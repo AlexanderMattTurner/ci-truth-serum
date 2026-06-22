@@ -21,45 +21,9 @@ def _write(dirpath: Path, name: str, body: str) -> Path:
     return path
 
 
-# ── has_decide_gate (shared from _linecheck) ──────────────────────────────
-
-
-def test_has_decide_gate_detects_reusable():
-    jobs = {"decide": {"uses": "./.github/workflows/decide-reusable.yaml"}}
-    assert car.has_decide_gate(jobs) is True
-
-
-def test_has_decide_gate_detects_needs_outputs():
-    jobs = {"work": {"if": "needs.decide.outputs.run == 'true'"}}
-    assert car.has_decide_gate(jobs) is True
-
-
-def test_has_decide_gate_false_when_no_gate():
-    jobs = {"build": {"runs-on": "ubuntu-latest"}}
-    assert car.has_decide_gate(jobs) is False
-
-
-def test_has_decide_gate_skips_non_dict_jobs():
-    assert car.has_decide_gate({"odd": "scalar"}) is False
-
-
-# ── has_always_reporter (shared from _linecheck) ──────────────────────────
-
-
-def test_has_always_reporter_detects_always():
-    jobs = {"reporter": {"if": "always()", "runs-on": "ubuntu-latest"}}
-    assert car.has_always_reporter(jobs) is True
-
-
-def test_has_always_reporter_false_when_absent():
-    jobs = {"work": {"if": "needs.decide.outputs.run == 'true'"}}
-    assert car.has_always_reporter(jobs) is False
-
-
-def test_has_always_reporter_requires_exact_match():
-    # Partial matches or expressions that include always() don't count.
-    jobs = {"job": {"if": "always() && some.condition"}}
-    assert car.has_always_reporter(jobs) is False
+# The required-check-shape probes (has_decide_gate / has_always_reporter) now
+# live in _linecheck and are unit-tested in test_linecheck.py; here they are
+# exercised end-to-end through check_file below.
 
 
 # ── check_file ────────────────────────────────────────────────────────────

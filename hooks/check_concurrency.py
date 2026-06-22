@@ -51,7 +51,8 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 # A concurrency group keyed by any of these is per-ref / per-PR / per-run, so a
 # run is only ever superseded by a *newer run of the same ref* — whose own
 # reporter then posts the check. Without one of these the group is static and a
-# sibling ref's run can cancel this one with no replacement report.
+# sibling ref's run can cancel this one with no replacement report. Matched as a
+# best-effort substring of the group expression, not a full ${{ }} parse.
 PER_REF_KEYS = (
     "github.ref",
     "github.ref_name",
@@ -96,7 +97,9 @@ def check_file(path: Path) -> list[tuple[int, str]]:
         )
 
     group = str(conc.get("group", ""))
-    is_static = not any(key in group for key in PER_REF_KEYS)
+    # `group` is required in a map-form concurrency block; guard anyway so an
+    # absent group is never mislabeled as a "static" one.
+    is_static = "group" in conc and not any(key in group for key in PER_REF_KEYS)
     jobs = doc.get("jobs", {})
     backs_required_check = isinstance(jobs, dict) and (
         has_decide_gate(jobs) and has_always_reporter(jobs)

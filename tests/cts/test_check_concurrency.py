@@ -139,6 +139,16 @@ def test_static_opt_out_suppresses_the_required_check_error(tmp_path):
     assert cc.check_file(_write(tmp_path, body)) == []
 
 
+def test_groupless_concurrency_is_not_flagged_as_static(tmp_path):
+    """A map-form concurrency block with no group (unusual, but the absent group
+    must not be mislabeled 'static') on a required-check workflow is clean."""
+    body = (
+        "name: x\non:\n  pull_request:\nconcurrency:\n"
+        "  cancel-in-progress: true\n" + REQUIRED_CHECK_JOBS
+    )
+    assert cc.check_file(_write(tmp_path, body)) == []
+
+
 def test_both_violations_are_reported_together(tmp_path):
     """A static group on a required-check workflow that also omits cancel-in-progress
     yields both findings."""
