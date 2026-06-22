@@ -109,7 +109,7 @@ To cut a release, label the PR **`release`**:
 1. `release-prep.yaml` asks Claude to classify the pending fragments as a **conservative** bump (patch or minor—never major) and commits the `package.json` bump plus the rolled `CHANGELOG.md` section onto the PR branch.
 2. On merge, `tag-release.yaml` pushes the `vX.Y.Z` tag and publishes a GitHub Release with that version’s changelog section as the notes.
 
-Both steps are idempotent and require an `ANTHROPIC_API_KEY` secret (for classification) and the same `TEMPLATE_SYNC_TOKEN` used by template sync. Preview the next changelog with `pnpm changelog:draft`.
+Both steps are idempotent. They need an `ANTHROPIC_API_KEY` secret (for the bump classification) and use the same `TEMPLATE_SYNC_TOKEN` as template sync when present, falling back to the built-in `GITHUB_TOKEN`. Preview the next changelog with `pnpm changelog:draft`.
 
 ## Automatic Updates
 
