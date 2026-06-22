@@ -1,0 +1,116 @@
+# ci-truth-serum — pre-commit hook definitions.
+#
+# Each lint is exposed as its own hook `id` so consumers can enable subsets.
+# Hooks are grouped Tier 1 (honesty + identity, default-on) / Tier 2 (opinionated,
+# opt-in) / Extras (off-theme bonus). Tier 2 and Extras are NEVER required by
+# Tier 1 — enable only the ids you want.
+#
+# `language: python` builds an isolated env and installs this package (which
+# pulls in PyYAML); the YAML lints additionally pin PyYAML under
+# `additional_dependencies` so the intent is explicit. Each entry runs the lint
+# as `python -m hooks.<module>` from the consumer's repo root.
+
+# ───────────────────────── Tier 1 · Honesty (default-on) ─────────────────────
+- id: check-workflow-pipefail
+  name: "honesty: enforce pipefail on piped run/runCmd steps"
+  description: A pipe in a non-pipefail shell masks a failing left-hand command.
+  entry: python -m hooks.check_workflow_pipefail
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-exit-suppression
+  name: "honesty: ban unjustified exit-status suppression (|| true / || :)"
+  description: "`cmd || true` drops a real failure while keeping its output."
+  entry: python -m hooks.check_exit_suppression
+  language: python
+  types: [shell]
+
+- id: check-stderr-suppression
+  name: "honesty: ban stderr suppression on container launch/build commands"
+  description: 2>/dev/null on a launch hides the only diagnostic a bare non-zero leaves.
+  entry: python -m hooks.check_stderr_suppression
+  language: python
+  types: [shell]
+
+- id: check-pr-paths
+  name: "honesty: ban paths/paths-ignore on pull_request triggers"
+  description: A path filter strands a required check at "Expected — Waiting" forever.
+  entry: python -m hooks.check_pr_paths
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+# ───────────────────────── Tier 1 · Identity (default-on) ────────────────────
+- id: check-pinned-base-images
+  name: "identity: enforce digest-pinned Docker base images"
+  description: A mutable tag (stronger than hadolint's tag-only rule) lets the bytes drift.
+  entry: python -m hooks.check_pinned_base_images
+  language: python
+  files: '(^|/)Dockerfile(\.[\w-]+)?$'
+
+- id: check-pinned-downloads
+  name: "identity: enforce checksum/signature on downloaded artifacts"
+  description: An unverified curl/wget that you then run is a supply-chain entry point.
+  entry: python -m hooks.check_pinned_downloads
+  language: python
+  files: '\.(sh|bash)$|(^|/)Dockerfile(\.[\w-]+)?$'
+
+# ───────────────────────── Tier 2 · Opinionated (opt-in) ─────────────────────
+# These prescribe a specific architecture. Enable only if you follow it.
+- id: check-always-reporter
+  name: "opinionated: require an always() reporter on gated workflows"
+  description: Assumes the decide-job + reporter pattern; a skipped gate strands a required check.
+  entry: python -m hooks.check_always_reporter
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-inline-run-length
+  name: "opinionated: enforce externalizing oversized inline run blocks"
+  description: Long inline run shell is invisible to shellcheck/shfmt/shellharden.
+  entry: python -m hooks.check_inline_run_length
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-concurrency
+  name: "opinionated: require explicit cancel-in-progress on concurrency groups"
+  description: Missing cancel-in-progress silently defaults to false (queue-don't-cancel).
+  entry: python -m hooks.check_concurrency
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
+# ───────────────────────── Extras · Unrelated bonus checks ───────────────────
+# Useful, but unrelated to CI truth. Opt-in.
+- id: check-symlinks
+  name: "extra: reject tracked symlinks with absolute targets"
+  description: An absolute-target symlink breaks on every machine but the author's.
+  entry: hooks/check_symlinks.sh
+  language: script
+  pass_filenames: false
+
+- id: check-unnamed-regex-groups
+  name: "extra: require named groups in Python re.* literals"
+  description: Unnamed capture groups make match handling positional and brittle.
+  entry: python -m hooks.check_unnamed_regex_groups
+  language: python
+  types: [python]
+
+- id: check-global-stdio-swap
+  name: "extra: ban reassigning sys.stdin/stdout/stderr in source Python"
+  description: Swapping process-global streams is not thread-safe under concurrency.
+  entry: python -m hooks.check_global_stdio_swap
+  language: python
+  types: [python]

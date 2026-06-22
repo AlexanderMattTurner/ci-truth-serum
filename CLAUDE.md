@@ -38,7 +38,8 @@ Use the `/pr-creation` skill. For contributions to others’ repos, before writi
 - Let exceptions propagate—never use try/except unless there is a specific, necessary recovery action. Default to crashing on unexpected input
 - Un-nest conditionals; combine related checks
 - Smart quotes (U+201C/U+201D/U+2018/U+2019): use Unicode escapes in code, centralize constants, ask user to verify output
-- Shell scripts: never use `|| true` to silence an expected non-zero exit—it silently swallows unexpected failures too. Branch on the exit code instead: `cmd; rc=$?; [ "${rc:-0}" -le N ] || exit "$rc"`.
+- Shell scripts: never use `|| true` to silence an expected non-zero exit—it silently swallows unexpected failures too. Branch on the exit code instead: `cmd; rc=$?; [[ "${rc:-0}" -le N ]] || exit "${rc}"`.
+- Shell scripts: the shellcheck hook enforces `require-variable-braces` (SC2250) and `require-double-brackets` (SC2292)—always brace variable references (`${var}`, not `$var`) and use `[[ ]]` over `[ ]` in bash/ksh.
 - **Iterating word-split command output under the shared `shellharden` + `shellcheck` hooks**: don’t write `for x in $(cmd)` — `shellharden` auto-quotes `$(cmd)`, killing the split, and `shellcheck` then fails with `SC2066`. Don’t reach for `mapfile`/`readarray` if the script must run on macOS bash 3.2 (it’s bash 4+). Use a portable `while IFS= read -r line; do arr+=("$line"); done < <(cmd)` array, consumed as `"${arr[@]}"`.
 - **Escape every metacharacter class in a single pass when embedding text into a shell/DSL.** Chained `.replace()` calls where a later pass can re-touch an earlier pass’s inserted escape character are the classic source of CodeQL’s _incomplete string escaping_ findings.
 

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Make the cancellation policy explicit (dogfoods check-concurrency).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.11"
+      - name: Lint (ruff)
+        run: uv run --extra dev ruff check hooks tests/cts
+      - name: Format check (ruff)
+        run: uv run --extra dev ruff format --check hooks tests/cts
+      - name: Tests (pytest)
+        run: uv run --extra dev pytest tests/cts -n auto -q

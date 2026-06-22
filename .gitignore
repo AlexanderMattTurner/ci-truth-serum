@@ -43,3 +43,7 @@ __pycache__/
 *.pyc
 .venv/
 .uv/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/

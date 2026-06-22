@@ -4,12 +4,31 @@ Lives in a regular module (not `conftest.py`) so it can be imported directly
 without manipulating `sys.path` or relying on the conftest plugin loader.
 """
 
+import importlib.util
 import os
 import shutil
 import subprocess
 from pathlib import Path
+from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+HOOKS_DIR = REPO_ROOT / "hooks"
+
+
+def load_hook(filename: str, modname: str) -> ModuleType:
+    """Load a ci-truth-serum hook script by path and drive its functions directly.
+
+    The hooks live in ``hooks/`` outside any importable package layout the tests
+    share, so each is loaded from its file. ``modname`` is the (arbitrary) module
+    name to register the loaded module under.
+    """
+    src = HOOKS_DIR / filename
+    spec = importlib.util.spec_from_file_location(modname, src)
+    assert spec and spec.loader, src
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
 
 GIT_IDENTITY_ENV = {
     "GIT_AUTHOR_NAME": "t",
@@ -60,6 +79,7 @@ def commit_all(repo: Path, message: str = "fixture") -> str:
 
 
 _SCRIPT_DIRS = [
+    REPO_ROOT / "hooks",
     REPO_ROOT / ".github" / "scripts",
     REPO_ROOT / ".claude" / "hooks",
     REPO_ROOT / ".hooks",
