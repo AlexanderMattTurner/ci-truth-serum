@@ -72,6 +72,16 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-required-reporter
+  name: "opinionated: classify every always() reporter as required or advisory"
+  description: An unclassified always() reporter silently escapes the required-status-check set; mark it required-check true|false.
+  entry: python -m hooks.check_required_reporter
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 - id: check-inline-run-length
   name: "opinionated: enforce externalizing oversized inline run blocks"
   description: Long inline run shell is invisible to shellcheck/shfmt/shellharden.

@@ -30,11 +30,12 @@ lints that catch two kinds of lie a green check can hide:
 
 ### Opinionated (Tier 2, opt-in)
 
-| Hook                      | Failure it prevents                                                                                                                                                   | Opt-out marker                      |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| `check-always-reporter`   | A gated workflow stranded a required check at “Expected—Waiting” when the decide gate skipped every work job. Assumes a **decide-job + `always()` reporter** pattern. | `# not-required-check` (on trigger) |
-| `check-inline-run-length` | A long inline `run:` block shipped unchecked (unquoted expansions, missing `pipefail`) because shellcheck/shfmt/shellharden only see standalone `.sh` files.          | `# allow-long-run: <reason>`        |
-| `check-concurrency`       | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.          | `# cancel-in-progress-not-required` |
+| Hook                      | Failure it prevents                                                                                                                                                                                                   | Opt-out marker                                                                         |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `check-always-reporter`   | A gated workflow stranded a required check at “Expected—Waiting” when the decide gate skipped every work job. Assumes a **decide-job + `always()` reporter** pattern.                                                 | `# not-required-check` (on trigger)                                                    |
+| `check-required-reporter` | A new `always()` reporter shipped as a green-but-never-required check because nothing tied a workflow’s reporters to the branch-protection required-set. Assumes the required-set is mirrored from these annotations. | `# not-required-check` (trigger) / `# required-check: false # <reason>` (per reporter) |
+| `check-inline-run-length` | A long inline `run:` block shipped unchecked (unquoted expansions, missing `pipefail`) because shellcheck/shfmt/shellharden only see standalone `.sh` files.                                                          | `# allow-long-run: <reason>`                                                           |
+| `check-concurrency`       | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.                                                          | `# cancel-in-progress-not-required`                                                    |
 
 ### Unrelated bonus checks (Extras)
 
@@ -74,6 +75,7 @@ repos:
       - id: check-pinned-downloads
       # ── Tier 2 · Opinionated (opt-in: uncomment to enable) ──
       # - id: check-always-reporter      # assumes a decide-job + always() reporter
+      # - id: check-required-reporter    # classify each always() reporter required-check: true|false
       # - id: check-inline-run-length
       # - id: check-concurrency
       # ── Extras · Unrelated bonus checks (opt-in) ──
