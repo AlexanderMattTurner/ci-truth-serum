@@ -21,10 +21,10 @@ BODY="@claude Resolve this template sync PR so it's ready to merge.
 
 **Important:** Check whether newly added workflow files duplicate CI that the target repo already has (e.g., the repo may already have its own test or lint workflows under different names or configurations). If a synced workflow (like \`node-tests.yaml\`, \`lint.yaml\`, \`format-check.yaml\`) duplicates existing CI, delete the redundant template workflow and add its path to EXCLUDE_PATHS in \`template-sync.yaml\` so it won't be re-added on future syncs."
 
-if [ "$HAS_CONFLICTS" = "true" ]; then
-  BODY="$BODY
+if [[ "${HAS_CONFLICTS}" = "true" ]]; then
+  BODY="${BODY}
 
-**Resolve conflicts in:** $CONFLICT_FILES
+**Resolve conflicts in:** ${CONFLICT_FILES}
 
 For each file:
 1. Open the file on this branch and resolve all \`<<<<<<<\`/\`=======\`/\`>>>>>>>\` conflict markers
@@ -34,15 +34,15 @@ For each file:
 5. Remove the \`.template-sync-conflicts\` tracking file once all conflicts are resolved"
 fi
 
-if [ "$HAS_DELETIONS" = "true" ]; then
-  BODY="$BODY
+if [[ "${HAS_DELETIONS}" = "true" ]]; then
+  BODY="${BODY}
 
-**Deleted files:** These files were removed from the template: $DELETED_FILES
+**Deleted files:** These files were removed from the template: ${DELETED_FILES}
 Check if they are still used locally. If not, delete them in this PR."
 fi
 
-BODY="$BODY
+BODY="${BODY}
 
 Commit your changes and ensure the PR is ready for human review."
 
-gh pr comment "$PR_NUM" --body "$BODY"
+gh pr comment "${PR_NUM}" --body "${BODY}"

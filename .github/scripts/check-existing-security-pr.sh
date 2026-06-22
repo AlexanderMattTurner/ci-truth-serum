@@ -17,20 +17,20 @@ GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 EXISTING_BRANCH=$(gh pr list --label "security-scan" --state open \
   --json headRefName --jq '.[0].headRefName // empty')
 
-if [ -n "$EXISTING_BRANCH" ]; then
-  echo "Found existing security PR branch: $EXISTING_BRANCH"
-  git fetch origin "$EXISTING_BRANCH"
-  git checkout "$EXISTING_BRANCH"
-  if ! git merge "origin/$DEFAULT_BRANCH" --no-edit; then
+if [[ -n "${EXISTING_BRANCH}" ]]; then
+  echo "Found existing security PR branch: ${EXISTING_BRANCH}"
+  git fetch origin "${EXISTING_BRANCH}"
+  git checkout "${EXISTING_BRANCH}"
+  if ! git merge "origin/${DEFAULT_BRANCH}" --no-edit; then
     echo "::error::Merge conflict with default branch. Aborting merge."
     git merge --abort
     exit 1
   fi
   {
-    echo "branch=$EXISTING_BRANCH"
+    echo "branch=${EXISTING_BRANCH}"
     echo "exists=true"
-  } >>"$GITHUB_OUTPUT"
+  } >>"${GITHUB_OUTPUT}"
 else
   echo "No existing security PR found, will create new branch"
-  echo "exists=false" >>"$GITHUB_OUTPUT"
+  echo "exists=false" >>"${GITHUB_OUTPUT}"
 fi

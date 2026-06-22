@@ -9,7 +9,7 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
-cd "$repo_root"
+cd "${repo_root}"
 
 # lint-staged stashes the working tree, which needs a committer identity that CI
 # runners don't configure by default.
@@ -25,15 +25,15 @@ setup_log=$(mktemp "${RUNNER_TEMP:-/tmp}/session-setup_XXXXXX.log")
 trap 'rm -f "$CLAUDE_ENV_FILE" "$setup_log"' EXIT
 
 echo "::group::session-setup.sh"
-.claude/hooks/session-setup.sh 2>&1 | tee "$setup_log"
+.claude/hooks/session-setup.sh 2>&1 | tee "${setup_log}"
 echo "::endgroup::"
 # shellcheck disable=SC1090
-source "$CLAUDE_ENV_FILE"
+source "${CLAUDE_ENV_FILE}"
 
 # session-setup warns (exit 0) instead of failing so a real session can still
 # start, but a hook with a syntax error is exactly the regression this job
 # exists to catch — so promote that specific warning to a hard failure.
-if grep -q "syntax error" "$setup_log"; then
+if grep -q "syntax error" "${setup_log}"; then
   echo "session-setup reported a hook with a syntax error — see log above" >&2
   exit 1
 fi
@@ -48,7 +48,7 @@ echo "::group::pre-commit"
 echo "::endgroup::"
 
 # 3. Pre-push checks (build/lint/test/ruff — whichever are configured).
-export CLAUDE_PROJECT_DIR="$repo_root"
+export CLAUDE_PROJECT_DIR="${repo_root}"
 echo "::group::pre-push-check.sh"
 .claude/hooks/pre-push-check.sh
 echo "::endgroup::"

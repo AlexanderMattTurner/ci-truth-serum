@@ -6,16 +6,16 @@ set -uo pipefail
 
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib-checks.sh
-source "$HOOK_DIR/lib-checks.sh"
+source "${HOOK_DIR}/lib-checks.sh"
 
 FAILED=0
 
 run_check() {
   local name="$1" cmd="$2"
   local output
-  if ! output=$($cmd 2>&1); then
-    echo "=== $name FAILED ===" >&2
-    echo "$output" >&2
+  if ! output=$(${cmd} 2>&1); then
+    echo "=== ${name} FAILED ===" >&2
+    echo "${output}" >&2
     FAILED=1
   fi
 }
@@ -31,7 +31,7 @@ if [[ -f pyproject.toml ]] || [[ -f uv.lock ]]; then
   PREFIX=""
   [[ -f uv.lock ]] && exists uv && PREFIX="uv run "
 
-  { exists ruff || [[ -n "$PREFIX" ]]; } && run_check "ruff" "${PREFIX}ruff check ."
+  { exists ruff || [[ -n "${PREFIX}" ]]; } && run_check "ruff" "${PREFIX}ruff check ."
 fi
 
-exit $FAILED
+exit ${FAILED}
