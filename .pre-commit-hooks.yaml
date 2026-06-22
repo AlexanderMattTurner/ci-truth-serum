@@ -83,8 +83,8 @@
   types: [yaml]
 
 - id: check-concurrency
-  name: "opinionated: require explicit cancel-in-progress on concurrency groups"
-  description: Missing cancel-in-progress silently defaults to false (queue-don't-cancel).
+  name: "opinionated: safe concurrency groups (explicit cancel-in-progress; no static lock on required checks)"
+  description: Missing cancel-in-progress silently defaults to false (queue-don't-cancel); a static workflow-level group on a required-check workflow can hang it at "Expected — Waiting".
   entry: python -m hooks.check_concurrency
   language: python
   additional_dependencies: [PyYAML]
