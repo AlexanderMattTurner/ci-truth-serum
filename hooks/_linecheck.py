@@ -10,7 +10,9 @@ are identical, and live here.
 
 The workflow lints (``check_pr_paths``, ``check_workflow_pipefail``,
 ``check_inline_run_length``, ``check_always_reporter``) share a byte-identical
-``workflow_files()`` discovery glob; it lives here too.
+``workflow_files()`` discovery glob; it lives here too. The two
+required-check-shape probes (``has_decide_gate``, ``has_always_reporter``) are
+shared by ``check_always_reporter`` and ``check_concurrency`` and live here too.
 
 Imported as a sibling: the scripts run as ``python3 hooks/check_*.py`` (or
 ``python -m hooks.check_*``), so each script prepends its own dir to ``sys.path``
@@ -65,3 +67,23 @@ def workflow_files(workflows_dir: Path, actions_dir: Path) -> list[Path]:
         files += actions_dir.rglob("action.yaml")
         files += actions_dir.rglob("action.yml")
     return sorted(files)
+
+
+def has_decide_gate(jobs: dict) -> bool:
+    """True if any job uses decide-reusable.yaml or conditions on needs.decide.outputs.*"""
+    for job_cfg in jobs.values():
+        if not isinstance(job_cfg, dict):
+            continue
+        if "decide-reusable.yaml" in str(job_cfg.get("uses", "")):
+            return True
+        if "needs.decide.outputs" in str(job_cfg.get("if", "")):
+            return True
+    return False
+
+
+def has_always_reporter(jobs: dict) -> bool:
+    """True if any job has `if: always()` — the required-check reporter shape."""
+    return any(
+        isinstance(job_cfg, dict) and str(job_cfg.get("if", "")) == "always()"
+        for job_cfg in jobs.values()
+    )

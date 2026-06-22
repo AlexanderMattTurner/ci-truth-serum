@@ -92,6 +92,16 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-static-concurrency
+  name: "opinionated: no static workflow-level concurrency lock on required checks"
+  description: A static concurrency group (no per-ref key) on a decide+always() workflow can hang the required check at "Expected — Waiting".
+  entry: python -m hooks.check_static_concurrency
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
 - id: check-symlinks

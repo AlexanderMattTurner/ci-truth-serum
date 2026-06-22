@@ -98,3 +98,36 @@ def test_workflow_files_skips_absent_actions_dir(tmp_path: Path) -> None:
     assert [p.name for p in lc.workflow_files(wf, tmp_path / "nonexistent")] == [
         "a.yaml"
     ]
+
+
+# ── has_decide_gate / has_always_reporter ────────────────────────────────
+# The required-check-shape probes shared by check_always_reporter and
+# check_concurrency; unit-tested here where they live.
+
+
+@pytest.mark.parametrize(
+    "jobs, expected",
+    [
+        ({"decide": {"uses": "./.github/workflows/decide-reusable.yaml"}}, True),
+        ({"work": {"if": "needs.decide.outputs.run == 'true'"}}, True),
+        ({"build": {"runs-on": "ubuntu-latest"}}, False),
+        ({"odd": "scalar"}, False),  # non-dict job config is skipped
+        ({}, False),
+    ],
+)
+def test_has_decide_gate(jobs: dict, expected: bool) -> None:
+    assert lc.has_decide_gate(jobs) is expected
+
+
+@pytest.mark.parametrize(
+    "jobs, expected",
+    [
+        ({"reporter": {"if": "always()", "runs-on": "ubuntu-latest"}}, True),
+        ({"work": {"if": "needs.decide.outputs.run == 'true'"}}, False),
+        ({"job": {"if": "always() && some.condition"}}, False),  # exact match only
+        ({"odd": "scalar"}, False),  # non-dict job config is skipped
+        ({}, False),
+    ],
+)
+def test_has_always_reporter(jobs: dict, expected: bool) -> None:
+    assert lc.has_always_reporter(jobs) is expected
