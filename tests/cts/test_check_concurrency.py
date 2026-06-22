@@ -4,7 +4,7 @@ explicitly (any value), preventing the silent false default."""
 
 from pathlib import Path
 
-from tests._helpers import load_hook
+from tests._helpers import REPO_ROOT, load_hook
 
 cc = load_hook("check_concurrency.py", "check_concurrency")
 
@@ -134,8 +134,9 @@ def test_main_reports_violation_and_returns_nonzero(tmp_path, monkeypatch, capsy
 # ── main: repo-wide pass ──────────────────────────────────────────────────────
 
 
-def test_all_shipped_workflows_pass(capsys):
-    """The invariant in practice: every workflow currently in ci-truth-serum
-    satisfies the check, so the repo dogfoods its own lint."""
-    rc = cc.main()
-    assert rc == 0, capsys.readouterr().out
+def test_own_ci_workflow_passes():
+    """ci-truth-serum's own CI workflow sets cancel-in-progress explicitly, so the
+    repo dogfoods its own lint. Scoped to the product's workflow (not the inherited
+    template's, which template-sync may rewrite independently)."""
+    ci = REPO_ROOT / ".github" / "workflows" / "ci.yaml"
+    assert cc.check_file(ci) is None

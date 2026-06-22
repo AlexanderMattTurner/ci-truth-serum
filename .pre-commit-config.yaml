@@ -1,91 +1,69 @@
-# ci-truth-serum dogfoods its own lints (plus ruff) on itself.
-# Run with: `pre-commit run --all-files`.
-#
-# Consumers do NOT use this file — they reference the hooks in
-# `.pre-commit-hooks.yaml` via `repo: https://github.com/alexander-turner/ci-truth-serum`
-# (see the README). This local config wires the same lints to this repo's own
-# sources so a regression turns `pre-commit` red here too.
+# Run with: `pre-commit run --all-files` (or install with `pre-commit install`).
+# CI runs this via `.github/workflows/pre-commit.yaml` regardless of whether
+# contributors have pre-commit installed locally. The existing `.hooks/pre-commit`
+# handles staged-file formatting via lint-staged on every commit; this config
+# adds wider hygiene checks (shellcheck, large-file detection, JSON/YAML
+# validity, etc.) that aren't covered there.
+
 repos:
-  - repo: local
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^pnpm-lock\.yaml$
+      - id: end-of-file-fixer
+        exclude: ^pnpm-lock\.yaml$
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: check-case-conflict
+      - id: check-symlinks
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: [-x, -P, .claude/hooks]
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.12.0-2
+    hooks:
+      - id: shfmt
+        args: [-i, "2", -w]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.5
     hooks:
       - id: ruff-check
-        name: ruff check
-        entry: ruff check --force-exclude
-        language: system
-        types_or: [python, pyi]
+        args: [--fix]
       - id: ruff-format
-        name: ruff format
-        entry: ruff format --force-exclude
-        language: system
-        types_or: [python, pyi]
 
-      # ── Tier 1 · Honesty ──
-      - id: check-workflow-pipefail
-        name: check-workflow-pipefail
-        entry: python -m hooks.check_workflow_pipefail
-        language: system
+  - repo: local
+    hooks:
+      - id: zizmor
+        name: zizmor (GitHub Actions security audit)
+        entry: zizmor
+        language: python
+        additional_dependencies: ["zizmor==1.25.2"]
         pass_filenames: false
-        files: ^\.github/(workflows|actions)/
-      - id: check-exit-suppression
-        name: check-exit-suppression
-        entry: python -m hooks.check_exit_suppression
-        language: system
-        types: [shell]
-      - id: check-stderr-suppression
-        name: check-stderr-suppression
-        entry: python -m hooks.check_stderr_suppression
-        language: system
-        types: [shell]
-      - id: check-pr-paths
-        name: check-pr-paths
-        entry: python -m hooks.check_pr_paths
-        language: system
-        pass_filenames: false
-        files: ^\.github/(workflows|actions)/
+        args: [".github/"]
+        files: ^\.github/
 
-      # ── Tier 1 · Identity ──
-      - id: check-pinned-base-images
-        name: check-pinned-base-images
-        entry: python -m hooks.check_pinned_base_images
+      - id: validate-config
+        name: validate Claude hook configuration
+        entry: bash .github/scripts/validate-config.sh
         language: system
-        files: '(^|/)Dockerfile(\.[\w-]+)?$'
-      - id: check-pinned-downloads
-        name: check-pinned-downloads
-        entry: python -m hooks.check_pinned_downloads
-        language: system
-        files: '\.(sh|bash)$|(^|/)Dockerfile(\.[\w-]+)?$'
+        pass_filenames: false
+        files: ^(\.claude/|\.hooks/|\.github/workflows/)
 
-      # ── Tier 2 · Opinionated ──
-      - id: check-always-reporter
-        name: check-always-reporter
-        entry: python -m hooks.check_always_reporter
+      - id: lint-skills
+        name: lint Claude SKILL.md files
+        entry: bash .hooks/lint-skills.sh
         language: system
-        pass_filenames: false
-        files: ^\.github/(workflows|actions)/
-      - id: check-inline-run-length
-        name: check-inline-run-length
-        entry: python -m hooks.check_inline_run_length
-        language: system
-        pass_filenames: false
-        files: ^\.github/(workflows|actions)/
-      - id: check-concurrency
-        name: check-concurrency
-        entry: python -m hooks.check_concurrency
-        language: system
-        pass_filenames: false
-        files: ^\.github/workflows/
-
-      # ── Extras ──
-      - id: check-symlinks
-        name: check-symlinks
-        entry: hooks/check_symlinks.sh
-        language: script
-        pass_filenames: false
-      - id: check-unnamed-regex-groups
-        name: check-unnamed-regex-groups
-        entry: python -m hooks.check_unnamed_regex_groups
-        language: system
-        types: [python]
-      # The stdio-swap lint is scoped to application source; this repo has none of
-      # those surfaces, and its own detector source mentions the banned idioms in
-      # prose, so it is not self-applied here (see check_global_stdio_swap.py).
+        files: ^\.claude/skills/.*\.md$

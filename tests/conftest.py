@@ -1,8 +1,8 @@
-"""Shared pytest fixtures for the shell-script tests."""
+"""Shared pytest fixtures for shell-script tests."""
 
 import subprocess
-from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Callable, Iterator
 
 import pytest
 
@@ -24,5 +24,5 @@ def empty_git_repo(tmp_path: Path) -> Iterator[Path]:
 
 @pytest.fixture
 def copy_script() -> Callable[[str, Path], Path]:
-    """Return a helper that copies a hook script into a sandbox dir."""
+    """Return a helper that copies a repo script into a sandbox dir."""
     return copy_script_to

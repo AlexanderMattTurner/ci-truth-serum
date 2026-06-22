@@ -1,32 +1,26 @@
-"""Shared helpers for the ci-truth-serum test suite.
+"""Shared helpers used by multiple test modules.
 
-Lives in a regular module (not ``conftest.py``) so it can be imported directly.
-The repo root is resolved via ``git rev-parse`` rather than walking ``__file__``'s
-parents by a hardcoded depth, so moving a test file never silently breaks discovery.
+Lives in a regular module (not `conftest.py`) so it can be imported directly
+without manipulating `sys.path` or relying on the conftest plugin loader.
 """
 
 import importlib.util
+import os
 import shutil
 import subprocess
 from pathlib import Path
 from types import ModuleType
 
-REPO_ROOT = Path(
-    subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO_ROOT / "hooks"
 
 
 def load_hook(filename: str, modname: str) -> ModuleType:
-    """Load a hook script by path and run its functions directly.
+    """Load a ci-truth-serum hook script by path and drive its functions directly.
 
-    The hooks live outside any importable package layout the tests share, so each
-    is loaded from its file. ``modname`` is the (arbitrary) module name to register.
+    The hooks live in ``hooks/`` outside any importable package layout the tests
+    share, so each is loaded from its file. ``modname`` is the (arbitrary) module
+    name to register the loaded module under.
     """
     src = HOOKS_DIR / filename
     spec = importlib.util.spec_from_file_location(modname, src)
@@ -46,14 +40,12 @@ GIT_IDENTITY_ENV = {
 
 def git_env() -> dict[str, str]:
     """Environment for running git in test sandboxes."""
-    import os
-
     return {**os.environ, **GIT_IDENTITY_ENV}
 
 
 def init_test_repo(path: Path) -> None:
-    """Init a throwaway repo with signing/hooks disabled so fixtures can commit in
-    any environment (including CI runners with enforced commit signing)."""
+    """Init a throwaway repo with signing/hooks disabled so fixtures can commit
+    in any environment (including CI runners with enforced commit signing)."""
     path.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
     for k, v in [
@@ -86,12 +78,21 @@ def commit_all(repo: Path, message: str = "fixture") -> str:
     return sha.stdout.strip()
 
 
+_SCRIPT_DIRS = [
+    REPO_ROOT / "hooks",
+    REPO_ROOT / ".github" / "scripts",
+    REPO_ROOT / ".claude" / "hooks",
+    REPO_ROOT / ".hooks",
+]
+
+
 def copy_script_to(script_name: str, dest_dir: Path) -> Path:
-    """Copy a hook script into ``dest_dir``, preserving the executable bit."""
-    src = HOOKS_DIR / script_name
-    if not src.exists():
-        raise FileNotFoundError(f"Could not find {script_name} in {HOOKS_DIR}")
-    dest = dest_dir / script_name
-    shutil.copy2(src, dest)
-    dest.chmod(0o755)
-    return dest
+    """Copy a repo script into `dest_dir`, preserving the executable bit."""
+    for src_dir in _SCRIPT_DIRS:
+        src = src_dir / script_name
+        if src.exists():
+            dest = dest_dir / script_name
+            shutil.copy2(src, dest)
+            dest.chmod(0o755)
+            return dest
+    raise FileNotFoundError(f"Could not find {script_name} in any known location")

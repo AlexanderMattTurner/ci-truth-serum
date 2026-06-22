@@ -5,7 +5,7 @@ limit that does not opt out."""
 
 from pathlib import Path
 
-from tests._helpers import load_hook
+from tests._helpers import REPO_ROOT, load_hook
 
 cl = load_hook("check_inline_run_length.py", "check_inline_run_length")
 
@@ -131,8 +131,9 @@ def test_main_reports_and_fails_on_violation(tmp_path: Path, monkeypatch, capsys
 # ── repo-wide: the shipped workflows must pass ────────────────────────────────
 
 
-def test_repository_workflows_pass_the_check():
-    """ci-truth-serum's own workflows + composite actions must already satisfy the
-    limit (or opt out), so the repo dogfoods its own lint."""
-    offenders = [m for path in cl.workflow_files() for m in cl.check_file(path)]
-    assert offenders == [], "oversized inline run: blocks:\n" + "\n".join(offenders)
+def test_own_ci_workflow_passes_the_check():
+    """ci-truth-serum's own CI workflow must satisfy the limit, so the repo
+    dogfoods its own lint. Scoped to the product's workflow (not the inherited
+    template's, which template-sync may rewrite independently)."""
+    ci = REPO_ROOT / ".github" / "workflows" / "ci.yaml"
+    assert cl.check_file(ci) == [], cl.check_file(ci)

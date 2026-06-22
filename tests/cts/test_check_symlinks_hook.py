@@ -1,4 +1,6 @@
-"""Tests for .github/scripts/check-symlinks.sh."""
+"""Tests for hooks/check_symlinks.sh — the ci-truth-serum copy of the
+absolute-target symlink guard (the template ships an identical script under
+.github/scripts/; this pins the packaged hook itself)."""
 
 import subprocess
 from pathlib import Path
@@ -9,7 +11,7 @@ from tests._helpers import commit_all
 
 
 def run_script(repo: Path, copy_script) -> subprocess.CompletedProcess:
-    script = copy_script("check-symlinks.sh", repo)
+    script = copy_script("check_symlinks.sh", repo)
     return subprocess.run(
         ["bash", str(script)], cwd=repo, capture_output=True, text=True
     )
