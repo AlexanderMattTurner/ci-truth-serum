@@ -83,9 +83,19 @@
   types: [yaml]
 
 - id: check-concurrency
-  name: "opinionated: safe concurrency groups (explicit cancel-in-progress; no static lock on required checks)"
-  description: Missing cancel-in-progress silently defaults to false (queue-don't-cancel); a static workflow-level group on a required-check workflow can hang it at "Expected — Waiting".
+  name: "opinionated: require explicit cancel-in-progress on concurrency groups"
+  description: Missing cancel-in-progress silently defaults to false (queue-don't-cancel).
   entry: python -m hooks.check_concurrency
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
+- id: check-static-concurrency
+  name: "opinionated: no static workflow-level concurrency lock on required checks"
+  description: A static concurrency group (no per-ref key) on a decide+always() workflow can hang the required check at "Expected — Waiting".
+  entry: python -m hooks.check_static_concurrency
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
