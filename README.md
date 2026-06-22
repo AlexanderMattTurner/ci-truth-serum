@@ -23,7 +23,7 @@ gaps these tools leave open—and those gaps span YAML **and** bash
 For example, a path filter on a `pull_request` trigger
 only strands a check when a repo combines branch protection **AND** path filters
 **AND** required checks. That intersection is common enough to keep biting, but
-narrow enough that demand never crossed the threshold for anyone to package the fix. 
+narrow enough that demand never crossed the threshold for anyone to package the fix.
 So here it is.
 
 ## What `ci-truth-serum` checks
