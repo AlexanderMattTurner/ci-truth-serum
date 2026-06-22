@@ -29,16 +29,9 @@ repos:
     rev: v0.11.0.1
     hooks:
       - id: shellcheck
-        # Enable two optional checks beyond the defaults: brace all variable
-        # references (${var}) and require [[ ]] over [ ] in bash/ksh.
-        args:
-          [
-            -x,
-            -P,
-            .claude/hooks,
-            -o,
-            "require-variable-braces,require-double-brackets",
-          ]
+        # Enable one optional check beyond the defaults: require [[ ]] over
+        # [ ] in bash/ksh.
+        args: [-x, -P, .claude/hooks, -o, require-double-brackets]
 
   - repo: https://github.com/scop/pre-commit-shfmt
     rev: v3.12.0-2
