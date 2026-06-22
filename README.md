@@ -1,34 +1,16 @@
 # ci-truth-serum
 
-**Make your CI confess what it’s hiding.** A green check should mean the work actually passed, and a pinned dependency
-should be the exact bytes you reviewed. Two kinds of lie break that:
+**Make your CI confess what it’s hiding.** A pack of fast, offline pre-commit
+lints that catch two kinds of lie a green check can hide:
 
-- **Honesty lies**—the pipeline reports success while the real work failed
-  (exit codes masked by pipes / `|| true` / `2>/dev/null`), or a required status
-  check silently never reports at all and the PR hangs forever.
-- **Identity lies**—a base image or downloaded artifact is pinned to a
-  _mutable_ name (a tag, a bare URL), so the bytes you run are not provably the
-  bytes you reviewed; the reference stays the same while the content drifts.
+- **Honesty lies** — the pipeline reports success while the real work failed
+  (exit codes masked by pipes / `|| true` / `2>/dev/null`), or a required check
+  silently never reports and the PR hangs forever.
+- **Identity lies** — a base image or downloaded artifact is pinned to a
+  _mutable_ name (a tag, a bare URL), so the bytes you run aren’t provably the
+  bytes you reviewed.
 
-`ci-truth-serum` offers a pack of fast, offline pre-commit lints that catch both.
-
-## Why this didn’t exist before
-
-The GitHub Actions tooling ecosystem stays in correctness/security lanes on
-purpose. [`actionlint`](https://github.com/rhysd/actionlint) checks workflow
-syntax and expression types; [`zizmor`](https://github.com/woodruffw/zizmor)
-audits for security smells; [`hadolint`](https://github.com/hadolint/hadolint)
-lints Dockerfiles; `shellcheck` lints shell. None of them enforce the _policy_
-gaps these tools leave open—and those gaps span YAML **and** bash
-**and** Dockerfile at once, fitting no single tool’s file-type scope.
-
-For example, a path filter on a `pull_request` trigger
-only strands a check when a repo combines branch protection **AND** path filters
-**AND** required checks. That intersection is common enough to keep biting, but
-narrow enough that demand never crossed the threshold for anyone to package the fix.
-So here it is.
-
-## What `ci-truth-serum` checks
+## What it checks
 
 ### Honesty (Tier 1, default-on)
 
@@ -62,26 +44,10 @@ So here it is.
 | `check-unnamed-regex-groups` | A regex’s match handling went positional and brittle because a `re.*` literal used an unnamed `( )` group.             | _(use `(?P<name>...)`)_        |
 | `check-global-stdio-swap`    | Concurrent calls clobbered each other’s output because code reassigned the process-global `sys.stdout` to capture I/O. | `# allow-stdio-swap: <reason>` |
 
-## Complements, doesn’t replace
-
-You should also run:
-
-- **Action pinning** → use [`zizmor`](https://github.com/woodruffw/zizmor)’s
-  `unpinned-uses` audit to SHA-pin `uses:` references. (This pack deliberately
-  ships no action-pinning lint—that would just be noise on top of zizmor.)
-- **Dockerfile lint** → use [`hadolint`](https://github.com/hadolint/hadolint).
-  Our `check-pinned-base-images` is **strictly stronger** than hadolint’s
-  `DL3006`/`DL3007`: those are satisfied by _any_ explicit tag, so `node:22.3.0`
-  passes hadolint yet is still mutable. Only a `@sha256:` digest is immutable, and
-  that is what this lint demands.
-- **Workflow syntax/types** → use [`actionlint`](https://github.com/rhysd/actionlint).
-- **Shell** → use `shellcheck` (the `check-inline-run-length` lint exists to make
-  inline shell _reachable_ by `shellcheck` in the first place).
-
 ## Usage
 
-These ship as [pre-commit](https://pre-commit.com) hooks. If you don’t already
-use pre-commit, install it and enable its git hook:
+These are [pre-commit](https://pre-commit.com) hooks. Install pre-commit and
+enable its git hook:
 
 ```bash
 pipx install pre-commit # or: pip install pre-commit / brew install pre-commit
@@ -89,9 +55,9 @@ pre-commit install
 ```
 
 Then add ci-truth-serum to your `.pre-commit-config.yaml`. Tier 1 (honesty +
-identity) is shown enabled; Tier 2 and Extras are commented in—uncomment only
-what you want. pre-commit builds each hook’s isolated Python environment for
-you, so pre-commit itself is the only prerequisite.
+identity) is shown enabled; Tier 2 and Extras are commented in—uncomment what
+you want. pre-commit builds each hook’s isolated Python environment, so it is
+the only prerequisite.
 
 ```yaml
 repos:
@@ -116,34 +82,27 @@ repos:
       # - id: check-global-stdio-swap
 ```
 
-On first adoption, sweep the whole repo (not just changed files) in one go:
-
-```bash
-pre-commit run --all-files
-```
-
-For local debugging you can also invoke a single lint standalone, from a clone
-of this repo:
-
-```bash
-python3 hooks/check_pinned_base_images.py path/to/Dockerfile
-python -m hooks.check_pr_paths            # globs ./.github/{workflows,actions}
-```
+`pre-commit run --all-files` sweeps the whole repo (handy on first adoption).
 
 ### Autofix (opt-in): digest-pin base images
 
-`check-pinned-base-images` can rewrite the violations it finds. Pass `--fix` and
-it resolves each unpinned `FROM`’s current registry digest and appends it
-(`FROM node:22` → `FROM node:22@sha256:…`), preserving any `--platform` flag and
-`AS <stage>` suffix. It is **opt-in** because `--fix` is the one place this pack
-touches the network (a Docker Registry v2 manifest lookup against Docker Hub,
-ghcr.io, and the like); detection stays fully offline. An image whose digest
-can’t be resolved is left untouched and still reported—the fix never guesses.
+`check-pinned-base-images` can rewrite what it finds: pass `--fix` and it
+resolves each unpinned `FROM`’s current registry digest and appends it
+(`FROM node:22` → `FROM node:22@sha256:…`), preserving `--platform` flags and
+`AS <stage>` suffixes. It is opt-in because `--fix` is the pack’s only network
+call (a Docker Registry v2 manifest lookup); detection stays offline, and an
+image whose digest can’t be resolved is left untouched—never guessed.
 
 ```yaml
 - id: check-pinned-base-images
-  args: [--fix] # online: pin to the digest the registry serves now
+  args: [--fix]
 ```
 
-Like other autofixing hooks, it exits non-zero when it rewrites a file so
-pre-commit stops for you to review and re-stage the change.
+## Complements, doesn’t replace
+
+ci-truth-serum enforces policy gaps; keep running the tools it doesn’t
+duplicate: [`zizmor`](https://github.com/woodruffw/zizmor) to SHA-pin `uses:`
+references, [`hadolint`](https://github.com/hadolint/hadolint) for Dockerfiles
+(`check-pinned-base-images` is stronger—it demands a `@sha256:` digest, not just
+an explicit tag), [`actionlint`](https://github.com/rhysd/actionlint) for
+workflow syntax/types, and `shellcheck` for shell.
