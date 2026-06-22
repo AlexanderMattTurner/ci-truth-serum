@@ -1,192 +1,143 @@
-# Claude Automation Template
+# ci-truth-serum
 
-A GitHub template that makes [Claude Code](https://docs.anthropic.com/en/docs/claude-code) work reliably on your repositories. It wires up git hooks, CI workflows, and Claude session hooks so that Claude can autonomously fix code, create PRs, and respond to `@claude` mentions—with safeguards to prevent broken code from shipping.
+**Make your CI confess what it’s hiding.**
 
-## Why Use This
+A green check should mean the work actually passed, and a pinned dependency
+should be the exact bytes you reviewed. Two kinds of lie break that:
 
-**Without this template**, using Claude Code on a repo requires manually configuring hooks, writing CI workflows, and building guardrails against common failure modes (infinite retry loops, pushing broken code, inconsistent formatting).
+- **Honesty lies**—the pipeline reports success while the real work failed
+  (exit codes masked by pipes / `|| true` / `2>/dev/null`), or a required status
+  check silently never reports at all and the PR hangs forever.
+- **Identity lies**—a base image or downloaded artifact is pinned to a
+  _mutable_ name (a tag, a bare URL), so the bytes you run are not provably the
+  bytes you reviewed; the reference stays the same while the content drifts.
 
-**With this template**, you get all of that out of the box:
+`ci-truth-serum` is a pack of fast, offline pre-commit lints that catch both.
+Each one is real scar tissue: a specific past incident, packaged so adopters
+don’t have to bleed for the lesson themselves.
 
-- **A solid starting CLAUDE.md**—upholds high code quality standards, including a self-critique loop that catches bugs before they leave the editor
-- **Pre-push verification**—build, lint, type checks, and tests run automatically before every `git push` or `gh pr create`
-- **Deadlock-proof session hooks**—every hook is syntax-checked at session start, wrapped in a launcher that degrades to “ask” on parse failure, and commits with conflict markers are rejected up front
-- **Skill-driven PR flow**—the `pr-creation` skill runs an iterative compress-critique-fix loop on the diff, then watches CI and fixes failures before reporting back
-- **Enforced code quality**—Conventional Commits (via commitlint), Prettier formatting, and lint-staged run on every commit
-- **`@claude` GitHub integration**—mention Claude in issues or PR comments and it responds with full repo context
-- **Weekly security sweeps**—a scheduled workflow collects Dependabot, code-scanning, secret-scanning, and `pnpm audit` alerts, then hands them to Claude to open a rollup fix PR
-- **Automatic template sync**—downstream repos receive improvements daily via PR, with 3-way merge that preserves your customizations
-- **Multi-language support**—Node.js (pnpm), Python (uv/ruff/pytest), and shell (shfmt/shellcheck) work out of the box
+## Why this didn’t exist before
 
-## Prerequisites
+The GitHub Actions tooling ecosystem stays in correctness/security lanes on
+purpose. [`actionlint`](https://github.com/rhysd/actionlint) checks workflow
+syntax and expression types; [`zizmor`](https://github.com/woodruffw/zizmor)
+audits for security smells; [`hadolint`](https://github.com/hadolint/hadolint)
+lints Dockerfiles; `shellcheck` lints shell. None of them enforce the _policy_
+gaps these tools deliberately leave open—and those gaps span YAML **and** bash
+**and** Dockerfile at once, fitting no single tool’s file-type scope.
 
-- [Node.js](https://nodejs.org/) (see `.nvmrc` for the pinned version)
-- [pnpm](https://pnpm.io/) (`npm install -g pnpm` if you don’t have it—`setup.sh` handles this automatically)
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
-- (Optional) [uv](https://docs.astral.sh/uv/) for Python projects
+The flagship footgun makes the point: a path filter on a `pull_request` trigger
+only strands a check when a repo combines branch protection **+** path filters
+**+** required checks. That intersection is common enough to keep biting, but
+narrow enough that demand never crossed the threshold for anyone to package the
+scar tissue. So here it is.
 
-## Quick Start
+## What it checks
 
-1. **Create your repo**—click **“Use this template”** on GitHub.
-2. **Clone and set up:**
+Every row leads with the **failure it prevents**, not the rule. Tier 1 is
+default-on; Tier 2 is opinionated and opt-in; Extras are off-theme bonuses.
 
-   ```bash
-   git clone <your-repo-url>
-   cd <your-repo>
-   ./setup.sh
-   ```
+### Honesty (Tier 1, default-on)
 
-   This installs dependencies and configures git hooks. Verify the output ends with `✓ Setup complete!`.
+| Hook                       | Failure it prevents                                                                                                                                                          | Opt-out marker                          |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `check-workflow-pipefail`  | CI went green while `pytest` was crashing, because `pytest \| tee log` exits with `tee`’s status—under a `runCmd:` / `shell: sh` / custom `bash` that lacks `pipefail`.      | `# allow-no-pipefail: <reason>`         |
+| `check-exit-suppression`   | A teardown that left a volume pinned reported success, because `cleanup \|\| true` discarded its non-zero exit while keeping its output.                                     | `# allow-exit-suppress: <reason>`       |
+| `check-stderr-suppression` | A container launch failed with a bare non-zero and no clue why, because `docker compose up 2>/dev/null` threw away the only diagnostic.                                      | `# allow-stderr-suppress: <reason>`     |
+| `check-pr-paths`           | A required check hung at “Expected—Waiting” forever and the PR could never merge, because `paths:`/`paths-ignore:` on `pull_request` skipped the workflow without reporting. | `# not-required-check` (on the trigger) |
 
-3. **Install the [Claude GitHub App](https://github.com/apps/claude)** to enable `@claude` mentions in issues and PRs.
+### Identity (Tier 1, default-on)
 
-4. **Customize for your project:**
-   - Edit **`CLAUDE.md`**—add project-specific context, architecture notes, and conventions for Claude.
-   - Edit **`package.json`**—wire up your `dev`, `build`, `test`, `lint`, and `check` scripts. Unconfigured scripts are detected and skipped gracefully, so nothing breaks on first push.
+| Hook                       | Failure it prevents                                                                                                                                            | Opt-out marker           |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `check-pinned-base-images` | The base image you reviewed and the one CI built diverged, because `FROM node:22` is a mutable tag the registry can re-point. **Demands a `@sha256:` digest.** | _(none—pin or don’t)_    |
+| `check-pinned-downloads`   | A tampered release or compromised mirror swapped the binary you `curl`ed and then ran, because the download carried no checksum/signature check.               | `# pin-exempt: <reason>` |
 
-## What’s Included
+### Opinionated (Tier 2, opt-in)
 
-### Git Hooks (`.hooks/`)
+These prescribe a specific architecture; **enabling them is never required to
+use Tier 1.**
 
-| Hook          | What it does                                                                                 |
-| ------------- | -------------------------------------------------------------------------------------------- |
-| `pre-commit`  | Runs lint-staged—auto-formats with Prettier, shfmt, and ruff depending on file type          |
-| `commit-msg`  | Validates [Conventional Commits](https://www.conventionalcommits.org/) format via commitlint |
-| `lint-skills` | Lint-staged helper—validates skill files have required frontmatter (`name`, `description`)   |
+| Hook                      | Failure it prevents                                                                                                                                                   | Opt-out marker                      |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| `check-always-reporter`   | A gated workflow stranded a required check at “Expected—Waiting” when the decide gate skipped every work job. Assumes a **decide-job + `always()` reporter** pattern. | `# not-required-check` (on trigger) |
+| `check-inline-run-length` | A long inline `run:` block shipped unchecked (unquoted expansions, missing `pipefail`) because shellcheck/shfmt/shellharden only see standalone `.sh` files.          | `# allow-long-run: <reason>`        |
+| `check-concurrency`       | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.          | `# cancel-in-progress-not-required` |
 
-### Claude Session Hooks (`.claude/hooks/`)
+### Unrelated bonus checks (Extras)
 
-These run inside Claude Code sessions (local CLI or cloud), not in CI.
+Useful, but unrelated to CI truth—kept here so they don’t dilute the core pitch.
 
-| Hook           | What it does                                                              |
-| -------------- | ------------------------------------------------------------------------- |
-| `SessionStart` | Installs tools (shfmt, shellcheck), configures git, installs dependencies |
-| `PreToolUse`   | Runs build/lint/typecheck/tests before `git push` or `gh pr create`       |
+| Hook                         | Failure it prevents                                                                                                    | Opt-out marker                 |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `check-symlinks`             | A tracked symlink with an absolute target (`/Users/you/...`) broke on every machine but the author’s.                  | _(none)_                       |
+| `check-unnamed-regex-groups` | A regex’s match handling went positional and brittle because a `re.*` literal used an unnamed `( )` group.             | _(use `(?P<name>...)`)_        |
+| `check-global-stdio-swap`    | Concurrent calls clobbered each other’s output because code reassigned the process-global `sys.stdout` to capture I/O. | `# allow-stdio-swap: <reason>` |
 
-### Claude Skills (`.claude/skills/`)
+## Complements, doesn’t replace
 
-| Skill                  | What it does                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------- |
-| `pr-creation`          | Self-critique workflow before PR submission, then watches CI and fixes failures |
-| `update-pr`            | Updates an existing PR with new changes and optionally revises the description  |
-| `conventional-commits` | Guides Claude through properly formatted commits with secret detection          |
-| `markdown-block`       | Outputs content in a fenced code block so users can copy raw markdown           |
-| `peer-review`          | Runs the read-only `code-reviewer` agent on the diff, then triages and fixes    |
-| `explore-plan`         | Enforces the Explore → Plan → Review → Verify discipline for non-trivial work   |
+`ci-truth-serum` enforces _policy_ gaps; it does not duplicate the
+correctness/security tools you should also run:
 
-### Claude Subagents (`.claude/agents/`)
+- **Action pinning** → use [`zizmor`](https://github.com/woodruffw/zizmor)’s
+  `unpinned-uses` audit to SHA-pin `uses:` references. (This pack deliberately
+  ships no action-pinning lint—that would just be noise on top of zizmor.)
+- **Dockerfile lint** → use [`hadolint`](https://github.com/hadolint/hadolint).
+  Note that `check-pinned-base-images` is **strictly stronger** than hadolint’s
+  `DL3006`/`DL3007`: those are satisfied by _any_ explicit tag, so `node:22.3.0`
+  passes hadolint yet is still mutable. Only a `@sha256:` digest is immutable, and
+  that is what this lint demands.
+- **Workflow syntax/types** → use [`actionlint`](https://github.com/rhysd/actionlint).
+- **Shell** → use `shellcheck` (the `check-inline-run-length` lint exists to make
+  inline shell _reachable_ by shellcheck in the first place).
 
-| Agent           | What it does                                                                         |
-| --------------- | ------------------------------------------------------------------------------------ |
-| `code-reviewer` | Read-only reviewer (Read/Grep/Glob, `model: opus`)—unbiased second opinion on a diff |
+## Usage
 
-### GitHub Actions (`.github/workflows/`)
+Add to your `.pre-commit-config.yaml`. Tier 1 (honesty + identity) is shown
+enabled; Tier 2 and Extras are commented in—uncomment only what you want.
 
-| Workflow                           | What it does                                                          |
-| ---------------------------------- | --------------------------------------------------------------------- |
-| `claude.yaml`                      | Responds to `@claude` mentions in issues and PR comments              |
-| `template-sync.yaml`               | Daily sync from template repo with 3-way merge and conflict detection |
-| `phone-home.yaml`                  | Propagates “Lessons Learned” from merged PRs back to the template     |
-| `security-vulnerability-scan.yaml` | Weekly security sweep—collects alerts, opens a rollup fix PR          |
-| `node-tests.yaml`                  | Runs `pnpm test` (skips gracefully if unconfigured)                   |
-| `lint.yaml`                        | Runs `pnpm lint` and `pnpm check` (skips gracefully if unconfigured)  |
-| `format-check.yaml`                | Checks Prettier formatting                                            |
-| `pre-commit.yaml`                  | Runs pre-commit hooks in CI                                           |
-| `validate-config.yaml`             | Validates `.claude/` and `.hooks/` config on every push               |
-| `dependabot-auto-merge.yaml`       | Auto-merges minor/patch Dependabot PRs after CI passes                |
+```yaml
+repos:
+  - repo: https://github.com/alexander-turner/ci-truth-serum
+    rev: v0.1.0 # pin to a tag
+    hooks:
+      # ── Tier 1 · Honesty (default-on) ──
+      - id: check-workflow-pipefail
+      - id: check-exit-suppression
+      - id: check-stderr-suppression
+      - id: check-pr-paths
+      # ── Tier 1 · Identity (default-on) ──
+      - id: check-pinned-base-images
+      - id: check-pinned-downloads
+      # ── Tier 2 · Opinionated (opt-in: uncomment to enable) ──
+      # - id: check-always-reporter      # assumes a decide-job + always() reporter
+      # - id: check-inline-run-length
+      # - id: check-concurrency
+      # ── Extras · Unrelated bonus checks (opt-in) ──
+      # - id: check-symlinks
+      # - id: check-unnamed-regex-groups
+      # - id: check-global-stdio-swap
+```
 
-#### Required checks & branch protection
-
-Each PR-gating workflow (`format-check`, `lint`, `node-tests`, `pre-commit`, `validate-config`) ends with an `if: always()` summary job—`format-check-passed`, `lint-passed`, `node-tests-passed`, `pre-commit-passed`, `validate-config-passed`—that `needs:` the real job(s) and passes only when they all succeed (or skip). **Mark these `*-passed` jobs as Required in branch protection, not the underlying jobs.** A job that is cancelled or skipped never reports a status to GitHub, so a directly-Required job can leave a PR stuck “pending” forever; the always-running summary job (`if: always()` plus a `contains(needs.*.result, …)` guard) reports a definitive pass/fail instead.
-
-> **Caveat:** the summary job only helps when its workflow runs at all. `lint`, `node-tests`, and `validate-config` use `paths` filters, so on a PR that doesn’t touch their paths the _entire_ workflow (summary job included) is skipped and posts nothing. If you mark those `*-passed` checks Required, drop the workflow’s `paths` filter (let the job run and short-circuit internally) so the gate always reports.
-
-### MCP Servers (`.mcp.json`)
-
-Team-shared [MCP servers](https://modelcontextprotocol.io/) live in `.mcp.json` at the repo root. A starter `.mcp.json.example` is included with GitHub, Context7, and Playwright entries:
+Every lint is offline and runs in well under a second. They are also runnable
+standalone, which is how the test suite drives them:
 
 ```bash
-cp .mcp.json.example .mcp.json   # then edit, set any referenced env vars, and run /mcp to verify
+python3 hooks/check_pinned_base_images.py path/to/Dockerfile
+python -m hooks.check_pr_paths            # globs ./.github/{workflows,actions}
 ```
 
-**Resist tool bloat**—each server expands Claude’s reasoning overhead, so enable only the ones you actually use and add more on demand. Personal (non-shared) servers belong in `~/.claude.json`, not the committed `.mcp.json`.
+## Development
 
-### Session Tuning (`.claude/settings.json` env)
-
-The `env` block in `.claude/settings.json` sets defaults tuned for long-running web/automation sessions:
-
-| Variable                                     | Why                                                                    |
-| -------------------------------------------- | ---------------------------------------------------------------------- |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000`     | Compacts earlier to curb context rot on long sessions (tune to taste)  |
-| `CLAUDE_CODE_AUTO_BACKGROUND_TASKS=1`        | Auto-backgrounds long-running commands instead of blocking the session |
-| `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` | Disables autoupdater/telemetry/error reporting (CI- and web-safe)      |
-
-See the [Claude Code environment variables reference](https://code.claude.com/docs/en/env-vars) for the full list.
-
-## How the Pieces Fit Together
-
-```
-Developer / Claude Code session
-        │
-        ├── git commit
-        │     ├── pre-commit hook  → lint-staged (Prettier, shfmt, ruff)
-        │     └── commit-msg hook  → commitlint (Conventional Commits)
-        │
-        ├── git push / gh pr create
-        │     └── PreToolUse hook  → build + lint + typecheck + tests
-        │
-        └── /pr-creation skill    → self-critique loop → create PR → watch CI
-                                                                │
-GitHub Actions (CI)                                             ▼
-        ├── format-check.yaml     → Prettier
-        ├── lint.yaml             → pnpm lint + pnpm check
-        ├── node-tests.yaml       → pnpm test
-        ├── pre-commit.yaml       → pre-commit hooks
-        ├── validate-config.yaml  → .claude/ and .hooks/ validation
-        │
-        ├── claude.yaml           → @claude mentions in issues/PRs
-        ├── template-sync.yaml    → daily template updates (9am UTC)
-        ├── phone-home.yaml       → sends Lessons Learned back to template
-        ├── security-*.yaml       → weekly vulnerability sweep + fix PR
-        └── dependabot-*.yaml     → auto-merge minor/patch dependency bumps
+```bash
+pip install -e ".[dev]"
+ruff check . && ruff format --check .
+pytest -n auto -q
 ```
 
-## Automatic Updates
+The repo dogfoods its own lints: the test suite asserts ci-truth-serum’s own
+workflow and shell pass every check.
 
-Template improvements sync daily at 9am UTC via `template-sync.yaml`. You can also trigger manually from **Actions > Sync from Template**.
+## License
 
-Changes arrive as a PR for you to review. The sync uses a 3-way merge that preserves local customizations in synced files—if there’s a conflict, Claude is asked to resolve it while keeping your project-specific changes intact.
-
-### Token Setup
-
-Create a **fine-grained personal access token** with these permissions on your repo:
-
-| Permission      | Access         |
-| --------------- | -------------- |
-| `contents`      | Read and write |
-| `workflows`     | Read and write |
-| `pull requests` | Read and write |
-
-Add it as a repository secret named **`TEMPLATE_SYNC_TOKEN`**.
-
-## Project Structure
-
-```
-.
-├── .claude/
-│   ├── hooks/              # Claude session hooks (SessionStart, PreToolUse)
-│   ├── skills/             # Claude skills (pr-creation, peer-review, explore-plan, ...)
-│   ├── agents/             # Claude subagents (code-reviewer)
-│   └── settings.json       # Claude Code hooks + session env tuning
-├── .mcp.json.example       # Starter team-shared MCP servers (copy to .mcp.json)
-├── .hooks/                 # Git hooks (pre-commit, commit-msg, lint-skills)
-├── .github/
-│   ├── workflows/          # CI workflows
-│   └── dependabot.yml      # Dependabot configuration
-├── config/                 # Shared configuration (e.g., JavaScript linting)
-├── tests/                  # Python tests for hooks and config validation
-├── CLAUDE.md               # Instructions for Claude Code sessions
-├── package.json            # Node.js deps + lint-staged config
-├── pyproject.toml          # Python project config (ruff, pytest)
-└── setup.sh                # One-command setup script
-```
+[Apache-2.0](./LICENSE).

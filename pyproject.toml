@@ -1,13 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "claude-automation-template"
-version = "0.0.0"
+name = "ci-truth-serum"
+version = "0.1.0"
+description = "Fast, offline pre-commit lints that make a CI pipeline confess what it's hiding."
+readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["pre-commit", "ci", "github-actions", "linter", "supply-chain"]
+dependencies = ["PyYAML"]
+
+[project.urls]
+Homepage = "https://github.com/alexander-turner/ci-truth-serum"
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "pytest-xdist", "ruff"]
 
-[tool.ruff]
-target-version = "py310"
+[tool.setuptools]
+# The lints are importable/runnable as `hooks.check_*`; pre-commit invokes them
+# as `python -m hooks.check_foo` from the installed package.
+packages = ["hooks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+# Govern only this package's own code; the inherited automation harness
+# (.claude/, config/) is out of scope for ci-truth-serum's lint gate.
+extend-exclude = [".venv", "node_modules", ".claude", "config"]
+
+[tool.ruff.lint]
+extend-select = ["I"]
