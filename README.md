@@ -1,3 +1,5 @@
+# ci-truth-serum
+
 **Make your CI confess what it’s hiding.** A green check should mean the work actually passed, and a pinned dependency
 should be the exact bytes you reviewed. Two kinds of lie break that:
 
@@ -78,8 +80,18 @@ You should also run:
 
 ## Usage
 
-Add to your `.pre-commit-config.yaml`. Tier 1 (honesty + identity) is shown
-enabled; Tier 2 and Extras are commented in—uncomment only what you want.
+These ship as [pre-commit](https://pre-commit.com) hooks. If you don’t already
+use pre-commit, install it and enable its git hook:
+
+```bash
+pipx install pre-commit # or: pip install pre-commit / brew install pre-commit
+pre-commit install
+```
+
+Then add ci-truth-serum to your `.pre-commit-config.yaml`. Tier 1 (honesty +
+identity) is shown enabled; Tier 2 and Extras are commented in—uncomment only
+what you want. pre-commit builds each hook’s isolated Python environment for
+you, so pre-commit itself is the only prerequisite.
 
 ```yaml
 repos:
@@ -104,7 +116,14 @@ repos:
       # - id: check-global-stdio-swap
 ```
 
-You can also run standalone:
+On first adoption, sweep the whole repo (not just changed files) in one go:
+
+```bash
+pre-commit run --all-files
+```
+
+For local debugging you can also invoke a single lint standalone, from a clone
+of this repo:
 
 ```bash
 python3 hooks/check_pinned_base_images.py path/to/Dockerfile
