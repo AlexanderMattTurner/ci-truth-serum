@@ -38,10 +38,13 @@ from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wro
 
 _FROM = re.compile(r"^\s*FROM\s+(?P<rest>.+?)\s*$", re.IGNORECASE)
 _AS = re.compile(r"\bAS\s+(?P<name>\S+)\s*$", re.IGNORECASE)
-# A real digest pin: `@sha256:` followed by exactly 64 lowercase hex chars at the
-# end of the ref. Checking shape (not mere `@sha256:` presence) rejects a
-# truncated or empty digest (`node@sha256:`) that would otherwise pass unpinned.
-_DIGEST_PINNED = re.compile(r"@sha256:[0-9a-f]{64}$")
+# A digest: `sha256:` + exactly 64 lowercase hex chars. One source of truth, anchored
+# two ways below — at the end of an in-ref pin, and as a whole registry header value.
+_SHA256_HEX = r"sha256:[0-9a-f]{64}"
+# A real digest pin: `@sha256:<64-hex>` at the end of the ref. Checking shape (not
+# mere `@sha256:` presence) rejects a truncated/empty digest (`node@sha256:`) that
+# would otherwise pass unpinned.
+_DIGEST_PINNED = re.compile(rf"@{_SHA256_HEX}$")
 
 
 def _stage_names(lines: list[str]) -> set[str]:
@@ -95,7 +98,7 @@ _ACCEPT = ", ".join(
         "application/vnd.oci.image.manifest.v1+json",
     ]
 )
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DIGEST = re.compile(rf"^{_SHA256_HEX}$")
 _DOCKER_HUB = "registry-1.docker.io"
 
 
@@ -132,6 +135,9 @@ def _bearer_token(challenge: str) -> str | None:
     """Fetch a pull token for a ``WWW-Authenticate: Bearer realm=…`` challenge."""
     if not challenge.strip().lower().startswith("bearer "):
         return None
+    # Assumes quoted param values, which Docker Hub / ghcr.io / quay all emit; an
+    # exotic registry using bare-token (unquoted) params would drop service/scope
+    # and surface as a DigestResolutionError (image left flagged, never mispinned).
     params = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
     realm = params.get("realm")
     if not realm:
@@ -220,7 +226,12 @@ def fix_text(
     unfixed: list[tuple[int, str]] = []
     for lineno in violations(text):
         raw = lines[lineno - 1]
-        content, nl = (raw[:-1], "\n") if raw.endswith("\n") else (raw, "")
+        # Split the line's content from its exact terminator. splitlines() recognises
+        # every separator keepends preserved (LF, CRLF, CR, U+2028, …), so the tail
+        # after the content IS that terminator — reattached verbatim after rewriting.
+        parts = raw.splitlines()
+        content = parts[0] if parts else raw
+        nl = raw[len(content) :]
         try:
             pinned = _pin_from_line(content, resolve)
         except DigestResolutionError as exc:

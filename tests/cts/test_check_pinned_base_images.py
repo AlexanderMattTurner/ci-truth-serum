@@ -2,8 +2,10 @@
 Docker base images be pinned to an immutable @sha256 digest.
 """
 
+import json
 import subprocess
 import sys
+import urllib.error
 
 import pytest
 
@@ -148,6 +150,8 @@ def _const(digest: str = _DIGEST):
         ("FROM node:22@sha256:abc123\n", f"FROM node:22@{_DIGEST}\n"),
         # No trailing newline is not invented.
         ("FROM node:22", f"FROM node:22@{_DIGEST}"),
+        # A CRLF terminator is preserved exactly, not normalized to LF.
+        ("FROM node:22\r\n", f"FROM node:22@{_DIGEST}\r\n"),
     ],
 )
 def test_fix_text_pins_unpinned(before: str, after: str) -> None:
@@ -243,3 +247,97 @@ def test_split_ref(image: str, name: str, tag: str) -> None:
 )
 def test_registry_and_repo(name: str, registry: str, repo: str) -> None:
     assert mod._registry_and_repo(name) == (registry, repo)
+
+
+# ── resolve_digest control flow (offline, via a fake urlopen) ─────────────────
+
+_HEADER_DIGEST = "sha256:" + "e" * 64
+_BEARER = (
+    'Bearer realm="https://auth.example/token",'
+    'service="reg",scope="repository:library/node:pull"'
+)
+
+
+class _FakeResp:
+    """Minimal urlopen stand-in: a context manager exposing ``headers`` and a
+    ``read()`` body (for the token endpoint's JSON)."""
+
+    def __init__(self, headers: dict | None = None, body: bytes = b"") -> None:
+        self.headers = headers or {}
+        self._body = body
+
+    def read(self, *_a) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_FakeResp":
+        return self
+
+    def __exit__(self, *_a) -> bool:
+        return False
+
+
+def _http_error(code: int, headers: dict | None = None) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://reg/v2/library/node/manifests/22", code, "err", headers or {}, None
+    )
+
+
+def _fake_urlopen(manifest_seq, token: dict | None = None):
+    """A urlopen replacement: each manifest request consumes the next item of
+    MANIFEST_SEQ (raised if an exception, else returned); the token endpoint returns
+    TOKEN as JSON."""
+    seq = iter(manifest_seq)
+
+    def fake(req, timeout=None):  # noqa: ARG001
+        # `resolve_digest` passes a Request (manifest); `_bearer_token` a str URL.
+        url = req.full_url if hasattr(req, "full_url") else req
+        if "/manifests/" in url:
+            item = next(seq)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        return _FakeResp(body=json.dumps(token or {"token": "T"}).encode())
+
+    return fake
+
+
+def test_resolve_digest_direct_200(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mod.urllib.request,
+        "urlopen",
+        _fake_urlopen([_FakeResp(headers={"Docker-Content-Digest": _HEADER_DIGEST})]),
+    )
+    assert mod.resolve_digest("node:22") == _HEADER_DIGEST
+
+
+def test_resolve_digest_completes_bearer_challenge(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mod.urllib.request,
+        "urlopen",
+        _fake_urlopen(
+            [
+                _http_error(401, {"WWW-Authenticate": _BEARER}),
+                _FakeResp(headers={"Docker-Content-Digest": _HEADER_DIGEST}),
+            ]
+        ),
+    )
+    assert mod.resolve_digest("node:22") == _HEADER_DIGEST
+
+
+@pytest.mark.parametrize(
+    "manifest_seq, expected",
+    [
+        # A non-401 HTTP error is a hard failure, not an auth challenge.
+        ([_http_error(404)], "node:22"),
+        # 401 without a Bearer challenge → no token to retry with.
+        ([_http_error(401, {"WWW-Authenticate": "Basic realm=x"})], "demanded auth"),
+        # 200 but the registry served no digest header.
+        ([_FakeResp(headers={})], "no digest"),
+        # Transport failure surfaces as the typed error, not a raw URLError.
+        ([urllib.error.URLError("boom")], "node:22"),
+    ],
+)
+def test_resolve_digest_raises_typed_error(monkeypatch, manifest_seq, expected) -> None:
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _fake_urlopen(manifest_seq))
+    with pytest.raises(mod.DigestResolutionError, match=expected):
+        mod.resolve_digest("node:22")
