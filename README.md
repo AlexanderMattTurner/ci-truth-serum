@@ -127,6 +127,24 @@ python3 hooks/check_pinned_base_images.py path/to/Dockerfile
 python -m hooks.check_pr_paths            # globs ./.github/{workflows,actions}
 ```
 
+### Autofix (opt-in): digest-pin base images
+
+`check-pinned-base-images` can rewrite the violations it finds. Pass `--fix` and
+it resolves each unpinned `FROM`’s current registry digest and appends it
+(`FROM node:22` → `FROM node:22@sha256:…`), preserving any `--platform` flag and
+`AS <stage>` suffix. It is **opt-in** because `--fix` is the one place this pack
+touches the network (a Docker Registry v2 manifest lookup against Docker Hub,
+ghcr.io, and the like); detection stays fully offline. An image whose digest
+can’t be resolved is left untouched and still reported—the fix never guesses.
+
+```yaml
+- id: check-pinned-base-images
+  args: [--fix] # online: pin to the digest the registry serves now
+```
+
+Like other autofixing hooks, it exits non-zero when it rewrites a file so
+pre-commit stops for you to review and re-stage the change.
+
 ## Development
 
 ```bash

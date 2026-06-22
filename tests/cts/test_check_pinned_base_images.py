@@ -116,3 +116,130 @@ def test_repo_dockerfiles_are_pinned() -> None:
         if v:
             offenders[rel] = v
     assert not offenders, f"unpinned base images: {offenders}"
+
+
+# ── --fix: digest pinning ────────────────────────────────────────────────────
+
+_DIGEST = "sha256:" + "a" * 64
+
+
+def _const(digest: str = _DIGEST):
+    """A resolver that returns a fixed digest and records what it was asked to pin."""
+    seen: list[str] = []
+
+    def resolve(image: str) -> str:
+        seen.append(image)
+        return digest
+
+    return resolve, seen
+
+
+@pytest.mark.parametrize(
+    "before, after",
+    [
+        ("FROM node:22\n", f"FROM node:22@{_DIGEST}\n"),
+        ("FROM ubuntu:latest\n", f"FROM ubuntu:latest@{_DIGEST}\n"),
+        # AS and --platform are preserved; only the image ref grows a digest.
+        (
+            "FROM --platform=linux/amd64 node:22 AS build\n",
+            f"FROM --platform=linux/amd64 node:22@{_DIGEST} AS build\n",
+        ),
+        # A malformed digest is replaced wholesale by the resolved one.
+        ("FROM node:22@sha256:abc123\n", f"FROM node:22@{_DIGEST}\n"),
+        # No trailing newline is not invented.
+        ("FROM node:22", f"FROM node:22@{_DIGEST}"),
+    ],
+)
+def test_fix_text_pins_unpinned(before: str, after: str) -> None:
+    resolve, _ = _const()
+    new_text, fixed, unfixed = mod.fix_text(before, resolve=resolve)
+    assert new_text == after
+    assert fixed == [1]
+    assert unfixed == []
+
+
+def test_fix_text_leaves_scratch_stage_and_pinned_untouched() -> None:
+    def fail(image: str) -> str:  # must never be called for a non-violation line
+        raise AssertionError(f"resolver hit for {image!r}")
+
+    text = (
+        "FROM scratch\n"
+        f"FROM node:22@{_DIGEST} AS base\n"
+        "FROM base\n"
+        "RUN echo not-a-from\n"
+    )
+    new_text, fixed, unfixed = mod.fix_text(text, resolve=fail)
+    assert new_text == text
+    assert fixed == [] and unfixed == []
+
+
+def test_fix_text_leaves_unresolvable_flagged_not_guessed() -> None:
+    def boom(image: str) -> str:
+        raise mod.DigestResolutionError("registry down")
+
+    new_text, fixed, unfixed = mod.fix_text("FROM node:22\n", resolve=boom)
+    assert new_text == "FROM node:22\n"  # untouched — never guesses a digest
+    assert fixed == []
+    assert unfixed == [(1, "registry down")]
+
+
+def test_fix_text_pins_only_resolvable_in_mixed_file() -> None:
+    def selective(image: str) -> str:
+        if image.startswith("node"):
+            return _DIGEST
+        raise mod.DigestResolutionError("no such image")
+
+    text = "FROM node:22\nFROM ghost:9\n"
+    new_text, fixed, unfixed = mod.fix_text(text, resolve=selective)
+    assert new_text == f"FROM node:22@{_DIGEST}\nFROM ghost:9\n"
+    assert fixed == [1]
+    assert unfixed == [(2, "no such image")]
+
+
+def test_main_fix_writes_file_and_signals_modification(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(mod, "resolve_digest", lambda image: _DIGEST)
+    df = tmp_path / "Dockerfile"
+    df.write_text("FROM node:22\n")
+    assert mod.main(["--fix", str(df)]) == 1  # modified → non-zero for re-staging
+    assert df.read_text() == f"FROM node:22@{_DIGEST}\n"
+    # Re-running over the now-pinned file is a clean no-op.
+    assert mod.main(["--fix", str(df)]) == 0
+
+
+def test_main_fix_reports_unresolvable(tmp_path, monkeypatch, capsys) -> None:
+    def boom(image: str) -> str:
+        raise mod.DigestResolutionError("offline")
+
+    monkeypatch.setattr(mod, "resolve_digest", boom)
+    df = tmp_path / "Dockerfile"
+    df.write_text("FROM node:22\n")
+    assert mod.main(["--fix", str(df)]) == 1
+    assert df.read_text() == "FROM node:22\n"  # unchanged
+    assert "could not pin" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "image, name, tag",
+    [
+        ("node:22", "node", "22"),
+        ("node", "node", "latest"),
+        ("ghcr.io/owner/app:1.2", "ghcr.io/owner/app", "1.2"),
+        ("localhost:5000/img", "localhost:5000/img", "latest"),
+        ("node:22@sha256:dead", "node", "22"),  # malformed digest dropped
+    ],
+)
+def test_split_ref(image: str, name: str, tag: str) -> None:
+    assert mod._split_ref(image) == (name, tag)
+
+
+@pytest.mark.parametrize(
+    "name, registry, repo",
+    [
+        ("node", "registry-1.docker.io", "library/node"),
+        ("owner/app", "registry-1.docker.io", "owner/app"),
+        ("ghcr.io/owner/app", "ghcr.io", "owner/app"),
+        ("localhost:5000/img", "localhost:5000", "img"),
+    ],
+)
+def test_registry_and_repo(name: str, registry: str, repo: str) -> None:
+    assert mod._registry_and_repo(name) == (registry, repo)
