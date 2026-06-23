@@ -22,7 +22,15 @@ Homepage = "https://github.com/alexander-turner/ci-truth-serum"
 sync-required-checks = "hooks.sync_required_checks:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "pytest-xdist", "ruff"]
+dev = ["pytest>=7", "pytest-xdist", "ruff", "hypothesis>=6"]
+# Mutation testing is heavy and pulls its own deps; keep it out of the default
+# `dev` install so the fast test/lint path stays lean. CI's scheduled mutation
+# job installs `--extra mutation` explicitly. cosmic-ray (not mutmut) because the
+# test harness loads each hook by FILE PATH (tests/_helpers.load_hook), not via
+# `import hooks.x` — mutmut 3.x instruments through an import trampoline that
+# file-path loading bypasses, so its mutants are never reached. cosmic-ray mutates
+# the file on disk and reruns the suite, so it is agnostic to how tests import.
+mutation = ["pytest>=7", "pytest-xdist", "hypothesis>=6", "cosmic-ray>=8"]
 
 [tool.setuptools]
 # The lints are importable/runnable as `hooks.check_*`; pre-commit invokes them
