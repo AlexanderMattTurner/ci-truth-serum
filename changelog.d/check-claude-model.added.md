@@ -1,0 +1,1 @@
+- `check-claude-model` (Extras, opt-in): flags any `anthropics/claude-code-action` step that omits an explicit model (`--model` in `claude_args`, or a `model:` input), which silently bills the action's default Opus tier. Opt out per step with `# allow-default-model` on the `uses:` line.

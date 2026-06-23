@@ -39,11 +39,12 @@ lints that catch two kinds of lie a green check can hide:
 
 ### Unrelated bonus checks (Extras)
 
-| Hook                         | Failure it prevents                                                                                                    | Opt-out marker                 |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `check-symlinks`             | A tracked symlink with an absolute target (`/Users/you/...`) broke on every machine but the author’s.                  | _(none)_                       |
-| `check-unnamed-regex-groups` | A regex’s match handling went positional and brittle because a `re.*` literal used an unnamed `( )` group.             | _(use `(?P<name>...)`)_        |
-| `check-global-stdio-swap`    | Concurrent calls clobbered each other’s output because code reassigned the process-global `sys.stdout` to capture I/O. | `# allow-stdio-swap: <reason>` |
+| Hook                         | Failure it prevents                                                                                                         | Opt-out marker                                |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `check-symlinks`             | A tracked symlink with an absolute target (`/Users/you/...`) broke on every machine but the author’s.                       | _(none)_                                      |
+| `check-unnamed-regex-groups` | A regex’s match handling went positional and brittle because a `re.*` literal used an unnamed `( )` group.                  | _(use `(?P<name>...)`)_                       |
+| `check-global-stdio-swap`    | Concurrent calls clobbered each other’s output because code reassigned the process-global `sys.stdout` to capture I/O.      | `# allow-stdio-swap: <reason>`                |
+| `check-claude-model`         | A `claude-code-action` step billed Opus silently because it omitted `--model` and rode the action’s expensive default tier. | `# allow-default-model` (on the `uses:` line) |
 
 ## Usage
 
@@ -82,6 +83,7 @@ repos:
       # - id: check-symlinks
       # - id: check-unnamed-regex-groups
       # - id: check-global-stdio-swap
+      # - id: check-claude-model         # require an explicit --model on claude-code-action steps
 ```
 
 `pre-commit run --all-files` sweeps the whole repo (handy on first adoption).

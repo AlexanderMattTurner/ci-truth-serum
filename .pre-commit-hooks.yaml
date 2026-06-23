@@ -134,3 +134,13 @@
   entry: python -m hooks.check_global_stdio_swap
   language: python
   types: [python]
+
+- id: check-claude-model
+  name: "extra: require an explicit model on claude-code-action steps"
+  description: A claude-code-action step without --model silently runs on the action's default (Opus) tier.
+  entry: python -m hooks.check_claude_model
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
