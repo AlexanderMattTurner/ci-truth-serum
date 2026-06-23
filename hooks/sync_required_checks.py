@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    WORKFLOW_GLOBS,
     required_check_contexts,
 )
 
@@ -41,8 +42,9 @@ WORKFLOWS_DIR = Path(".github/workflows")
 def desired_contexts(workflows_dir: Path) -> list[str]:
     """The full, sorted, de-duplicated required-check set across all workflows."""
     contexts: set[str] = set()
-    for path in sorted(workflows_dir.glob("*.y*ml")):
-        contexts.update(required_check_contexts(path.read_text()))
+    for glob in WORKFLOW_GLOBS:
+        for path in sorted(workflows_dir.glob(glob)):
+            contexts.update(required_check_contexts(path.read_text()))
     return sorted(contexts)
 
 

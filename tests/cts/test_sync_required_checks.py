@@ -125,6 +125,8 @@ def test_github_request_get_parses_json(monkeypatch):
     out = mod.github_request("GET", "https://api.github.com/x", "tok")
     assert out == {"ok": True}
     assert captured["req"].get_header("Authorization") == "Bearer tok"
+    assert captured["req"].get_header("Accept") == "application/vnd.github+json"
+    assert captured["req"].get_header("X-github-api-version") == "2022-11-28"
     assert captured["req"].data is None
 
 

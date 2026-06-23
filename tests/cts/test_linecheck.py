@@ -236,6 +236,24 @@ def test_matrix_include_appends_when_no_axis_match() -> None:
     assert {"a": 1} in combos and {"a": 9, "b": "q"} in combos
 
 
+def test_matrix_multi_axis_exclude_then_include_extends_every_match() -> None:
+    # exclude drops one product row; the include's axis key (`a: 2`) matches the
+    # two surviving `a==2` rows and extends BOTH (the extendable-loop), never
+    # appending a duplicate — pins the exact GitHub-scheduled set.
+    assert lc.matrix_combinations(
+        {
+            "a": [1, 2],
+            "b": ["x", "y"],
+            "exclude": [{"a": 1, "b": "y"}],
+            "include": [{"a": 2, "extra": "z"}],
+        }
+    ) == [
+        {"a": 1, "b": "x"},
+        {"a": 2, "b": "x", "extra": "z"},
+        {"a": 2, "b": "y", "extra": "z"},
+    ]
+
+
 def test_expand_name_without_refs_is_identity() -> None:
     assert lc.expand_name("Static check", {}) == ["Static check"]
 

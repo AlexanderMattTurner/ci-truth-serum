@@ -32,6 +32,11 @@ import yaml
 # checks; check_exit_suppression extends it (it also excuses status helpers).
 MESSAGE_PREFIX = re.compile(r"^(?:echo|printf|warn|status|die|log|:)\b")
 
+# The two extensions a GitHub workflow file may carry. One SSOT so the reporter
+# lint's discovery (`workflow_files`) and the apply step's (`desired_contexts`)
+# can never diverge on which files they read.
+WORKFLOW_GLOBS = ("*.yaml", "*.yml")
+
 # `# required-check: true` on a job key line or one of its direct-child lines —
 # the SSOT marker both check_required_reporter (which *requires* every always()
 # reporter to be classified) and the sync_required_checks apply step (which reads
@@ -73,7 +78,7 @@ def workflow_files(workflows_dir: Path, actions_dir: Path) -> list[Path]:
     monkeypatch its own ``WORKFLOWS_DIR`` / ``ACTIONS_DIR`` constants and still
     redirect discovery.
     """
-    files = list(workflows_dir.glob("*.yaml")) + list(workflows_dir.glob("*.yml"))
+    files = [p for glob in WORKFLOW_GLOBS for p in workflows_dir.glob(glob)]
     if actions_dir.exists():
         files += actions_dir.rglob("action.yaml")
         files += actions_dir.rglob("action.yml")
