@@ -37,7 +37,11 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    _classification_text,
+    _job_blocks,
+    workflow_files as _workflow_files,
+)
 
 OPT_OUT = "not-required-check"
 MARKER = "required-check"
@@ -59,79 +63,6 @@ def _locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
         if re.match(rf"^\s*{trigger}\s*:", line):
             return num, OPT_OUT in line
     return 1, False
-
-
-def _job_blocks(text: str) -> dict[str, tuple[int, str]]:
-    """Map each top-level job name to (1-based key line, its source block).
-
-    A block is the job's key line plus every following body line indented deeper
-    than the key — it stops at the next line dedented to the job-key indent or
-    shallower (a sibling job, an inter-job comment, or the end of `jobs:`). Blank
-    lines never terminate a block. Comments thus count as classification only
-    when trailing the key line or living inside the indented body.
-    """
-    lines = text.splitlines()
-    jobs_idx = next(
-        (i for i, line in enumerate(lines) if re.match(r"^jobs\s*:", line)), None
-    )
-    if jobs_idx is None:
-        return {}
-
-    job_indent = next(
-        (
-            len(line) - len(line.lstrip())
-            for line in lines[jobs_idx + 1 :]
-            if line.strip() and not line.lstrip().startswith("#")
-        ),
-        None,
-    )
-    if job_indent is None:
-        return {}
-
-    blocks: dict[str, tuple[int, str]] = {}
-    key = re.compile(rf"^\s{{{job_indent}}}([^\s:#][^:]*?)\s*:")
-    i = jobs_idx + 1
-    while i < len(lines):
-        stripped = lines[i].strip()
-        indent = len(lines[i]) - len(lines[i].lstrip())
-        if stripped and not stripped.startswith("#") and indent < job_indent:
-            break
-        match = key.match(lines[i])
-        if not (match and indent == job_indent and not stripped.startswith("#")):
-            i += 1
-            continue
-        end = i + 1
-        while end < len(lines):
-            body = lines[end]
-            if body.strip() and len(body) - len(body.lstrip()) <= job_indent:
-                break
-            end += 1
-        name = match.group(1).strip("'\"")  # align with PyYAML's unquoted key
-        blocks[name] = (i + 1, "\n".join(lines[i:end]))
-        i = end
-    return blocks
-
-
-def _classification_text(block: str) -> str:
-    """The lines of a job block where a classification comment may live: the key
-    line plus the job's direct-child lines (a trailing comment on a child, or a
-    standalone comment at the child indent). Deeper step/run content is excluded
-    so a `# required-check:` string buried in a step can't pass as a classification.
-    """
-    lines = block.splitlines()
-    if not lines:
-        return ""
-    child_indent = next(
-        (len(ln) - len(ln.lstrip()) for ln in lines[1:] if ln.strip()), None
-    )
-    eligible = [lines[0]]
-    if child_indent is not None:
-        eligible += [
-            ln
-            for ln in lines[1:]
-            if ln.strip() and len(ln) - len(ln.lstrip()) == child_indent
-        ]
-    return "\n".join(eligible)
 
 
 def _reporter_names(jobs: dict) -> list[str]:

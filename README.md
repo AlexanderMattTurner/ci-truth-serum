@@ -100,6 +100,32 @@ image whose digest can’t be resolved is left untouched—never guessed.
   args: [--fix]
 ```
 
+### Apply: mirror branch protection from the annotations
+
+`check-required-reporter` is the local half of a pair; the `sync-required-checks`
+console script is the apply half. It reads every job carrying `# required-check:
+true` (any job, not just `always()` reporters—a cheap always-run linter is
+required too), expands each `name:` across its own `strategy.matrix` into
+concrete check contexts, and rewrites the repository’s single branch-protection
+ruleset so its `required_status_checks` equal exactly that set. The annotations
+become the single source of truth; the required-set stops drifting in the GitHub
+UI.
+
+```bash
+pip install ci-truth-serum
+
+# Report drift and exit non-zero WITHOUT mutating (PR-safe gate):
+sync-required-checks --repo owner/name --check
+
+# Rewrite the ruleset to match the annotations:
+GH_TOKEN=<token-with-administration:write> sync-required-checks --repo owner/name
+```
+
+The mutation path needs a token (`GH_TOKEN` / `GITHUB_TOKEN`) with
+`administration: write`; it reads the marker from the same scoped lines the lint
+classifies, so the gate and the apply step can never disagree. Pass
+`--ruleset-id` if the repo has more than one branch ruleset.
+
 ## Complements, doesn’t replace
 
 ci-truth-serum enforces policy gaps; keep running the tools it doesn’t
