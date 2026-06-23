@@ -46,7 +46,7 @@ jobs:
 
   # Stable Required check: runs even when `validate` is cancelled/skipped, so a
   # protected branch never gets stuck on a check that never reports.
-  validate-config-passed:
+  validate-config-passed: # required-check: true
     if: always()
     needs: [validate]
     runs-on: ubuntu-latest

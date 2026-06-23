@@ -56,6 +56,17 @@ repos:
 
   - repo: local
     hooks:
+      # Dogfood our own Tier 2 lint: every always() reporter on a PR-triggered
+      # workflow must declare whether it is a required status check.
+      - id: check-required-reporter
+        name: classify always() reporters (required-check true|false)
+        entry: python -m hooks.check_required_reporter
+        language: python
+        additional_dependencies: [PyYAML]
+        pass_filenames: false
+        files: ^\.github/(workflows|actions)/
+        types: [yaml]
+
       - id: zizmor
         name: zizmor (GitHub Actions security audit)
         entry: zizmor
