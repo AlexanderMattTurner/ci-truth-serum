@@ -5,11 +5,7 @@ name: zizmor
 on:
   push:
     branches: ["main"]
-    paths:
-      - ".github/**"
   pull_request:
-    paths:
-      - ".github/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -19,7 +15,21 @@ permissions:
   contents: read
 
 jobs:
+  # Path gate: runs unconditionally so the zizmor-passed reporter always reports,
+  # then opens only when .github/ (workflows, actions, scripts) changes on a PR.
+  decide:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/decide-reusable.yaml
+    with:
+      filters: |
+        run:
+          - '.github/**'
+
   zizmor:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -31,3 +41,15 @@ jobs:
 
       - name: Run zizmor
         run: uvx zizmor==1.25.2 .github/
+
+  # Stable Required check: runs even when `zizmor` is cancelled/skipped, so a
+  # protected branch never gets stuck on a check that never reports.
+  zizmor-passed: # required-check: true
+    if: always()
+    needs: [decide, zizmor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fail if any required job did not pass
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

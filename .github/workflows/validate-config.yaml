@@ -1,21 +1,8 @@
 name: Validate config
 on:
   push:
-    paths:
-      - ".claude/**"
-      - ".hooks/**"
-      - ".github/workflows/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "uv.lock"
+    branches: ["main"]
   pull_request:
-    paths:
-      - ".claude/**"
-      - ".hooks/**"
-      - ".github/workflows/**"
-      - "tests/**"
-      - "pyproject.toml"
-      - "uv.lock"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -25,7 +12,26 @@ permissions:
   contents: read
 
 jobs:
+  # Path gate: runs unconditionally so the validate-config-passed reporter always
+  # reports, then opens only when config/hook/test sources change on a PR.
+  decide:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/decide-reusable.yaml
+    with:
+      filters: |
+        run:
+          - '.claude/**'
+          - '.hooks/**'
+          - '.github/workflows/**'
+          - 'tests/**'
+          - 'pyproject.toml'
+          - 'uv.lock'
+
   validate:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -48,7 +54,7 @@ jobs:
   # protected branch never gets stuck on a check that never reports.
   validate-config-passed: # required-check: true
     if: always()
-    needs: [validate]
+    needs: [decide, validate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

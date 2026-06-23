@@ -3,23 +3,7 @@ name: Lint
 on:
   push:
     branches: ["main"]
-    paths:
-      - "**/*.ts"
-      - "**/*.tsx"
-      - "**/*.js"
-      - "**/*.jsx"
-      - "**/*.mjs"
-      - "package.json"
-      - ".github/workflows/lint.yaml"
   pull_request:
-    paths:
-      - "**/*.ts"
-      - "**/*.tsx"
-      - "**/*.js"
-      - "**/*.jsx"
-      - "**/*.mjs"
-      - "package.json"
-      - ".github/workflows/lint.yaml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -29,7 +13,28 @@ permissions:
   contents: read
 
 jobs:
+  # Path gate: runs unconditionally so the lint-passed reporter always reports,
+  # then opens only when JS/TS sources (or this workflow) change on a PR.
+  decide:
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/decide-reusable.yaml
+    with:
+      filters: |
+        run:
+          - '**/*.ts'
+          - '**/*.tsx'
+          - '**/*.js'
+          - '**/*.jsx'
+          - '**/*.mjs'
+          - 'package.json'
+          - '.github/workflows/lint.yaml'
+          - '.github/workflows/decide-reusable.yaml'
+
   lint:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -68,7 +73,7 @@ jobs:
   # protected branch never gets stuck on a check that never reports.
   lint-passed: # required-check: true
     if: always()
-    needs: [lint]
+    needs: [decide, lint]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
