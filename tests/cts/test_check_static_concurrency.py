@@ -164,9 +164,8 @@ def test_main_reports_violation_and_returns_nonzero(tmp_path, monkeypatch, capsy
 
 
 def test_all_shipped_workflows_pass(monkeypatch, capsys):
-    """The repo dogfoods this lint: its three static-group workflows (template-sync,
-    security-vulnerability-scan, tag-release) back no required check, so none are
-    flagged."""
+    """The repo dogfoods this lint: its static-group workflows (template-sync,
+    tag-release) back no required check, so none are flagged."""
     workflows = REPO_ROOT / ".github" / "workflows"
     monkeypatch.setattr(sc, "REPO_ROOT", REPO_ROOT)
     monkeypatch.setattr(sc, "WORKFLOWS_DIR", workflows)
