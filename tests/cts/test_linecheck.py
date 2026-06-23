@@ -281,6 +281,18 @@ def test_expand_name_two_refs_one_axis() -> None:
     ]
 
 
+def test_expand_name_ref_is_a_strict_subset_of_the_matrix_axes() -> None:
+    # The name references only `arch`, but the matrix also varies `os`. The combo
+    # filter must accept any combo whose keys are a SUPERSET of the refs (refs <=
+    # keys), then dedup once `os` is substituted away -- yielding one context per
+    # distinct arch. Pins the `refs <= keys` subset test against the `refs == keys`
+    # mutant, which would demand an exact key match and drop every combo (the combo
+    # always carries the extra `os` key), collapsing the result to [].
+    name = "Build (${{ matrix.arch }})"
+    matrix = {"arch": ["amd64", "arm64"], "os": ["linux", "mac"]}
+    assert lc.expand_name(name, matrix) == ["Build (amd64)", "Build (arm64)"]
+
+
 # ── required_check_contexts ──────────────────────────────────────────────────
 
 
