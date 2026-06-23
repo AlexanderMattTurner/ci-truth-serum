@@ -11,7 +11,7 @@ generated file lives under the module's idea of the repo root, then call
 """
 
 import yaml
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 from tests._helpers import load_hook
@@ -101,8 +101,6 @@ def test_workflow_check_files_never_crash(
     try:
         yaml.safe_load(text)
     except yaml.YAMLError:
-        from hypothesis import assume
-
         assume(False)
 
     root = tmp_path_factory.mktemp("repo")
@@ -111,7 +109,7 @@ def test_workflow_check_files_never_crash(
     path = wf_dir / "wf.yaml"
     path.write_text(text, encoding="utf-8")
 
-    for name, check, expects_list in WORKFLOW_CHECKS:
+    for _name, check, expects_list in WORKFLOW_CHECKS:
         mod = check.__globals__
         monkeypatch.setitem(mod, "REPO_ROOT", root)
         monkeypatch.setitem(mod, "WORKFLOWS_DIR", wf_dir)

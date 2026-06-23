@@ -189,8 +189,9 @@ def test_line_detectors_never_crash_and_report_real_lines(text: str) -> None:
 
 @given(text=source_text())
 def test_line_detectors_are_deterministic(text: str) -> None:
-    # A pure text -> findings function must be stable across calls; mutmut and CI
-    # both rely on this, and a hidden global-state leak would surface here.
+    # A pure text -> findings function must be stable across calls; the mutation
+    # and CI runs both rely on this, and a hidden global-state leak (e.g. a regex
+    # accumulating state, a shared mutable default) would surface here.
     for detect in LINE_DETECTORS.values():
         assert detect(text) == detect(text)
 
@@ -200,7 +201,7 @@ def test_line_detectors_idempotent_under_repeat(text: str) -> None:
     # Doubling the file (with a separating newline) can only re-flag lines, never
     # crash or invent out-of-range numbers.
     doubled = text + "\n" + text
-    for name, detect in LINE_DETECTORS.items():
+    for detect in LINE_DETECTORS.values():
         _assert_valid_linenos(doubled, detect(doubled))
 
 

@@ -19,6 +19,19 @@
 
 [cosmic-ray]
 module-path = "hooks"
+# Skip the two modules with no offline test oracle, so their always-surviving
+# mutants don't drown the real survivors in the report:
+#   - sync_required_checks: GitHub REST plumbing (network),
+#   - run_tier: argv dispatcher to the other hooks (each mutated on its own).
+# Everything else IS mutated, including check_pinned_base_images: its offline
+# violations()/fix_text()/_split_ref paths are pinned by the example + fuzz
+# suites, so they belong in the score (only its live registry resolver lacks an
+# offline oracle, and those few survivors are expected).
+excluded-modules = [
+    "hooks/sync_required_checks.py",
+    "hooks/run_tier.py",
+    "hooks/__init__.py",
+]
 timeout = 60.0
 # The offline test suite is the oracle. -p no:cacheprovider keeps each worker
 # from racing on the pytest cache; HYPOTHESIS_PROFILE is set in the env by the
