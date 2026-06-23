@@ -192,6 +192,45 @@ def test_flags_each_unclassified_reporter_independently(tmp_path):
     assert "audit" in message
 
 
+MARKER_BURIED_IN_STEP = """\
+name: x
+on:
+  pull_request:
+jobs:
+  report:
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: noise # required-check: true
+        run: echo hi
+"""
+
+QUOTED_REPORTER_KEY = """\
+name: x
+on:
+  pull_request:
+jobs:
+  "report": # required-check: true
+    if: always()
+    runs-on: ubuntu-latest
+"""
+
+
+def test_marker_inside_a_step_does_not_classify(tmp_path):
+    # A `# required-check:` string buried in step content must NOT satisfy the
+    # classification — only the key line and direct-child lines count.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MARKER_BURIED_IN_STEP))
+    assert len(found) == 1
+    assert "unclassified" in found[0][1]
+
+
+def test_quoted_reporter_key_is_classified(tmp_path):
+    # The block carver strips surrounding quotes so the source key matches the
+    # unquoted name PyYAML reports — otherwise the lookup misses and a classified
+    # reporter is falsely flagged.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", QUOTED_REPORTER_KEY)) == []
+
+
 def test_ignores_non_mapping_document(tmp_path):
     assert crr.check_file(_write(tmp_path, "wf.yaml", "- a\n- b\n")) == []
 

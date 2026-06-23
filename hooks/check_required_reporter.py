@@ -106,9 +106,32 @@ def _job_blocks(text: str) -> dict[str, tuple[int, str]]:
             if body.strip() and len(body) - len(body.lstrip()) <= job_indent:
                 break
             end += 1
-        blocks[match.group(1)] = (i + 1, "\n".join(lines[i:end]))
+        name = match.group(1).strip("'\"")  # align with PyYAML's unquoted key
+        blocks[name] = (i + 1, "\n".join(lines[i:end]))
         i = end
     return blocks
+
+
+def _classification_text(block: str) -> str:
+    """The lines of a job block where a classification comment may live: the key
+    line plus the job's direct-child lines (a trailing comment on a child, or a
+    standalone comment at the child indent). Deeper step/run content is excluded
+    so a `# required-check:` string buried in a step can't pass as a classification.
+    """
+    lines = block.splitlines()
+    if not lines:
+        return ""
+    child_indent = next(
+        (len(ln) - len(ln.lstrip()) for ln in lines[1:] if ln.strip()), None
+    )
+    eligible = [lines[0]]
+    if child_indent is not None:
+        eligible += [
+            ln
+            for ln in lines[1:]
+            if ln.strip() and len(ln) - len(ln.lstrip()) == child_indent
+        ]
+    return "\n".join(eligible)
 
 
 def _reporter_names(jobs: dict) -> list[str]:
@@ -152,7 +175,7 @@ def check_file(path: Path) -> list[tuple[int, str]]:
     violations: list[tuple[int, str]] = []
     for name in _reporter_names(jobs):
         line, block = blocks.get(name, (pr_line, ""))
-        match = _CLASSIFY.search(block)
+        match = _CLASSIFY.search(_classification_text(block))
         if match is None:
             violations.append((line, _unclassified(name)))
         elif match.group(1) == "false" and not _REASON.search(match.group("rest")):
