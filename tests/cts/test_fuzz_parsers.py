@@ -99,12 +99,14 @@ _INTERESTING_TOKENS = [
 # form feed, and the Unicode breaks str.splitlines() recognises -- U+0085 (NEL),
 # U+2028 (line sep), U+2029 (paragraph sep). Written as escapes so no invisible
 # byte hides in this source (CLAUDE.md: centralize/escape special chars).
-_NEWLINES = ["\n", "\r\n", "\r", "\x0b", "\x0c", "\x85", " ", " "]
+_NEWLINES = ["\n", "\r\n", "\r", "\x0b", "\x0c", "\x85", "\u2028", "\u2029"]
 
 # Adversarial unicode: bidi override (U+202E), zero-width space/joiner
 # (U+200B/U+200D), BOM (U+FEFF), a combining acute (U+0301), an astral emoji,
 # and bracket noise. Escapes only -- a literal here once smuggled a NUL in.
-_WEIRD_CHARS = st.sampled_from(["‮", "​", "‍", "﻿", "́", "\U0001f600"] + list("(){}[]"))
+_WEIRD_CHARS = st.sampled_from(
+    ["\u202e", "\u200b", "\u200d", "\ufeff", "\u0301", "\U0001f600"] + list("(){}[]")
+)
 
 
 @st.composite
