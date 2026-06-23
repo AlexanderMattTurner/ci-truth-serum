@@ -77,6 +77,101 @@ def test_pin_exempt_escape_hatch() -> None:
     assert _flags('# pin-exempt: see issue 1\ncurl "$u" -o f https://x\n') == []
 
 
+def test_pin_exempt_only_excuses_the_immediately_preceding_line() -> None:
+    # The exemption must sit on the line right above the download (lines[i-1]).
+    # A `pin-exempt` two lines up does NOT excuse it -- pins lines[i-1], killing
+    # the `i - 1` -> `i >> 1` / `i // 2` index mutants (which alias i-1 only for
+    # tiny i). The download here is at index 5, so a wrong index reads a blank.
+    far = (
+        "# pin-exempt: stale, two lines up\n"
+        "noop\n"
+        "noop\n"
+        "noop\n"
+        "noop\n"
+        'curl "$u" -o f https://x\n'  # line 6
+    )
+    assert _flags(far) == [6]
+    # ...and exactly one line above DOES excuse it (same download, exemption moved).
+    near = "noop\n" * 4 + "# pin-exempt: ok\n" + 'curl "$u" -o f https://x\n'
+    assert _flags(near) == []
+
+
+def test_pin_exempt_on_first_line_download_ignores_wraparound() -> None:
+    # A download on line 1 (i == 0) with `pin-exempt` only on the LAST line must
+    # still be flagged: the `i > 0` guard blocks the lines[i-1] read, so a
+    # negative index can't wrap around to the trailing exemption.
+    #
+    # NB: `i > 0` -> `i != 0` is an EQUIVALENT mutant (the enumerate index i is
+    # always >= 0, so the two agree everywhere) and is left surviving by design;
+    # this test pins the i==0 boundary behaviour the real guard exists for.
+    text = 'curl "$u" -o f https://x\nnoop\n# pin-exempt: trailing, unrelated\n'
+    assert _flags(text) == [1]
+
+
+# The scan window is 25 lines (hooks.check_pinned_downloads._WINDOW). The boundary
+# is hardcoded here ON PURPOSE: parametrising on `mod._WINDOW` would let a mutant
+# that changes the constant shift the test input in lockstep, so the test could
+# never observe the change. Pinning the literal makes the off-by-one mutants
+# (the `_WINDOW` NumberReplacer and the `start + _WINDOW + 1` arithmetic) fail.
+_WINDOW_LITERAL = 25
+
+
+@pytest.mark.parametrize(
+    ("gap", "expected"),
+    [
+        (_WINDOW_LITERAL, []),  # verify on the last in-window line -> verified
+        (_WINDOW_LITERAL + 1, [1]),  # one line past the window -> unverified
+    ],
+)
+def test_verification_window_boundary_is_exact(gap: int, expected: list[int]) -> None:
+    text = 'curl "$u" -o f https://x\n' + "noop\n" * (gap - 1) + "sha256sum -c f\n"
+    assert _flags(text) == expected
+
+
+def test_window_literal_matches_source() -> None:
+    # SSOT guard: if _WINDOW changes in the source, the hardcoded boundary above
+    # is stale and silently stops testing the real edge. Fail loudly instead.
+    assert mod._WINDOW == _WINDOW_LITERAL
+
+
+def test_same_line_download_and_verify_passes() -> None:
+    # A download verified ON ITS OWN LINE is accepted: the window scan starts at
+    # `j == start`, and the `j > start` guard must let that first line reach the
+    # _VERIFY check rather than treat the download as an immediate "next download".
+    # Kills the `j > start` -> `j >= start` mutant (which would abort at j==start,
+    # leaving every same-line-verified download wrongly flagged).
+    assert _flags('curl "$u" -o f https://x && sha256sum -c f\n') == []
+
+
+def test_intervening_download_aborts_scan_before_a_later_verify() -> None:
+    # The window scan must STOP at the next download so one checksum can't cover an
+    # earlier, unrelated fetch. Here download `a` (line 1) is followed by download
+    # `b` (line 2), then a checksum (line 3) that only matches `a`. Because `b`
+    # intervenes, `a` is unverified and flagged; `b` finds the checksum on line 3
+    # and is clean. Kills the `j > start` -> `j < start` / `j is not start`
+    # mutants (which never fire the abort, letting `a` reach the later checksum and
+    # wrongly pass) -- without it `_flags` would be [].
+    text = 'curl "$u" -o a\ncurl "$u" -o b\nsha256sum -c a.sum\n'
+    assert _flags(text) == [1]
+
+
+def test_non_download_line_does_not_halt_the_scan() -> None:
+    # A line that is neither a comment/message NOR a download (the `if not
+    # _is_artifact_download: continue` branch) must be skipped, not end the loop: a
+    # real unverified download AFTER such a line must still be flagged. Kills the
+    # `continue` -> `break` mutant on that branch.
+    text = "noop\ncurl -o f https://x\nrun f\n"
+    assert _flags(text) == [2]
+
+
+def test_comment_line_does_not_halt_the_scan() -> None:
+    # A comment / message line is skipped (continue on the first guard), not a hard
+    # stop (break): a real unverified download AFTER a comment line must still be
+    # flagged. Kills the `continue` -> `break` mutant on the comment/blank branch.
+    text = "# just a note\ncurl -o f https://x\nrun f\n"
+    assert _flags(text) == [2]
+
+
 def test_main_wires_violations_and_message(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:

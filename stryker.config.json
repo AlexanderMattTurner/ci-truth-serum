@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Stryker mutation testing for the self-contained JS in scripts/. The Python lints use cosmic-ray (see cosmic-ray.toml); this is the JS counterpart. Slow, so it runs in the mutation.yaml workflow change-gated on the JS sources (plus a weekly schedule), behind the mutation-passed required reporter. The CLI-entry block in assemble-changelog.mjs carries `// Stryker disable` markers (its mutants are unkillable by in-process tests), so they are excluded from the score rather than reported as survivors.",
+  "packageManager": "pnpm",
+  "testRunner": "command",
+  "commandRunner": {
+    "command": "node --test scripts/assemble-changelog.test.mjs"
+  },
+  "coverageAnalysis": "off",
+  "mutate": ["scripts/assemble-changelog.mjs"],
+  "_ignore_comment": "Stryker copies the project into a sandbox; keep the Python venv, mutation artifacts, and worktrees out of it (the venv's symlinks crash the copy, and none are needed to run the JS test).",
+  "ignorePatterns": [
+    ".venv",
+    ".uv",
+    "mutants",
+    ".stryker-tmp",
+    "cr-session.sqlite",
+    "*.sqlite"
+  ],
+  "reporters": ["clear-text", "progress"],
+  "timeoutMS": 60000,
+  "concurrency": 2
+}

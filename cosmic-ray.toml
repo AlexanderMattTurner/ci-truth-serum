@@ -1,0 +1,46 @@
+# cosmic-ray mutation-testing config for the ci-truth-serum lint parsers.
+#
+# Why cosmic-ray (not mutmut): the test harness loads each hook by FILE PATH
+# (tests/_helpers.load_hook -> importlib.spec_from_file_location), not via
+# `import hooks.x`. mutmut 3.x instruments through an import trampoline that
+# file-path loading bypasses, so its mutants are never reached. cosmic-ray
+# rewrites the file on disk and reruns the suite, so it is agnostic to how tests
+# import the code under test.
+#
+# Scope: the whole `hooks/` package is mutated. The orchestrators/IO-only modules
+# (run_tier, sync_required_checks, the __main__/network plumbing) have no offline
+# test oracle, so their mutants survive by design; the scheduled CI job filters
+# the report to the parser modules the fuzz + example suites actually pin. Run:
+#
+#   uv run --extra mutation cosmic-ray init     cosmic-ray.toml cr-session.sqlite
+#   uv run --extra mutation cosmic-ray baseline cosmic-ray.toml
+#   uv run --extra mutation cosmic-ray exec     cosmic-ray.toml cr-session.sqlite
+#   uv run --extra mutation cr-report                            cr-session.sqlite
+
+[cosmic-ray]
+module-path = "hooks"
+# Skip the two modules with no offline test oracle, so their always-surviving
+# mutants don't drown the real survivors in the report:
+#   - sync_required_checks: GitHub REST plumbing (network),
+#   - run_tier: argv dispatcher to the other hooks (each mutated on its own).
+# Everything else IS mutated, including check_pinned_base_images: its offline
+# violations()/fix_text()/_split_ref paths are pinned by the example + fuzz
+# suites, so they belong in the score (only its live registry resolver lacks an
+# offline oracle, and those few survivors are expected).
+excluded-modules = [
+    "hooks/sync_required_checks.py",
+    "hooks/run_tier.py",
+    "hooks/__init__.py",
+]
+timeout = 60.0
+# The offline test suite is the oracle. -p no:cacheprovider keeps each worker
+# from racing on the pytest cache; HYPOTHESIS_PROFILE is set in the env by the
+# runner so the property suites use a fast-but-still-meaningful budget.
+test-command = "python -m pytest -x -q -p no:cacheprovider tests/cts"
+
+[cosmic-ray.distributor]
+name = "local"
+
+[cosmic-ray.filters.operators-filter]
+# Operators whose mutants are predominantly equivalent/noise on this codebase.
+exclude-operators = []

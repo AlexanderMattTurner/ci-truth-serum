@@ -307,6 +307,17 @@ describe("main", () => {
         main(["--release", "0.5.0", "--date", "2026-06-14", "extra"], { cwd }),
       /unexpected argument\(s\) after --release/,
     );
+    // The message must list the OFFENDING args, space-joined and starting AFTER
+    // the consumed ones (version/date) -- two stray args distinguish `.join(" ")`
+    // from `.join("")` ("x y" vs "xy") and `.slice(consumed)` from `.slice()`
+    // (which would re-list 0.5.0). Pins both, killing the message-formatting
+    // mutants Stryker flagged on lines 204/206.
+    assert.throws(
+      () => main(["--release", "0.5.0", "x", "y"], { cwd }),
+      (err) =>
+        / x y \(use --date/.test(err.message) &&
+        !err.message.includes("0.5.0 x"),
+    );
   });
 
   it("throws the general usage on an unknown or missing mode", () => {
