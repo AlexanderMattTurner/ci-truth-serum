@@ -3,10 +3,10 @@
 **Make your CI confess what it’s hiding.** A pack of fast, offline pre-commit
 lints that catch two kinds of lie a green check can hide:
 
-- **Honesty lies** — the pipeline reports success while the real work failed
-  (exit codes masked by pipes / `|| true` / `2>/dev/null`), or a required check
-  silently never reports and the PR hangs forever.
-- **Identity lies** — a base image or downloaded artifact is pinned to a
+- **Honesty lies:** the pipeline reports success while the real work failed
+  (exit codes masked by pipes), or a required check silently never reports and
+  the PR hangs forever.
+- **Identity lies:** a base image or downloaded artifact is pinned to a
   _mutable_ name (a tag, a bare URL), so the bytes you run aren’t provably the
   bytes you reviewed.
 
@@ -14,37 +14,37 @@ lints that catch two kinds of lie a green check can hide:
 
 ### Honesty (Tier 1, default-on)
 
-| Hook                       | Failure it prevents                                                                                                                                                          | Opt-out marker                          |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `check-workflow-pipefail`  | CI went green while `pytest` was crashing, because `pytest \| tee log` exits with `tee`’s status—under a `runCmd:` / `shell: sh` / custom `bash` that lacks `pipefail`.      | `# allow-no-pipefail: <reason>`         |
-| `check-exit-suppression`   | A teardown that left a volume pinned reported success, because `cleanup \|\| true` discarded its non-zero exit while keeping its output.                                     | `# allow-exit-suppress: <reason>`       |
-| `check-stderr-suppression` | A container launch failed with a bare non-zero and no clue why, because `docker compose up 2>/dev/null` threw away the only diagnostic.                                      | `# allow-stderr-suppress: <reason>`     |
-| `check-pr-paths`           | A required check hung at “Expected—Waiting” forever and the PR could never merge, because `paths:`/`paths-ignore:` on `pull_request` skipped the workflow without reporting. | `# not-required-check` (on the trigger) |
+| Hook                       | Failure it prevents                                                                                                                                                          |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-workflow-pipefail`  | CI went green while `pytest` was crashing, because `pytest \| tee log` exits with `tee`’s status—under a `runCmd:` / `shell: sh` / custom `bash` that lacks `pipefail`.      |
+| `check-exit-suppression`   | A teardown that left a volume pinned reported success, because `cleanup \|\| true` discarded its non-zero exit while keeping its output.                                     |
+| `check-stderr-suppression` | A container launch failed with a bare non-zero and no clue why, because `docker compose up 2>/dev/null` threw away the only diagnostic.                                      |
+| `check-pr-paths`           | A required check hung at “Expected—Waiting” forever and the PR could never merge, because `paths:`/`paths-ignore:` on `pull_request` skipped the workflow without reporting. |
 
 ### Identity (Tier 1, default-on)
 
-| Hook                       | Failure it prevents                                                                                                                                            | Opt-out marker           |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `check-pinned-base-images` | The base image you reviewed and the one CI built diverged, because `FROM node:22` is a mutable tag the registry can re-point. **Demands a `@sha256:` digest.** | _(none—pin or don’t)_    |
-| `check-pinned-downloads`   | A tampered release or compromised mirror swapped the binary you `curl`ed and then ran, because the download carried no checksum/signature check.               | `# pin-exempt: <reason>` |
+| Hook                       | Failure it prevents                                                                                                                                            |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-pinned-base-images` | The base image you reviewed and the one CI built diverged, because `FROM node:22` is a mutable tag the registry can re-point. **Demands a `@sha256:` digest.** |
+| `check-pinned-downloads`   | A tampered release or compromised mirror swapped the binary you `curl`ed and then ran, because the download carried no checksum/signature check.               |
 
 ### Opinionated (Tier 2, opt-in)
 
-| Hook                      | Failure it prevents                                                                                                                                                                                                   | Opt-out marker                                                                         |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `check-always-reporter`   | A gated workflow stranded a required check at “Expected—Waiting” when the decide gate skipped every work job. Assumes a **decide-job + `always()` reporter** pattern.                                                 | `# not-required-check` (on trigger)                                                    |
-| `check-required-reporter` | A new `always()` reporter shipped as a green-but-never-required check because nothing tied a workflow’s reporters to the branch-protection required-set. Assumes the required-set is mirrored from these annotations. | `# not-required-check` (trigger) / `# required-check: false # <reason>` (per reporter) |
-| `check-inline-run-length` | A long inline `run:` block shipped unchecked (unquoted expansions, missing `pipefail`) because shellcheck/shfmt/shellharden only see standalone `.sh` files.                                                          | `# allow-long-run: <reason>`                                                           |
-| `check-concurrency`       | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.                                                          | `# cancel-in-progress-not-required`                                                    |
+| Hook                      | Failure it prevents                                                                                                                                                                                                   |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-always-reporter`   | A gated workflow stranded a required check at “Expected—Waiting” when the decide gate skipped every work job. Assumes a **decide-job + `always()` reporter** pattern.                                                 |
+| `check-required-reporter` | A new `always()` reporter shipped as a green-but-never-required check because nothing tied a workflow’s reporters to the branch-protection required-set. Assumes the required-set is mirrored from these annotations. |
+| `check-inline-run-length` | A long inline `run:` block shipped unchecked (unquoted expansions, missing `pipefail`) because shellcheck/shfmt/shellharden only see standalone `.sh` files.                                                          |
+| `check-concurrency`       | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.                                                          |
 
 ### Unrelated bonus checks (Extras)
 
-| Hook                         | Failure it prevents                                                                                                         | Opt-out marker                                |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| `check-symlinks`             | A tracked symlink with an absolute target (`/Users/you/...`) broke on every machine but the author’s.                       | _(none)_                                      |
-| `check-unnamed-regex-groups` | A regex’s match handling went positional and brittle because a `re.*` literal used an unnamed `( )` group.                  | _(use `(?P<name>...)`)_                       |
-| `check-global-stdio-swap`    | Concurrent calls clobbered each other’s output because code reassigned the process-global `sys.stdout` to capture I/O.      | `# allow-stdio-swap: <reason>`                |
-| `check-claude-model`         | A `claude-code-action` step billed Opus silently because it omitted `--model` and rode the action’s expensive default tier. | `# allow-default-model` (on the `uses:` line) |
+| Hook                         | Failure it prevents                                                                                                         |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `check-symlinks`             | A tracked symlink with an absolute target (`/Users/you/...`) broke on every machine but the author’s.                       |
+| `check-unnamed-regex-groups` | A regex’s match handling went positional and brittle because a `re.*` literal used an unnamed `( )` group.                  |
+| `check-global-stdio-swap`    | Concurrent calls clobbered each other’s output because code reassigned the process-global `sys.stdout` to capture I/O.      |
+| `check-claude-model`         | A `claude-code-action` step billed Opus silently because it omitted `--model` and rode the action’s expensive default tier. |
 
 ## Usage
 
@@ -57,7 +57,7 @@ pre-commit install
 ```
 
 Then add ci-truth-serum to your `.pre-commit-config.yaml`. Tier 1 (honesty +
-identity) is shown enabled; Tier 2 and Extras are commented in—uncomment what
+identity) is enabled below; Tier 2 and Extras are commented out: uncomment what
 you want. pre-commit builds each hook’s isolated Python environment, so it is
 the only prerequisite.
 
@@ -90,9 +90,9 @@ repos:
 
 ### Enable a whole tier with one id
 
-Tired of adding a new `- id:` every time a check ships? Enable a tier aggregate
-instead — one id runs every Python check in that tier, and a check added to the
-tier later is picked up with **no change to your config**:
+Instead of adding a new `- id:` every time a check ships, enable a tier
+aggregate: one id runs every Python check in that tier, and checks added later
+are picked up with **no change to your config**:
 
 ```yaml
 repos:
@@ -100,21 +100,21 @@ repos:
     rev: v0.1.0 # pin to a tag
     hooks:
       - id: check-tier1 # all honesty + identity checks (the safe default-on set)
-      # - id: check-tier2   # all opinionated checks — assumes the decide-gate + reporter architecture
+      # - id: check-tier2   # all opinionated checks: assumes the decide-gate + reporter architecture
       # - id: check-extras  # the Python extras (vendor-/style-specific)
 ```
 
-`check-symlinks` is the one check not folded into an aggregate — it is a shell
-(`language: script`) hook rather than a Python module, so enable its `- id:`
-separately if you want it. Mixing a tier aggregate with individual ids is fine
-(a check just runs twice); pick whichever reads cleaner.
+`check-symlinks` is the only check not in an aggregate: it is a shell
+(`language: script`) hook, not a Python module, so add its `- id:` separately if
+you want it. Mixing an aggregate with individual ids is fine (a check just runs
+twice).
 
 ### Scope one check to specific paths
 
-Sometimes one check in a tier needs tighter file scoping than the rest (e.g.,
-`check-exit-suppression` is too strict for your `tests/` directory). Use
-`--skip <module_name>` to drop that member from the aggregate, then re-add it
-as a standalone hook with normal pre-commit `files:`/`exclude:` filters:
+When one check in a tier needs tighter file scoping than the rest (e.g.,
+`check-exit-suppression` is too strict for your `tests/` directory), use
+`--skip <module_name>` to drop it from the aggregate, then re-add it as a
+standalone hook with normal pre-commit `files:`/`exclude:` filters:
 
 ```yaml
 - repo: https://github.com/alexander-turner/ci-truth-serum
@@ -127,14 +127,14 @@ as a standalone hook with normal pre-commit `files:`/`exclude:` filters:
       exclude: "^bin/(bench-|check-)"
 ```
 
-`--skip` is repeatable — pass one `--skip <name>` pair per check to drop.
+`--skip` is repeatable: pass one `--skip <name>` pair per check to drop.
 **An unknown name is a hard error** (to catch typos that would silently
 re-include the check). Module names use underscores and match the TIERS
 registry in `hooks/run_tier.py` (e.g., `check_exit_suppression`, not
 `check-exit-suppression`).
 
 The key property is preserved: any new check added to the tier upstream still
-flows in automatically via the aggregate — you only opt out of the ones you
+flows in automatically via the aggregate: you only opt out of the ones you
 deliberately scope.
 
 ### Autofix (opt-in): digest-pin base images
@@ -144,7 +144,7 @@ resolves each unpinned `FROM`’s current registry digest and appends it
 (`FROM node:22` → `FROM node:22@sha256:…`), preserving `--platform` flags and
 `AS <stage>` suffixes. It is opt-in because `--fix` is the pack’s only network
 call (a Docker Registry v2 manifest lookup); detection stays offline, and an
-image whose digest can’t be resolved is left untouched—never guessed.
+image whose digest can’t be resolved is left untouched: never guessed.
 
 ```yaml
 - id: check-pinned-base-images
@@ -153,14 +153,12 @@ image whose digest can’t be resolved is left untouched—never guessed.
 
 ### Apply: mirror branch protection from the annotations
 
-`check-required-reporter` is the local half of a pair; the `sync-required-checks`
-console script is the apply half. It reads every job carrying `# required-check:
-true` (any job, not just `always()` reporters—a cheap always-run linter is
-required too), expands each `name:` across its own `strategy.matrix` into
-concrete check contexts, and rewrites the repository’s single branch-protection
-ruleset so its `required_status_checks` equal exactly that set. The annotations
-become the single source of truth; the required-set stops drifting in the GitHub
-UI.
+`check-required-reporter` lints locally; `sync-required-checks` applies. It reads
+every job marked `# required-check: true` (any job, not just `always()`
+reporters), expands each `name:` across its `strategy.matrix` into concrete check
+contexts, and rewrites the repo’s branch-protection ruleset so
+`required_status_checks` matches that set exactly. The annotations become the
+single source of truth, so the required-set stops drifting in the GitHub UI.
 
 ```bash
 pip install ci-truth-serum
@@ -182,6 +180,6 @@ classifies, so the gate and the apply step can never disagree. Pass
 ci-truth-serum enforces policy gaps; keep running the tools it doesn’t
 duplicate: [`zizmor`](https://github.com/woodruffw/zizmor) to SHA-pin `uses:`
 references, [`hadolint`](https://github.com/hadolint/hadolint) for Dockerfiles
-(`check-pinned-base-images` is stronger—it demands a `@sha256:` digest, not just
+(`check-pinned-base-images` is stronger: it demands a `@sha256:` digest, not just
 an explicit tag), [`actionlint`](https://github.com/rhysd/actionlint) for
 workflow syntax/types, and `shellcheck` for shell.
