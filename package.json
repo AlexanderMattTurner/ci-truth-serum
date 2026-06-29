@@ -1,7 +1,34 @@
 {
-  "name": "my-project",
+  "name": "ci-truth-serum",
   "version": "1.0.0",
-  "description": "Project with Claude Code automation",
+  "description": "Fast, offline pre-commit lints that catch CI honesty lies (exit codes masked by pipes, required checks that never report) and supply-chain identity lies (mutable image tags, unpinned downloads) before a green check can hide them.",
+  "keywords": [
+    "ci",
+    "ci-cd",
+    "github-actions",
+    "pre-commit",
+    "git-hooks",
+    "linter",
+    "static-analysis",
+    "shell",
+    "shellcheck",
+    "pipefail",
+    "exit-code",
+    "required-checks",
+    "supply-chain",
+    "pinning",
+    "devops"
+  ],
+  "homepage": "https://github.com/alexander-turner/ci-truth-serum#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexander-turner/ci-truth-serum.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alexander-turner/ci-truth-serum/issues"
+  },
+  "author": "Alexander Turner",
+  "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@11.8.0",
   "scripts": {
