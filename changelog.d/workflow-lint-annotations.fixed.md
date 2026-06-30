@@ -1,0 +1,1 @@
+- `check-workflow-pipefail` and `check-inline-run-length` now emit GitHub `::error file=…,line=…::` annotations pointing at the offending step, instead of a bare `::error::` with the path buried in free text. Their violations are now clickable in the GitHub UI and the file-changed view, matching every other workflow lint.

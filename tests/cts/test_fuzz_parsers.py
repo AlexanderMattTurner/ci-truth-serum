@@ -210,6 +210,15 @@ def test_line_detectors_idempotent_under_repeat(text: str) -> None:
 # --- Doc-level analyzers -----------------------------------------------------
 
 
+def _is_line_message(item: object) -> bool:
+    """analyze() yields (line, message): line is the step's source line (int) or
+    None when the doc carried no line tags; message is the human-readable string."""
+    if not (isinstance(item, tuple) and len(item) == 2):
+        return False
+    line, msg = item
+    return (line is None or isinstance(line, int)) and isinstance(msg, str)
+
+
 @given(text=yaml_text())
 def test_workflow_pipefail_analyze_never_crashes(text: str) -> None:
     import yaml
@@ -220,7 +229,7 @@ def test_workflow_pipefail_analyze_never_crashes(text: str) -> None:
         assume(False)  # check_file swallows these; analyze is only fed valid docs
     out = workflow_pipefail.analyze(doc)
     assert isinstance(out, list)
-    assert all(isinstance(m, str) for m in out)
+    assert all(_is_line_message(item) for item in out)
 
 
 @given(text=yaml_text())
@@ -233,7 +242,7 @@ def test_inline_run_length_analyze_never_crashes(text: str) -> None:
         assume(False)
     out = inline_run_length.analyze(doc)
     assert isinstance(out, list)
-    assert all(isinstance(m, str) for m in out)
+    assert all(_is_line_message(item) for item in out)
 
 
 @given(
