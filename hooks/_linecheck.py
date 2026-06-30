@@ -45,6 +45,13 @@ REQUIRED_MARKER = re.compile(r"#\s*required-check\s*:\s*true\b")
 # A `${{ matrix.KEY }}` reference inside a job `name:`.
 MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.(?P<key>[A-Za-z_][\w-]*)\s*\}\}")
 
+# A whole-value `${{ … }}` expression wrapper around a job `if:`. GitHub evaluates
+# `if: always()` and `if: ${{ always() }}` identically, so the reporter probe must
+# see through the wrapper. Only a wrapper spanning the ENTIRE value is stripped — a
+# compound like `always() && cond` (wrapped or not) is left intact so it stays a
+# non-reporter (it does not unconditionally run).
+_IF_WRAPPER = re.compile(r"^\$\{\{\s*(?P<inner>.*?)\s*\}\}$")
+
 
 def run_line_checks(
     argv: list[str],
@@ -97,10 +104,24 @@ def has_decide_gate(jobs: dict) -> bool:
     return False
 
 
+def is_always_reporter(if_value: object) -> bool:
+    """True if a job `if:` value is an unconditional always() reporter.
+
+    Accepts bare `always()` and the semantically identical `${{ always() }}`
+    wrapper (any inner spacing). A compound condition such as `always() && cond`
+    is intentionally rejected: it does not always run, so it is no reporter.
+    """
+    text = str(if_value).strip()
+    wrapped = _IF_WRAPPER.match(text)
+    if wrapped:
+        text = wrapped.group("inner").strip()
+    return text == "always()"
+
+
 def has_always_reporter(jobs: dict) -> bool:
-    """True if any job has `if: always()` — the required-check reporter shape."""
+    """True if any job has an always() reporter `if:` — the required-check shape."""
     return any(
-        isinstance(job_cfg, dict) and str(job_cfg.get("if", "")) == "always()"
+        isinstance(job_cfg, dict) and is_always_reporter(job_cfg.get("if", ""))
         for job_cfg in jobs.values()
     )
 

@@ -128,14 +128,37 @@ def test_has_decide_gate(jobs: dict, expected: bool) -> None:
     "jobs, expected",
     [
         ({"reporter": {"if": "always()", "runs-on": "ubuntu-latest"}}, True),
+        # The ${{ }} wrapper is evaluated identically by GitHub — a reporter.
+        ({"reporter": {"if": "${{ always() }}"}}, True),
         ({"work": {"if": "needs.decide.outputs.run == 'true'"}}, False),
-        ({"job": {"if": "always() && some.condition"}}, False),  # exact match only
+        # A compound condition does not always run, so it is no reporter — even
+        # when wrapped. This stays excluded by design.
+        ({"job": {"if": "always() && some.condition"}}, False),
+        ({"job": {"if": "${{ always() && some.condition }}"}}, False),
         ({"odd": "scalar"}, False),  # non-dict job config is skipped
         ({}, False),
     ],
 )
 def test_has_always_reporter(jobs: dict, expected: bool) -> None:
     assert lc.has_always_reporter(jobs) is expected
+
+
+@pytest.mark.parametrize(
+    "if_value, expected",
+    [
+        ("always()", True),
+        ("${{ always() }}", True),
+        ("${{always()}}", True),  # no inner spacing
+        ("${{   always()   }}", True),  # extra inner spacing
+        ("  always()  ", True),  # surrounding whitespace
+        ("always() && needs.x.result == 'success'", False),  # compound: not a reporter
+        ("${{ always() && needs.x.result == 'success' }}", False),  # wrapped compound
+        ("success()", False),
+        ("", False),
+    ],
+)
+def test_is_always_reporter(if_value: str, expected: bool) -> None:
+    assert lc.is_always_reporter(if_value) is expected
 
 
 # ── _job_blocks / _classification_text ───────────────────────────────────────

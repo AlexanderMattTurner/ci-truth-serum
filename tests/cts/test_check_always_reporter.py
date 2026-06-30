@@ -141,6 +141,27 @@ def test_check_file_passes_gated_workflow_with_reporter(tmp_path):
     assert car.check_file(path) is None
 
 
+GATED_WITH_WRAPPED_REPORTER = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  report:
+    needs: decide
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+"""
+
+
+def test_check_file_passes_wrapped_always_reporter(tmp_path):
+    # `if: ${{ always() }}` is evaluated identically to `if: always()` — it is a
+    # valid reporter and must not be flagged (regression: exact-match missed it).
+    path = _write(tmp_path, "wf.yaml", GATED_WITH_WRAPPED_REPORTER)
+    assert car.check_file(path) is None
+
+
 def test_check_file_passes_ungated_workflow(tmp_path):
     # No decide gate → every job always runs → no reporter needed.
     path = _write(tmp_path, "wf.yaml", UNGATED_NO_REPORTER)

@@ -52,6 +52,20 @@ def test_static_group_on_required_check_is_an_error(tmp_path):
     assert "Expected — Waiting" in message
 
 
+def test_static_group_with_wrapped_always_reporter_is_an_error(tmp_path):
+    """A `${{ always() }}`-wrapped reporter is still a reporter, so a static lock
+    on this required-check shape must be flagged (regression: the exact-match
+    reporter probe missed the wrapper and let the static lock slip through)."""
+    wrapped_jobs = REQUIRED_CHECK_JOBS.replace("if: always()", "if: ${{ always() }}")
+    body = (
+        "name: x\non:\n  pull_request:\nconcurrency:\n"
+        "  group: my-static-lock\n  cancel-in-progress: false\n" + wrapped_jobs
+    )
+    result = sc.check_file(_write(tmp_path, body))
+    assert result is not None
+    assert "static" in result[1]
+
+
 def test_per_ref_group_on_required_check_is_clean(tmp_path):
     """A per-ref group on the same required-check shape is safe — a run is only
     superseded by a newer run of the same ref, which reports."""

@@ -155,6 +155,15 @@ def test_flags_unclassified_reporter(tmp_path):
     assert crr.OPT_OUT in message
 
 
+def test_flags_unclassified_wrapped_reporter(tmp_path):
+    # A `${{ always() }}`-wrapped reporter is a reporter too, so it must also be
+    # classified — regression: the exact-match probe let the wrapper escape.
+    body = UNCLASSIFIED.replace("if: always()", "if: ${{ always() }}")
+    found = crr.check_file(_write(tmp_path, "wf.yaml", body))
+    assert len(found) == 1
+    assert "unclassified" in found[0][1]
+
+
 def test_flags_advisory_without_reason(tmp_path):
     found = crr.check_file(_write(tmp_path, "wf.yaml", ADVISORY_NO_REASON))
     assert len(found) == 1

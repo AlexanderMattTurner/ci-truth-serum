@@ -40,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _classification_text,
     _job_blocks,
+    is_always_reporter,
     workflow_files as _workflow_files,
 )
 
@@ -66,11 +67,11 @@ def _locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
 
 
 def _reporter_names(jobs: dict) -> list[str]:
-    """Names of jobs whose `if` is exactly `always()` — the reporter shape."""
+    """Names of jobs whose `if` is an always() reporter (bare or ${{ }}-wrapped)."""
     return [
         name
         for name, cfg in jobs.items()
-        if isinstance(cfg, dict) and str(cfg.get("if", "")) == "always()"
+        if isinstance(cfg, dict) and is_always_reporter(cfg.get("if", ""))
     ]
 
 
