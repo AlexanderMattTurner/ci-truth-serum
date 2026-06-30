@@ -8,6 +8,8 @@ import sys
 import urllib.error
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from tests._helpers import HOOKS_DIR, REPO_ROOT, load_hook
 
@@ -352,3 +354,67 @@ def test_resolve_digest_raises_typed_error(monkeypatch, manifest_seq, expected) 
     monkeypatch.setattr(mod.urllib.request, "urlopen", _fake_urlopen(manifest_seq))
     with pytest.raises(mod.DigestResolutionError, match=expected):
         mod.resolve_digest("node:22")
+
+
+# ── _bearer_token branches (only exercised indirectly above) ─────────────────
+
+
+def _no_network(monkeypatch) -> None:
+    def boom(*_a, **_k):
+        raise AssertionError("urlopen must not be called")
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", boom)
+
+
+def test_bearer_token_uses_access_token_fallback(monkeypatch) -> None:
+    # A token endpoint that returns `access_token` instead of `token` (ghcr.io does
+    # this) must still resolve — the `or body.get("access_token")` fallback branch,
+    # which the manifest-challenge test never reaches.
+    monkeypatch.setattr(
+        mod.urllib.request,
+        "urlopen",
+        lambda req, timeout=None: _FakeResp(  # noqa: ARG005
+            body=json.dumps({"access_token": "AT"}).encode()
+        ),
+    )
+    assert mod._bearer_token(_BEARER) == "AT"
+
+
+def test_bearer_token_rejects_non_bearer_scheme(monkeypatch) -> None:
+    # A `Basic` challenge is not a bearer flow → None, before any network call.
+    _no_network(monkeypatch)
+    assert mod._bearer_token("Basic realm=x") is None
+
+
+def test_bearer_token_without_realm_returns_none(monkeypatch) -> None:
+    # A bearer challenge missing realm= cannot be completed → None, no network call.
+    _no_network(monkeypatch)
+    assert mod._bearer_token('Bearer service="reg"') is None
+
+
+def test_bearer_token_queryless_realm_opens_bare_realm(monkeypatch) -> None:
+    # realm present but no service/scope → the request URL is the bare realm, with no
+    # trailing `?` (the else-branch of `f"{realm}?{query}" if query else realm`).
+    seen: dict[str, str] = {}
+
+    def fake(url, timeout=None):  # noqa: ARG001
+        seen["url"] = url
+        return _FakeResp(body=json.dumps({"token": "T"}).encode())
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", fake)
+    assert mod._bearer_token('Bearer realm="https://auth.example/token"') == "T"
+    assert seen["url"] == "https://auth.example/token"
+
+
+# ── property: the offline ref parsers never crash on arbitrary refs ──────────
+
+
+@given(st.text(max_size=40))
+def test_ref_parsers_never_crash(ref: str) -> None:
+    # _split_ref → _registry_and_repo is the chain resolve_digest runs on an image
+    # ref read straight from a Dockerfile (untrusted). It must always return string
+    # pairs, never raise, whatever the ref looks like.
+    name, tag = mod._split_ref(ref)
+    assert isinstance(name, str) and isinstance(tag, str)
+    registry, repo = mod._registry_and_repo(name)
+    assert isinstance(registry, str) and isinstance(repo, str)
