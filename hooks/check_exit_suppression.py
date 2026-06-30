@@ -56,30 +56,28 @@ _ALLOW = "allow-exit-suppress"
 # spanning lines is analyzed whole, not mis-split mid-capture.
 _CONTINUES = re.compile(r"(?:\\|\||&&)\s*$")
 
+# The only tokens that affect substitution nesting: an escaped char (`\x`, inert —
+# so `\`` is a literal backtick and `\$` never opens `$(`), an opening `$(` / `<(`,
+# a closing `)`, or a bare backtick. Walking these instead of indexing characters
+# keeps `_inside_substitution` a plain fold with no manual offset bookkeeping.
+_SUBST_TOKEN = re.compile(r"\\.|\$\(|<\(|`|\)")
+
 
 def _inside_substitution(prefix: str) -> bool:
     """True if PREFIX has an unclosed ``$(`` / ``<(`` / backtick — i.e. a ``|| true``
-    after it is a value capture, or the line is still mid-substitution and continues.
-
-    A backslash escapes the next character, so ``\\``` is a literal backtick (not a
-    parity toggle) and ``\\$`` is not the start of ``$(``."""
+    after it is a value capture, or the line is still mid-substitution and continues."""
     depth = 0
     backtick = False
-    i = 0
-    while i < len(prefix):
-        ch = prefix[i]
-        if ch == "\\":
-            i += 2  # skip the escaped character
-            continue
-        if prefix[i : i + 2] in ("$(", "<("):
+    for token in _SUBST_TOKEN.finditer(prefix):
+        tok = token.group()
+        if tok[0] == "\\":
+            continue  # escaped character — inert
+        if tok in ("$(", "<("):
             depth += 1
-            i += 2
-            continue
-        if ch == ")" and depth:
+        elif tok == ")" and depth:
             depth -= 1
-        elif ch == "`":
+        elif tok == "`":
             backtick = not backtick
-        i += 1
     return depth > 0 or backtick
 
 
