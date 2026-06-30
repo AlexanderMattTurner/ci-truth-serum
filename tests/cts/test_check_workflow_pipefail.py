@@ -34,7 +34,8 @@ def test_repo_root_is_the_current_working_directory():
 
 
 def _analyze(text: str) -> list[str]:
-    return cwp.analyze(yaml.safe_load(text))
+    # analyze() returns (line, message); the detection tests assert on messages.
+    return [msg for _line, msg in cwp.analyze(yaml.safe_load(text))]
 
 
 def _write(dirpath: Path, name: str, body: str) -> Path:
@@ -261,25 +262,26 @@ def test_iter_steps_skips_non_dict_and_pure_uses_steps():
 def test_iter_steps_skips_non_dict_step_and_keeps_scanning():
     # The `continue` past a non-dict step must NOT be a `break`: a stray scalar in the
     # steps list cannot swallow a real run step that follows it.
+    # Hand-built dicts carry no `__line__`, so the step line is None.
     steps = ["not-a-dict", {"run": "a | b", "shell": "sh"}]
-    assert cwp._iter_steps(steps, {}, {}) == [("a | b", "sh", "run")]
+    assert cwp._iter_steps(steps, {}, {}) == [(None, "a | b", "sh", "run")]
 
 
 def test_iter_steps_extracts_runcmd_as_pipefail_less():
     steps = [{"with": {"runCmd": "bash x | tee y"}}]
-    assert cwp._iter_steps(steps, {}, {}) == [("bash x | tee y", "sh", "runCmd")]
+    assert cwp._iter_steps(steps, {}, {}) == [(None, "bash x | tee y", "sh", "runCmd")]
 
 
 def test_iter_steps_run_uses_step_shell_over_default():
     workflow = {"defaults": {"run": {"shell": "bash"}}}
     steps = [{"run": "a | b", "shell": "sh"}]
-    assert cwp._iter_steps(steps, workflow, {}) == [("a | b", "sh", "run")]
+    assert cwp._iter_steps(steps, workflow, {}) == [(None, "a | b", "sh", "run")]
 
 
 def test_iter_steps_run_falls_back_to_default_shell():
     workflow = {"defaults": {"run": {"shell": "sh"}}}
     steps = [{"run": "a | b"}]
-    assert cwp._iter_steps(steps, workflow, {}) == [("a | b", "sh", "run")]
+    assert cwp._iter_steps(steps, workflow, {}) == [(None, "a | b", "sh", "run")]
 
 
 # ── analyze ──────────────────────────────────────────────────────────────
@@ -321,7 +323,7 @@ def test_analyze_non_dict_job_does_not_abort_remaining_jobs():
             "j2": {"steps": [{"run": "cat x | tee y", "shell": "sh"}]},
         }
     }
-    out = cwp.analyze(doc)
+    out = [msg for _line, msg in cwp.analyze(doc)]
     assert len(out) == 1 and "job j2 (run)" in out[0]
 
 
@@ -344,7 +346,9 @@ def test_check_file_reads_and_reports(tmp_path, monkeypatch):
     )
     out = cwp.check_file(path)
     assert len(out) == 1
-    assert out[0].startswith(".github/workflows/bad.yaml: ")
+    line, message = out[0]
+    assert line == 4  # the `- run: cat x | tee y` step line
+    assert "job j (run)" in message
 
 
 def test_check_file_tolerates_invalid_yaml(tmp_path):
@@ -397,7 +401,8 @@ def test_main_reports_and_fails_on_violation(tmp_path, monkeypatch, capsys):
     )
     assert cwp.main() == 1
     out = capsys.readouterr().out
-    assert "::error::.github/workflows/bad.yaml:" in out
+    # The annotation is now navigable: file= and line= attributes are present.
+    assert "::error file=.github/workflows/bad.yaml,line=4::" in out
     assert "1 pipefail violation(s) found" in out
 
 

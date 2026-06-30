@@ -64,7 +64,7 @@ def test_analyze_flags_job_and_composite_steps():
         "jobs": {"build": {"steps": [{"run": over}, {"run": "echo ok"}]}},
         "runs": {"steps": [{"run": over}]},
     }
-    msgs = cl.analyze(doc)
+    msgs = [m for _line, m in cl.analyze(doc)]
     assert len(msgs) == 2
     assert any("job build" in m for m in msgs)
     assert any("composite action" in m for m in msgs)
@@ -89,15 +89,18 @@ def test_analyze_skips_non_dict_job_and_stepless_job():
 # ── check_file ────────────────────────────────────────────────────────────────
 
 
-def test_check_file_reports_relative_path(tmp_path: Path, monkeypatch):
+def test_check_file_reports_line_and_message(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(cl, "REPO_ROOT", tmp_path)
     wf = tmp_path / "wf.yaml"
     wf.write_text(
         "jobs:\n  build:\n    steps:\n      - run: |\n"
         + "".join(f"          echo line{i}\n" for i in range(cl.MAX_LINES + 1))
     )
-    msgs = cl.check_file(wf)
-    assert len(msgs) == 1 and msgs[0].startswith("wf.yaml: ")
+    out = cl.check_file(wf)
+    assert len(out) == 1
+    line, message = out[0]
+    assert line == 4  # the `- run: |` step line
+    assert "job build (run step 0)" in message
 
 
 def test_check_file_tolerates_malformed_yaml(tmp_path: Path):
@@ -125,7 +128,9 @@ def test_main_reports_and_fails_on_violation(tmp_path: Path, monkeypatch, capsys
     monkeypatch.setattr(cl, "workflow_files", lambda: [wf])
     assert cl.main() == 1
     out = capsys.readouterr().out
-    assert "::error::" in out and "oversized inline run: block(s)" in out
+    # The annotation is now navigable: it carries file= and line= attributes.
+    assert "::error file=wf.yaml,line=4::" in out
+    assert "oversized inline run: block(s)" in out
 
 
 # ── repo-wide: the shipped workflows must pass ────────────────────────────────

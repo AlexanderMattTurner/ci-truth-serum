@@ -36,6 +36,23 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
+
+class _LineLoader(yaml.SafeLoader):
+    """SafeLoader that tags every mapping with `__line__` (the 1-based source line
+    of its first key) so a flagged step can be reported with a navigable
+    file/line annotation instead of a bare, unclickable `::error::`."""
+
+
+def _mapping_with_line(loader: _LineLoader, node: yaml.MappingNode) -> dict:
+    mapping = loader.construct_mapping(node, deep=True)
+    mapping["__line__"] = node.start_mark.line + 1
+    return mapping
+
+
+_LineLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_with_line
+)
+
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
 REPO_ROOT = Path.cwd()
@@ -165,52 +182,62 @@ def _check_script(script: str, shell: str | None, location: str) -> list[str]:
 
 def _iter_steps(
     steps: object, workflow: dict, job: object
-) -> list[tuple[str, str | None, str]]:
-    """Yield (script, effective_shell, kind) for every run/runCmd step in STEPS."""
-    out: list[tuple[str, str | None, str]] = []
+) -> list[tuple[int | None, str, str | None, str]]:
+    """Yield (line, script, effective_shell, kind) for every run/runCmd step in
+    STEPS. LINE is the step's 1-based source line (None if the doc was parsed
+    without line tags, e.g. a hand-built dict in a unit test)."""
+    out: list[tuple[int | None, str, str | None, str]] = []
     if not isinstance(steps, list):
         return out
     for step in steps:
         if not isinstance(step, dict):
             continue
+        line = step.get("__line__")
         with_ = step.get("with")
         if isinstance(with_, dict) and isinstance(with_.get("runCmd"), str):
             # runCmd bypasses GitHub's pipefail-enabled shell entirely.
-            out.append((with_["runCmd"], "sh", "runCmd"))
+            out.append((line, with_["runCmd"], "sh", "runCmd"))
         if isinstance(step.get("run"), str):
             shell = step.get("shell")
             if shell is None:
                 shell = _default_shell(job, workflow)
-            out.append((step["run"], shell, "run"))
+            out.append((line, step["run"], shell, "run"))
     return out
 
 
-def analyze(doc: object) -> list[str]:
-    """Every pipefail violation in a parsed workflow / composite-action document."""
+def analyze(doc: object) -> list[tuple[int | None, str]]:
+    """Every pipefail violation in a parsed workflow / composite-action document,
+    as (line, message). LINE is the offending step's source line, or None."""
     if not isinstance(doc, dict):
         return []
-    found: list[str] = []
+    found: list[tuple[int | None, str]] = []
     jobs = doc.get("jobs")
     if isinstance(jobs, dict):
         for job_id, job in jobs.items():
             if not isinstance(job, dict):
                 continue
-            for script, shell, kind in _iter_steps(job.get("steps"), doc, job):
-                found += _check_script(script, shell, f"job {job_id} ({kind})")
+            for line, script, shell, kind in _iter_steps(job.get("steps"), doc, job):
+                found += [
+                    (line, msg)
+                    for msg in _check_script(script, shell, f"job {job_id} ({kind})")
+                ]
     runs = doc.get("runs")
     if isinstance(runs, dict):
-        for script, shell, kind in _iter_steps(runs.get("steps"), doc, runs):
-            found += _check_script(script, shell, f"composite action ({kind})")
+        for line, script, shell, kind in _iter_steps(runs.get("steps"), doc, runs):
+            found += [
+                (line, msg)
+                for msg in _check_script(script, shell, f"composite action ({kind})")
+            ]
     return found
 
 
-def check_file(path: Path) -> list[str]:
+def check_file(path: Path) -> list[tuple[int | None, str]]:
+    """(line, message) for every violation in PATH; [] on unparseable YAML."""
     try:
-        doc = yaml.safe_load(path.read_text())
+        doc = yaml.load(path.read_text(), Loader=_LineLoader)
     except yaml.YAMLError:
         return []
-    rel = path.relative_to(REPO_ROOT)
-    return [f"{rel}: {msg}" for msg in analyze(doc)]
+    return analyze(doc)
 
 
 def workflow_files() -> list[Path]:
@@ -220,8 +247,10 @@ def workflow_files() -> list[Path]:
 def main() -> int:
     total = 0
     for path in workflow_files():
-        for message in check_file(path):
-            print(f"::error::{message}")
+        rel = path.relative_to(REPO_ROOT)
+        for line, message in check_file(path):
+            loc = f"file={rel},line={line}" if line else f"file={rel}"
+            print(f"::error {loc}::{message}")
             total += 1
     if total:
         print(f"\nERROR: {total} pipefail violation(s) found.")

@@ -27,6 +27,23 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
+
+class _LineLoader(yaml.SafeLoader):
+    """SafeLoader that tags every mapping with `__line__` (the 1-based source line
+    of its first key) so a flagged step can be reported with a navigable
+    file/line annotation instead of a bare, unclickable `::error::`."""
+
+
+def _mapping_with_line(loader: _LineLoader, node: yaml.MappingNode) -> dict:
+    mapping = loader.construct_mapping(node, deep=True)
+    mapping["__line__"] = node.start_mark.line + 1
+    return mapping
+
+
+_LineLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_with_line
+)
+
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
@@ -62,41 +79,51 @@ def _check_script(script: str, location: str) -> list[str]:
     ]
 
 
-def _iter_run_steps(steps: object) -> list[str]:
-    """Every `run:` script in STEPS (a list of step mappings)."""
+def _iter_run_steps(steps: object) -> list[tuple[int | None, str]]:
+    """Every (line, `run:` script) in STEPS. LINE is the step's 1-based source
+    line (None when the doc was parsed without line tags, e.g. a unit-test dict)."""
     if not isinstance(steps, list):
         return []
     return [
-        s["run"] for s in steps if isinstance(s, dict) and isinstance(s.get("run"), str)
+        (s.get("__line__"), s["run"])
+        for s in steps
+        if isinstance(s, dict) and isinstance(s.get("run"), str)
     ]
 
 
-def analyze(doc: object) -> list[str]:
-    """Every oversized-inline-run violation in a parsed workflow / composite action."""
+def analyze(doc: object) -> list[tuple[int | None, str]]:
+    """Every oversized-inline-run violation as (line, message). LINE is the
+    offending step's source line, or None."""
     if not isinstance(doc, dict):
         return []
-    found: list[str] = []
+    found: list[tuple[int | None, str]] = []
     jobs = doc.get("jobs")
     if isinstance(jobs, dict):
         for job_id, job in jobs.items():
             if not isinstance(job, dict):
                 continue
-            for i, script in enumerate(_iter_run_steps(job.get("steps"))):
-                found += _check_script(script, f"job {job_id} (run step {i})")
+            for i, (line, script) in enumerate(_iter_run_steps(job.get("steps"))):
+                found += [
+                    (line, msg)
+                    for msg in _check_script(script, f"job {job_id} (run step {i})")
+                ]
     runs = doc.get("runs")
     if isinstance(runs, dict):
-        for i, script in enumerate(_iter_run_steps(runs.get("steps"))):
-            found += _check_script(script, f"composite action (run step {i})")
+        for i, (line, script) in enumerate(_iter_run_steps(runs.get("steps"))):
+            found += [
+                (line, msg)
+                for msg in _check_script(script, f"composite action (run step {i})")
+            ]
     return found
 
 
-def check_file(path: Path) -> list[str]:
+def check_file(path: Path) -> list[tuple[int | None, str]]:
+    """(line, message) for every violation in PATH; [] on unparseable YAML."""
     try:
-        doc = yaml.safe_load(path.read_text())
+        doc = yaml.load(path.read_text(), Loader=_LineLoader)
     except yaml.YAMLError:
         return []
-    rel = path.relative_to(REPO_ROOT)
-    return [f"{rel}: {msg}" for msg in analyze(doc)]
+    return analyze(doc)
 
 
 def workflow_files() -> list[Path]:
@@ -106,8 +133,10 @@ def workflow_files() -> list[Path]:
 def main() -> int:
     total = 0
     for path in workflow_files():
-        for message in check_file(path):
-            print(f"::error::{message}")
+        rel = path.relative_to(REPO_ROOT)
+        for line, message in check_file(path):
+            loc = f"file={rel},line={line}" if line else f"file={rel}"
+            print(f"::error {loc}::{message}")
             total += 1
     if total:
         print(f"\nERROR: {total} oversized inline run: block(s) found.")
