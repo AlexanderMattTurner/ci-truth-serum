@@ -4,13 +4,16 @@
 A ``curl``/``wget`` that saves a file to disk and is then run, installed, or
 extracted is a supply-chain entry point: without verifying the bytes against a
 pinned digest, a compromised mirror or a tampered release silently swaps what
-you execute. This check fires on any ``curl``/``wget`` invocation that writes an
-artifact (``-o FILE`` / ``-O`` / ``--output`` / ``--remote-name``) unless a
+you execute. The same is true of a Dockerfile ``ADD <url> <dest>``, which writes
+the remote bytes straight into the image. This check fires on any ``curl``/``wget``
+invocation that writes an artifact (``-o FILE`` / ``-O`` / ``--output`` /
+``--remote-name``), and on any ``ADD`` from an ``http(s)://`` URL, unless a
 verification token appears close after it:
 
   * ``sha256sum`` / ``sha512sum`` / ``shasum`` / ``md5sum`` (a ``… -c`` check)
   * ``cosign verify`` or ``gpg --verify`` (signature check)
   * ``_sha256_verify`` (a common verify-helper naming)
+  * ``ADD --checksum=sha256:<digest>`` (Docker's own built-in pin)
 
 Downloads to ``/dev/null``/``/dev/stdout``/``-`` (reachability probes, piped
 API reads) are not artifacts and are ignored, as are commands inside message
@@ -34,6 +37,13 @@ _WINDOW = 25
 
 _DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")
 
+# A Dockerfile `ADD <url> <dest>` that fetches a remote artifact (optionally with
+# build flags like `--chown=`/`--chmod=`). This is the idiomatic Dockerfile
+# download and writes the bytes straight into the image, so it owes a verification
+# exactly like curl/wget. Docker's own `--checksum=sha256:<digest>` IS that
+# verification (matched by _VERIFY below), so a pinned ADD passes.
+_ADD_URL = re.compile(r"^\s*ADD\s+(?:--\S+\s+)*\S*https?://", re.IGNORECASE)
+
 # An output flag that makes the fetch write a file. `-o`/`--output` and wget's
 # `-O` take a target (captured so a /dev/null/stdout/- sink can be excused);
 # curl's `-O` and `--remote-name` derive the name from the URL and take none. The
@@ -50,6 +60,7 @@ _VERIFY = re.compile(
     r"\b(?:sha256sum|sha512sum|sha384sum|sha1sum|shasum|md5sum|_sha256_verify)\b"
     r"|\bcosign\s+verify\b"
     r"|\bgpg\b[^\n]*--verify\b"
+    r"|--checksum=sha256:"  # Docker `ADD --checksum=sha256:<digest> <url>`
 )
 
 
@@ -65,6 +76,12 @@ def _is_artifact_download(line: str) -> bool:
     return m.group("target") not in _NULL_TARGETS
 
 
+def _is_download(line: str) -> bool:
+    """True if LINE fetches a remote artifact to disk — a curl/wget save or a
+    Dockerfile `ADD <url>` — so it must carry a nearby verification."""
+    return _is_artifact_download(line) or bool(_ADD_URL.search(line))
+
+
 def violations(text: str) -> list[int]:
     """1-based line numbers of artifact downloads with no nearby verification."""
     lines = text.splitlines()
@@ -73,7 +90,7 @@ def violations(text: str) -> list[int]:
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
             continue
-        if not _is_artifact_download(line):
+        if not _is_download(line):
             continue
         if "pin-exempt" in line or (i > 0 and "pin-exempt" in lines[i - 1]):
             continue
@@ -86,7 +103,7 @@ def _verified_within_window(lines: list[str], start: int) -> bool:
     """Scan [start, start+_WINDOW] for a verification token, stopping at the next
     download so each fetch must carry its own check."""
     for j in range(start, min(len(lines), start + _WINDOW + 1)):
-        if j > start and _is_artifact_download(lines[j]):
+        if j > start and _is_download(lines[j]):
             return False
         if _VERIFY.search(lines[j]):
             return True
