@@ -172,6 +172,45 @@ def test_comment_line_does_not_halt_the_scan() -> None:
     assert _flags(text) == [2]
 
 
+def test_add_from_url_unverified_flags() -> None:
+    # A Dockerfile `ADD <url> <dest>` writes remote bytes into the image and owes a
+    # verification exactly like curl/wget, including with build flags like --chmod.
+    assert _flags("ADD https://example.com/tool.tar /opt/tool.tar\n") == [1]
+    assert _flags("ADD --chmod=755 https://example.com/x /usr/local/bin/x\n") == [1]
+
+
+def test_add_with_checksum_is_pinned() -> None:
+    # Docker's own `ADD --checksum=sha256:<digest>` IS the verification, matched by
+    # _VERIFY on the ADD line itself (the window scan starts at j == start).
+    digest = "sha256:" + "a" * 64
+    assert _flags(f"ADD --checksum={digest} https://example.com/x /opt/x\n") == []
+
+
+def test_add_followed_by_sha256sum_passes() -> None:
+    # A separate checksum within the window verifies the ADD, same as for curl/wget.
+    text = "ADD https://example.com/x.tar /tmp/x.tar\nRUN sha256sum -c x.tar.sha256\n"
+    assert _flags(text) == []
+
+
+def test_add_local_source_is_not_a_download() -> None:
+    # `ADD` of a local path (build context) fetches nothing — only http(s) URLs do.
+    assert _flags("ADD app.tar /opt/\nADD ./src /src\n") == []
+
+
+def test_add_respects_pin_exempt() -> None:
+    assert (
+        _flags("ADD https://example.com/x /opt/x  # pin-exempt: vendored mirror\n")
+        == []
+    )
+
+
+def test_add_and_curl_each_need_their_own_check() -> None:
+    # An ADD and a curl are independent downloads: a checksum for one does not cover
+    # the other. The verified curl passes; the trailing unverified ADD is flagged.
+    text = 'curl "$u" -o a\nsha256sum -c a.sum\nADD https://x/y /y\n'
+    assert _flags(text) == [3]
+
+
 def test_main_wires_violations_and_message(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
