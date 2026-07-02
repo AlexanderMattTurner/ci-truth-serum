@@ -56,16 +56,27 @@ repos:
 
   - repo: local
     hooks:
-      # Dogfood our own Tier 2 lint: every always() reporter on a PR-triggered
-      # workflow must declare whether it is a required status check.
-      - id: check-required-reporter
-        name: classify always() reporters (required-check true|false)
-        entry: python -m hooks.check_required_reporter
+      # Dogfood every tier through the same aggregates consumers enable, so a
+      # check added to a tier immediately lints this repo too.
+      - id: check-tier1
+        name: "dogfood aggregate: every Tier 1 (honesty + identity) check"
+        entry: python -m hooks.run_tier 1
         language: python
-        additional_dependencies: [PyYAML]
-        pass_filenames: false
-        files: ^\.github/(workflows|actions)/
-        types: [yaml]
+        additional_dependencies: [PyYAML, identify]
+      - id: check-tier2
+        name: "dogfood aggregate: every Tier 2 (opinionated) check"
+        entry: python -m hooks.run_tier 2
+        language: python
+        additional_dependencies: [PyYAML, identify]
+      - id: check-extras
+        name: "dogfood aggregate: every Extras Python check"
+        entry: python -m hooks.run_tier extras
+        # check_global_stdio_swap is skipped, per its own docstring's scoping
+        # advice: nothing here runs concurrently, and the checker's source plus
+        # its test fixtures necessarily quote the banned idiom.
+        args: [--skip, check_global_stdio_swap]
+        language: python
+        additional_dependencies: [PyYAML, identify]
 
       - id: zizmor
         name: zizmor (GitHub Actions security audit)
