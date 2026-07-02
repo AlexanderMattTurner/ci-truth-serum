@@ -138,7 +138,7 @@ def _bearer_token(challenge: str) -> str | None:
     # Assumes quoted param values, which Docker Hub / ghcr.io / quay all emit; an
     # exotic registry using bare-token (unquoted) params would drop service/scope
     # and surface as a DigestResolutionError (image left flagged, never mispinned).
-    params = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+    params = dict(re.findall(r'(?P<key>\w+)="(?P<value>[^"]*)"', challenge))
     realm = params.get("realm")
     if not realm:
         return None
