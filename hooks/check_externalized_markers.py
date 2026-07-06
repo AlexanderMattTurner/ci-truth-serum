@@ -75,7 +75,7 @@ DEFAULT_MARKERS = (
 # A reference to a repo-local shell script under .github/scripts, however it is
 # invoked (`bash …`, `sh …`, `. …`, `./…`, or embedded in a longer path). The
 # path token is captured wherever it appears in the run body.
-_SCRIPT_REF = re.compile(r"(?:\./)?(\.github/scripts/[\w./-]+?\.(?:sh|bash))\b")
+_SCRIPT_REF = re.compile(r"(?:\./)?(?P<path>\.github/scripts/[\w./-]+?\.(?:sh|bash))\b")
 
 
 def _marker_regex(marker: str) -> re.Pattern[str]:
@@ -94,7 +94,7 @@ def referenced_scripts(text: str) -> list[str]:
     first-seen order (leading `./` normalized away)."""
     seen: dict[str, None] = {}
     for match in _SCRIPT_REF.finditer(text):
-        seen.setdefault(match.group(1), None)
+        seen.setdefault(match.group("path"), None)
     return list(seen)
 
 
