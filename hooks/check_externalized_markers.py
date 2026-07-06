@@ -13,51 +13,46 @@ out of the inline `run:` body into `.github/scripts/<name>.sh` (invoked as
 `run: bash .github/scripts/<name>.sh`) or into a local composite action
 (`uses: ./.github/actions/<name>`), the marker no longer appears in the `run:`
 text — so an inline-only guard stops seeing that job and passes VACUOUSLY. This is
-especially dangerous in repos with a policy of externalizing inline shell (the
-safe refactor is the thing that blinds the guard).
+especially dangerous in repos with a policy of externalizing inline shell (this
+pack's own `check-inline-run-length` pushes exactly that refactor): the safe move
+is the thing that blinds the guard.
 
 This lint is the positive form of that check: for a policy marker set (default:
 the git history-rewrite commands), it scans BOTH the inline `run:` text of each
 job AND every referenced `.github/scripts/*.sh` script and `./.github/actions/*`
 composite. It flags any job where the two scans DISAGREE — i.e. a marker lives
 only in externalized code. That delta is exactly the blind spot: proof that an
-inline-only guard would miss this job. Fix the guard to resolve the indirection
-(or keep the check inline).
+inline-only guard would miss this job. Fix the guard to resolve the indirection,
+keep the marker inline, or annotate the invoking step (or the referenced script)
+with `# allow-externalized-marker: <reason>` to opt out.
 
+Scope: indirection is followed ONE hop past a composite — a marker inside a
+composite that itself `uses:` a further nested composite is not resolved (a
+deliberate limit; the common shape is job → script or job → composite → script).
 Add markers with `--marker '<cmd>'` (repeatable; each is matched
-whitespace-insensitively). Globs every workflow + composite action like the other
+whitespace-insensitively but bounded so `--force` does not match inside
+`--force-with-lease`). Globs every workflow + composite action like the other
 workflow lints; the passed file list is ignored.
 """
 
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
-
-
-class _LineLoader(yaml.SafeLoader):
-    """SafeLoader that tags every mapping with `__line__` (the 1-based source line
-    of its first key) so a flagged step can be reported with a navigable
-    file/line annotation instead of a bare, unclickable `::error::`."""
-
-
-def _mapping_with_line(loader: _LineLoader, node: yaml.MappingNode) -> dict:
-    mapping = loader.construct_mapping(node, deep=True)
-    mapping["__line__"] = node.start_mark.line + 1
-    return mapping
-
-
-_LineLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_with_line
-)
 
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
+
+# Opt out of a legitimately-externalized marker with this comment on the invoking
+# `run:` step or inside the referenced script.
+OPT_OUT = "allow-externalized-marker"
 
 # The default policy marker set: git commands that rewrite history. A job running
 # any of these must check out with `fetch-depth: 0`; a guard enforcing that by
@@ -77,11 +72,17 @@ DEFAULT_MARKERS = (
 # path token is captured wherever it appears in the run body.
 _SCRIPT_REF = re.compile(r"(?:\./)?(?P<path>\.github/scripts/[\w./-]+?\.(?:sh|bash))\b")
 
+# A reader over repo-relative paths — returns file text, or "" when unreadable.
+Reader = Callable[[str], str]
+
 
 def _marker_regex(marker: str) -> re.Pattern[str]:
-    """Compile a marker string into a whitespace-insensitive matcher, so
-    `git   commit  --amend` in a script matches `git commit --amend`."""
-    return re.compile(r"\s+".join(re.escape(tok) for tok in marker.split()))
+    """Compile a marker string into a whitespace-insensitive matcher bounded so it
+    matches a whole command token: `git   commit  --amend` matches
+    `git commit --amend`, but `git push --force` does NOT match inside
+    `git push --force-with-lease` (the trailing `-` breaks the boundary)."""
+    body = r"\s+".join(re.escape(tok) for tok in marker.split())
+    return re.compile(rf"(?<![\w-]){body}(?![\w-])")
 
 
 def markers_present(text: str, markers: list[tuple[str, re.Pattern[str]]]) -> set[str]:
@@ -108,40 +109,31 @@ def _composite_dir(uses: object) -> str | None:
     return text[2:].rstrip("/")
 
 
-def _read_action(dir_rel: str, reader) -> tuple[str, str] | None:
-    """Resolve a local composite action's definition to (label, scanned text).
-
-    Returns the raw action.yml/action.yaml text (its inline `run:` bodies live
-    there verbatim) concatenated with every script that action references — one
-    hop of indirection past the composite. None if no definition is readable.
-    """
+def _read_action(dir_rel: str, reader: Reader) -> list[tuple[str, str]]:
+    """A local composite action resolved to (label, text) sources: its
+    action.yml/action.yaml (whose inline `run:` bodies live there verbatim) plus
+    every script that action references — one hop past the composite. Empty when
+    no definition is readable. Each source is kept separate so a marker can never
+    be matched across a source boundary."""
     for name in ("action.yml", "action.yaml"):
         rel = f"{dir_rel}/{name}"
         content = reader(rel)
         if not content:
             continue
-        extra = "\n".join(reader(s) for s in referenced_scripts(content))
-        return rel, f"{content}\n{extra}"
-    return None
+        return [(rel, content)] + [(s, reader(s)) for s in referenced_scripts(content)]
+    return []
 
 
-def _step_external(run: str, uses: object, reader) -> tuple[list[str], str]:
-    """The (source labels, concatenated text) reachable from one step by resolving
-    `bash .github/scripts/*.sh` and `uses: ./.github/actions/*` indirection.
-    Inline `run:` text is NOT included — this is exactly what an inline-only guard
-    would fail to see."""
-    labels: list[str] = []
-    texts: list[str] = []
-    for rel in referenced_scripts(run):
-        labels.append(rel)
-        texts.append(reader(rel))
+def _step_external(run: str, uses: object, reader: Reader) -> list[tuple[str, str]]:
+    """The (label, text) sources reachable from one step by resolving
+    `bash .github/scripts/*.sh` and `uses: ./.github/actions/*` indirection —
+    exactly what an inline-only guard would fail to see. Inline `run:` text is NOT
+    included."""
+    sources = [(rel, reader(rel)) for rel in referenced_scripts(run)]
     composite = _composite_dir(uses)
     if composite is not None:
-        resolved = _read_action(composite, reader)
-        if resolved is not None:
-            labels.append(resolved[0])
-            texts.append(resolved[1])
-    return labels, "\n".join(texts)
+        sources += _read_action(composite, reader)
+    return sources
 
 
 def _iter_steps(steps: object) -> list[tuple[int | None, str, object]]:
@@ -163,7 +155,7 @@ def _analyze_unit(
     line: int | None,
     steps: object,
     markers: list[tuple[str, re.Pattern[str]]],
-    reader,
+    reader: Reader,
 ) -> list[tuple[int | None, str]]:
     """Flag a job / composite (a UNIT of steps) for every policy marker that lives
     only in externalized code the unit invokes, never in its inline `run:` text."""
@@ -173,19 +165,27 @@ def _analyze_unit(
     )
     found: list[tuple[int | None, str]] = []
     for step_line, run, uses in parsed:
-        labels, external = _step_external(run, uses, reader)
-        blind = markers_present(external, markers) - inline_markers
+        sources = _step_external(run, uses, reader)
+        if OPT_OUT in run or any(OPT_OUT in text for _label, text in sources):
+            continue
+        blind: set[str] = set()
+        blind_labels: list[str] = []
+        for label, text in sources:
+            hit = markers_present(text, markers) - inline_markers
+            if hit:
+                blind |= hit
+                blind_labels.append(label)
         if not blind:
             continue
         found.append(
             (
                 step_line if step_line is not None else line,
-                f"{unit_id}: policy marker(s) {sorted(blind)} live only in "
-                f"externalized code ({', '.join(labels)}) — no inline run: in "
-                "this job contains them. A CI guard that scans only inline run: "
-                "text is BLIND here and passes vacuously. Make the guard resolve "
-                "`bash .github/scripts/*.sh` and `uses: ./.github/actions/*` "
-                "indirection, or keep the marker inline.",
+                f"{unit_id}: policy marker(s) {sorted(blind)} appear only in "
+                f"externalized code ({', '.join(blind_labels)}), not in any inline "
+                "run: — an inline-only workflow guard is BLIND to this job and "
+                "passes vacuously. Resolve script/composite indirection in the "
+                f"guard, keep the marker inline, or annotate with `# {OPT_OUT}: "
+                "<reason>`.",
             )
         )
     return found
@@ -193,7 +193,7 @@ def _analyze_unit(
 
 def analyze(
     doc: object,
-    reader,
+    reader: Reader,
     markers: list[tuple[str, re.Pattern[str]]],
 ) -> list[tuple[int | None, str]]:
     """Every blind-spot violation as (line, message). READER(rel_path) returns the
@@ -234,7 +234,7 @@ def check_file(
         markers = [(m, _marker_regex(m)) for m in DEFAULT_MARKERS]
     try:
         doc = yaml.load(path.read_text(), Loader=_LineLoader)
-    except (yaml.YAMLError, OSError, UnicodeDecodeError):
+    except yaml.YAMLError:
         return []
     return analyze(doc, _repo_reader, markers)
 

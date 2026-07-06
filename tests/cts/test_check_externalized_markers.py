@@ -37,6 +37,17 @@ def test_markers_present_empty_when_none_match():
     assert em.markers_present("echo hello", MARKERS) == set()
 
 
+def test_marker_boundary_distinguishes_force_variants():
+    """`git push --force` must not match inside `git push --force-with-lease`, so
+    the two markers stay distinct rather than both firing on one command."""
+    assert em.markers_present("git push --force-with-lease", MARKERS) == {
+        "git push --force-with-lease"
+    }
+    assert em.markers_present("git push --force origin", MARKERS) == {
+        "git push --force"
+    }
+
+
 # ── referenced_scripts ────────────────────────────────────────────────────────
 
 
@@ -111,6 +122,71 @@ def test_marker_present_inline_is_not_flagged():
         }
     }
     reader = _reader({".github/scripts/x.sh": "git rebase -i"})
+    assert em.analyze(doc, reader, MARKERS) == []
+
+
+def test_partial_delta_flags_only_the_externalized_marker():
+    """One marker inline, a DIFFERENT marker external: only the external one is a
+    blind spot (the inline one a guard already sees). Exercises the set-difference
+    `external - inline` at the heart of the check."""
+    doc = {
+        "jobs": {
+            "j": {
+                "steps": [
+                    {"run": "git rebase --continue"},
+                    {"run": "bash .github/scripts/x.sh"},
+                ]
+            }
+        }
+    }
+    reader = _reader({".github/scripts/x.sh": "git filter-branch --all"})
+    out = em.analyze(doc, reader, MARKERS)
+    assert len(out) == 1
+    assert "git filter-branch" in out[0][1]
+    assert "git rebase" not in out[0][1]
+
+
+def test_opt_out_on_run_step_suppresses_finding():
+    doc = {
+        "jobs": {
+            "j": {
+                "steps": [
+                    {
+                        "run": "bash .github/scripts/x.sh  # allow-externalized-marker: reviewed"
+                    }
+                ]
+            }
+        }
+    }
+    reader = _reader({".github/scripts/x.sh": "git rebase -i"})
+    assert em.analyze(doc, reader, MARKERS) == []
+
+
+def test_opt_out_inside_referenced_script_suppresses_finding():
+    doc = {"jobs": {"j": {"steps": [{"run": "bash .github/scripts/x.sh"}]}}}
+    reader = _reader(
+        {
+            ".github/scripts/x.sh": "# allow-externalized-marker: intentional\ngit rebase -i"
+        }
+    )
+    assert em.analyze(doc, reader, MARKERS) == []
+
+
+def test_nested_composite_is_not_followed_one_hop_only():
+    """Documented limit: a marker inside a composite that itself `uses:` a further
+    nested composite is NOT resolved. Asserts the current (miss) behavior so a
+    future change to two-hop resolution is deliberate, not accidental."""
+    doc = {"jobs": {"j": {"steps": [{"uses": "./.github/actions/outer"}]}}}
+    reader = _reader(
+        {
+            ".github/actions/outer/action.yml": (
+                "runs:\n  steps:\n    - uses: ./.github/actions/inner\n"
+            ),
+            ".github/actions/inner/action.yml": (
+                "runs:\n  steps:\n    - run: git rebase -i\n"
+            ),
+        }
+    )
     assert em.analyze(doc, reader, MARKERS) == []
 
 

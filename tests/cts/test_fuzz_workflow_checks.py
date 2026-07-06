@@ -60,6 +60,11 @@ _WORKFLOW_FRAGMENTS = [
         "        with:\n          claude_args: --model x\n"
     ),
     "jobs:\n  claude:\n    steps:\n      - uses: anthropics/claude-code-action@v1\n",
+    # Externalized-marker paths: a script invocation and a local composite ref.
+    # The referenced files don't exist under the fuzz root, so resolution reads
+    # empty text and the job stays clean — exercising the traversal, not a finding.
+    "jobs:\n  fix:\n    steps:\n      - run: bash .github/scripts/autofix.sh\n",
+    "jobs:\n  fix:\n    steps:\n      - uses: ./.github/actions/fixup\n",
     "jobs: null\n",
     "[]\n",
     "just a scalar\n",
