@@ -22,6 +22,9 @@ concurrency = load_hook("check_concurrency.py", "fuzz_concurrency")
 static_concurrency = load_hook("check_static_concurrency.py", "fuzz_static_concurrency")
 pr_paths = load_hook("check_pr_paths.py", "fuzz_pr_paths")
 claude_model = load_hook("check_claude_model.py", "fuzz_claude_model")
+externalized_markers = load_hook(
+    "check_externalized_markers.py", "fuzz_externalized_markers"
+)
 
 # Each returns a finding shape; the contract under fuzz is only "no crash, and a
 # well-typed result". `expects_list` distinguishes the list-returning checks from
@@ -33,6 +36,7 @@ WORKFLOW_CHECKS = [
     ("check_static_concurrency", static_concurrency.check_file, False),
     ("check_pr_paths", pr_paths.check_file, False),
     ("check_claude_model", claude_model.check_file, True),
+    ("check_externalized_markers", externalized_markers.check_file, True),
 ]
 
 
@@ -56,6 +60,11 @@ _WORKFLOW_FRAGMENTS = [
         "        with:\n          claude_args: --model x\n"
     ),
     "jobs:\n  claude:\n    steps:\n      - uses: anthropics/claude-code-action@v1\n",
+    # Externalized-marker paths: a script invocation and a local composite ref.
+    # The referenced files don't exist under the fuzz root, so resolution reads
+    # empty text and the job stays clean — exercising the traversal, not a finding.
+    "jobs:\n  fix:\n    steps:\n      - run: bash .github/scripts/autofix.sh\n",
+    "jobs:\n  fix:\n    steps:\n      - uses: ./.github/actions/fixup\n",
     "jobs: null\n",
     "[]\n",
     "just a scalar\n",

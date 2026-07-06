@@ -32,6 +32,25 @@ import yaml
 # checks; check_exit_suppression extends it (it also excuses status helpers).
 MESSAGE_PREFIX = re.compile(r"^(?:echo|printf|warn|status|die|log|:)\b")
 
+
+class LineLoader(yaml.SafeLoader):
+    """SafeLoader that tags every mapping with `__line__` (the 1-based source line
+    of its first key) so a flagged step can be reported with a navigable
+    file/line annotation instead of a bare, unclickable `::error::`. Shared by the
+    workflow lints that want line-anchored findings (check_inline_run_length,
+    check_externalized_markers)."""
+
+
+def _mapping_with_line(loader: LineLoader, node: yaml.MappingNode) -> dict:
+    mapping = loader.construct_mapping(node, deep=True)
+    mapping["__line__"] = node.start_mark.line + 1
+    return mapping
+
+
+LineLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_with_line
+)
+
 # The two extensions a GitHub workflow file may carry. One SSOT so the reporter
 # lint's discovery (`workflow_files`) and the apply step's (`desired_contexts`)
 # can never diverge on which files they read.
