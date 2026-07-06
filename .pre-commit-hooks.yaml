@@ -116,6 +116,16 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-externalized-markers
+  name: "opinionated: flag policy markers reachable only through script/composite indirection"
+  description: A history-rewrite (etc.) command in .github/scripts/*.sh is invisible to an inline-run guard, which then passes vacuously.
+  entry: python -m hooks.check_externalized_markers
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
 - id: check-symlinks

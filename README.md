@@ -30,12 +30,13 @@ lints that catch two kinds of lie a green check can hide:
 
 ### Opinionated (Tier 2, opt-in)
 
-| Hook                      | Failure it prevents                                                                                                                                                                                                   |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `check-always-reporter`   | A gated workflow stranded a required check at “Expected—Waiting” when the decide gate skipped every work job. Assumes a **decide-job + `always()` reporter** pattern.                                                 |
-| `check-required-reporter` | A new `always()` reporter shipped as a green-but-never-required check because nothing tied a workflow’s reporters to the branch-protection required-set. Assumes the required-set is mirrored from these annotations. |
-| `check-inline-run-length` | A long inline `run:` block shipped unchecked (unquoted expansions, missing `pipefail`) because shellcheck/shfmt/shellharden only see standalone `.sh` files.                                                          |
-| `check-concurrency`       | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.                                                          |
+| Hook                         | Failure it prevents                                                                                                                                                                                                                                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `check-always-reporter`      | A gated workflow stranded a required check at “Expected—Waiting” when the decide gate skipped every work job. Assumes a **decide-job + `always()` reporter** pattern.                                                                                                                                                    |
+| `check-required-reporter`    | A new `always()` reporter shipped as a green-but-never-required check because nothing tied a workflow’s reporters to the branch-protection required-set. Assumes the required-set is mirrored from these annotations.                                                                                                    |
+| `check-inline-run-length`    | A long inline `run:` block shipped unchecked (unquoted expansions, missing `pipefail`) because shellcheck/shfmt/shellharden only see standalone `.sh` files.                                                                                                                                                             |
+| `check-concurrency`          | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.                                                                                                                                                             |
+| `check-externalized-markers` | A workflow guard that scans inline `run:` for a policy marker (e.g. a history-rewrite command that demands `fetch-depth: 0`) went blind and passed vacuously the moment that command moved into `.github/scripts/*.sh` or a composite action. Flags any job where the marker is reachable only through that indirection. |
 
 ### Unrelated bonus checks (Extras)
 
@@ -79,6 +80,7 @@ repos:
       # - id: check-required-reporter    # classify each always() reporter required-check: true|false
       # - id: check-inline-run-length
       # - id: check-concurrency
+      # - id: check-externalized-markers  # marker reachable only via script/composite indirection
       # ── Extras · Unrelated bonus checks (opt-in) ──
       # - id: check-symlinks
       # - id: check-unnamed-regex-groups

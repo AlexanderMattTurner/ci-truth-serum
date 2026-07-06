@@ -53,6 +53,7 @@ FUZZ_REQUIRED = {
     "check_required_reporter": "check_file",
     "check_concurrency": "check_file",
     "check_static_concurrency": "check_file",
+    "check_externalized_markers": "check_file",
     "check_pr_paths": "check_file",
     "check_claude_model": "check_file",
     "check_unnamed_regex_groups": "check_file",
