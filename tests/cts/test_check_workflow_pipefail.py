@@ -351,9 +351,15 @@ def test_check_file_reads_and_reports(tmp_path, monkeypatch):
     assert "job j (run)" in message
 
 
-def test_check_file_tolerates_invalid_yaml(tmp_path):
+def test_check_file_reports_unparseable_yaml(tmp_path):
+    # Unparseable input can't be verified, so it must not silently read as
+    # "no violations" — that would be the exact false-green this tool exists to catch.
     path = _write(tmp_path, "broken.yaml", "key: [unterminated\n")
-    assert cwp.check_file(path) == []
+    out = cwp.check_file(path)
+    assert len(out) == 1
+    line, message = out[0]
+    assert line is None
+    assert "could not parse as YAML" in message
 
 
 # ── workflow_files ───────────────────────────────────────────────────────

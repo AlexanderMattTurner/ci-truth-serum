@@ -83,6 +83,17 @@ def run_line_checks(
     that violate. Each hit prints ``<path>:<lineno>: <message>`` to stderr; an
     unreadable path (OSError / UnicodeDecodeError) is skipped. Returns 1 if any
     path produced a hit, else 0.
+
+    This skip is a deliberate, narrow recovery action, not a silent-pass-on-bad-
+    input escape hatch: ARGV here is pre-commit's own file list, already filtered
+    to committed files of the right type (shell/python/Dockerfile) via ``identify``
+    before this ever runs, so a read failure means the path vanished (a rename/
+    delete race) or was mis-tagged as text (stray binary bytes) — not that this
+    lint is blessing bad shell/Python/Dockerfile content as clean. That's the
+    opposite of the YAML workflow lints (``check_workflow_pipefail`` &c.), whose
+    one argument *is* the exact artifact under test: an unparseable workflow
+    there is reported as a violation, since "no findings" would be a false-green
+    on the very file being verified.
     """
     status = 0
     for path in argv:

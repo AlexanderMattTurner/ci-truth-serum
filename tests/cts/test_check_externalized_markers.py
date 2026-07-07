@@ -265,10 +265,16 @@ def test_check_file_resolves_indirection_from_disk(tmp_path: Path, monkeypatch):
     assert "git commit --amend" in msg
 
 
-def test_check_file_tolerates_malformed_yaml(tmp_path: Path):
+def test_check_file_reports_unparseable_yaml(tmp_path: Path):
+    # Unparseable input can't be verified, so it must not silently read as
+    # "no violations" — that would be the exact false-green this tool exists to catch.
     bad = tmp_path / "bad.yaml"
     bad.write_text("jobs: [unbalanced\n")
-    assert em.check_file(bad) == []
+    out = em.check_file(bad)
+    assert len(out) == 1
+    line, message = out[0]
+    assert line is None
+    assert "could not parse as YAML" in message
 
 
 def test_custom_marker_set_is_honored():

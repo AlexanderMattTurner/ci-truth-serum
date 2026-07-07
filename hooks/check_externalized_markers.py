@@ -229,13 +229,24 @@ def _repo_reader(rel: str) -> str:
 def check_file(
     path: Path, markers: list[tuple[str, re.Pattern[str]]] | None = None
 ) -> list[tuple[int | None, str]]:
-    """(line, message) for every violation in PATH; [] on unparseable YAML."""
+    """(line, message) for every violation in PATH. A file this lint cannot parse
+    as YAML is itself reported as a violation (line ``None``) rather than
+    silently passed as clean: "no violations" on unparseable input would be a
+    silent false-green, not a real result. (YAML *syntax* is actionlint's job —
+    this only fires when PyYAML can't build a document to analyze at all.)"""
     if markers is None:
         markers = [(m, _marker_regex(m)) for m in DEFAULT_MARKERS]
     try:
         doc = yaml.load(path.read_text(), Loader=_LineLoader)
-    except yaml.YAMLError:
-        return []
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        return [
+            (
+                None,
+                f"could not parse as YAML ({first_line}); cannot verify externalized-"
+                "marker reachability — fix the syntax (or run actionlint) and re-check.",
+            )
+        ]
     return analyze(doc, _repo_reader, markers)
 
 
