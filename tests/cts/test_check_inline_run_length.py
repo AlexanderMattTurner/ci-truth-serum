@@ -103,10 +103,16 @@ def test_check_file_reports_line_and_message(tmp_path: Path, monkeypatch):
     assert "job build (run step 0)" in message
 
 
-def test_check_file_tolerates_malformed_yaml(tmp_path: Path):
+def test_check_file_reports_unparseable_yaml(tmp_path: Path):
+    # Unparseable input can't be verified, so it must not silently read as
+    # "no violations" — that would be the exact false-green this tool exists to catch.
     bad = tmp_path / "bad.yaml"
     bad.write_text("jobs: [unbalanced\n")
-    assert cl.check_file(bad) == []
+    out = cl.check_file(bad)
+    assert len(out) == 1
+    line, message = out[0]
+    assert line is None
+    assert "could not parse as YAML" in message
 
 
 # ── main ──────────────────────────────────────────────────────────────────────

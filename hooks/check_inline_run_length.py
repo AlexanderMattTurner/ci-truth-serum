@@ -102,11 +102,22 @@ def analyze(doc: object) -> list[tuple[int | None, str]]:
 
 
 def check_file(path: Path) -> list[tuple[int | None, str]]:
-    """(line, message) for every violation in PATH; [] on unparseable YAML."""
+    """(line, message) for every violation in PATH. A file this lint cannot parse
+    as YAML is itself reported as a violation (line ``None``) rather than
+    silently passed as clean: "no violations" on unparseable input would be a
+    silent false-green, not a real result. (YAML *syntax* is actionlint's job —
+    this only fires when PyYAML can't build a document to analyze at all.)"""
     try:
         doc = yaml.load(path.read_text(), Loader=_LineLoader)
-    except yaml.YAMLError:
-        return []
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        return [
+            (
+                None,
+                f"could not parse as YAML ({first_line}); cannot verify inline "
+                "run-block length — fix the syntax (or run actionlint) and re-check.",
+            )
+        ]
     return analyze(doc)
 
 
