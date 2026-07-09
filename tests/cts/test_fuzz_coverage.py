@@ -44,6 +44,7 @@ FUZZ_REQUIRED = {
     "_linecheck": "required_check_contexts",
     "check_exit_suppression": "violations",
     "check_stderr_suppression": "violations",
+    "check_pipefail_grep_pipe": "violations",
     "check_pinned_downloads": "violations",
     "check_pinned_base_images": "violations",
     "check_global_stdio_swap": "violations",

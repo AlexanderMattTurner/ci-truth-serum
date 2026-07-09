@@ -38,6 +38,7 @@ webi_install_if_missing() {
     # shebang check below, and a version-pinned $pkg instead.
     # pin-exempt: webi.sh bootstrap is generated per-request, no stable digest
     if curl --proto '=https' -fsSL "https://webi.sh/${pkg}" -o "${installer}" 2>/dev/null; then
+      # pipefail-grep-ok: head -n 1 emits a single line, which fits the pipe buffer so the producer never SIGPIPEs
       if head -n 1 "${installer}" | grep -q '^#!'; then
         sh "${installer}" >/dev/null 2>&1 || warn "Failed to install ${cmd}"
       else

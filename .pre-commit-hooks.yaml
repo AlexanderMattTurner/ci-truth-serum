@@ -49,6 +49,13 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-pipefail-grep-pipe
+  name: "honesty: ban `producer | grep -q` under set -o pipefail (SIGPIPE false-negative)"
+  description: grep -q's early exit SIGPIPEs the producer; pipefail surfaces 141, so a match reads as no-match.
+  entry: python -m hooks.check_pipefail_grep_pipe
+  language: python
+  types: [shell]
+
 # ───────────────────────── Tier 1 · Identity (default-on) ────────────────────
 - id: check-pinned-base-images
   name: "identity: enforce digest-pinned Docker base images"

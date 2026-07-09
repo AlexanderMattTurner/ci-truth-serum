@@ -37,6 +37,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_workflow_pipefail", WORKFLOW),
         ("check_exit_suppression", SHELL),
         ("check_stderr_suppression", SHELL),
+        ("check_pipefail_grep_pipe", SHELL),
         ("check_pr_paths", WORKFLOW),
         ("check_pinned_base_images", DOCKERFILE),
         ("check_pinned_downloads", SHELL_OR_DOCKERFILE),
