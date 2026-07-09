@@ -147,7 +147,10 @@ fi
 # owner/repo and export GH_REPO to make all gh commands work.
 
 if [[ -z "${GH_REPO:-}" ]]; then
-  remote_url=$(git -C "${PROJECT_DIR}" remote get-url origin 2>/dev/null)
+  # Read the raw configured URL, not `git remote get-url`: the latter applies
+  # url.<proxy>.insteadOf, which rewrites a plain https://github.com/ remote into
+  # the proxy shape and would falsely match the extraction regex below.
+  remote_url=$(git -C "${PROJECT_DIR}" config --get remote.origin.url 2>/dev/null)
   if [[ "${remote_url}" =~ /git/([^/]+/[^/]+)$ ]]; then
     GH_REPO="${BASH_REMATCH[1]}"
     GH_REPO="${GH_REPO%.git}"
