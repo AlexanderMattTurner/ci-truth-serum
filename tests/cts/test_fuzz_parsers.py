@@ -28,6 +28,7 @@ from tests._helpers import load_hook
 # --- Loaded hooks (drive their public functions directly) --------------------
 exit_suppression = load_hook("check_exit_suppression.py", "fuzz_exit_suppression")
 stderr_suppression = load_hook("check_stderr_suppression.py", "fuzz_stderr_suppression")
+pipefail_grep_pipe = load_hook("check_pipefail_grep_pipe.py", "fuzz_pipefail_grep_pipe")
 pinned_downloads = load_hook("check_pinned_downloads.py", "fuzz_pinned_downloads")
 pinned_base_images = load_hook("check_pinned_base_images.py", "fuzz_pinned_base_images")
 global_stdio_swap = load_hook("check_global_stdio_swap.py", "fuzz_global_stdio_swap")
@@ -40,6 +41,7 @@ linecheck = load_hook("_linecheck.py", "fuzz_linecheck")
 LINE_DETECTORS = {
     "check_exit_suppression": exit_suppression.violations,
     "check_stderr_suppression": stderr_suppression.violations,
+    "check_pipefail_grep_pipe": pipefail_grep_pipe.violations,
     "check_pinned_downloads": pinned_downloads.violations,
     "check_pinned_base_images": pinned_base_images.violations,
     "check_global_stdio_swap": global_stdio_swap.violations,
