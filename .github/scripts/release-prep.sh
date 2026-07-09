@@ -15,8 +15,11 @@ set -euo pipefail
 # The release workflow runs a copy of this script from $RUNNER_TEMP (so a PR
 # cannot alter the trusted base-branch logic), so the repo root comes from the
 # working directory — the checked-out repo it reads package.json and pushes from.
+# The retry helper is likewise sourced from the base branch's trusted copy the
+# workflow stages in $RETRY_LIB (same isolation as $ASSEMBLE_CHANGELOG), falling
+# back to the in-tree path only to bootstrap the very PR that first adds it.
 # shellcheck source=../../bin/lib/retry.bash disable=SC1091
-source "$(git rev-parse --show-toplevel)/bin/lib/retry.bash"
+source "${RETRY_LIB:-$(git rev-parse --show-toplevel)/bin/lib/retry.bash}"
 
 : "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is not set. Configure it as a repository secret.}"
 : "${BASE_REF:?BASE_REF (the PR base branch) is not set.}"
