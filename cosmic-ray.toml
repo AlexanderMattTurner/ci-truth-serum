@@ -9,8 +9,14 @@
 #
 # Scope: the whole `hooks/` package is mutated. The orchestrators/IO-only modules
 # (run_tier, sync_required_checks, the __main__/network plumbing) have no offline
-# test oracle, so their mutants survive by design; the scheduled CI job filters
-# the report to the parser modules the fuzz + example suites actually pin. Run:
+# test oracle, so their mutants survive by design and are excluded below.
+#
+# This file is the SSOT (mutated package, exclusions, timeout, test-command,
+# operator filters). CI does NOT run it whole: .github/scripts/mutation_shards.py
+# derives one shard per remaining module from it and runs each in parallel, with
+# the per-mutant oracle scoped to that module's own example suite, so the slow
+# serial pass becomes a ~few-minute fan-out (see .github/workflows/mutation.yaml).
+# The whole-package flow below is still the way to run it locally by hand:
 #
 #   uv run --extra mutation cosmic-ray init     cosmic-ray.toml cr-session.sqlite
 #   uv run --extra mutation cosmic-ray baseline cosmic-ray.toml
