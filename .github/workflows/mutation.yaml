@@ -1,18 +1,22 @@
 name: Mutation testing
 
 # Mutation testing over the lint parsers (cosmic-ray, Python) and the changelog
-# assembler (Stryker, JS). Both are slow — cosmic-ray reruns the whole offline
-# suite once per mutant — so each job is change-gated via decide-reusable: on a
-# PR it runs only when files it actually depends on changed, and a weekly
-# schedule re-checks main. The mutation-passed reporter is an `if: always()`
-# summary so it always concludes (even when the gates are closed), which lets it
-# be a stable required status check. Concurrency is keyed per PR/ref so a
-# superseded run goes red rather than stranding the required check.
+# assembler (Stryker, JS). cosmic-ray reruns the offline suite once per mutant,
+# so the Python side is SLICED: one shard per mutated hook module, fanned across
+# runners, each mutant scoped to its module's own example suite (see
+# .github/scripts/mutation_shards.py). Slices run in parallel so wall-clock is
+# the slowest single module, not the serial sum, and an aggregate step demands
+# one report per shard so a vanished slice can't score a subset as the whole.
+# Both sides are change-gated via decide-reusable: on a PR they run only when
+# files they depend on changed; a weekly schedule re-checks main.
 #
-# Gate semantics: run-mutation.sh fails only when the unmutated baseline is red
-# or cosmic-ray errors — a surviving mutant is a prompt to add a test, not a
-# build break — so "required" here means the mutation run completed cleanly, not
-# that the score is perfect.
+# Gate semantics: a shard fails only when its unmutated baseline is red or
+# cosmic-ray errors — a surviving mutant is a prompt to add a test, not a build
+# break — so "required" here means every shard ran cleanly and reported, not that
+# the score is perfect. The mutation-passed reporter is an `if: always()` summary
+# so it always concludes (even when the gates are closed), which lets it be a
+# stable required status check. Concurrency is keyed per PR/ref so a superseded
+# run goes red rather than stranding the required check.
 
 on:
   schedule:
@@ -34,8 +38,8 @@ permissions:
 
 jobs:
   # Path gates: each runs unconditionally so the mutation-passed reporter always
-  # receives a conclusion, then opens only when files the matching job depends on
-  # change on a PR (always open on non-pull_request events).
+  # receives a conclusion, then opens only when files the matching side depends
+  # on change on a PR (always open on non-pull_request events).
   decide-py:
     permissions:
       contents: read
@@ -50,6 +54,9 @@ jobs:
           - 'pyproject.toml'
           - '.python-version'
           - '.github/scripts/run-mutation.sh'
+          - '.github/scripts/run-mutation-shard.sh'
+          - '.github/scripts/mutation_shards.py'
+          - '.github/scripts/aggregate-mutation.py'
           - '.github/workflows/mutation.yaml'
           - '.github/workflows/decide-reusable.yaml'
 
@@ -69,11 +76,37 @@ jobs:
           - '.github/workflows/mutation.yaml'
           - '.github/workflows/decide-reusable.yaml'
 
-  mutation:
+  # Expand the shard matrix from the committed tree (one shard per mutated hook
+  # module). The aggregate job re-derives the same set from the same checkout, so
+  # their shard counts are guaranteed identical — the gate can never score a subset.
+  plan:
     needs: decide-py
     if: needs.decide-py.outputs.run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.shards.outputs.shards }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Compute shard matrix
+        id: shards
+        run: echo "shards=$(python3 .github/scripts/mutation_shards.py)" >> "$GITHUB_OUTPUT"
+
+  # One shard per mutated module, in parallel. Each runs cosmic-ray over its one
+  # module with the per-mutant oracle scoped to that module's example suite, and
+  # uploads reports/mutation/<id>.json. Break-disabled by design: a survivor is
+  # diagnostic, so a shard fails only on a red baseline or a cosmic-ray error.
+  mutation:
+    needs: plan
+    if: needs.plan.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -85,18 +118,51 @@ jobs:
           # Keep in sync with .python-version / ci.yaml.
           python-version: "3.11"
 
-      - name: Run mutation testing
+      - name: Run mutation shard
         env:
+          SHARD_ID: ${{ matrix.shard.id }}
           HYPOTHESIS_PROFILE: ${{ inputs.hypothesis_profile || 'dev' }}
-        run: uv run --extra mutation bash .github/scripts/run-mutation.sh cr-session.sqlite
+        run: uv run --extra mutation bash .github/scripts/run-mutation-shard.sh
 
-      - name: Upload mutation session
-        if: always()
+      - name: Upload shard report
+        if: ${{ always() && hashFiles(format('reports/mutation/{0}.json', matrix.shard.id)) != '' }}
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: cosmic-ray-session
-          path: cr-session.sqlite
-          if-no-files-found: warn
+          name: mutation-report-${{ matrix.shard.id }}
+          path: reports/mutation/${{ matrix.shard.id }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+  # Demand exactly one report per shard (from the same expander the matrix used)
+  # and print the per-shard survival rates. This is the coverage gate; the shards
+  # themselves never fail on survivors.
+  aggregate: # required-check: false  # rolled up by mutation-passed (which needs: aggregate)
+    needs: [decide-py, plan, mutation]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Skip when shards did not run
+        if: needs.decide-py.outputs.run != 'true'
+        run: echo "::notice::No mutation-relevant Python files changed, nothing to aggregate"
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: needs.decide-py.outputs.run == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Download shard reports
+        if: needs.decide-py.outputs.run == 'true'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: mutation-report-*
+          path: shard-reports
+
+      # aggregate-mutation.py is stdlib-only (json + tomllib); ubuntu-latest ships
+      # Python 3.12, so no toolchain setup is needed to enforce the coverage gate.
+      - name: Aggregate and enforce one report per shard
+        if: needs.decide-py.outputs.run == 'true'
+        run: python3 .github/scripts/aggregate-mutation.py shard-reports
 
   # JS counterpart: Stryker over the self-contained scripts/assemble-changelog.mjs.
   mutation-js:
@@ -123,7 +189,7 @@ jobs:
   # never reports.
   mutation-passed: # required-check: true
     if: always()
-    needs: [decide-py, decide-js, mutation, mutation-js]
+    needs: [decide-py, decide-js, plan, mutation, aggregate, mutation-js]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

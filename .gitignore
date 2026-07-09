@@ -50,6 +50,8 @@ __pycache__/
 
 # Mutation testing artifacts
 cr-session.sqlite
+cr-*.sqlite
+cosmic-ray.shard.toml
 mutants/
 reports/
 .stryker-tmp/
