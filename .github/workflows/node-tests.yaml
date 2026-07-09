@@ -29,6 +29,7 @@ jobs:
           - '**/*.jsx'
           - '**/*.mjs'
           - 'package.json'
+          - '.github/actions/setup-base-env/**'
           - '.github/workflows/node-tests.yaml'
           - '.github/workflows/decide-reusable.yaml'
 

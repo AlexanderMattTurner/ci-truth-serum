@@ -35,6 +35,7 @@ jobs:
           - 'uv.lock'
           - '.pre-commit-config.yaml'
           - '.github/scripts/run-hook-lifecycle.sh'
+          - '.github/actions/setup-base-env/**'
           - '.github/workflows/hook-lifecycle.yaml'
           - '.github/workflows/decide-reusable.yaml'
 

@@ -24,6 +24,7 @@ jobs:
         run:
           - '.claude/**'
           - '.hooks/**'
+          - '.github/actions/setup-base-env/**'
           - '.github/workflows/**'
           - 'tests/**'
           - 'pyproject.toml'
