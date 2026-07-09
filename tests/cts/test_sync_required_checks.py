@@ -181,6 +181,61 @@ def test_find_branch_ruleset_ambiguous_fails_loud(monkeypatch):
         mod.find_branch_ruleset("o/r", "tok")
 
 
+def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
+    # Repo-level ruleset + inherited org-level ruleset both target `main`; only
+    # the Repository-source one is writable through the repo PATCH endpoint.
+    monkeypatch.setattr(
+        mod,
+        "github_request",
+        lambda *a, **k: [
+            {"id": 7, "target": "branch", "source_type": "Organization"},
+            {"id": 8, "target": "branch", "source_type": "Repository"},
+        ],
+    )
+    assert mod.find_branch_ruleset("o/r", "tok") == 8
+
+
+def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
+    # A tag ruleset alongside a single branch ruleset must not be counted.
+    monkeypatch.setattr(
+        mod,
+        "github_request",
+        lambda *a, **k: [
+            {"id": 5, "target": "tag", "source_type": "Repository"},
+            {"id": 6, "target": "branch", "source_type": "Organization"},
+        ],
+    )
+    assert mod.find_branch_ruleset("o/r", "tok") == 6
+
+
+def test_find_branch_ruleset_no_repository_source_still_ambiguous(monkeypatch):
+    # Two branch rulesets, neither repo-owned → cannot pick a writable target.
+    monkeypatch.setattr(
+        mod,
+        "github_request",
+        lambda *a, **k: [
+            {"id": 7, "target": "branch", "source_type": "Organization"},
+            {"id": 9, "target": "branch", "source_type": "Organization"},
+        ],
+    )
+    with pytest.raises(SystemExit, match="found 2 branch ruleset\\(s\\), 0"):
+        mod.find_branch_ruleset("o/r", "tok")
+
+
+def test_find_branch_ruleset_two_repository_source_still_ambiguous(monkeypatch):
+    # More than one repo-owned branch ruleset → narrowing can't disambiguate.
+    monkeypatch.setattr(
+        mod,
+        "github_request",
+        lambda *a, **k: [
+            {"id": 7, "target": "branch", "source_type": "Repository"},
+            {"id": 9, "target": "branch", "source_type": "Repository"},
+        ],
+    )
+    with pytest.raises(SystemExit, match="2 of them repo-owned"):
+        mod.find_branch_ruleset("o/r", "tok")
+
+
 # ─── apply_contexts ──────────────────────────────────────────────────────────
 
 
