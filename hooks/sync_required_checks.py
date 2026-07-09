@@ -64,16 +64,30 @@ def github_request(method: str, url: str, token: str, body: dict | None = None) 
 
 
 def find_branch_ruleset(repo: str, token: str) -> int:
-    """The id of the repo's single active branch ruleset, or fail loud if the
-    count isn't exactly one (ambiguous target — caller must pass --ruleset-id)."""
+    """The id of the branch ruleset this script can write, or fail loud when the
+    target is ambiguous (caller must pass --ruleset-id).
+
+    A repo can be covered by more than one branch ruleset targeting `main` — its
+    own repo-level ruleset plus an org-level ruleset inherited from the owning
+    organization. Both list under `GET /repos/{repo}/rulesets` with
+    `target == "branch"`, but only the repo-owned one is writable through the
+    `/repos/{repo}/rulesets/{id}` PATCH used here; org rulesets live on a
+    different endpoint. So when exactly one branch ruleset exists we return it,
+    and when several do we narrow to the sole `source_type == "Repository"` one
+    (the writable target). Any other count — zero branch rulesets, or still more
+    than one after narrowing — stays ambiguous and fails loud with the counts."""
     rulesets = github_request("GET", f"{API_ROOT}/repos/{repo}/rulesets", token)
     branch = [r for r in rulesets if r.get("target") == "branch"]
-    if len(branch) != 1:
-        raise SystemExit(
-            f"Expected exactly one branch ruleset on {repo}, found {len(branch)}; "
-            "pass --ruleset-id to disambiguate."
-        )
-    return branch[0]["id"]
+    if len(branch) == 1:
+        return branch[0]["id"]
+    repo_owned = [r for r in branch if r.get("source_type") == "Repository"]
+    if len(repo_owned) == 1:
+        return repo_owned[0]["id"]
+    raise SystemExit(
+        f"Expected exactly one writable branch ruleset on {repo}: found "
+        f"{len(branch)} branch ruleset(s), {len(repo_owned)} of them "
+        "repo-owned (source_type=Repository); pass --ruleset-id to disambiguate."
+    )
 
 
 def _find_checks_rule(ruleset: dict) -> dict | None:
