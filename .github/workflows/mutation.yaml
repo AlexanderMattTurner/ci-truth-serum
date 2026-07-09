@@ -66,6 +66,7 @@ jobs:
           - 'stryker.config.json'
           - 'package.json'
           - 'pnpm-lock.yaml'
+          - '.github/actions/setup-base-env/**'
           - '.github/workflows/mutation.yaml'
           - '.github/workflows/decide-reusable.yaml'
 

@@ -23,6 +23,7 @@ jobs:
     name: Conservative version bump on the PR branch
     if: github.event.label.name == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout PR branch
         # Credentials stay persisted: release-prep.sh pushes the bump commit with them.
