@@ -121,6 +121,8 @@ jobs:
       - name: Run mutation shard
         env:
           SHARD_ID: ${{ matrix.shard.id }}
+          SHARD_INDEX: ${{ matrix.shard.index }}
+          SHARD_TOTAL: ${{ matrix.shard.total }}
           HYPOTHESIS_PROFILE: ${{ inputs.hypothesis_profile || 'dev' }}
         run: uv run --extra mutation bash .github/scripts/run-mutation-shard.sh
 

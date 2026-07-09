@@ -1,13 +1,15 @@
 """Tests for .github/scripts/mutation_shards.py — the cosmic-ray shard expander.
 
 Drives the pure functions directly (no cosmic-ray) and pins the SSOT contract:
-the shard set is exactly the mutated ``hooks/*.py`` (per cosmic-ray.toml) minus
-its exclusions, one shard each, and every shard's generated config is valid TOML
-that mutates one module and scopes the suite to that module.
+the shards cover exactly the mutated ``hooks/*.py`` (per cosmic-ray.toml) minus
+its exclusions, a large module splits into a complete indexed mutant-partition,
+and every shard's generated config is valid TOML that mutates one module and
+scopes the suite to that module.
 """
 
 import importlib.util
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -37,20 +39,18 @@ def _mutated_modules() -> set[str]:
     }
 
 
-# ── the SSOT contract: shard set == mutated modules, one each ──────────────
-def test_shards_are_exactly_the_mutated_modules() -> None:
+# ── the SSOT contract: shards COVER exactly the mutated modules ────────────
+def test_shards_cover_exactly_the_mutated_modules() -> None:
     shards = mod.expand_shards(REPO_ROOT)
     assert {s["module"] for s in shards} == _mutated_modules()
-    # one shard per module, no dupes
-    assert len(shards) == len(_mutated_modules())
+    # ids are unique across all shards (sub-shards included)
     assert len({s["id"] for s in shards}) == len(shards)
 
 
 def test_excluded_modules_get_no_shard() -> None:
-    ids = {s["id"] for s in mod.expand_shards(REPO_ROOT)}
+    modules = {s["module"] for s in mod.expand_shards(REPO_ROOT)}
     for excluded in _COSMIC["excluded-modules"]:
-        stem = Path(excluded).stem
-        assert stem not in ids, f"{stem} is excluded in cosmic-ray.toml but got a shard"
+        assert excluded not in modules, f"{excluded} is excluded but got a shard"
 
 
 def test_every_shard_oracle_exists_and_is_id_sorted() -> None:
@@ -58,12 +58,36 @@ def test_every_shard_oracle_exists_and_is_id_sorted() -> None:
     assert shards == sorted(shards, key=lambda s: s["id"])
     for shard in shards:
         assert (REPO_ROOT / shard["tests"]).is_file()
-        # module id is the file stem; module path is under the mutated package
-        assert shard["module"] == f"{_COSMIC['module-path']}/{shard['id']}.py"
+        assert shard["module"].startswith(f"{_COSMIC['module-path']}/")
+        # the oracle is the module's own suite regardless of sub-shard suffix
+        assert shard["tests"] == mod._test_file(Path(shard["module"]).stem)
 
 
 def test_expand_is_deterministic() -> None:
     assert mod.expand_shards(REPO_ROOT) == mod.expand_shards(REPO_ROOT)
+
+
+# ── sub-sharding: a module's slices partition its mutants disjointly ────────
+def test_sub_shards_form_a_complete_indexed_partition() -> None:
+    by_module: dict[str, list[dict]] = {}
+    for s in mod.expand_shards(REPO_ROOT):
+        by_module.setdefault(s["module"], []).append(s)
+    for module, subs in by_module.items():
+        total = subs[0]["total"]
+        assert all(s["total"] == total for s in subs)
+        # every residue class 0..total-1 appears exactly once — disjoint + complete
+        assert sorted(s["index"] for s in subs) == list(range(total))
+        stem = Path(module).stem
+        if total == 1:
+            assert [s["id"] for s in subs] == [stem]
+        else:
+            assert {s["id"] for s in subs} == {f"{stem}-{k + 1}" for k in range(total)}
+
+
+def test_total_matches_line_count_ceiling() -> None:
+    for s in mod.expand_shards(REPO_ROOT):
+        lines = len((REPO_ROOT / s["module"]).read_text(encoding="utf-8").splitlines())
+        assert s["total"] == max(1, math.ceil(lines / mod.SPLIT_EVERY_LINES))
 
 
 # ── the oracle-file convention ─────────────────────────────────────────────
@@ -115,12 +139,46 @@ def test_empty_package_raises(tmp_path: Path) -> None:
         mod.expand_shards(tmp_path)
 
 
+def test_large_module_splits_into_line_capped_sub_shards(tmp_path: Path) -> None:
+    # A module just over 2x the line cap must split into 3 sub-shards indexed 0..2.
+    lines = mod.SPLIT_EVERY_LINES * 2 + 1
+    _write_min_repo(tmp_path, modules=["__init__.py", "check_big.py"], tests=[])
+    (tmp_path / "hooks" / "check_big.py").write_text("x = 1\n" * lines)
+    (tmp_path / "tests" / "cts" / "test_check_big.py").write_text("def test(): pass\n")
+    shards = mod.expand_shards(tmp_path)
+    assert [s["id"] for s in shards] == ["check_big-1", "check_big-2", "check_big-3"]
+    assert all(s["total"] == 3 for s in shards)
+    assert [s["index"] for s in shards] == [0, 1, 2]
+    # a module at exactly the cap stays a single bare-stem shard
+    (tmp_path / "hooks" / "check_small.py").write_text(
+        "x = 1\n" * mod.SPLIT_EVERY_LINES
+    )
+    (tmp_path / "tests" / "cts" / "test_check_small.py").write_text(
+        "def test(): pass\n"
+    )
+    small = [
+        s for s in mod.expand_shards(tmp_path) if s["module"].endswith("check_small.py")
+    ]
+    assert small == [
+        {
+            "id": "check_small",
+            "module": "hooks/check_small.py",
+            "tests": "tests/cts/test_check_small.py",
+            "index": 0,
+            "total": 1,
+        }
+    ]
+
+
 # ── the generated per-shard config ─────────────────────────────────────────
 def test_shard_config_is_valid_single_module_toml() -> None:
     shard = next(
-        s for s in mod.expand_shards(REPO_ROOT) if s["id"] == "check_pipefail_grep_pipe"
+        s
+        for s in mod.expand_shards(REPO_ROOT)
+        if s["module"] == "hooks/check_pipefail_grep_pipe.py"
     )
     parsed = tomllib.loads(mod.shard_config_toml(REPO_ROOT, shard))["cosmic-ray"]
+    # the config mutates the WHOLE module (the sub-shard slices mutants at runtime)
     assert parsed["module-path"] == shard["module"]
     assert parsed["excluded-modules"] == []
     # timeout + operator filter inherited from the base config (SSOT)

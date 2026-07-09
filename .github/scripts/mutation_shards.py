@@ -29,6 +29,7 @@ Usage:
 """
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -40,6 +41,16 @@ SHARD_CONFIG = "cosmic-ray.shard.toml"
 # dir; the base test-command in cosmic-ray.toml targets the whole tree, and a
 # shard narrows it to one file (see _scoped_test_command).
 TEST_DIR = "tests/cts"
+
+# A module larger than this many source lines is split into ceil(lines / this)
+# sub-shards that each mutate the whole module but run only a disjoint slice of
+# its mutants (see run-mutation-shard.sh's work_items partition). cosmic-ray
+# emits roughly one mutant per source line and each mutant costs ~1.2 s, so this
+# caps a shard at ~150 mutants ≈ ~3 min of exec + setup — comfortably under the
+# job's timeout. Line count is a cheap, drift-proof proxy computed at plan time,
+# exactly as agent-input-sanitizer's `splitEvery` slices its big files. Below the
+# cap a module is a single shard whose id is the bare module stem.
+SPLIT_EVERY_LINES = 150
 
 
 def _base_config(repo_root: Path) -> dict:
@@ -55,13 +66,17 @@ def _test_file(stem: str) -> str:
 
 
 def expand_shards(repo_root: Path) -> list[dict]:
-    """One shard per mutated hook module, id-sorted.
+    """The mutation shard matrix, id-sorted.
 
     Reads ``cosmic-ray.toml`` for the mutated package (``module-path``) and the
-    modules it excludes, then emits ``{id, module, tests}`` for every remaining
-    ``hooks/*.py``. Raises if a module's ``test_<module>.py`` oracle is missing —
-    a new hook must bring the suite that its shard will run, or expansion fails
-    loud rather than gate on an empty or whole-tree slice.
+    modules it excludes, then emits shards for every remaining ``hooks/*.py``.
+    A module up to ``SPLIT_EVERY_LINES`` lines is one shard ``{id=stem, index=0,
+    total=1}``; a larger module is split into ``ceil(lines / SPLIT_EVERY_LINES)``
+    sub-shards ``{id=f"{stem}-{k+1}", index=k, total=N}`` that each mutate the
+    whole module but run a disjoint ``rowid % N == index`` slice of its mutants.
+    Each shard also carries the ``tests`` oracle it runs. Raises if a module's
+    ``test_<module>.py`` oracle is missing — a new hook must bring the suite its
+    shard will run, or expansion fails loud rather than gate on an empty slice.
     """
     cfg = _base_config(repo_root)["cosmic-ray"]
     package = cfg["module-path"]
@@ -78,10 +93,22 @@ def expand_shards(repo_root: Path) -> list[dict]:
                 f"{module} has no mutation oracle at {tests}: every mutated hook "
                 f"needs its own example suite (add it, or exclude the module in {CONFIG})."
             )
-        shards.append({"id": path.stem, "module": module, "tests": tests})
+        line_count = len(path.read_text(encoding="utf-8").splitlines())
+        total = max(1, math.ceil(line_count / SPLIT_EVERY_LINES))
+        for index in range(total):
+            shard_id = path.stem if total == 1 else f"{path.stem}-{index + 1}"
+            shards.append(
+                {
+                    "id": shard_id,
+                    "module": module,
+                    "tests": tests,
+                    "index": index,
+                    "total": total,
+                }
+            )
     if not shards:
         raise ValueError(f"no mutable modules found under {package}/ in {CONFIG}")
-    return shards
+    return sorted(shards, key=lambda s: s["id"])
 
 
 def _scoped_test_command(base: str, tests: str) -> str:

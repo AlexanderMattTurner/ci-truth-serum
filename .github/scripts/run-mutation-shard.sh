@@ -10,10 +10,13 @@
 # cosmic-ray error (set -e). It always writes reports/mutation/$SHARD_ID.json so
 # the aggregate can demand one report per shard and catch a silently missing slice.
 #
-# Env: SHARD_ID (required)  HYPOTHESIS_PROFILE (default dev, a fast property budget)
+# Env: SHARD_ID (required)  SHARD_INDEX/SHARD_TOTAL (mutant slice, default 0/1)
+#      HYPOTHESIS_PROFILE (default dev, a fast property budget)
 set -euo pipefail
 
 : "${SHARD_ID:?SHARD_ID must be set to a shard id from mutation_shards.py}"
+shard_index="${SHARD_INDEX:-0}"
+shard_total="${SHARD_TOTAL:-1}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 config="cosmic-ray.shard.toml"
@@ -33,6 +36,15 @@ echo "::endgroup::"
 
 echo "::group::cosmic-ray init (${SHARD_ID})"
 cosmic-ray init "${config}" "${session}"
+# A split module mutates the whole file but this shard runs only its slice of the
+# mutants: keep the work items whose deterministic rowid lands in this shard's
+# residue class and drop the rest, so the sub-shards partition the module's
+# mutants disjointly and completely (init is deterministic, so every runner sees
+# the same rowid order). total=1 keeps everything.
+if [[ "${shard_total}" -gt 1 ]]; then
+  python -c 'import sqlite3, sys; db, total, index = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]); conn = sqlite3.connect(db); conn.execute("DELETE FROM work_items WHERE rowid % ? != ?", (total, index)); conn.commit(); conn.close()' \
+    "${session}" "${shard_total}" "${shard_index}"
+fi
 echo "::endgroup::"
 
 echo "::group::cosmic-ray exec (${SHARD_ID})"
