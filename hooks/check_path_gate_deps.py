@@ -2,13 +2,17 @@
 """Verify a decide-gated job's path filters cover every file the job depends on.
 
 Repos using this pack gate expensive jobs behind a `decide` job (a call to
-`decide-reusable.yaml` with a `filters:` spec of path globs) plus
-`if: needs.decide.outputs.run == 'true'`. When the filter spec omits a file the
-gated job actually depends on, a PR changing only that file skips the job and
-the `always()` reporter goes green — a fail-open exactly when the dependency
-changed. That has recurred (a composite action omitted from every filter; a
-helper script omitted from a test gate) despite the rule being documented,
-because nothing enforced it.
+`decide-reusable.yaml`) plus `if: needs.decide.outputs.run == 'true'`. The
+decide call declares its change filter in one of two shapes: a `filters:` spec
+of dorny/paths-filter glob groups, or a `paths-regex:` single extended-regex
+(ERE) string matched at runtime by `grep -qE` against the changed-file list
+(an empty `paths-regex` is a deliberately keyword-only gate — path coverage is
+not applicable, so nothing is ever reported uncovered for it). When the filter
+omits a file the gated job actually depends on, a PR changing only that file
+skips the job and the `always()` reporter goes green — a fail-open exactly when
+the dependency changed. That has recurred (a composite action omitted from
+every filter; a helper script omitted from a test gate) despite the rule being
+documented, because nothing enforced it.
 
 For each workflow with the decide pattern, this lint computes each gated job's
 static dependencies and demands the union of the filter globs of every decide
@@ -149,7 +153,8 @@ def filter_patterns(filters_value: object) -> list[str]:
 
 
 def is_decide_job(job: object) -> bool:
-    """True for a job calling decide-reusable.yaml with a `filters:` input."""
+    """True for a job calling decide-reusable.yaml with a `filters:` or
+    `paths-regex:` input (the two change-filter shapes decide-reusable accepts)."""
     if not isinstance(job, dict):
         return False
     uses = str(job.get("uses", "")).partition("@")[0]
@@ -157,8 +162,30 @@ def is_decide_job(job: object) -> bool:
     return (
         uses.endswith(DECIDE_WORKFLOW)
         and isinstance(with_, dict)
-        and isinstance(with_.get("filters"), str)
+        and (
+            isinstance(with_.get("filters"), str)
+            or isinstance(with_.get("paths-regex"), str)
+        )
     )
+
+
+def decide_matchers(with_: dict) -> list[re.Pattern[str]]:
+    """The file matchers for one decide job, as the union of its declared shapes.
+
+    `filters:` globs translate through `glob_to_regex`. A `paths-regex:` ERE
+    string is compiled directly (matched with `.search()`, mirroring runtime
+    `grep -qE`): an empty string is a deliberately keyword-only gate, so path
+    coverage is not applicable — it becomes a match-everything matcher
+    (`re.compile("")`, whose `.search` matches any string) so no dependency is
+    reported uncovered. An unresolved `${{ inputs.paths-regex }}` expression
+    compiles to a literal that matches no real path — fail-closed and correct,
+    so the author must statically cover the deps or suppress.
+    """
+    matchers = [glob_to_regex(p) for p in filter_patterns(with_.get("filters"))]
+    regex = with_.get("paths-regex")
+    if isinstance(regex, str):
+        matchers.append(re.compile(regex.strip()))
+    return matchers
 
 
 def gate_refs(job: dict, decide_ids: set[str]) -> set[str]:
@@ -175,7 +202,13 @@ def _normalize(dep: str) -> str:
 
 
 def _run_scripts(run: object) -> list[str]:
-    return _SCRIPT_REF.findall(run) if isinstance(run, str) else []
+    # Strip a trailing `.` the greedy capture pulls off a sentence-ending
+    # comment (`# … .github/scripts/foo.sh.`) — no real path ends in a dot.
+    return (
+        [s.rstrip(".") for s in _SCRIPT_REF.findall(run)]
+        if isinstance(run, str)
+        else []
+    )
 
 
 def job_dependencies(job: dict, read_repo_file) -> tuple[list[str], list[str]]:
@@ -271,10 +304,7 @@ def analyze(doc: object, text: str, read_repo_file) -> list[tuple[int | None, st
     if not decide_jobs:
         return []
     blocks = _job_blocks(text)
-    compiled = {
-        jid: [glob_to_regex(p) for p in filter_patterns(job["with"]["filters"])]
-        for jid, job in decide_jobs.items()
-    }
+    compiled = {jid: decide_matchers(job["with"]) for jid, job in decide_jobs.items()}
 
     found: list[tuple[int | None, str]] = []
     for job_id, job in jobs.items():

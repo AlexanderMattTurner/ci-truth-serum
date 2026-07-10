@@ -319,6 +319,115 @@ def test_job_needing_decide_without_gate_if_is_not_gated(tmp_path, monkeypatch, 
     assert cpgd.main() == 0
 
 
+# ── paths-regex decide variant ───────────────────────────────────────────
+def _paths_regex_workflow(regex: str, steps: str) -> str:
+    return textwrap.dedent(
+        """\
+        name: x
+        on:
+          push:
+        jobs:
+          decide:
+            uses: ./.github/workflows/decide-reusable.yaml
+            with:
+              paths-regex: '{regex}'
+          work:
+            needs: decide
+            if: needs.decide.outputs.run == 'true'
+            runs-on: ubuntu-latest
+            steps:
+        {steps}
+        """
+    ).format(regex=regex, steps=textwrap.indent(steps.rstrip(), "      "))
+
+
+def test_paths_regex_covering_composite_passes(tmp_path, monkeypatch, capsys):
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _paths_regex_workflow(r"^\.github/actions/setup/", COMPOSITE_STEPS),
+        ACTION,
+    )
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_paths_regex_omitting_composite_fails_naming_dep(tmp_path, monkeypatch, capsys):
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _paths_regex_workflow(r"^src/", COMPOSITE_STEPS),
+        ACTION,
+    )
+    assert cpgd.main() == 1
+    out = capsys.readouterr().out
+    assert "job work (gated by decide)" in out
+    assert "`.github/actions/setup`" in out
+    assert ".github/actions/setup/action.yml" in out
+    assert out.count("::error") == 1
+
+
+def test_empty_paths_regex_is_match_all_no_finding(tmp_path, monkeypatch, capsys):
+    # An empty paths-regex is a keyword-only gate: path coverage is N/A, so no
+    # dependency is ever reported uncovered.
+    _repo(tmp_path, monkeypatch, _paths_regex_workflow("", COMPOSITE_STEPS), ACTION)
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_paths_regex_covering_script_passes(tmp_path, monkeypatch, capsys):
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _paths_regex_workflow(
+            r"^\.github/scripts/", "- run: bash .github/scripts/foo.sh\n"
+        ),
+        {".github/scripts/foo.sh": "#!/bin/bash\n"},
+    )
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+# ── trailing-dot precision in script-ref capture ─────────────────────────
+def test_trailing_dot_in_script_comment_is_stripped(tmp_path, monkeypatch, capsys):
+    # A run body mentioning the script inside a sentence-ending comment must
+    # resolve to the real path, not the dotted form.
+    steps = (
+        "- run: |\n"
+        "    # Keep in sync with .github/scripts/foo.sh.\n"
+        "    bash .github/scripts/foo.sh\n"
+    )
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _workflow(["src/**"], steps),
+        {".github/scripts/foo.sh": "#!/bin/bash\n"},
+    )
+    assert cpgd.main() == 1
+    out = capsys.readouterr().out
+    assert "`.github/scripts/foo.sh`" in out
+    assert "foo.sh.`" not in out
+
+
+def test_trailing_dot_in_transitive_script_is_stripped(tmp_path, monkeypatch, capsys):
+    # The one-hop scan of a referenced script also strips a dotted comment ref.
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _workflow([".github/scripts/foo.sh"], "- run: bash .github/scripts/foo.sh\n"),
+        {
+            ".github/scripts/foo.sh": (
+                "#!/bin/bash\n# see .github/scripts/lib.bash.\n"
+            ),
+            ".github/scripts/lib.bash": "helper() { :; }\n",
+        },
+    )
+    assert cpgd.main() == 1
+    out = capsys.readouterr().out
+    assert "`.github/scripts/lib.bash`" in out
+    assert "lib.bash.`" not in out
+
+
 # ── error annotation shape ───────────────────────────────────────────────
 def test_violation_is_line_anchored_to_the_gated_job(tmp_path, monkeypatch, capsys):
     _repo(tmp_path, monkeypatch, _workflow(["src/**"], COMPOSITE_STEPS), ACTION)
