@@ -30,6 +30,7 @@ jobs:
           - '**/*.mjs'
           - 'package.json'
           - '.github/actions/setup-base-env/**'
+          - '.github/scripts/script-configured.sh'
           - '.github/workflows/node-tests.yaml'
           - '.github/workflows/decide-reusable.yaml'
 

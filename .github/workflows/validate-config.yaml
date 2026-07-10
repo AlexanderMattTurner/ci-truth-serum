@@ -25,6 +25,7 @@ jobs:
           - '.claude/**'
           - '.hooks/**'
           - '.github/actions/setup-base-env/**'
+          - '.github/scripts/validate-config.sh'
           - '.github/workflows/**'
           - 'tests/**'
           - 'pyproject.toml'

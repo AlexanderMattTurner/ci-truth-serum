@@ -39,6 +39,8 @@ lints that catch two kinds of lie a green check can hide:
 | `check-concurrency`          | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.                                                                                                                                                             |
 | `check-static-concurrency`   | A required check hung at “Expected—Waiting” forever, because a static workflow-level `concurrency.group` (no `github.ref`/`head_ref` key) let a sibling ref’s run cancel this one’s pending run wholesale before any job—and its `always()` reporter—ever started.                                                       |
 | `check-externalized-markers` | A workflow guard that scans inline `run:` for a policy marker (e.g. a history-rewrite command that demands `fetch-depth: 0`) went blind and passed vacuously the moment that command moved into `.github/scripts/*.sh` or a composite action. Flags any job where the marker is reachable only through that indirection. |
+| `check-path-gate-deps`       | A gated job silently skipped—and its `always()` reporter went green—on the exact PR that changed a file the job depends on, because the decide job's path filters omitted a composite action or `.github/scripts/` helper. Verifies every gated job's static dependencies (composites, run scripts one `source` hop deep, and `# gate-deps:`-declared paths) are covered by the decide filters; suppress one dep with `# path-gate-ok: <dep> <reason>`.                                              |
+| `check-failure-notifier-coverage` | A new push/schedule workflow failed silently forever because `ci-failure-notify.yaml`'s `on.workflow_run.workflows` list (necessarily a hand-copied list—`workflow_run` has no wildcard) was never updated. Round-trip freshness check: the list must equal the tree's push/schedule workflow names; prints the corrected block on mismatch. Pass `--require-notifier` to fail when the notifier workflow itself is missing.                                                          |
 
 ### Unrelated bonus checks (Extras)
 
@@ -85,6 +87,8 @@ repos:
       # - id: check-concurrency
       # - id: check-static-concurrency   # static workflow-level concurrency.group on a required check
       # - id: check-externalized-markers  # marker reachable only via script/composite indirection
+      # - id: check-path-gate-deps       # decide filters must cover every gated-job dependency
+      # - id: check-failure-notifier-coverage  # keep ci-failure-notify's workflow_run list fresh
       # ── Extras · Unrelated bonus checks (opt-in) ──
       # - id: check-symlinks
       # - id: check-unnamed-regex-groups

@@ -1,0 +1,1 @@
+- Closed three fail-open decide-filter gaps the new `check-path-gate-deps` hook found in this repo's own workflows: `lint.yaml` and `node-tests.yaml` omitted `.github/scripts/script-configured.sh`, and `validate-config.yaml` omitted `.github/scripts/validate-config.sh` — a PR changing only those scripts skipped the gated jobs while their reporters stayed green.

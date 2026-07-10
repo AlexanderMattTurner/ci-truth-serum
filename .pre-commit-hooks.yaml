@@ -123,6 +123,28 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-path-gate-deps
+  name: "opinionated: require decide filters to cover every gated-job dependency"
+  description: A decide filter omitting a gated job's composite/script dependency fails open exactly when that dependency changes.
+  entry: python -m hooks.check_path_gate_deps
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  # always_run: coverage can break from the DEPENDENCY side (a new file under
+  # .github/actions/X/ or a declared gate-deps dir) with no workflow edit, so a
+  # files:-filtered hook would never re-check. The scan is cheap (YAML + regex).
+  always_run: true
+
+- id: check-failure-notifier-coverage
+  name: "opinionated: keep ci-failure-notify's workflow_run list in sync with the tree"
+  description: workflow_run has no wildcard, so the notifier's workflows list is a derived copy; a stale copy silently drops failure notifications.
+  entry: python -m hooks.check_failure_notifier_coverage
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
 - id: check-externalized-markers
   name: "opinionated: flag policy markers reachable only through script/composite indirection"
   description: A history-rewrite (etc.) command in .github/scripts/*.sh is invisible to an inline-run guard, which then passes vacuously.

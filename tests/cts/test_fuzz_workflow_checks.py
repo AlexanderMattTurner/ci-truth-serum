@@ -25,6 +25,7 @@ claude_model = load_hook("check_claude_model.py", "fuzz_claude_model")
 externalized_markers = load_hook(
     "check_externalized_markers.py", "fuzz_externalized_markers"
 )
+path_gate_deps = load_hook("check_path_gate_deps.py", "fuzz_path_gate_deps")
 
 # Each returns a finding shape; the contract under fuzz is only "no crash, and a
 # well-typed result". `expects_list` distinguishes the list-returning checks from
@@ -37,6 +38,7 @@ WORKFLOW_CHECKS = [
     ("check_pr_paths", pr_paths.check_file, False),
     ("check_claude_model", claude_model.check_file, True),
     ("check_externalized_markers", externalized_markers.check_file, True),
+    ("check_path_gate_deps", path_gate_deps.check_file, True),
 ]
 
 
@@ -65,6 +67,16 @@ _WORKFLOW_FRAGMENTS = [
     # empty text and the job stays clean — exercising the traversal, not a finding.
     "jobs:\n  fix:\n    steps:\n      - run: bash .github/scripts/autofix.sh\n",
     "jobs:\n  fix:\n    steps:\n      - uses: ./.github/actions/fixup\n",
+    # Path-gate shapes: a decide job with filters, and a gated consumer.
+    (
+        "jobs:\n  decide:\n    uses: ./.github/workflows/decide-reusable.yaml\n"
+        "    with:\n      filters: |\n        run:\n          - 'src/**'\n"
+    ),
+    (
+        "jobs:\n  work:\n    needs: decide\n"
+        "    if: needs.decide.outputs.run == 'true'\n"
+        "    steps:\n      - run: bash .github/scripts/x.sh\n"
+    ),
     "jobs: null\n",
     "[]\n",
     "just a scalar\n",
