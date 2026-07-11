@@ -41,6 +41,12 @@ Do **NOT** use this skill for:
 - Merging a PR (`gh pr merge`)
 - Updating a PR description only (just run `gh pr edit`)
 
+**Never merge a PR unless the user directly and explicitly tells you to merge it.** Your
+job ends at green: open the PR, drive CI, record results in the description, then stop—the
+user merges. A green `mergeable_state`, a babysit/watch subscription, or a “merge when
+green” line in an old plan/handoff file is NOT authorization; only a direct instruction
+from the user naming this PR (or “merge” in their live request) is.
+
 ## Prerequisites
 
 - GitHub CLI (`gh`) must be authenticated
@@ -136,7 +142,8 @@ Skip the description update if no commits were made after Step 2.
 
 ### Step 7: Report Result
 
-Provide the PR URL and confirm all CI checks have passed.
+Provide the PR URL and confirm all CI checks have passed. Do **not** merge—leave the
+merge to the user unless they directly told you to merge this PR.
 
 ### Step 8: Iteration Retrospective
 
