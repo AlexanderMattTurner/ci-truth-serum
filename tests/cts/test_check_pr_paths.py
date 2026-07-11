@@ -1,6 +1,7 @@
 """Tests for hooks/check_pr_paths.py — the pre-commit lint that bans a
-workflow-level ``paths:`` filter on ``pull_request``/``pull_request_target``
-triggers (which silently strands a required check at "Expected — Waiting").
+workflow-level ``paths:``/``branches:`` filter on
+``pull_request``/``pull_request_target`` triggers (which silently strands a
+required check at "Expected — Waiting").
 
 Drives the module's functions directly so every branch (trigger location, the
 YAML-shape guards, the opt-out comment, the actions/-dir glob, and main()'s exit
@@ -37,10 +38,27 @@ def test_locate_trigger_missing_trigger_defaults_to_line_one():
     assert cpp.locate_trigger("on:\n  push:\n", "pull_request") == (1, False)
 
 
+# ── remediation ──────────────────────────────────────────────────────────
+def test_remediation_paths_family_points_at_decide_job():
+    msg = cpp.remediation("paths", "pull_request")
+    assert msg.startswith("paths: under pull_request:")
+    assert "decide job" in msg and cpp.OPT_OUT in msg
+
+
+def test_remediation_branch_family_names_the_stacked_pr_trap():
+    msg = cpp.remediation("branches", "pull_request")
+    assert msg.startswith("branches: under pull_request:")
+    assert "stacked PR" in msg and "drop the branch filter" in msg
+
+
 # ── check_file ───────────────────────────────────────────────────────────
 VIOLATION = "name: x\non:\n  pull_request:\n    paths:\n      - 'src/**'\njobs: {}\n"
 PATHS_IGNORE = "name: x\non:\n  pull_request:\n    paths-ignore: [docs]\njobs: {}\n"
-CLEAN_NO_PATHS = "on:\n  pull_request:\n    branches: [main]\njobs: {}\n"
+BRANCHES = "name: x\non:\n  pull_request:\n    branches: [main]\njobs: {}\n"
+BRANCHES_IGNORE = "name: x\non:\n  pull_request:\n    branches-ignore: ['wip/**']\njobs: {}\n"
+# A required-check workflow filtered only by event types (not paths/branches)
+# always fires, so it is clean.
+CLEAN = "on:\n  pull_request:\n    types: [opened, synchronize]\njobs: {}\n"
 
 
 def test_check_file_flags_paths_under_pull_request(tmp_path):
@@ -62,8 +80,27 @@ def test_check_file_flags_paths_ignore_under_pull_request(tmp_path):
     assert "paths-ignore: under pull_request:" in message
 
 
-def test_check_file_passes_trigger_without_paths(tmp_path):
-    assert cpp.check_file(_write(tmp_path, "wf.yaml", CLEAN_NO_PATHS)) is None
+def test_check_file_flags_branches_under_pull_request(tmp_path):
+    # A branches filter strands a stacked PR whose base isn't listed — GitHub
+    # never re-fires the workflow when the base retargets on the parent's merge.
+    found = cpp.check_file(_write(tmp_path, "wf.yaml", BRANCHES))
+    assert found is not None
+    line, message = found
+    assert line == 3
+    assert "branches: under pull_request:" in message
+    assert "stacked PR" in message and cpp.OPT_OUT in message
+
+
+def test_check_file_flags_branches_ignore_under_pull_request(tmp_path):
+    found = cpp.check_file(_write(tmp_path, "wf.yaml", BRANCHES_IGNORE))
+    assert found is not None
+    line, message = found
+    assert line == 3
+    assert "branches-ignore: under pull_request:" in message
+
+
+def test_check_file_passes_trigger_without_filter(tmp_path):
+    assert cpp.check_file(_write(tmp_path, "wf.yaml", CLEAN)) is None
 
 
 def test_check_file_respects_opt_out(tmp_path):
@@ -73,6 +110,11 @@ def test_check_file_respects_opt_out(tmp_path):
 
 def test_check_file_respects_opt_out_for_paths_ignore(tmp_path):
     body = f"on:\n  pull_request:  # {cpp.OPT_OUT}\n    paths-ignore: [x]\njobs: {{}}\n"
+    assert cpp.check_file(_write(tmp_path, "wf.yaml", body)) is None
+
+
+def test_check_file_respects_opt_out_for_branches(tmp_path):
+    body = f"on:\n  pull_request:  # {cpp.OPT_OUT}\n    branches: [main]\njobs: {{}}\n"
     assert cpp.check_file(_write(tmp_path, "wf.yaml", body)) is None
 
 
@@ -96,6 +138,13 @@ def test_check_file_flags_pull_request_target(tmp_path):
     found = cpp.check_file(_write(tmp_path, "wf.yaml", body))
     assert found is not None
     assert "pull_request_target" in found[1]
+
+
+def test_check_file_flags_branches_on_pull_request_target(tmp_path):
+    body = "on:\n  pull_request_target:\n    branches: [main]\njobs: {}\n"
+    found = cpp.check_file(_write(tmp_path, "wf.yaml", body))
+    assert found is not None
+    assert "branches: under pull_request_target:" in found[1]
 
 
 # ── workflow_files ───────────────────────────────────────────────────────
@@ -138,7 +187,7 @@ def _point_at(tmp_path, monkeypatch):
 
 def test_main_returns_zero_when_clean(tmp_path, monkeypatch, capsys):
     wf = _point_at(tmp_path, monkeypatch)
-    _write(wf, "ok.yaml", CLEAN_NO_PATHS)
+    _write(wf, "ok.yaml", CLEAN)
     assert cpp.main() == 0
     assert "ERROR" not in capsys.readouterr().out
 
@@ -146,7 +195,7 @@ def test_main_returns_zero_when_clean(tmp_path, monkeypatch, capsys):
 def test_main_reports_and_fails_on_violation(tmp_path, monkeypatch, capsys):
     wf = _point_at(tmp_path, monkeypatch)
     _write(wf, "bad.yaml", VIOLATION)
-    _write(wf, "ok.yaml", CLEAN_NO_PATHS)
+    _write(wf, "ok.yaml", CLEAN)
     assert cpp.main() == 1
     out = capsys.readouterr().out
     assert "::error file=.github/workflows/bad.yaml,line=3::" in out
@@ -160,3 +209,12 @@ def test_main_reports_paths_ignore_violation(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "::error file=.github/workflows/bad.yaml,line=3::" in out
     assert "paths-ignore: under pull_request:" in out
+
+
+def test_main_reports_branches_violation(tmp_path, monkeypatch, capsys):
+    wf = _point_at(tmp_path, monkeypatch)
+    _write(wf, "bad.yaml", BRANCHES)
+    assert cpp.main() == 1
+    out = capsys.readouterr().out
+    assert "::error file=.github/workflows/bad.yaml,line=3::" in out
+    assert "branches: under pull_request:" in out
