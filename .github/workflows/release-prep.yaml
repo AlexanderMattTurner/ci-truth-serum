@@ -7,7 +7,9 @@ name: Release prep (pre-merge version bump)
 # The matching vX.Y.Z tag is created post-merge by tag-release.yaml.
 
 on:
-  pull_request:
+  # not-required-check: advisory label-gated release automation, never a required
+  # status check — the branches: [main, master] scoping is deliberate.
+  pull_request: # not-required-check
     types: [labeled]
     branches: [main, master]
 

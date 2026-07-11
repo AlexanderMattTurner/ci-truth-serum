@@ -40,8 +40,8 @@
   types: [shell]
 
 - id: check-pr-paths
-  name: "honesty: ban paths/paths-ignore on pull_request triggers"
-  description: A path filter strands a required check at "Expected — Waiting" forever.
+  name: "honesty: ban paths/branches filters on pull_request triggers"
+  description: A paths or branches filter strands a required check at "Expected — Waiting" forever.
   entry: python -m hooks.check_pr_paths
   language: python
   additional_dependencies: [PyYAML]

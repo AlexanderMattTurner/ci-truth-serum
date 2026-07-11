@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
 """
-Enforce no path filter under pull_request: triggers in GitHub Actions workflows.
+Enforce no path/branch filter under pull_request(_target): triggers in workflows.
 
-A workflow-level path filter on pull_request means the workflow never fires
+A workflow-level filter on a pull_request trigger means the workflow never fires
 when a PR doesn't match it — GitHub shows a required check as
-"Expected — Waiting" forever and the PR can't be merged. This applies equally
-to `paths:` (PR must touch a listed path) and `paths-ignore:` (PR touching only
-ignored paths is skipped) — both leave a required check hanging.
+"Expected — Waiting" forever and the PR can't be merged. Two filter families do
+this:
 
-The fix is to move path filtering into a job (a "decide" job that gates the
-expensive jobs on a diff), so the workflow always fires and always reports while
-the work skips when nothing relevant changed.
+  * paths / paths-ignore — a PR that doesn't touch (or touches only ignored)
+    paths skips the workflow. The fix is to move path filtering into a job (a
+    "decide" job that gates the expensive jobs on a diff), so the workflow
+    always fires and always reports while the work skips when nothing relevant
+    changed.
+  * branches / branches-ignore — a PR whose base branch isn't listed skips the
+    workflow. The trap is a STACKED PR based on another feature branch: a
+    `branches: [main]` filter skips it, and GitHub does NOT re-fire the workflow
+    when it retargets the child's base to main on the parent's merge, so the
+    required checks hang permanently. The fix is to drop the filter — a required
+    check must fire for every PR regardless of base branch.
 
-Opt out with a "# not-required-check" comment on the pull_request: trigger line
-when the workflow is deliberately advisory and never a required status check.
+Opt out with a "# not-required-check" comment on the pull_request(_target):
+trigger line when the workflow is deliberately advisory and never a required
+status check.
 """
 
 import re
@@ -31,6 +39,8 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 PR_TRIGGERS = ("pull_request", "pull_request_target")
 PATH_FILTERS = ("paths", "paths-ignore")
+BRANCH_FILTERS = ("branches", "branches-ignore")
+TRIGGER_FILTERS = PATH_FILTERS + BRANCH_FILTERS
 
 
 def locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
@@ -41,8 +51,35 @@ def locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
     return 1, False
 
 
+def remediation(filter_key: str, trigger: str) -> str:
+    """The tailored message for a filter family that strands a required check.
+
+    paths/branches hang the same way but have different fixes: a path filter
+    belongs in a decide job; a branch filter must simply go (a required check
+    fires for every PR base)."""
+    if filter_key in PATH_FILTERS:
+        cause_fix = (
+            "prevents the workflow from reporting when paths don't match. "
+            "Path-gate inside a job (a decide job) instead"
+        )
+    else:
+        cause_fix = (
+            "prevents the workflow from firing for a PR whose base branch isn't "
+            "listed — a stacked PR on a non-main base is stranded, and GitHub "
+            "does not re-fire the workflow when the base retargets to main on the "
+            "parent's merge. A required check must fire for every PR regardless "
+            "of base, so drop the branch filter"
+        )
+    return (
+        f"{filter_key}: under {trigger}: {cause_fix} — a required check hangs at "
+        f"'Expected — Waiting'. Add '# {OPT_OUT}' if this workflow is never a "
+        "required check."
+    )
+
+
 def check_file(path: Path) -> tuple[int, str] | None:
-    """Return (line, message) if the workflow filters paths on a pull_request trigger."""
+    """Return (line, message) if the workflow filters paths/branches on a
+    pull_request trigger."""
     text = path.read_text()
     doc = yaml.safe_load(text)
     if not isinstance(doc, dict):
@@ -56,18 +93,13 @@ def check_file(path: Path) -> tuple[int, str] | None:
         cfg = triggers.get(trigger)
         if not isinstance(cfg, dict):
             continue
-        filter_key = next((key for key in PATH_FILTERS if key in cfg), None)
+        filter_key = next((key for key in TRIGGER_FILTERS if key in cfg), None)
         if filter_key is None:
             continue
         line, opted_out = locate_trigger(text, trigger)
         if opted_out:
             continue
-        return line, (
-            f"{filter_key}: under {trigger}: prevents the workflow from reporting "
-            "when paths don't match — a required check hangs at 'Expected — "
-            f"Waiting'. Path-gate inside a job (a decide job) instead, or add "
-            f"'# {OPT_OUT}' if this workflow is never a required check."
-        )
+        return line, remediation(filter_key, trigger)
     return None
 
 
@@ -88,7 +120,7 @@ def main() -> int:
     if total:
         print(f"\nERROR: {total} violation(s) found.")
         print(
-            "A paths/paths-ignore filter on a pull_request trigger strands a "
+            "A paths/branches filter on a pull_request trigger strands a "
             "required check at 'Expected — Waiting'."
         )
         return 1
