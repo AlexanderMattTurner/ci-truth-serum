@@ -55,7 +55,9 @@ def test_remediation_branch_family_names_the_stacked_pr_trap():
 VIOLATION = "name: x\non:\n  pull_request:\n    paths:\n      - 'src/**'\njobs: {}\n"
 PATHS_IGNORE = "name: x\non:\n  pull_request:\n    paths-ignore: [docs]\njobs: {}\n"
 BRANCHES = "name: x\non:\n  pull_request:\n    branches: [main]\njobs: {}\n"
-BRANCHES_IGNORE = "name: x\non:\n  pull_request:\n    branches-ignore: ['wip/**']\njobs: {}\n"
+BRANCHES_IGNORE = (
+    "name: x\non:\n  pull_request:\n    branches-ignore: ['wip/**']\njobs: {}\n"
+)
 # A required-check workflow filtered only by event types (not paths/branches)
 # always fires, so it is clean.
 CLEAN = "on:\n  pull_request:\n    types: [opened, synchronize]\njobs: {}\n"
