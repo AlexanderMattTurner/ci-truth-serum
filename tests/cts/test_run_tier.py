@@ -195,8 +195,10 @@ def test_main_tier1_flags_a_real_violation(tmp_path, monkeypatch):
 
 def test_main_tier1_passes_on_clean_repo(tmp_path, monkeypatch):
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    # Clean: a branches filter on PUSH is ignored (only pull_request is checked),
+    # and the pull_request trigger itself carries no paths/branches filter.
     (tmp_path / ".github" / "workflows" / "ok.yaml").write_text(
-        "name: x\non:\n  pull_request:\n    branches: [main]\njobs: {}\n"
+        "name: x\non:\n  push:\n    branches: [main]\n  pull_request:\njobs: {}\n"
     )
     monkeypatch.chdir(tmp_path)
     assert rt.main(["1"]) == 0
