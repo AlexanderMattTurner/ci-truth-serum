@@ -20,6 +20,9 @@ always_reporter = load_hook("check_always_reporter.py", "fuzz_always_reporter")
 required_reporter = load_hook("check_required_reporter.py", "fuzz_required_reporter")
 concurrency = load_hook("check_concurrency.py", "fuzz_concurrency")
 static_concurrency = load_hook("check_static_concurrency.py", "fuzz_static_concurrency")
+requires_concurrency = load_hook(
+    "check_requires_concurrency.py", "fuzz_requires_concurrency"
+)
 pr_paths = load_hook("check_pr_paths.py", "fuzz_pr_paths")
 claude_model = load_hook("check_claude_model.py", "fuzz_claude_model")
 externalized_markers = load_hook(
@@ -35,6 +38,7 @@ WORKFLOW_CHECKS = [
     ("check_required_reporter", required_reporter.check_file, True),
     ("check_concurrency", concurrency.check_file, False),
     ("check_static_concurrency", static_concurrency.check_file, False),
+    ("check_requires_concurrency", requires_concurrency.check_file, False),
     ("check_pr_paths", pr_paths.check_file, False),
     ("check_claude_model", claude_model.check_file, True),
     ("check_externalized_markers", externalized_markers.check_file, True),

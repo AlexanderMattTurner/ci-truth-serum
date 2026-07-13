@@ -123,6 +123,16 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-requires-concurrency
+  name: "opinionated: require a concurrency block on pull_request workflows"
+  description: A PR workflow with no concurrency block stacks a fresh run per push instead of cancelling the superseded one, starving a capped runner pool.
+  entry: python -m hooks.check_requires_concurrency
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
 - id: check-path-gate-deps
   name: "opinionated: require decide filters to cover every gated-job dependency"
   description: A decide filter omitting a gated job's composite/script dependency fails open exactly when that dependency changes.
