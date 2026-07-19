@@ -44,7 +44,11 @@ runs:
 
     - name: Install Node Dependencies
       if: hashFiles('package.json') != ''
-      run: pnpm install
+      # `--frozen-lockfile` enforces lockfile integrity, but only a repo that
+      # commits a `pnpm-lock.yaml` has one to freeze; a lockfile-less repo (this
+      # one — package.json exists only for prettier/commitlint) would else hit
+      # ERR_PNPM_NO_LOCKFILE. Freeze when a lockfile is present, plain otherwise.
+      run: pnpm install ${{ hashFiles('pnpm-lock.yaml') != '' && '--frozen-lockfile' || '' }}
       shell: bash
 
     - name: Set up uv
