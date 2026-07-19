@@ -61,6 +61,11 @@ FUZZ_REQUIRED = {
     "check_path_gate_deps": "check_file",
     "check_failure_notifier_coverage": "check_repo",
     "check_unnamed_regex_groups": "check_file",
+    "check_drift_guards": "violations",
+    "check_graceful_handwave": "violations",
+    "check_historical_comments": "violations",
+    "check_doc_line_refs": "violations",
+    "check_flag_arity": "violations",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the

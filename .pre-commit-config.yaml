@@ -75,6 +75,19 @@ repos:
         # advice: nothing here runs concurrently, and the checker's source plus
         # its test fixtures necessarily quote the banned idiom.
         args: [--skip, check_global_stdio_swap]
+        # Excluded files quote the banned idioms by necessity: the prose-honesty
+        # checks' test/fuzz fixtures embed un-annotated hits on purpose, the
+        # README catalog must name each banned pattern to document its check,
+        # and the inherited automation harness under .claude/ carries
+        # deliberately illustrative `path/to/file.py:42` placeholders (it is
+        # out of scope for this package's lint gate, as in ruff's config).
+        exclude: |
+          (?x)^(
+            README\.md
+            |\.claude/.*
+            |tests/cts/test_check_(drift_guards|graceful_handwave|historical_comments|doc_line_refs)\.py
+            |tests/cts/test_fuzz_prose_checks\.py
+          )$
         language: python
         additional_dependencies: [PyYAML, identify]
 

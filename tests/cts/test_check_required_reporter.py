@@ -251,8 +251,8 @@ jobs:
 
 
 def test_flags_list_form_on_reporter(tmp_path):
-    # List-form `on: [pull_request, push]` used to be skipped by the
-    # `isinstance(triggers, dict)` gate — a fail-open. It must now be checked.
+    # An `isinstance(triggers, dict)` gate alone would skip list-form
+    # `on: [pull_request, push]` — a fail-open; the list form must be checked.
     found = crr.check_file(_write(tmp_path, "wf.yaml", LIST_FORM_UNCLASSIFIED))
     assert len(found) == 1
     line, message = found[0]

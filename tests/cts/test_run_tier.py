@@ -94,6 +94,36 @@ def test_matches_shell_or_dockerfile_accepts_shell(tmp_path):
     assert rt.matches(str(p), rt.SHELL_OR_DOCKERFILE) is True
 
 
+def test_matches_markdown(tmp_path):
+    p = tmp_path / "notes.md"
+    p.write_text("# heading\n")
+    assert rt.matches(str(p), rt.MARKDOWN) is True
+    assert rt.matches(str(p), rt.COMMENTED_CODE) is False
+
+
+def test_matches_commented_code_accepts_each_language(tmp_path):
+    for name, body in [
+        ("s.sh", "#!/usr/bin/env bash\n"),
+        ("m.py", "x = 1\n"),
+        ("j.js", "let x = 1;\n"),
+        ("t.ts", "let x = 1;\n"),
+    ]:
+        p = tmp_path / name
+        p.write_text(body)
+        assert rt.matches(str(p), rt.COMMENTED_CODE) is True, name
+        assert rt.matches(str(p), rt.PROSE_OR_COMMENTED_CODE) is True, name
+
+
+def test_matches_prose_or_commented_code_accepts_prose(tmp_path):
+    for name in ("notes.md", "doc.rst"):
+        p = tmp_path / name
+        p.write_text("text\n")
+        assert rt.matches(str(p), rt.PROSE_OR_COMMENTED_CODE) is True, name
+    p = tmp_path / "Dockerfile"
+    p.write_text("FROM scratch\n")
+    assert rt.matches(str(p), rt.PROSE_OR_COMMENTED_CODE) is False
+
+
 # ── run_member ────────────────────────────────────────────────────────────
 def test_run_member_skips_content_lint_with_no_matching_files(tmp_path, monkeypatch):
     # A python file given to a SHELL member → no shell files → skipped (rc 0),
