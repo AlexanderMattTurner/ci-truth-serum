@@ -22,7 +22,10 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    LineLoader,
+    workflow_files as _workflow_files,
+)
 
 ACTION = "anthropics/claude-code-action"
 OPT_OUT = "allow-default-model"
@@ -30,9 +33,11 @@ REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 
-# A `uses:` line that references the action exactly (split on `@` excludes the
-# longer `claude-code-base-action`, whose model handling is separate).
-USES_LINE = re.compile(rf"uses:\s*{re.escape(ACTION)}(?:@|\s|$)")
+# A source line whose YAML key is `uses:` referencing the action exactly. Anchored
+# after optional block-sequence `- ` and leading indent, so a commented-out or
+# example `# uses: …` line never matches (the `#` is not consumed). Splitting on
+# `@` excludes the longer `claude-code-base-action`, whose model handling differs.
+USES_LINE = re.compile(rf"^-?\s*uses:\s*{re.escape(ACTION)}(?:@|\s|$)")
 
 MESSAGE = (
     f"{ACTION} step has no explicit model; the action defaults to Opus (~5x the "
@@ -71,27 +76,49 @@ def action_steps(doc: dict) -> list[dict]:
     return steps
 
 
-def uses_lines(text: str) -> list[tuple[int, bool]]:
-    """1-based line number and opt-out flag for each claude-code-action `uses:` line, in order."""
-    return [
-        (num, OPT_OUT in line)
-        for num, line in enumerate(text.splitlines(), 1)
-        if USES_LINE.search(line)
-    ]
+def _uses_line(source_lines: list[str], start: int) -> int:
+    """The 1-based line of this step's `uses: <action>` key, scanning forward from
+    the step's own start line. Anchoring to the step's start (not a global grep of
+    every `uses:` in the file) is what fixes the misalignment: a commented/example
+    `uses:` line elsewhere can no longer shift which step a violation is pinned to."""
+    for i in range(start - 1, len(source_lines)):
+        if USES_LINE.match(source_lines[i].lstrip()):
+            return i + 1
+    return start
 
 
-def check_file(path: Path) -> list[tuple[int, str]]:
-    """Return (line, message) for every claude-code-action step missing an explicit model."""
+def check_file(path: Path) -> list[tuple[int | None, str]]:
+    """Return (line, message) for every claude-code-action step missing an explicit model.
+
+    A file that cannot be parsed as YAML is itself reported as a violation
+    (line ``None``) rather than silently passed as clean — matching the sibling
+    workflow lints (check_workflow_pipefail &c.)."""
     text = path.read_text()
-    doc = yaml.safe_load(text)
+    try:
+        doc = yaml.load(text, Loader=LineLoader)
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        return [
+            (
+                None,
+                f"could not parse as YAML ({first_line}); cannot verify "
+                "claude-code-action model pinning — fix the syntax (or run "
+                "actionlint) and re-check.",
+            )
+        ]
     if not isinstance(doc, dict):
         return []
-    # Parse order and text order both follow the document, so the Nth using-step
-    # lines up with the Nth uses: line — pair them to attach a line number.
-    using = [step for step in action_steps(doc) if uses_action(step)]
-    located = uses_lines(text)
-    violations = []
-    for step, (line, opted_out) in zip(using, located):
+
+    # LineLoader tags each step mapping with `__line__` (its first key's source
+    # line); the step's own `uses:` line is found by scanning from there, so each
+    # violation is anchored to its real step instead of a positional text pairing.
+    source_lines = text.splitlines()
+    violations: list[tuple[int | None, str]] = []
+    for step in action_steps(doc):
+        if not uses_action(step):
+            continue
+        line = _uses_line(source_lines, step.get("__line__", 1))
+        opted_out = 1 <= line <= len(source_lines) and OPT_OUT in source_lines[line - 1]
         if not has_model(step) and not opted_out:
             violations.append((line, MESSAGE))
     return violations
@@ -104,8 +131,10 @@ def workflow_files() -> list[Path]:
 def main() -> int:
     total = 0
     for path in workflow_files():
+        rel = path.relative_to(REPO_ROOT)
         for line, message in check_file(path):
-            print(f"::error file={path.relative_to(REPO_ROOT)},line={line}::{message}")
+            loc = f"file={rel},line={line}" if line else f"file={rel}"
+            print(f"::error {loc}::{message}")
             total += 1
 
     if total:

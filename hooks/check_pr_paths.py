@@ -77,11 +77,23 @@ def remediation(filter_key: str, trigger: str) -> str:
     )
 
 
-def check_file(path: Path) -> tuple[int, str] | None:
+def check_file(path: Path) -> tuple[int | None, str] | None:
     """Return (line, message) if the workflow filters paths/branches on a
-    pull_request trigger."""
+    pull_request trigger.
+
+    A file that cannot be parsed as YAML is itself reported as a violation
+    (line ``None``) rather than silently passed as clean — matching the sibling
+    workflow lints (check_workflow_pipefail &c.)."""
     text = path.read_text()
-    doc = yaml.safe_load(text)
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        return None, (
+            f"could not parse as YAML ({first_line}); cannot verify path/branch "
+            "filters on the pull_request trigger — fix the syntax (or run "
+            "actionlint) and re-check."
+        )
     if not isinstance(doc, dict):
         return None
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
@@ -114,7 +126,9 @@ def main() -> int:
         if found is None:
             continue
         line, message = found
-        print(f"::error file={path.relative_to(REPO_ROOT)},line={line}::{message}")
+        rel = path.relative_to(REPO_ROOT)
+        loc = f"file={rel},line={line}" if line else f"file={rel}"
+        print(f"::error {loc}::{message}")
         total += 1
 
     if total:

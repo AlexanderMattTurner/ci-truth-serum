@@ -168,6 +168,40 @@ def test_notifier_without_workflow_run_list_fails(tmp_path, monkeypatch, capsys)
     assert "no `on.workflow_run.workflows` list" in capsys.readouterr().out
 
 
+# ── malformed YAML is reported, not raised ───────────────────────────────
+def test_malformed_monitored_workflow_is_reported(tmp_path, monkeypatch, capsys):
+    # A monitored workflow that PyYAML can't parse is reported as a violation
+    # (not a traceback that aborts the whole scan), so coverage stays verifiable.
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "a.yaml": PUSH_WF.format(name="Alpha"),
+            "broken.yaml": "on: [push\njobs: {\n",
+            "ci-failure-notify.yaml": _notifier(["Alpha"]),
+        },
+    )
+    assert _main(monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "could not parse as YAML" in out
+    assert "broken.yaml" in out
+
+
+def test_malformed_notifier_is_reported(tmp_path, monkeypatch, capsys):
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "a.yaml": PUSH_WF.format(name="Alpha"),
+            "ci-failure-notify.yaml": "on: [workflow_run\njobs: {\n",
+        },
+    )
+    assert _main(monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "could not parse as YAML" in out
+    assert "ci-failure-notify.yaml" in out
+
+
 # ── crash resistance (property fuzz over the check_repo surface) ─────────
 _FRAGMENTS = [
     "name: x\n",

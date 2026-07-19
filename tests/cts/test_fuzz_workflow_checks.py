@@ -36,7 +36,7 @@ path_gate_deps = load_hook("check_path_gate_deps.py", "fuzz_path_gate_deps")
 WORKFLOW_CHECKS = [
     ("check_always_reporter", always_reporter.check_file, False),
     ("check_required_reporter", required_reporter.check_file, True),
-    ("check_concurrency", concurrency.check_file, False),
+    ("check_concurrency", concurrency.check_file, True),
     ("check_static_concurrency", static_concurrency.check_file, False),
     ("check_requires_concurrency", requires_concurrency.check_file, False),
     ("check_pr_paths", pr_paths.check_file, False),

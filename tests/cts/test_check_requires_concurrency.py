@@ -116,7 +116,23 @@ def test_opt_out_comment_suppresses_the_error(tmp_path):
     assert rc.check_file(_write(tmp_path, body)) is None
 
 
+def test_opt_out_token_in_string_value_does_not_suppress(tmp_path):
+    """The opt-out counts only inside a real `#` comment — a workflow `name:` that
+    literally contains the token must still be flagged (no byte-stream fail-open)."""
+    body = f'name: "{rc.OPT_OUT}"\non:\n  pull_request:\n' + PLAIN_JOBS
+    assert rc.check_file(_write(tmp_path, body)) is not None
+
+
 # ── malformed / edge inputs (no crash) ──────────────────────────────────────────
+
+
+def test_malformed_yaml_is_reported_not_raised(tmp_path):
+    """An unparseable workflow is reported as a violation (line None), not a crash."""
+    result = rc.check_file(_write(tmp_path, "on: [pull_request\njobs: {\n"))
+    assert result is not None
+    line, message = result
+    assert line is None
+    assert "could not parse as YAML" in message
 
 
 def test_missing_on_key_is_exempt(tmp_path):
