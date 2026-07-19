@@ -262,7 +262,9 @@ def test_flags_list_form_on_reporter(tmp_path):
 
 def test_list_form_without_pr_trigger_is_ignored(tmp_path):
     # A list `on:` with no pull_request member is not a required-check candidate.
-    body = "name: x\non: [push, workflow_dispatch]\njobs:\n  report:\n    if: always()\n"
+    body = (
+        "name: x\non: [push, workflow_dispatch]\njobs:\n  report:\n    if: always()\n"
+    )
     assert crr.check_file(_write(tmp_path, "wf.yaml", body)) == []
 
 
