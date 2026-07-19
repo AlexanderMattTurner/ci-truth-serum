@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO_ROOT / ".github" / "scripts"
 
 # `: "${VAR:?message}"` guard lines, in file order.
-_GUARD_RE = re.compile(r'^\s*:?\s*"\$\{([A-Za-z_][A-Za-z0-9_]*):\?')
+_GUARD_RE = re.compile(r'^\s*:?\s*"\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*):\?')
 
 
 def _guard_vars(script: Path) -> list[str]:
@@ -22,7 +22,7 @@ def _guard_vars(script: Path) -> list[str]:
     for line in script.read_text().splitlines():
         m = _GUARD_RE.match(line)
         if m:
-            out.append(m.group(1))
+            out.append(m.group("var"))
     return out
 
 
