@@ -58,6 +58,14 @@ def _command(path: str) -> dict:
             1,
             "missing.sh",
         ),
+        # Same, but the UNQUOTED $CLAUDE_PROJECT_DIR spelling (validate-config.sh
+        # rewrites both `"$CLAUDE_PROJECT_DIR"/` and bare `$CLAUDE_PROJECT_DIR/`).
+        (
+            _command("$CLAUDE_PROJECT_DIR/.claude/hooks/missing.sh"),
+            [(".hooks/pre-commit", True)],
+            1,
+            "missing.sh",
+        ),
         # Hook file exists but isn't executable (.hooks/)
         (
             {"hooks": {}},
@@ -73,7 +81,13 @@ def _command(path: str) -> dict:
             "not executable",
         ),
     ],
-    ids=["valid", "missing-hook", "non-executable-hook", "non-executable-claude-hook"],
+    ids=[
+        "valid",
+        "missing-hook",
+        "missing-hook-unquoted",
+        "non-executable-hook",
+        "non-executable-claude-hook",
+    ],
 )
 def test_validate_config(
     tmp_path: Path,
@@ -119,6 +133,19 @@ def test_rejects_hook_with_syntax_error(tmp_path: Path, copy_script) -> None:
     result = run_validator(tmp_path, copy_script)
     assert result.returncode == 1
     assert "has a bash syntax error" in result.stdout + result.stderr
+
+
+def test_rejects_py_hook_with_syntax_error(tmp_path: Path, copy_script) -> None:
+    """The `*.py) py_compile` arm must catch a Python syntax error. No shebang and
+    no +x, so this isolates the py_compile branch (not the shebang/exec check)."""
+    write_settings(tmp_path, {"hooks": {}})
+    path = tmp_path / ".hooks" / "bad.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("def f(:\n    pass\n")  # `def f(:` is a syntax error
+    path.chmod(0o644)
+    result = run_validator(tmp_path, copy_script)
+    assert result.returncode == 1
+    assert "has a python syntax error" in result.stdout + result.stderr
 
 
 def _pretooluse_settings(cmd: str) -> dict:

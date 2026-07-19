@@ -140,7 +140,13 @@ def test_every_input_parsing_hook_has_a_fuzz_suite() -> None:
         # module without driving its parser does not satisfy the obligation.
         module_hits = [name for name, code in SUITES if stem in code]
         symbol_re = re.compile(rf"\b{re.escape(symbol)}\b")
-        symbol_hits = [name for name, code in SUITES if symbol_re.search(code)]
+        # Intersect: the symbol must be referenced in a suite that ALSO loads this
+        # module. Otherwise a symbol shared across parsers (e.g. `check_file`) is
+        # satisfied by some *other* module's suite, and this module could ship with
+        # its parser undriven while the obligation reads as met.
+        symbol_hits = [
+            name for name, code in SUITES if stem in code and symbol_re.search(code)
+        ]
         assert module_hits, f"{stem} parses input but no fuzz suite references it"
         assert symbol_hits, (
             f"{stem}.{symbol} is never exercised by a fuzz suite "

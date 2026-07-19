@@ -97,13 +97,23 @@ def workflow_text(draw: st.DrawFn) -> str:
     return "".join(parts)
 
 
-def _result_well_typed(result: object, expects_list: bool) -> None:
+def _assert_lineno_in_range(line: object, n_lines: int) -> None:
+    # A reported line number must point at a real line of the file it was read
+    # from (1-based, within bounds) -- mirrors test_fuzz_parsers._assert_valid_linenos.
+    if line is None:
+        return
+    assert isinstance(line, int)
+    assert 1 <= line <= n_lines, (line, n_lines)
+
+
+def _result_well_typed(result: object, expects_list: bool, n_lines: int) -> None:
     if expects_list:
         assert isinstance(result, list)
         for item in result:
             assert isinstance(item, tuple) and len(item) == 2
             line, msg = item
             assert isinstance(line, int) and isinstance(msg, str)
+            _assert_lineno_in_range(line, n_lines)
         return
     assert result is None or (
         isinstance(result, tuple)
@@ -111,6 +121,8 @@ def _result_well_typed(result: object, expects_list: bool) -> None:
         and isinstance(result[0], int)
         and isinstance(result[1], str)
     )
+    if isinstance(result, tuple):
+        _assert_lineno_in_range(result[0], n_lines)
 
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
@@ -133,6 +145,7 @@ def test_workflow_check_files_never_crash(
     wf_dir.mkdir(parents=True)
     path = wf_dir / "wf.yaml"
     path.write_text(text, encoding="utf-8")
+    n_lines = len(text.splitlines())
 
     for _name, check, expects_list in WORKFLOW_CHECKS:
         mod = check.__globals__
@@ -141,4 +154,4 @@ def test_workflow_check_files_never_crash(
         if "ACTIONS_DIR" in mod:
             monkeypatch.setitem(mod, "ACTIONS_DIR", root / ".github" / "actions")
         result = check(path)
-        _result_well_typed(result, expects_list)
+        _result_well_typed(result, expects_list, n_lines)
