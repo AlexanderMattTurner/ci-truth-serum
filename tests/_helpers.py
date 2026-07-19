@@ -6,13 +6,30 @@ without manipulating `sys.path` or relying on the conftest plugin loader.
 
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
 from types import ModuleType
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_DIR = REPO_ROOT / "hooks"
+
+
+def dogfood_extras_exclude() -> "re.Pattern[str]":
+    """The dogfood check-extras hook's exclude regex from .pre-commit-config.yaml —
+    the one authoritative definition of what the extras aggregate skips in this
+    repo, so tree-clean tests scan exactly the set the hook enforces."""
+    config = yaml.safe_load(
+        (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    )
+    for repo in config["repos"]:
+        for hook in repo.get("hooks", []):
+            if hook.get("id") == "check-extras":
+                return re.compile(hook["exclude"])
+    raise AssertionError("check-extras dogfood hook not in .pre-commit-config.yaml")
 
 
 def load_hook(filename: str, modname: str) -> ModuleType:

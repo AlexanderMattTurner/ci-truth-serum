@@ -51,6 +51,10 @@ lints that catch two kinds of lie a green check can hide:
 | `check-unnamed-regex-groups` | A regex’s match handling went positional and brittle because a `re.*` literal used an unnamed `( )` group.                  |
 | `check-global-stdio-swap`    | Concurrent calls clobbered each other’s output because code reassigned the process-global `sys.stdout` to capture I/O.      |
 | `check-claude-model`         | A `claude-code-action` step billed Opus silently because it omitted `--model` and rode the action’s expensive default tier. |
+| `check-drift-guards`         | A copies-agree ("drift guard") test shipped with no stated reason why a single source of truth is infeasible—the duplication it polices kept drifting anyway. Requires `@pytest.mark.drift_guard("<why no SSOT is feasible>")` on any test whose name/docstring reads as a drift guard, so the judgement is reviewed, not implied. |
+| `check-graceful-handwave`    | A doc or comment claimed the code "fails gracefully"—a guarantee that specifies nothing (which input? which exit code?)—and nobody could tell whether the behaviour was real or wished-for. Scans prose (Markdown/RST) line-by-line and code comment-only; opt out by stating the behaviour: `allow-graceful: <what actually happens>`. Pass `--prose` to scan a free-standing text file (e.g. a PR body) line-by-line. |
+| `check-historical-comments`  | A comment narrating the past ("renamed from X", "now uses Y") rotted into a lie the moment the code moved—the reader can't see the old code, so the note was unverifiable from day one. Bans only tokens with no present-tense reading; opt out (e.g. a reader of a legacy on-disk format) with `# allow-history: <reason>`. |
+| `check-doc-line-refs`        | A doc cited source by exact line number and pointed at whatever now happens to live there after the next refactor. Bans `<file>.<ext>:<N>` and `(L<N>)`-style cites in Markdown (fenced code blocks and any `CHANGELOG.md` are skipped); cite a function/section/anchor instead, or suppress with `<!-- allow-line-ref: <reason> -->`. |
 
 ## Usage
 
@@ -96,6 +100,10 @@ repos:
       # - id: check-unnamed-regex-groups
       # - id: check-global-stdio-swap
       # - id: check-claude-model         # require an explicit --model on claude-code-action steps
+      # - id: check-drift-guards         # copies-agree tests must justify why no SSOT is feasible
+      # - id: check-graceful-handwave    # "graceful" hand-waves must state the concrete behaviour
+      # - id: check-historical-comments  # comments describe the present code, not its past
+      # - id: check-doc-line-refs        # docs cite symbols/sections, not line numbers
 ```
 
 `pre-commit run --all-files` sweeps the whole repo (handy on first adoption).

@@ -198,6 +198,34 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-drift-guards
+  name: "extra: require a justification on drift-guard (copies-agree) tests"
+  description: A test asserting two copies agree hides a missing SSOT; mark it @pytest.mark.drift_guard("<why>") so the reason is reviewed.
+  entry: python -m hooks.check_drift_guards
+  language: python
+  types: [python]
+
+- id: check-graceful-handwave
+  name: "extra: ban graceful-degradation hand-waves in prose and comments"
+  description: The word claims a guarantee while specifying nothing; state the concrete behaviour or annotate allow-graceful.
+  entry: python -m hooks.check_graceful_handwave
+  language: python
+  types_or: [shell, python, javascript, ts, markdown, rst]
+
+- id: check-historical-comments
+  name: "extra: ban historical narration in code comments"
+  description: A comment narrating how the code changed is unverifiable and rots; describe the current code, or annotate allow-history.
+  entry: python -m hooks.check_historical_comments
+  language: python
+  types_or: [shell, python, javascript, ts]
+
+- id: check-doc-line-refs
+  name: "extra: ban exact line-number citations in Markdown docs"
+  description: A doc citing source by line number rots the moment code moves; cite a symbol/section instead.
+  entry: python -m hooks.check_doc_line_refs
+  language: python
+  types: [markdown]
+
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
 # picked up with no consumer change. `check-symlinks` (a language:script shell

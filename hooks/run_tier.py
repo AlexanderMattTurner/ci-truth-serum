@@ -31,6 +31,14 @@ SHELL = "shell"
 PYTHON = "python"
 DOCKERFILE = "dockerfile"
 SHELL_OR_DOCKERFILE = "shell_or_dockerfile"
+MARKDOWN = "markdown"
+COMMENTED_CODE = "commented_code"
+PROSE_OR_COMMENTED_CODE = "prose_or_commented_code"
+
+# The file classes whose `#`/`//` comments the comment lints can read, and the
+# prose classes scanned line-by-line.
+_COMMENT_TAGS = frozenset({"shell", "python", "javascript", "ts"})
+_PROSE_TAGS = frozenset({"markdown", "rst"})
 
 TIERS: dict[str, list[tuple[str, str]]] = {
     "1": [
@@ -57,6 +65,10 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_unnamed_regex_groups", PYTHON),
         ("check_global_stdio_swap", PYTHON),
         ("check_claude_model", WORKFLOW),
+        ("check_drift_guards", PYTHON),
+        ("check_graceful_handwave", PROSE_OR_COMMENTED_CODE),
+        ("check_historical_comments", COMMENTED_CODE),
+        ("check_doc_line_refs", MARKDOWN),
     ],
 }
 
@@ -72,6 +84,12 @@ def matches(path: str, kind: str) -> bool:
         return "dockerfile" in tags
     if kind == SHELL_OR_DOCKERFILE:
         return "shell" in tags or "dockerfile" in tags
+    if kind == MARKDOWN:
+        return "markdown" in tags
+    if kind == COMMENTED_CODE:
+        return bool(tags & _COMMENT_TAGS)
+    if kind == PROSE_OR_COMMENTED_CODE:
+        return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS))
     return False
 
 
