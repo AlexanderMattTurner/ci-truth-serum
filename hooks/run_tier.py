@@ -69,6 +69,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_graceful_handwave", PROSE_OR_COMMENTED_CODE),
         ("check_historical_comments", COMMENTED_CODE),
         ("check_doc_line_refs", MARKDOWN),
+        ("check_flag_arity", SHELL),
     ],
 }
 

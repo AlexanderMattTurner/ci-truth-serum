@@ -55,6 +55,7 @@ lints that catch two kinds of lie a green check can hide:
 | `check-graceful-handwave`    | A doc or comment claimed the code "fails gracefully"—a guarantee that specifies nothing (which input? which exit code?)—and nobody could tell whether the behaviour was real or wished-for. Scans prose (Markdown/RST) line-by-line and code comment-only; opt out by stating the behaviour: `allow-graceful: <what actually happens>`. Pass `--prose` to scan a free-standing text file (e.g. a PR body) line-by-line. |
 | `check-historical-comments`  | A comment narrating the past ("renamed from X", "now uses Y") rotted into a lie the moment the code moved—the reader can't see the old code, so the note was unverifiable from day one. Bans only tokens with no present-tense reading; opt out (e.g. a reader of a legacy on-disk format) with `# allow-history: <reason>`. |
 | `check-doc-line-refs`        | A doc cited source by exact line number and pointed at whatever now happens to live there after the next refactor. Bans `<file>.<ext>:<N>` and `(L<N>)`-style cites in Markdown (fenced code blocks and any `CHANGELOG.md` are skipped); cite a function/section/anchor instead, or suppress with `<!-- allow-line-ref: <reason> -->`. |
+| `check-flag-arity`           | A CLI parser died with a raw `$2: unbound variable` instead of a clean "--branch needs a value", because a `--branch) X="$2"; shift 2` arm trusted the loop's outer `$# -gt 0` (which proves only `$1`) and the flag was passed last. Flags any `case` arm whose label is a `-x`/`--xxx`/`--xxx=*` option that reads `$2`/`shift 2` without its own guard; satisfied by `[[ $# -ge 2 ]] \|\| die`, a self-guarding `${2:?…}`, or a `need_val`/`need_arg` helper. Suppress with `# flag-arity-ok: <why>`. |
 
 ## Usage
 
@@ -104,6 +105,7 @@ repos:
       # - id: check-graceful-handwave    # "graceful" hand-waves must state the concrete behaviour
       # - id: check-historical-comments  # comments describe the present code, not its past
       # - id: check-doc-line-refs        # docs cite symbols/sections, not line numbers
+      # - id: check-flag-arity           # value-taking CLI flag arms must guard $2 before reading it
 ```
 
 `pre-commit run --all-files` sweeps the whole repo (handy on first adoption).

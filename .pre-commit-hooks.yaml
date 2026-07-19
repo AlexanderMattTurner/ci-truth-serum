@@ -226,6 +226,13 @@
   language: python
   types: [markdown]
 
+- id: check-flag-arity
+  name: "extra: require an arity guard on value-taking CLI flag arms"
+  description: A `--flag) x=$2; shift 2` arm relying only on the loop's `$# -gt 0` dies with a raw unbound-variable error when the flag is passed last; guard `$2` before reading it.
+  entry: python -m hooks.check_flag_arity
+  language: python
+  types: [shell]
+
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
 # picked up with no consumer change. `check-symlinks` (a language:script shell
