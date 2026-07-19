@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Run the base branch's trusted release-prep + changelog assembler on the PR branch.
 # Env: BASE_REF, RUNNER_TEMP
-set -eo pipefail
+set -euo pipefail
+: "${BASE_REF:?}"
+: "${RUNNER_TEMP:?}"
 script=.github/scripts/release-prep.sh
 assembler=scripts/assemble-changelog.mjs
 retry_lib=bin/lib/retry.bash

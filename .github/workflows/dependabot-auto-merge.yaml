@@ -13,8 +13,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
+# `gh pr merge --auto` only enables auto-merge (GitHub performs the merge later
+# once checks pass), and `gh pr comment` posts a note — both need just
+# pull-requests: write, so contents stays read-only. NOTE: on Dependabot-authored
+# PRs the GITHUB_TOKEN is read-only by default; for these steps to work the repo
+# must grant Dependabot elevated permissions
+# (Settings -> Code security -> Dependabot -> "Allow GitHub Actions to create and
+# approve pull requests", plus enabling auto-merge on the repository).
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 jobs:
