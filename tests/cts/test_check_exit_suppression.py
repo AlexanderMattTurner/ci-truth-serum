@@ -26,10 +26,29 @@ mod = load_hook("check_exit_suppression.py", "check_exit_suppression")
         "git config --get-all x || true",
         # `|| :` is the same no-op suppressor as `|| true`
         "reap_volumes || :",
+        # a suppressor glued to a following metacharacter (no trailing space) must
+        # still fire — the old `(?:\s|;|$)` boundary missed `|| true&` / `|| :;`.
+        "cleanup || true&",
+        "cleanup || true;next_cmd",
+        "cleanup || :;next_cmd",
     ],
 )
 def test_fires_on_output_kept_suppression(line: str) -> None:
     assert mod.violations(line) == [1]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # a longer command NAMED true.../: ... is not the `true`/`:` builtin, so the
+        # `(?![\w-])` boundary must NOT fire on it (negative control for the glued
+        # boundary — pairs with the positives above).
+        "run_thing || truelove",
+        "run_thing || true-ish",
+    ],
+)
+def test_does_not_fire_on_longer_command_name(line: str) -> None:
+    assert mod.violations(line) == []
 
 
 @pytest.mark.parametrize(

@@ -6,9 +6,11 @@ extracted is a supply-chain entry point: without verifying the bytes against a
 pinned digest, a compromised mirror or a tampered release silently swaps what
 you execute. The same is true of a Dockerfile ``ADD <url> <dest>``, which writes
 the remote bytes straight into the image. This check fires on any ``curl``/``wget``
-invocation that writes an artifact (``-o FILE`` / ``-O`` / ``--output`` /
-``--remote-name``), and on any ``ADD`` from an ``http(s)://`` URL, unless a
-verification token appears close after it:
+invocation that writes an artifact — an explicit output flag (``-o FILE`` / ``-O`` /
+``--output`` / ``--remote-name``), a shell redirect into a file (``> FILE`` /
+``>> FILE``), or a bare ``wget <url>`` (which saves to disk by default) — and on any
+``ADD`` from an ``http(s)://`` URL, unless a verification token appears close after
+it:
 
   * ``sha256sum`` / ``sha512sum`` / ``shasum`` / ``md5sum`` (a ``… -c`` check)
   * ``cosign verify`` or ``gpg --verify`` (signature check)
@@ -54,7 +56,18 @@ _OUTPUT_FLAG = re.compile(
     r"(?:[=\s]+(?P<target>\S+)|(?P<stdout>-)(?=\s|$))?"
 )
 
-_NULL_TARGETS = {"/dev/null", "/dev/stdout", "-"}
+_NULL_TARGETS = {"/dev/null", "/dev/stdout", "/dev/stderr", "-"}
+
+# A shell redirect that writes the fetched bytes into a file: `> f` / `>> f` (with
+# any inter-token spacing). The `>` must be at a word boundary (start or after
+# whitespace) so an FD-qualified redirect like `2>` / `1>` (stderr/stdout, glued to
+# a digit) is NOT mistaken for an artifact write; a `&`/`|`-led target (`2>&1`, a
+# pipe) is excluded from the captured path.
+_REDIRECT = re.compile(r"(?:^|\s)>>?\s*(?P<rt>[^\s&|<>]+)")
+
+# wget (unlike curl, which defaults to stdout) writes to disk by default, so a bare
+# `wget <url>` with no output flag or redirect is still an artifact download.
+_WGET = re.compile(r"\bwget\b")
 
 _VERIFY = re.compile(
     r"\b(?:sha256sum|sha512sum|sha384sum|sha1sum|shasum|md5sum|_sha256_verify)\b"
@@ -65,15 +78,26 @@ _VERIFY = re.compile(
 
 
 def _is_artifact_download(line: str) -> bool:
-    """True if LINE runs curl/wget to save a real file (not /dev/null/stdout/-)."""
+    """True if LINE runs curl/wget to save a real file (not /dev/null/stdout/-).
+
+    Recognizes three ways bytes reach disk: an explicit output flag
+    (``-o FILE``/``-O``/``--output``/``--remote-name``), a shell redirect into a
+    file (``curl url > f``), and a bare ``wget url`` (wget saves by default; curl,
+    which defaults to stdout, does not — so a flag-less, redirect-less curl is not
+    an artifact)."""
     if not _DOWNLOADER.search(line):
         return False
     m = _OUTPUT_FLAG.search(line)
-    if not m:
-        return False
-    if m.group("stdout"):  # `-O-` writes to stdout, not an artifact
-        return False
-    return m.group("target") not in _NULL_TARGETS
+    if m:
+        if m.group("stdout"):  # `-O-` writes to stdout, not an artifact
+            return False
+        # A captured target may be a null sink; `-O`/`--remote-name` capture none
+        # (they derive the name from the URL) and so are always a real artifact.
+        return m.group("target") not in _NULL_TARGETS
+    rm = _REDIRECT.search(line)
+    if rm and rm.group("rt") not in _NULL_TARGETS:
+        return True
+    return bool(_WGET.search(line))
 
 
 def _is_download(line: str) -> bool:

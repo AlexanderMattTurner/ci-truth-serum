@@ -157,6 +157,31 @@ def test_executable_lines_keeps_pipe_on_heredoc_intro_line():
     assert "cat <<EOF | tee" in cwp._executable_lines("cat <<EOF | tee\nbody\nEOF\n")
 
 
+def test_code_only_normalizes_quoted_heredoc_delimiter():
+    # `<<'EOF'` / `<<"EOF"` / `<<-'EOF'` must survive quote-stripping as `<<EOF` /
+    # `<<-EOF` — otherwise `_code_only` swallows the delimiter as a quoted string and
+    # the body is never dropped (the fail-open this fix closes).
+    assert cwp._code_only("cat <<'EOF'\nbody\nEOF\n") == "cat <<EOF\nbody\nEOF\n"
+    assert cwp._code_only('cat <<"EOF"\nbody\nEOF\n') == "cat <<EOF\nbody\nEOF\n"
+    assert cwp._code_only("cat <<-'END'\nbody\nEND\n") == "cat <<-END\nbody\nEND\n"
+
+
+def test_code_only_ignores_heredoc_operator_inside_a_string():
+    # A `<<` inside a quoted string is data, not a heredoc introducer: `_code_only`
+    # is inside the quote there, so it must not normalize it into a delimiter.
+    assert cwp._code_only('echo "a << b"\n') == "echo \n"
+
+
+def test_executable_lines_drops_quoted_heredoc_body():
+    # The `|` inside a QUOTED heredoc body is data; only the intro line (no pipe
+    # here) and the post-terminator line are code. Kills the fail-open where a
+    # quoted delimiter left the whole body scanned as shell.
+    script = "cat <<'EOF'\na | b\nEOF\nreal | tee\n"
+    lines = cwp._executable_lines(script)
+    assert "a | b" not in lines
+    assert "real | tee" in lines
+
+
 def test_executable_lines_heredoc_body_bounded_exactly_by_terminator():
     # The heredoc end test `line.strip() == terminator` must be a strict equality, not
     # `<=`/`>`/`>=`/`!=`/`is not`/`not(==)`. A multi-line body straddling the
@@ -227,6 +252,47 @@ def test_check_script_pipefail_inside_heredoc_does_not_whitelist():
 def test_check_script_no_false_positive_on_multiline_quote_or_heredoc():
     assert cwp._check_script('echo "a | b\nc"', "sh", "loc") == []
     assert cwp._check_script("cat <<EOF\ndata | more\nEOF", "sh", "loc") == []
+
+
+def test_check_script_no_false_positive_on_pipe_inside_quoted_heredoc():
+    # A `|` inside a QUOTED-delimiter heredoc body is data, not a pipe — must not
+    # fire. (Positive marker for the same fix lives in the flags test below.)
+    assert cwp._check_script("cat <<'EOF'\ndata | more\nEOF", "sh", "loc") == []
+    assert cwp._check_script('cat <<"EOF"\ndata | more\nEOF', "sh", "loc") == []
+
+
+def test_check_script_flags_real_pipe_outside_quoted_heredoc():
+    # The fix must still SEE a genuine masking pipe that sits AFTER a quoted heredoc:
+    # dropping the body must not drop the code around it. Pairs with the negative
+    # above so neither passes vacuously.
+    out = cwp._check_script("cat <<'EOF'\na | b\nEOF\nreal | tee y", "sh", "loc")
+    assert len(out) == 1 and "real | tee y" in out[0]
+
+
+def test_allow_optout_only_counts_a_real_comment():
+    # The opt-out must be a real `#` comment — not the marker buried in a string, a
+    # piped command's data, or a heredoc body — else a spurious hit disables the
+    # check and a real pipe sails through (fail-open).
+    assert cwp._allow_optout("cat x | tee y  # allow-no-pipefail: intended") is True
+    assert cwp._allow_optout('echo "allow-no-pipefail"\ncat x | tee y') is False
+    assert (
+        cwp._allow_optout("cat <<EOF\nallow-no-pipefail\nEOF\ncat x | tee y") is False
+    )
+
+
+def test_check_script_string_borne_optout_does_not_whitelist():
+    # A quoted `allow-no-pipefail` (data, not a comment) must NOT excuse the real
+    # pipe below it.
+    out = cwp._check_script('echo "allow-no-pipefail"\ncat x | tee y', "sh", "loc")
+    assert len(out) == 1 and "cat x | tee y" in out[0]
+
+
+def test_check_script_comment_optout_whitelists():
+    # Positive marker: the SAME marker in a real trailing comment does opt out, so
+    # the negative above isn't passing because the marker is simply never honored.
+    assert (
+        cwp._check_script("cat x | tee y  # allow-no-pipefail: ok", "sh", "loc") == []
+    )
 
 
 def test_check_script_safe_when_no_pipe():
