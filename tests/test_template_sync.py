@@ -141,6 +141,39 @@ def test_3way_merge_outcomes(
         assert (child / ".template-sync-conflicts").exists()
 
 
+def test_clean_3way_merge_records_auto_merged(workdir: Path) -> None:
+    """Case 6a: base/local/template each change a DIFFERENT non-adjacent line, so
+    `git merge-file` produces a clean 3-way merge (no conflict markers). This is
+    the only path that appends to AUTO_MERGED_FILES, so it must surface both the
+    merged content and the `auto_merged_files` output — untested by the
+    `auto-merge` parametrize case above, which hits Case 5 (adopt template)."""
+    child = workdir / "child"
+    template = workdir / "template"
+
+    base = "alpha\nbeta\ngamma\ndelta\nepsilon\n"
+    local = "LOCAL-alpha\nbeta\ngamma\ndelta\nepsilon\n"  # first line only
+    template_after = "alpha\nbeta\ngamma\ndelta\nTEMPLATE-epsilon\n"  # last line only
+
+    write(template / "config" / "a.txt", base)
+    prev_sha = commit_all(template)
+    write(child / "config" / "a.txt", local)
+    (child / ".template-version").write_text(prev_sha)
+    commit_all(child)
+    write(template / "config" / "a.txt", template_after)
+    commit_all(template)
+
+    result, output_file = run_sync(child, template, sync_paths="config")
+    assert result.returncode == 0, result.stderr
+
+    outputs = parse_outputs(output_file)
+    assert outputs["has_conflicts"] == "false"
+    # Both sides' non-adjacent edits survive the merge.
+    assert (child / "config" / "a.txt").read_text() == (
+        "LOCAL-alpha\nbeta\ngamma\ndelta\nTEMPLATE-epsilon\n"
+    )
+    assert "config/a.txt" in outputs["auto_merged_files"]
+
+
 def test_adds_new_file_from_template(workdir: Path) -> None:
     child = workdir / "child"
     template = workdir / "template"
