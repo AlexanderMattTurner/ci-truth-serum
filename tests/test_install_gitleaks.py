@@ -28,7 +28,7 @@ def _install_curl_stub(bindir: Path, payload: bytes) -> None:
     curl.write_text(
         "#!/usr/bin/env bash\n"
         "out=\n"
-        'while [[ $# -gt 0 ]]; do\n'
+        "while [[ $# -gt 0 ]]; do\n"
         '  if [[ "$1" == "-o" ]]; then out="$2"; shift 2; continue; fi\n'
         "  shift\n"
         "done\n"

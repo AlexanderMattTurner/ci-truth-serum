@@ -65,7 +65,10 @@ def _make_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     _write_pkg(repo, "0.0.0")
     commit_all(repo, "seed")
     subprocess.run(
-        ["git", "remote", "add", "origin", str(bare)], cwd=repo, env=git_env(), check=True
+        ["git", "remote", "add", "origin", str(bare)],
+        cwd=repo,
+        env=git_env(),
+        check=True,
     )
     return repo, gh_log, bindir
 
@@ -84,7 +87,11 @@ def _run(repo: Path, bindir: Path) -> subprocess.CompletedProcess:
 
 def _tags(repo: Path) -> set[str]:
     out = subprocess.run(
-        ["git", "tag", "--list"], cwd=repo, env=git_env(), capture_output=True, text=True
+        ["git", "tag", "--list"],
+        cwd=repo,
+        env=git_env(),
+        capture_output=True,
+        text=True,
     )
     return set(out.stdout.split())
 
