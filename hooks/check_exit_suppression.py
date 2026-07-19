@@ -31,8 +31,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
-# The no-op suppressors: `|| true` or `|| :` (with any inter-token spacing).
-_SUPPRESS = re.compile(r"\|\|\s*(?:true|:)(?:\s|;|$)")
+# The no-op suppressors: `|| true` or `|| :` (with any inter-token spacing). The
+# `(?![\w-])` boundary rejects a longer command name (`|| truelove`) while still
+# matching a suppressor glued to a following metacharacter (`|| true&`, `|| :;`),
+# which a `(?:\s|;|$)` boundary would miss.
+_SUPPRESS = re.compile(r"\|\|\s*(?:true|:)(?![\w-])")
 
 # Lines whose first word only prints text — a `|| true` quoted inside them is an
 # example or hint, not executed code. This extends the shared MESSAGE_PREFIX

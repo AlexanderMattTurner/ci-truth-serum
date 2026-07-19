@@ -29,6 +29,11 @@ mod = load_hook("check_stderr_suppression.py", "check_stderr_suppression")
         'devcontainer up "${args[@]}" &>/dev/null || rc=$?',
         "docker compose -f x.yml up -d &> /dev/null",
         "docker build -t img . &>/dev/null",
+        # the canonical `>/dev/null 2>&1` discards stderr just as thoroughly —
+        # neither token alone is `2>/dev/null`, so the pair must be caught.
+        "docker build -t img . >/dev/null 2>&1",
+        "docker compose -f x.yml up -d >/dev/null 2>&1",
+        "devcontainer build . 1>/dev/null 2>&1",
     ],
 )
 def test_fires_on_literal_launchers(line: str) -> None:
@@ -55,15 +60,22 @@ def test_fires_on_array_variable_launcher_ampersand() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        # opt-out annotation on the same line (both suppression forms)
+        # opt-out annotation on the same line (all suppression forms)
         "docker compose up 2>/dev/null  # allow-stderr-suppress: probe only",
         "docker compose up &>/dev/null  # allow-stderr-suppress: probe only",
+        "docker build . >/dev/null 2>&1  # allow-stderr-suppress: probe only",
         # whole-line comment, not real code
         "# docker compose up 2>/dev/null is bad",
         # suppression but not a launch/build verb (a probe/exec)
         "docker compose exec app test -f /x 2>/dev/null",
         "command -v docker 2>/dev/null",
         "command -v docker &>/dev/null",
+        # a lone `2>&1` merges stderr into a LIVE stdout — nothing is discarded,
+        # so a launch that only dups stderr must NOT be flagged (no null sink).
+        "docker build -t img . 2>&1 | tee build.log",
+        "docker compose up -d 2>&1",
+        # stdout-only to /dev/null keeps stderr visible on a launch — not suppression
+        "docker build -t img . >/dev/null",
         # a launch with no suppression
         "docker compose up -d",
         # array launcher invoked without suppression

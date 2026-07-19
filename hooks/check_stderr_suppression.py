@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Ban stderr suppression (``2>/dev/null`` or ``&>/dev/null``) on container
-launch/build commands.
+"""Ban stderr suppression (``2>/dev/null``, ``&>/dev/null``, or the canonical
+``>/dev/null 2>&1``) on container launch/build commands.
 
 Discarding stderr on a command whose only other failure signal is its exit code
 hides the diagnostic and leaves nothing to debug — the bug that motivated this
@@ -28,6 +28,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import MESSAGE_PREFIX, run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 _SUPPRESS = re.compile(r"(?:2|&)>\s*/dev/null")
+# The canonical `>/dev/null 2>&1` sends stdout to the bit-bucket and then dups
+# stderr onto it, so stderr is discarded even though neither token alone is
+# `2>/dev/null`. Detect it as the co-occurrence of a stdout->null redirect (`>` or
+# `1>`) and a `2>&1` dup on the same command. A lone `2>&1` (stderr merged into a
+# live stdout) discards nothing and must NOT match.
+_STDOUT_NULL = re.compile(r"(?:^|\s)1?>\s*/dev/null")
+_STDERR_DUP = re.compile(r"2>&1")
+
+
+def _suppresses_stderr(line: str) -> bool:
+    """True if LINE discards stderr — a direct `2>`/`&>` to /dev/null, or the
+    `>/dev/null 2>&1` pair."""
+    if _SUPPRESS.search(line):
+        return True
+    return bool(_STDERR_DUP.search(line) and _STDOUT_NULL.search(line))
+
+
 # The up/build verb as a subcommand, not a flag: `(?<![-\w])` rejects `--build`
 # (a flag to `docker compose run`, not the `build` subcommand) while still
 # matching a space-preceded ` up`/` build`.
@@ -66,7 +83,7 @@ def violations(text: str) -> list[int]:
         stripped = line.lstrip()
         if stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
             continue  # whole-line comment or a printed example, not real code
-        if not _SUPPRESS.search(line) or "allow-stderr-suppress" in line:
+        if not _suppresses_stderr(line) or "allow-stderr-suppress" in line:
             continue
         if _LITERAL_LAUNCH.search(line) or _array_launch(line, arrays):
             hits.append(lineno)

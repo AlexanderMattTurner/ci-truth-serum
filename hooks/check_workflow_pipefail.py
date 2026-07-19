@@ -69,8 +69,13 @@ _PIPE = re.compile(r"(?<![|>&])\|(?!\|)")
 # (which DISABLES it). Anchored so a comment mention can't whitelist the script.
 _SET_PIPEFAIL = re.compile(r"\bset\s+-\w*o\w*\s+pipefail\b")
 # A heredoc redirect; its body is DATA, not commands, so a `|` there is not a pipe.
-# `_code_only` has already stripped the delimiter's quotes (`<<'EOF'` -> `<<EOF`).
+# `_code_only` normalizes the delimiter, stripping its quotes (`<<'EOF'` -> `<<EOF`)
+# so a quoted heredoc's body is dropped exactly like an unquoted one's.
 _HEREDOC = re.compile(r"<<-?\s*(?P<term>\w+)")
+# The heredoc INTRODUCER as written in source, recognized inside `_code_only` before
+# quotes are stripped: `<<` / `<<-`, optional space, and a delimiter that may be
+# bare or quoted (`<<'EOF'`, `<<"EOF"`). `(?P=q)` pins the close quote to the open.
+_HEREDOC_INTRO = re.compile(r"<<(?P<dash>-?)\s*(?P<q>['\"]?)(?P<term>\w+)(?P=q)")
 _SHELL_BASENAMES = {"bash", "sh", "dash", "zsh", "ksh"}
 
 
@@ -98,21 +103,38 @@ def _shell_has_pipefail(shell: str | None) -> bool:
 def _code_only(script: str) -> str:
     """SCRIPT with quoted spans and `#` comments removed, newlines preserved. Quote
     state is tracked ACROSS lines, so a `|` inside a multi-line "…" or '…' string is
-    not mistaken for a pipe; a `#` comment runs only to its own end of line."""
-    out = []
+    not mistaken for a pipe; a `#` comment runs only to its own end of line.
+
+    A heredoc introducer (`<<'EOF'`, `<<"EOF"`, `<<-EOF`) is recognized when NOT
+    inside a string/comment and emitted with its delimiter quotes stripped
+    (`<<EOF`) — so the quotes never open a spurious string span that would swallow
+    the delimiter, and `_executable_lines` can still find the terminator and drop
+    the (quoted-heredoc) body."""
+    out: list[str] = []
+    i, n = 0, len(script)
     in_s = in_d = in_comment = False
-    for ch in script:
+    while i < n:
+        ch = script[i]
         if ch == "\n":
             in_comment = False
             out.append(ch)
+            i += 1
             continue
         if in_comment:
+            i += 1
             continue
         if in_s:
             in_s = ch != "'"
+            i += 1
             continue
         if in_d:
             in_d = ch != '"'
+            i += 1
+            continue
+        intro = _HEREDOC_INTRO.match(script, i)
+        if intro:
+            out.append("<<" + intro.group("dash") + intro.group("term"))
+            i = intro.end()
             continue
         if ch == "'":
             in_s = True
@@ -122,7 +144,47 @@ def _code_only(script: str) -> str:
             in_comment = True
         else:
             out.append(ch)
+        i += 1
     return "".join(out)
+
+
+def _line_comment(line: str) -> str:
+    """The `#`-comment text of LINE (everything after the first unquoted `#`), or
+    "" if the line has none. Quote-aware so a `#` inside a string is not a comment."""
+    in_s = in_d = False
+    for idx, ch in enumerate(line):
+        if in_s:
+            in_s = ch != "'"
+        elif in_d:
+            in_d = ch != '"'
+        elif ch == "'":
+            in_s = True
+        elif ch == '"':
+            in_d = True
+        elif ch == "#":
+            return line[idx + 1 :]
+    return ""
+
+
+def _allow_optout(script: str) -> bool:
+    """True if the `# allow-no-pipefail` marker appears in a real `#` comment — not
+    buried in a string, a piped-command's data, or a heredoc body (where a `#` is
+    literal text, not a comment). Scans each source line's comment, skipping heredoc
+    bodies via the same terminator tracking `_executable_lines` uses."""
+    raw_lines = script.splitlines()
+    code_lines = _code_only(script).splitlines()  # newline-preserving: indices align
+    terminator = None
+    for idx, code in enumerate(code_lines):
+        if terminator is not None:
+            if code.strip() == terminator:
+                terminator = None
+            continue
+        if idx < len(raw_lines) and ALLOW in _line_comment(raw_lines[idx]):
+            return True
+        match = _HEREDOC.search(code)
+        if match:
+            terminator = match.group("term")
+    return False
 
 
 def _executable_lines(script: str) -> list[str]:
@@ -163,7 +225,7 @@ def _check_script(script: str, shell: str | None, location: str) -> list[str]:
     pipefail and neither opts out nor sets pipefail itself; else empty."""
     if not isinstance(script, str) or not _is_posix_shell(shell):
         return []
-    if _shell_has_pipefail(shell) or ALLOW in script:
+    if _shell_has_pipefail(shell) or _allow_optout(script):
         return []
     code = _executable_lines(script)
     if _SET_PIPEFAIL.search("\n".join(code)):

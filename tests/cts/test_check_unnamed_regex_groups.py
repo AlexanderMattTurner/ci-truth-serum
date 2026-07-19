@@ -66,6 +66,43 @@ def test_check_file_ignores_safe_or_unrelated_calls(
     assert _check_source(tmp_path, source) == []
 
 
+@pytest.mark.parametrize(
+    "source, lineno",
+    [
+        # `import re as x` — an unnamed group via the module alias must be caught.
+        ("import re as rex\nrex.search('(foo)', s)\n", 2),
+        # `from re import compile` — a bare `compile(...)` call must be caught.
+        ("from re import compile\ncompile('(bar)')\n", 2),
+        # `from re import search as s` — the aliased function name too.
+        ("from re import search as s\ns('(baz)', x)\n", 2),
+    ],
+)
+def test_check_file_flags_aliased_re_imports(
+    tmp_path: Path, source: str, lineno: int
+) -> None:
+    result = _check_source(tmp_path, source)
+    assert len(result) == 1 and result[0][0] == lineno
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Same aliases, but NAMED groups — these must stay clean, so the positives
+        # above aren't just firing on the alias unconditionally (non-vacuous pair).
+        "import re as rex\nrex.search('(?P<n>foo)', s)\n",
+        "from re import compile\ncompile('(?P<n>bar)')\n",
+        # a name that happens to match an re func but is NOT imported from re
+        "from os import compile\ncompile('(bar)')\n",
+        # a bare `compile('(x)')` with no `from re import` binding it
+        "compile('(x)')\n",
+    ],
+)
+def test_check_file_alias_resolution_is_not_overbroad(
+    tmp_path: Path, source: str
+) -> None:
+    assert _check_source(tmp_path, source) == []
+
+
 def test_check_file_unreadable_path_warns(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

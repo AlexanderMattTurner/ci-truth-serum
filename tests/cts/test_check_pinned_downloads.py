@@ -26,6 +26,37 @@ def test_unverified_curl_with_output_flags() -> None:
     assert _flags("curl --output f https://x\ncurl --remote-name https://y\n") == [1, 2]
 
 
+def test_bare_wget_saves_to_disk_and_is_flagged() -> None:
+    # wget (unlike curl) writes to disk by default, so a bare `wget <url>` with no
+    # output flag is still an unverified artifact reaching disk.
+    assert _flags("wget https://example.com/tool\ninstall tool /usr/bin\n") == [1]
+    assert _flags("wget -q https://example.com/x.tar.gz\ntar xf x.tar.gz\n") == [1]
+
+
+def test_bare_wget_to_stdout_or_null_is_not_an_artifact() -> None:
+    # Negative controls: an `-O -`/`-O /dev/null` sink is a probe, not a saved file,
+    # and must stay excused even though the bare-wget rule now fires by default.
+    assert _flags("wget -O- https://x | sh\n") == []
+    assert _flags("wget -O - https://x | sh\n") == []
+    assert _flags("wget -O /dev/null https://x\n") == []
+
+
+def test_curl_redirect_to_file_is_flagged() -> None:
+    # `curl url > f` / `>> f` writes the bytes to disk via a shell redirect — an
+    # artifact the `-o FILE` path would otherwise miss.
+    assert _flags("curl https://example.com/x.sh > x.sh\nbash x.sh\n") == [1]
+    assert _flags("curl -fsSL https://x >> out\nrun out\n") == [1]
+    assert _flags("wget -qO- https://x > tool\nrun tool\n") == [1]
+
+
+def test_curl_redirect_to_null_or_pipe_is_not_an_artifact() -> None:
+    # Negative controls: a redirect to /dev/null is a probe, and a bare piped curl
+    # (no redirect, no output flag) writes to stdout, not disk — neither is flagged.
+    assert _flags("curl https://x > /dev/null\n") == []
+    assert _flags("curl -sSf https://x 2>/dev/null | jq -r .tag\n") == []
+    assert _flags("curl -sL https://x | sh\n") == []
+
+
 def test_verification_after_download_passes() -> None:
     assert _flags('curl "$u" -o f\nsha256sum -c f.sha256\n') == []
     assert (
@@ -240,6 +271,8 @@ def _run_script(*paths: str) -> subprocess.CompletedProcess[str]:
         "curl -O https://example.com/runsc\ninstall runsc /usr/bin\n",  # curl -O
         "wget -O tool https://example.com/tool\nrun tool\n",  # wget -O FILE
         "curl --output=runsc https://x\ninstall runsc /usr/bin\n",  # =-joined target
+        "wget https://example.com/tool\ninstall tool /usr/bin\n",  # bare wget (disk)
+        "curl https://example.com/x.sh > x.sh\nbash x.sh\n",  # shell redirect
     ],
 )
 def test_script_rejects_unverified_download(tmp_path, script: str) -> None:
