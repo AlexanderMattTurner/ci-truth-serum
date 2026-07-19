@@ -120,6 +120,15 @@ def test_check_file_respects_opt_out_for_branches(tmp_path):
     assert cpp.check_file(_write(tmp_path, "wf.yaml", body)) is None
 
 
+def test_check_file_reports_malformed_yaml(tmp_path):
+    # An unparseable workflow is reported as a violation (line None), not a crash.
+    found = cpp.check_file(_write(tmp_path, "wf.yaml", "on: [pull_request\njobs: {\n"))
+    assert found is not None
+    line, message = found
+    assert line is None
+    assert "could not parse as YAML" in message
+
+
 def test_check_file_ignores_non_mapping_document(tmp_path):
     assert cpp.check_file(_write(tmp_path, "wf.yaml", "- a\n- b\n")) is None
 

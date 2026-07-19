@@ -136,6 +136,55 @@ def test_check_file_finds_step_in_composite_action(tmp_path):
     assert [line for line, _ in found] == [5]
 
 
+def test_check_file_line_points_at_real_step_not_a_comment(tmp_path):
+    # A commented-out example `uses:` line for the action precedes the real
+    # unpinned step. The old positional zip against a raw text grep of every
+    # `uses:` line paired the step with the COMMENT's line number (misreport /
+    # suppression); the LineLoader-anchored line must point at the real step.
+    body = (
+        "on:\n  push:\njobs:\n  j:\n    steps:\n"
+        "      # uses: anthropics/claude-code-action@example  (do not use)\n"
+        "      - uses: anthropics/claude-code-action@abc123\n"
+        '        with:\n          claude_args: "--allowedTools Bash"\n'
+    )
+    found = ccm.check_file(_write(tmp_path, "wf.yaml", body))
+    assert [line for line, _ in found] == [7]  # the real step, not the comment (line 6)
+
+
+def test_check_file_commented_action_with_pinned_real_step_is_clean(tmp_path):
+    # Negative marker: a commented example line must not itself create a phantom
+    # violation when the real step is properly pinned.
+    body = (
+        "on:\n  push:\njobs:\n  j:\n    steps:\n"
+        "      # uses: anthropics/claude-code-action@example\n"
+        "      - uses: anthropics/claude-code-action@abc123\n"
+        '        with:\n          claude_args: "--model claude-sonnet-4-6"\n'
+    )
+    assert ccm.check_file(_write(tmp_path, "wf.yaml", body)) == []
+
+
+def test_check_file_line_correct_when_uses_is_not_first_key(tmp_path):
+    # When `name:` precedes `uses:` in the step, the violation must still point at
+    # the `uses:` line, not the step's first-key (`name:`) line.
+    body = (
+        "on:\n  push:\njobs:\n  j:\n    steps:\n"
+        "      - name: run claude\n"
+        "        uses: anthropics/claude-code-action@abc123\n"
+        '        with:\n          claude_args: "--allowedTools Bash"\n'
+    )
+    found = ccm.check_file(_write(tmp_path, "wf.yaml", body))
+    assert [line for line, _ in found] == [7]  # the `uses:` line, not `name:` (line 6)
+
+
+def test_check_file_reports_malformed_yaml(tmp_path):
+    # An unparseable workflow is reported as a violation (line None), not a crash.
+    found = ccm.check_file(_write(tmp_path, "wf.yaml", "on: [push\njobs: {\n"))
+    assert len(found) == 1
+    line, message = found[0]
+    assert line is None
+    assert "could not parse as YAML" in message
+
+
 def test_check_file_ignores_non_mapping_document(tmp_path):
     assert ccm.check_file(_write(tmp_path, "wf.yaml", "- a\n- b\n")) == []
 

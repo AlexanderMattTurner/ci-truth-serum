@@ -69,7 +69,16 @@ def expected_names(paths: list[Path]) -> tuple[set[str], list[str]]:
     names: set[str] = set()
     warnings: list[str] = []
     for path in paths:
-        doc = yaml.safe_load(path.read_text())
+        try:
+            doc = yaml.safe_load(path.read_text())
+        except yaml.YAMLError as err:
+            first_line = str(err).partition("\n")[0]
+            warnings.append(
+                f"{path.relative_to(REPO_ROOT)}: could not parse as YAML "
+                f"({first_line}); cannot verify failure-notifier coverage — fix the "
+                "syntax (or run actionlint) and re-check."
+            )
+            continue
         if not isinstance(doc, dict) or not has_monitored_trigger(doc):
             continue
         name = doc.get("name")
@@ -130,7 +139,18 @@ def check_repo(require_notifier: bool) -> list[str]:
     )
     found = [f"::error::{w}" for w in warnings]
 
-    listed = notifier_list(yaml.safe_load(notifier_path.read_text()))
+    try:
+        notifier_doc = yaml.safe_load(notifier_path.read_text())
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        found.append(
+            f"::error file={rel}::could not parse as YAML ({first_line}); cannot "
+            "verify failure-notifier coverage — fix the syntax (or run actionlint) "
+            "and re-check."
+        )
+        return found
+
+    listed = notifier_list(notifier_doc)
     if listed is None:
         found.append(
             f"::error file={rel}::has no `on.workflow_run.workflows` list of "

@@ -61,17 +61,37 @@ def _concurrency_line(text: str) -> int:
     return 1
 
 
-def check_file(path: Path) -> tuple[int, str] | None:
+def _opted_out(text: str) -> bool:
+    """True only when the opt-out token appears inside an actual `#` comment, not
+    anywhere in the byte stream — a `group: "static-concurrency-ok"` string value
+    must not silently disable the lint (that would be a fail-open)."""
+    return any(
+        OPT_OUT in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
+    )
+
+
+def check_file(path: Path) -> tuple[int | None, str] | None:
     """Return (line, message) if the workflow has a static workflow-level lock
-    on a required-check (decide gate + always() reporter) shape."""
+    on a required-check (decide gate + always() reporter) shape.
+
+    A file that cannot be parsed as YAML is itself reported as a violation
+    (line ``None``) rather than silently passed as clean — matching the sibling
+    workflow lints (check_workflow_pipefail &c.)."""
     text = path.read_text()
-    doc = yaml.safe_load(text)
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        return None, (
+            f"could not parse as YAML ({first_line}); cannot verify workflow-level "
+            "concurrency safety — fix the syntax (or run actionlint) and re-check."
+        )
     if not isinstance(doc, dict):
         return None
     conc = doc.get("concurrency")
     if not isinstance(conc, dict) or "group" not in conc:
         return None
-    if OPT_OUT in text:
+    if _opted_out(text):
         return None
 
     group = str(conc.get("group", ""))
@@ -105,7 +125,9 @@ def main() -> int:
         if found is None:
             continue
         line, message = found
-        print(f"::error file={path.relative_to(REPO_ROOT)},line={line}::{message}")
+        rel = path.relative_to(REPO_ROOT)
+        loc = f"file={rel},line={line}" if line else f"file={rel}"
+        print(f"::error {loc}::{message}")
         total += 1
 
     if total:

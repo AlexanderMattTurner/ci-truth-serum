@@ -114,6 +114,28 @@ def test_opt_out_comment_suppresses_the_error(tmp_path):
     assert sc.check_file(_write(tmp_path, body)) is None
 
 
+def test_opt_out_token_in_string_value_does_not_suppress(tmp_path):
+    """The opt-out counts only inside a real `#` comment. A group value that
+    literally contains the token must still be flagged — matching it anywhere in
+    the byte stream would be a fail-open."""
+    body = (
+        f'name: x\non:\n  pull_request:\nconcurrency:\n  group: "{sc.OPT_OUT}"\n'
+        "  cancel-in-progress: false\n" + REQUIRED_CHECK_JOBS
+    )
+    result = sc.check_file(_write(tmp_path, body))
+    assert result is not None
+    assert "static" in result[1]
+
+
+def test_malformed_yaml_is_reported_not_raised(tmp_path):
+    """An unparseable workflow is reported as a violation (line None), not a crash."""
+    result = sc.check_file(_write(tmp_path, "on: [pull_request\nconcurrency: {\n"))
+    assert result is not None
+    line, message = result
+    assert line is None
+    assert "could not parse as YAML" in message
+
+
 def test_groupless_concurrency_is_not_flagged(tmp_path):
     """A map-form concurrency block with no group (unusual, but the absent group
     must not be mislabeled 'static') on a required-check workflow is clean."""

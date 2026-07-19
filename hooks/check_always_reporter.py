@@ -44,23 +44,47 @@ def _locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
     return 1, False
 
 
-def check_file(path: Path) -> tuple[int, str] | None:
-    """Return (line, message) if the workflow is gated but lacks an always() reporter."""
+def _trigger_names(triggers: object) -> set[str]:
+    """The set of trigger names an `on:` value declares, across every spelling:
+    a scalar (`on: pull_request`), a list (`on: [pull_request, push]`), or a
+    mapping (`on:\n  pull_request:`). Mirrors check_requires_concurrency's
+    `_is_pr_triggered` so list/scalar forms are never silently skipped."""
+    if isinstance(triggers, str):
+        return {triggers}
+    if isinstance(triggers, list):
+        return {t for t in triggers if isinstance(t, str)}
+    if isinstance(triggers, dict):
+        return {k for k in triggers if isinstance(k, str)}
+    return set()
+
+
+def check_file(path: Path) -> tuple[int | None, str] | None:
+    """Return (line, message) if the workflow is gated but lacks an always() reporter.
+
+    A file that cannot be parsed as YAML is itself reported as a violation
+    (line ``None``) rather than silently passed as clean — matching the sibling
+    workflow lints (check_workflow_pipefail &c.)."""
     text = path.read_text()
-    doc = yaml.safe_load(text)
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        return None, (
+            f"could not parse as YAML ({first_line}); cannot verify always() "
+            "reporter coverage — fix the syntax (or run actionlint) and re-check."
+        )
     if not isinstance(doc, dict):
         return None
 
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
     triggers = doc.get("on", doc.get(True))
-    if not isinstance(triggers, dict):
-        return None
+    names = _trigger_names(triggers)
 
     # Only check workflows that fire on pull_request (or pull_request_target).
     pr_line: int | None = None
     opted_out = False
     for trigger in PR_TRIGGERS:
-        if trigger in triggers:
+        if trigger in names:
             line, out = _locate_trigger(text, trigger)
             if pr_line is None:
                 pr_line = line
@@ -97,7 +121,9 @@ def main() -> int:
         if found is None:
             continue
         line, message = found
-        print(f"::error file={path.relative_to(REPO_ROOT)},line={line}::{message}")
+        rel = path.relative_to(REPO_ROOT)
+        loc = f"file={rel},line={line}" if line else f"file={rel}"
+        print(f"::error {loc}::{message}")
         total += 1
 
     if total:
