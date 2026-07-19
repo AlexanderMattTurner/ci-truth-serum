@@ -73,6 +73,15 @@ def _has_concurrency(doc: dict) -> bool:
     )
 
 
+def _opted_out(text: str) -> bool:
+    """True only when the opt-out token appears inside an actual `#` comment, not
+    anywhere in the byte stream — a string value that happens to contain the token
+    must not silently disable the lint (that would be a fail-open)."""
+    return any(
+        OPT_OUT in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
+    )
+
+
 def _trigger_line(text: str) -> int:
     """1-based line of the pull_request(_target) trigger, else the `on:` line, else 1."""
     on_line = 1
@@ -85,10 +94,21 @@ def _trigger_line(text: str) -> int:
     return on_line
 
 
-def check_file(path: Path) -> tuple[int, str] | None:
-    """Return (line, message) if a PR-triggered workflow declares no concurrency."""
+def check_file(path: Path) -> tuple[int | None, str] | None:
+    """Return (line, message) if a PR-triggered workflow declares no concurrency.
+
+    A file that cannot be parsed as YAML is itself reported as a violation
+    (line ``None``) rather than silently passed as clean — matching the sibling
+    workflow lints (check_workflow_pipefail &c.)."""
     text = path.read_text()
-    doc = yaml.safe_load(text)
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        return None, (
+            f"could not parse as YAML ({first_line}); cannot verify concurrency "
+            "coverage — fix the syntax (or run actionlint) and re-check."
+        )
     if not isinstance(doc, dict):
         return None
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
@@ -97,7 +117,7 @@ def check_file(path: Path) -> tuple[int, str] | None:
         return None
     if _has_concurrency(doc):
         return None
-    if OPT_OUT in text:
+    if _opted_out(text):
         return None
     return _trigger_line(text), (
         "pull_request-triggered workflow declares no concurrency: block — a new "
@@ -118,7 +138,9 @@ def main() -> int:
         if found is None:
             continue
         line, message = found
-        print(f"::error file={path.relative_to(REPO_ROOT)},line={line}::{message}")
+        rel = path.relative_to(REPO_ROOT)
+        loc = f"file={rel},line={line}" if line else f"file={rel}"
+        print(f"::error {loc}::{message}")
         total += 1
 
     if total:

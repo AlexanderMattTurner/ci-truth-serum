@@ -152,6 +152,21 @@ def test_skips_empty_lessons_section(tmp_path: Path) -> None:
     assert "has_lessons" not in outputs
 
 
+def test_skips_unfilled_skeleton_section(tmp_path: Path) -> None:
+    """A Lessons section that is ONLY the unfilled What/Where/Why skeleton is long
+    enough to clear the first two length gates, so it reaches the skeleton-strip
+    check (phone-home-extract.js:73-77): once `**What**:`/`**Where**:`/`**Why**:`
+    are stripped, nothing substantive remains and has_lessons must not be set."""
+    pr_body = (
+        "## Lessons Learned\n\n- **What**: \n- **Where**: \n- **Why**: \n"
+        "## Other\n\nContent.\n"
+    )
+    outputs, result = run_extract(tmp_path, pr_body)
+    assert result.returncode == 0, result.stderr
+    assert "has_lessons" not in outputs
+    assert not (PHONE_HOME_DIR / "lessons.txt").exists()
+
+
 def test_skips_template_repo(tmp_path: Path) -> None:
     pr_body = "## Lessons Learned\n\n- Important lesson.\n"
     outputs, result = run_extract(

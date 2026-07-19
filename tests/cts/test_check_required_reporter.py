@@ -240,6 +240,43 @@ def test_quoted_reporter_key_is_classified(tmp_path):
     assert crr.check_file(_write(tmp_path, "wf.yaml", QUOTED_REPORTER_KEY)) == []
 
 
+LIST_FORM_UNCLASSIFIED = """\
+name: x
+on: [pull_request, push]
+jobs:
+  report:
+    if: always()
+    runs-on: ubuntu-latest
+"""
+
+
+def test_flags_list_form_on_reporter(tmp_path):
+    # List-form `on: [pull_request, push]` used to be skipped by the
+    # `isinstance(triggers, dict)` gate — a fail-open. It must now be checked.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", LIST_FORM_UNCLASSIFIED))
+    assert len(found) == 1
+    line, message = found[0]
+    assert line == 4  # the reporter's own key line
+    assert "unclassified" in message
+
+
+def test_list_form_without_pr_trigger_is_ignored(tmp_path):
+    # A list `on:` with no pull_request member is not a required-check candidate.
+    body = (
+        "name: x\non: [push, workflow_dispatch]\njobs:\n  report:\n    if: always()\n"
+    )
+    assert crr.check_file(_write(tmp_path, "wf.yaml", body)) == []
+
+
+def test_malformed_yaml_is_reported_not_raised(tmp_path):
+    # An unparseable workflow is reported as a violation (line None), not a crash.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", "on: [pull_request\njobs: {\n"))
+    assert len(found) == 1
+    line, message = found[0]
+    assert line is None
+    assert "could not parse as YAML" in message
+
+
 def test_ignores_non_mapping_document(tmp_path):
     assert crr.check_file(_write(tmp_path, "wf.yaml", "- a\n- b\n")) == []
 

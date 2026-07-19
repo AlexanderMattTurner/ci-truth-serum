@@ -191,6 +191,51 @@ def test_check_file_respects_opt_out_on_pull_request_target(tmp_path):
     assert car.check_file(path) is None
 
 
+LIST_FORM_GATED_NO_REPORTER = """\
+name: x
+on: [pull_request, push]
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  work:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+"""
+
+
+def test_check_file_flags_list_form_on(tmp_path):
+    # List-form `on: [pull_request, push]` used to fall through the
+    # `isinstance(triggers, dict)` gate — a gated workflow missing its always()
+    # reporter escaped the check entirely (fail-open). It must now be flagged.
+    path = _write(tmp_path, "wf.yaml", LIST_FORM_GATED_NO_REPORTER)
+    found = car.check_file(path)
+    assert found is not None
+    line, message = found
+    assert line == 1  # no `pull_request:` key line, so the fallback line
+    assert "decide gate" in message
+
+
+def test_check_file_list_form_without_pr_trigger_is_ignored(tmp_path):
+    # A list `on:` with no pull_request member can't be a required check.
+    body = (
+        "name: x\non: [push, workflow_dispatch]\n"
+        "jobs:\n  decide:\n    uses: ./.github/workflows/decide-reusable.yaml\n"
+        "  work:\n    needs: decide\n    if: needs.decide.outputs.run == 'true'\n"
+    )
+    assert car.check_file(_write(tmp_path, "wf.yaml", body)) is None
+
+
+def test_check_file_reports_malformed_yaml(tmp_path):
+    # An unparseable workflow is reported as a violation (line None), not a crash.
+    path = _write(tmp_path, "wf.yaml", "on: [pull_request\njobs: {\n")
+    found = car.check_file(path)
+    assert found is not None
+    line, message = found
+    assert line is None
+    assert "could not parse as YAML" in message
+
+
 def test_check_file_ignores_non_mapping_document(tmp_path):
     path = _write(tmp_path, "wf.yaml", "- a\n- b\n")
     assert car.check_file(path) is None
@@ -314,3 +359,15 @@ def test_main_returns_zero_on_opt_out(tmp_path, monkeypatch, capsys):
     wf = _point_at(tmp_path, monkeypatch)
     _write(wf, "opted-out.yaml", OPT_OUT_YAML)
     assert car.main() == 0
+
+
+def test_main_reports_malformed_yaml_without_line(tmp_path, monkeypatch, capsys):
+    # A malformed workflow is reported as a filewide `::error file=…::` (no line=),
+    # never a traceback that aborts scanning the remaining files.
+    wf = _point_at(tmp_path, monkeypatch)
+    _write(wf, "broken.yaml", "on: [pull_request\njobs: {\n")
+    assert car.main() == 1
+    out = capsys.readouterr().out
+    assert "::error file=.github/workflows/broken.yaml::" in out
+    assert "line=None" not in out
+    assert "could not parse as YAML" in out

@@ -66,6 +66,19 @@ def _locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
     return 1, False
 
 
+def _trigger_names(triggers: object) -> set[str]:
+    """The set of trigger names an `on:` value declares, across every spelling
+    (scalar / list / mapping) — so list-form `on: [pull_request, push]` is not
+    silently skipped. Mirrors check_requires_concurrency's `_is_pr_triggered`."""
+    if isinstance(triggers, str):
+        return {triggers}
+    if isinstance(triggers, list):
+        return {t for t in triggers if isinstance(t, str)}
+    if isinstance(triggers, dict):
+        return {k for k in triggers if isinstance(k, str)}
+    return set()
+
+
 def _reporter_names(jobs: dict) -> list[str]:
     """Names of jobs whose `if` is an always() reporter (bare or ${{ }}-wrapped)."""
     return [
@@ -75,22 +88,36 @@ def _reporter_names(jobs: dict) -> list[str]:
     ]
 
 
-def check_file(path: Path) -> list[tuple[int, str]]:
-    """Return (line, message) for every unclassified/under-justified reporter."""
+def check_file(path: Path) -> list[tuple[int | None, str]]:
+    """Return (line, message) for every unclassified/under-justified reporter.
+
+    A file that cannot be parsed as YAML is itself reported as a violation
+    (line ``None``) rather than silently passed as clean — matching the sibling
+    workflow lints (check_workflow_pipefail &c.)."""
     text = path.read_text()
-    doc = yaml.safe_load(text)
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        return [
+            (
+                None,
+                f"could not parse as YAML ({first_line}); cannot verify "
+                "required-check reporter classification — fix the syntax (or run "
+                "actionlint) and re-check.",
+            )
+        ]
     if not isinstance(doc, dict):
         return []
 
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
     triggers = doc.get("on", doc.get(True))
-    if not isinstance(triggers, dict):
-        return []
+    names = _trigger_names(triggers)
 
     pr_line: int | None = None
     opted_out = False
     for trigger in PR_TRIGGERS:
-        if trigger in triggers:
+        if trigger in names:
             line, out = _locate_trigger(text, trigger)
             if pr_line is None:
                 pr_line = line
@@ -140,8 +167,10 @@ def workflow_files() -> list[Path]:
 def main() -> int:
     total = 0
     for path in workflow_files():
+        rel = path.relative_to(REPO_ROOT)
         for line, message in check_file(path):
-            print(f"::error file={path.relative_to(REPO_ROOT)},line={line}::{message}")
+            loc = f"file={rel},line={line}" if line else f"file={rel}"
+            print(f"::error {loc}::{message}")
             total += 1
 
     if total:

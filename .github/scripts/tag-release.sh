@@ -20,18 +20,32 @@ if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-# Only tag when this push changed the version, so an ordinary commit never
-# retro-tags the standing version onto an unrelated commit.
-if PREV=$(git show "HEAD~1:package.json" 2>/dev/null); then
-  OLD_VERSION=$(printf '%s' "$PREV" | read_version)
-else
-  OLD_VERSION=""
+# Detect a version advance independent of how the PR merged. A HEAD~1 diff only
+# works for merge/squash, where the bump is the last commit; rebase-and-merge
+# replays the PR's commits, so HEAD~1 can already carry the new version and the
+# diff sees no change — silently skipping the tag. Instead compare package.json's
+# version to the latest existing release tag: this push advanced the version when
+# the vX.Y.Z tag is still missing AND X.Y.Z differs from the highest published
+# tag. An ordinary commit that didn't bump the version has its tag already
+# standing, so it takes the tag-exists path below and exits without retagging.
+#
+# A shallow Actions checkout (fetch-depth != 0) does not fetch tags, so fetch
+# them explicitly — the advance detection is only correct with the full tag set
+# locally present. Fail loud rather than mistaking a missing tag for an advance.
+if ! retry_cmd 4 2 git fetch --tags --quiet origin; then
+  echo "Error: failed to fetch tags to detect a version advance" >&2
+  exit 1
 fi
-if [[ "$NEW_VERSION" == "$OLD_VERSION" ]]; then
-  echo "Version unchanged ($NEW_VERSION). No tag."
-  exit 0
+LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+LATEST_VERSION="${LATEST_TAG#v}"
+
+if [[ "$NEW_VERSION" != "$LATEST_VERSION" ]]; then
+  echo "Version advanced: ${LATEST_TAG:-<none>} -> v$NEW_VERSION."
 fi
 
+# The tag already exists on an ordinary no-bump push (nothing to do beyond the
+# idempotent release check) and on a rerun after a partial failure (tag pushed,
+# release missing — the release backfill below still runs).
 if git rev-parse -q --verify "refs/tags/v$NEW_VERSION" >/dev/null; then
   echo "Tag v$NEW_VERSION already exists."
 else
