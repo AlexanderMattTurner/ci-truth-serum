@@ -39,6 +39,13 @@
   language: python
   types: [shell]
 
+- id: check-substitution-exit-swallow
+  name: "honesty: ban jq/yq feeding a shell loop through an exit-swallowing construct"
+  description: "`done < <(jq …)` / `jq … | while` discards jq/yq's exit, so a query/data error no-ops the loop yet reports success."
+  entry: python -m hooks.check_substitution_exit_swallow
+  language: python
+  types: [shell]
+
 - id: check-pr-paths
   name: "honesty: ban paths/branches filters on pull_request triggers"
   description: A paths or branches filter strands a required check at "Expected — Waiting" forever.

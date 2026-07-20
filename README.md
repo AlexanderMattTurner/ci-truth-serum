@@ -19,6 +19,7 @@ lints that catch two kinds of lie a green check can hide:
 | `check-workflow-pipefail`  | CI went green while `pytest` was crashing, because `pytest \| tee log` exits with `tee`’s status—under a `runCmd:` / `shell: sh` / custom `bash` that lacks `pipefail`.                                                                    |
 | `check-exit-suppression`   | A teardown that left a volume pinned reported success, because `cleanup \|\| true` discarded its non-zero exit while keeping its output.                                                                                                   |
 | `check-stderr-suppression` | A container launch failed with a bare non-zero and no clue why, because `docker compose up 2>/dev/null` threw away the only diagnostic.                                                                                                    |
+| `check-substitution-exit-swallow` | An allowlist-building loop reported success while adding nothing, because `done < <(jq …)` (or `jq … \| while read`) discards `jq`/`yq`'s exit status—a renamed key or malformed input makes the producer exit non-zero, the loop iterates zero times, and the fail-open goes unnoticed. Curated to `jq`/`yq` (structured-data extractors whose non-zero exit is a fail-closed signal); opt out with `# allow-substitution-exit: <reason>`. |
 | `check-pr-paths`           | A required check hung at “Expected—Waiting” forever and the PR could never merge, because `paths:`/`paths-ignore:`/`branches:` on `pull_request` skipped the workflow without reporting (a stacked PR on a non-main base is the branch-filter trap). |
 | `check-pipefail-grep-pipe` | A teardown check reported a still-present secret as removed, because `secret_store ls \| grep -q "$name"` under `pipefail` let grep’s early exit SIGPIPE the producer, surfacing 141 as no-match once the listing outgrew the pipe buffer. |
 
@@ -81,6 +82,7 @@ repos:
       - id: check-workflow-pipefail
       - id: check-exit-suppression
       - id: check-stderr-suppression
+      - id: check-substitution-exit-swallow
       - id: check-pr-paths
       - id: check-pipefail-grep-pipe
       # ── Tier 1 · Identity (default-on) ──
