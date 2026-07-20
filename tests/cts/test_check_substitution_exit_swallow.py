@@ -13,9 +13,7 @@ import pytest
 from tests._helpers import HOOKS_DIR, REPO_ROOT, load_hook
 
 _SRC = HOOKS_DIR / "check_substitution_exit_swallow.py"
-mod = load_hook(
-    "check_substitution_exit_swallow.py", "check_substitution_exit_swallow"
-)
+mod = load_hook("check_substitution_exit_swallow.py", "check_substitution_exit_swallow")
 
 
 # ── process-substitution stdin redirect: `… done < <(jq …)` ──────────────────
@@ -82,7 +80,7 @@ def test_excluded_producers_are_clean(producer: str) -> None:
     [
         # the correct capture-then-iterate pattern observes jq's failure
         'out="$(jq -r ".a[]" "$f")" || die "jq failed"\n'
-        "while IFS= read -r d; do :; done <<<\"$out\"",
+        'while IFS= read -r d; do :; done <<<"$out"',
         # here-string consumer (not a proc-sub), producer already captured
         'while read -r d; do :; done <<<"$providers"',
         # process substitution as a command ARGUMENT (not a stdin redirect) —
@@ -135,11 +133,7 @@ def test_reasonless_annotation_does_not_suppress(annotation: str) -> None:
 
 
 def test_annotation_two_lines_above_does_not_suppress() -> None:
-    text = (
-        "# allow-substitution-exit: reason\n"
-        "x=1\n"
-        'mapfile -t h < <(jq -r ".h[]" "$f")'
-    )
+    text = '# allow-substitution-exit: reason\nx=1\nmapfile -t h < <(jq -r ".h[]" "$f")'
     assert mod.violations(text) == [3]
 
 
