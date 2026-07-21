@@ -242,7 +242,6 @@
   language: python
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
-  additional_dependencies: [tree-sitter, tree-sitter-bash]
 
 - id: check-secret-file-perms
   name: "extra: flag a secret file created world-readable then chmod'd private after"
