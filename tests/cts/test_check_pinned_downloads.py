@@ -36,8 +36,9 @@ def test_bare_wget_saves_to_disk_and_is_flagged() -> None:
 def test_bare_wget_to_stdout_or_null_is_not_an_artifact() -> None:
     # Negative controls: an `-O -`/`-O /dev/null` sink is a probe, not a saved file,
     # and must stay excused even though the bare-wget rule now fires by default.
-    assert _flags("wget -O- https://x | sh\n") == []
-    assert _flags("wget -O - https://x | sh\n") == []
+    # (A stdout sink piped INTO a shell IS an execution — covered separately below.)
+    assert _flags("wget -O- https://x | jq .\n") == []
+    assert _flags("wget -O - https://x | cat\n") == []
     assert _flags("wget -O /dev/null https://x\n") == []
 
 
@@ -50,11 +51,40 @@ def test_curl_redirect_to_file_is_flagged() -> None:
 
 
 def test_curl_redirect_to_null_or_pipe_is_not_an_artifact() -> None:
-    # Negative controls: a redirect to /dev/null is a probe, and a bare piped curl
-    # (no redirect, no output flag) writes to stdout, not disk — neither is flagged.
+    # Negative controls: a redirect to /dev/null is a probe, and a curl piped to a
+    # non-shell data reader writes to stdout, not disk — neither is flagged. (A pipe
+    # into a shell IS flagged; see test_pipe_to_shell_installer_is_flagged.)
     assert _flags("curl https://x > /dev/null\n") == []
     assert _flags("curl -sSf https://x 2>/dev/null | jq -r .tag\n") == []
-    assert _flags("curl -sL https://x | sh\n") == []
+    assert _flags("curl -sL https://x | tar xz -C /tmp\n") == []
+
+
+def test_pipe_to_shell_installer_is_flagged() -> None:
+    # `curl … | sh` / `… | sudo bash` streams unverified bytes straight into a shell
+    # that executes them — the marquee one-line installer. curl defaults to stdout
+    # (no file on disk) and a `-O-`/`-o -` sink is normally a probe, but piping either
+    # into a shell is an execution, so it must fire.
+    assert _flags("curl -fsSL https://example.com/i.sh | sudo sh\n") == [1]
+    assert _flags("curl -sL https://x | sh\n") == [1]
+    assert _flags("curl -fsSL https://x | bash\n") == [1]
+    assert _flags("wget -qO- https://x | sudo bash -s -- --yes\n") == [1]
+    assert _flags("curl -sL https://x | sudo -H sh\n") == [1]
+    assert _flags("curl -sL https://x | /bin/sh\n") == [1]
+    assert _flags("wget -O- https://x | sh\n") == [1]
+
+
+def test_pipe_to_non_shell_reader_is_not_flagged() -> None:
+    # Only a shell interpreter executes; a pipe into a data reader is not an install,
+    # and `ssh` must not be mistaken for `sh` (word-boundary guard).
+    assert _flags("curl -sSf https://x | jq -r .tag\n") == []
+    assert _flags("curl -sL https://x | grep foo\n") == []
+    assert _flags("curl -sL https://x | ssh host cat\n") == []
+
+
+def test_pipe_to_shell_respects_pin_exempt() -> None:
+    # The escape hatch still applies to a piped installer that genuinely can't be
+    # pinned (e.g. an upstream that publishes no digest).
+    assert _flags("curl -fsSL https://x | sh  # pin-exempt: trusted vendor\n") == []
 
 
 def test_verification_after_download_passes() -> None:
@@ -90,7 +120,7 @@ def test_equals_joined_and_attached_stdout_sinks_are_excused() -> None:
     # the target must still be recognized as null across these spellings.
     assert _flags("curl --output=/dev/null https://x\n") == []
     assert _flags("curl -o=/dev/stdout https://x\n") == []
-    assert _flags("wget -O- https://x | sh -s -- --verify\n") == []
+    assert _flags("wget -O- https://x | jq .\n") == []
     assert _flags("wget -O-\n") == []
 
 

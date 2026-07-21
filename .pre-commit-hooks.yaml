@@ -210,7 +210,9 @@
   description: A test asserting two copies agree hides a missing SSOT; mark it @pytest.mark.drift_guard("<why>") so the reason is reviewed.
   entry: python -m hooks.check_drift_guards
   language: python
-  types: [python]
+  # Python tests use @pytest.mark.drift_guard; JS/TS/shell suites carry copies-agree
+  # tests too, caught by a phrase pass and excused with `drift-guard-ok: <reason>`.
+  types_or: [python, javascript, ts, shell]
 
 - id: check-graceful-handwave
   name: "extra: ban graceful-degradation hand-waves in prose and comments"

@@ -15,7 +15,14 @@ so review checks the stated reason, not the mere existence of the guard.
 Detection is by convention, not proof — a guard worded to dodge the phrasing
 slips through, like the other heuristic lints in this pack.
 
-Invoked by pre-commit with the staged Python files as arguments.
+Python tests carry the ``@pytest.mark.drift_guard`` marker; but copies-agree tests
+also live in JavaScript/TypeScript (``*.test.mjs``) and shell suites, which have no
+such decorator. For those a SIBLING phrase pass runs: any line expressing
+drift-guard intent must carry a same-line or immediately-preceding
+``drift-guard-ok: <why a true SSOT is infeasible>`` annotation, or it is flagged.
+Same heuristic, different surface — so the backstop is not silently Python-only.
+
+Invoked by pre-commit with the staged Python / JS / TS / shell files as arguments.
 """
 
 import ast
@@ -41,6 +48,11 @@ _GUARD_PATTERNS = (
 _GUARD_RE = re.compile("|".join(_GUARD_PATTERNS), re.IGNORECASE)
 
 _MARKER = "drift_guard"
+
+# The non-Python opt-out: a comment `drift-guard-ok: <reason>` with a non-empty
+# reason. (The bare token `drift-guard` inside it also matches _GUARD_RE, but the
+# annotation check runs first, so an annotation line never flags itself.)
+_ALLOW_MARKER = re.compile(r"drift-guard-ok:\s*\S", re.IGNORECASE)
 
 
 def _is_drift_guard(name: str, docstring: str) -> bool:
@@ -93,6 +105,27 @@ def violations(source: str) -> list[tuple[int, str]]:
     return hits
 
 
+def text_violations(text: str) -> list[tuple[int, str]]:
+    """(1-based line, matched phrase) for every line of TEXT that expresses
+    drift-guard intent without a reason-bearing ``drift-guard-ok:`` annotation on
+    that line or the one immediately above.
+
+    The non-AST sibling of ``violations()``: JS/TS/shell tests carry no
+    ``@pytest.mark``, so intent is detected by phrase and excused inline instead."""
+    lines = text.splitlines()
+    hits: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        match = _GUARD_RE.search(line)
+        if not match:
+            continue
+        if _ALLOW_MARKER.search(line):
+            continue
+        if i > 0 and _ALLOW_MARKER.search(lines[i - 1]):
+            continue
+        hits.append((i + 1, match.group(0)))
+    return hits
+
+
 def main(argv: list[str]) -> int:
     status = 0
     for path in argv:
@@ -100,11 +133,22 @@ def main(argv: list[str]) -> int:
             source = Path(path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for lineno, name in violations(source):
+        if path.endswith(".py"):
+            for lineno, name in violations(source):
+                print(
+                    f"{path}:{lineno}: drift guard {name!r} lacks a justification — "
+                    "prefer removing the duplication (make one source authoritative), "
+                    f'or add @pytest.mark.{_MARKER}("why a true SSOT is infeasible").',
+                    file=sys.stderr,
+                )
+                status = 1
+            continue
+        for lineno, phrase in text_violations(source):
             print(
-                f"{path}:{lineno}: drift guard {name!r} lacks a justification — "
-                "prefer removing the duplication (make one source authoritative), "
-                f'or add @pytest.mark.{_MARKER}("why a true SSOT is infeasible").',
+                f"{path}:{lineno}: drift-guard intent ({phrase!r}) lacks a "
+                "justification — prefer removing the duplication (make one source "
+                "authoritative), or annotate "
+                "`drift-guard-ok: <why a true SSOT is infeasible>`.",
                 file=sys.stderr,
             )
             status = 1

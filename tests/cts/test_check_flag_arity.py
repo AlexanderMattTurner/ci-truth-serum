@@ -149,6 +149,31 @@ def test_optout_with_empty_reason_is_itself_a_violation() -> None:
     assert "non-empty reason" in hits[0][1]
 
 
+def test_read_before_guard_on_same_line_is_flagged() -> None:
+    # The arity guard follows the $2 read, so $2 is dereferenced raw (and crashes
+    # under set -u) before the guard ever runs.
+    body = '  --x)\n    X="$2"; [[ $# -ge 2 ]] || die\n    shift 2\n    ;;'
+    assert _flagged_lines(_parser(body)) == [5]
+
+
+def test_guard_before_read_on_same_line_passes() -> None:
+    # Mirror image: the same tokens in the correct order (guard, then read) pass.
+    body = '  --x)\n    [[ $# -ge 2 ]] || die; X="$2"; shift 2\n    ;;'
+    assert _flagged_lines(_parser(body)) == []
+
+
+def test_bare_arity_test_without_bail_is_not_a_guard() -> None:
+    # `[[ $# -ge 2 ]]` whose result is discarded (no || die / && die / then die)
+    # does not stop the read, so the following $2 is still unguarded.
+    body = '  --x)\n    [[ $# -ge 2 ]]\n    X="$2"\n    shift 2\n    ;;'
+    assert _flagged_lines(_parser(body)) == [6]
+
+
+def test_negative_bail_with_ampersand_consequent_passes() -> None:
+    body = '  --x)\n    [[ $# -lt 2 ]] && die "--x needs a value"\n    X="$2"\n    shift 2\n    ;;'
+    assert _flagged_lines(_parser(body)) == []
+
+
 def test_dollar_hash_is_not_mistaken_for_a_comment() -> None:
     # strip_comment must keep `$#` intact so the arity guard is recognized.
     body = '  --a)\n    [[ $# -ge 2 ]] || die x # trailing note\n    A="$2"\n    ;;'

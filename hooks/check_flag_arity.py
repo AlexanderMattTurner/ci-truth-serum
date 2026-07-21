@@ -9,11 +9,18 @@ reads ``$2`` / does ``shift 2`` while relying only on the loop's outer
 ``set -u``, the parser dies with a raw ``$2: unbound variable`` instead of a
 clean "--branch needs a value".
 
-A value-consuming flag arm must carry its own arity guard BEFORE the read::
+A value-consuming flag arm must carry its own arity guard BEFORE the read, and the
+guard must actually BAIL when the value is missing::
 
     [[ $# -ge 2 ]] || die "--branch needs a value"   # or -gt 1 / (( $# >= 2 ))
     BRANCH="${2:?--branch needs a value}"            # self-guarding read
     need_val "$@"                                     # an allowlisted helper
+
+Two failure modes this closes: an arity test whose result is DISCARDED
+(``[[ $# -ge 2 ]]`` with no ``|| die`` / ``&& die`` / ``then die`` consequent does
+not stop the read), and an arity guard that runs AFTER the read
+(``X="$2"; [[ $# -ge 2 ]] || die`` still dereferences ``$2`` raw first). Both are
+flagged; only a guard that bails and precedes the read passes.
 
 Scope is deliberately narrow to keep false positives at zero: only arms whose
 LABEL is one or more ``-x`` / ``--xxx`` / ``--xxx=*`` options fire the check.
@@ -46,6 +53,20 @@ _FLAG_ALT_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9_-]*(?:=\*)?$")
 # read (`[[ $# -ge 2 ]] || die`) and the negative bail (`[[ $# -lt 2 ]] && die`).
 _ARITY_RE = re.compile(
     r'\$#"?\s*(?P<op>-ge|-gt|-eq|-lt|-le|>=|<=|>|<|==)\s*"?(?P<n>[0-9]+)'
+)
+# A command that ABORTS the arm/loop/script before the read is reached — the
+# consequent that makes an arity test an actual guard rather than a discarded
+# boolean. A bare `[[ $# -ge 2 ]]` with none of these does not stop the read.
+_EXIT_CMD = (
+    r"(?:die|exit|return|usage|fatal|abort|bail|fail|error|err|continue|break)\b"
+)
+# A POSITIVE comparison (`$# -ge 2`, proving >=2 remain on success) is a guard only
+# when the FAILURE branch bails: `]]`/`))` then `|| <exit>` (allowing `|| { die; }`).
+_POS_BAIL = re.compile(r"\s*(?:\]\]|\)\))?\s*\|\|\s*(?:\{\s*)?" + _EXIT_CMD)
+# A NEGATIVE comparison (`$# -lt 2`, true when the value is missing) is a guard only
+# when its TRUE branch bails: `&& <exit>` or an `if …; then <exit>`.
+_NEG_BAIL = re.compile(
+    r"\s*(?:\]\]|\)\))?\s*(?:&&\s*|;?\s*then\s+)(?:\{\s*)?" + _EXIT_CMD
 )
 # `${2:?…}` / `${2:-…}` / `${2:=…}` / `${2:+…}`: a self-guarding read.
 _SELF_GUARD_RE = re.compile(r"\$\{2:[?=+-]")
@@ -85,41 +106,71 @@ def _strip_comment(line: str) -> str:
     return line
 
 
-def _has_arity_guard(code: str) -> bool:
+def _arity_guard_pos(code: str) -> int | None:
+    """Offset of the FIRST effective arity guard in CODE, or None.
+
+    A comparison guards only when (a) it proves >= 2 args remain on the branch that
+    reaches the read, and (b) the OTHER branch bails to an exiting command — a
+    positive test (`$# -ge 2`) via `|| die`, a negative test (`$# -lt 2`) via
+    `&& die` / `then die`. A bare `[[ $# -ge 2 ]]` whose result is discarded is not
+    a guard (its threshold is right, but nothing stops the read on failure)."""
+    best: int | None = None
     for m in _ARITY_RE.finditer(code):
         op, n = m.group("op"), int(m.group("n"))
-        # A read succeeds when >= 2 args remain; each operator implies that at
-        # its own threshold (a `< 2` / `-lt 2` bail leaves >= 2 in fall-through).
-        if op in ("-ge", ">=", "-eq", "==") and n >= 2:
-            return True
-        if op in ("-gt", ">") and n >= 1:
-            return True
-        if op in ("-lt", "<") and n >= 2:
-            return True
-        if op in ("-le", "<=") and n >= 1:
-            return True
-    return False
+        positive = (op in ("-ge", ">=", "-eq", "==") and n >= 2) or (
+            op in ("-gt", ">") and n >= 1
+        )
+        negative = (op in ("-lt", "<") and n >= 2) or (op in ("-le", "<=") and n >= 1)
+        after = code[m.end() :]
+        if (positive and _POS_BAIL.match(after)) or (
+            negative and _NEG_BAIL.match(after)
+        ):
+            if best is None or m.start() < best:
+                best = m.start()
+    return best
 
 
-def _calls_allowlisted_helper(code: str) -> bool:
-    return any(
-        re.search(rf"(?:^|[\s;&|(]){re.escape(h)}(?:\s|$)", code)
+def _helper_pos(code: str) -> int | None:
+    """Offset of the first allowlisted arity helper (`need_val`/`need_arg`), or None."""
+    positions = [
+        m.start()
         for h in ALLOWLISTED_HELPERS
-    )
+        for m in re.finditer(rf"(?:^|[\s;&|(]){re.escape(h)}(?:\s|$)", code)
+    ]
+    return min(positions) if positions else None
 
 
-def _reads_self_guarded(code: str) -> bool:
-    return bool(_SELF_GUARD_RE.search(code))
+def _self_guard_pos(code: str) -> int | None:
+    """Offset of the first self-guarding read (`${2:?…}` / `${2:-…}`), or None."""
+    m = _SELF_GUARD_RE.search(code)
+    return m.start() if m else None
 
 
-def _reads_bare_positional(code: str) -> bool:
-    if _BARE_POS_RE.search(code):
-        return True
-    return any(int(m.group("n")) >= 2 for m in _BRACE_POS_RE.finditer(code))
+def _guard_pos(code: str) -> int | None:
+    """Offset of the earliest guard of ANY accepted kind (arity test, allowlisted
+    helper, self-guarding read) in CODE, or None if the fragment carries none."""
+    candidates = [
+        p
+        for p in (_arity_guard_pos(code), _helper_pos(code), _self_guard_pos(code))
+        if p is not None
+    ]
+    return min(candidates) if candidates else None
 
 
-def _shifts_past_first(code: str) -> bool:
-    return any(int(m.group("n")) >= 2 for m in _SHIFT_RE.finditer(code))
+def _raw_read_pos(code: str) -> int | None:
+    """Offset of the earliest UNGUARDED positional read past $1 in CODE, or None.
+
+    A bare `$2`/`${2}`/higher or a `shift` >= 2 crashes raw under `set -u`; a
+    self-guarding `${2:?…}` is not counted here (it is a guard, handled above)."""
+    positions: list[int] = []
+    m = _BARE_POS_RE.search(code)
+    if m:
+        positions.append(m.start())
+    positions += [
+        m.start() for m in _BRACE_POS_RE.finditer(code) if int(m.group("n")) >= 2
+    ]
+    positions += [m.start() for m in _SHIFT_RE.finditer(code) if int(m.group("n")) >= 2]
+    return min(positions) if positions else None
 
 
 def _arm_label(rest: str) -> str | None:
@@ -154,21 +205,23 @@ def violations(text: str) -> list[tuple[int, str]]:
 
     def consume(raw_frag: str, code: str, line_no: int) -> None:
         """Fold one code fragment into the current arm's guard/consumption state,
-        recording a violation for an unguarded read."""
+        recording a violation for an unguarded read.
+
+        Order matters WITHIN a fragment: a guard resolves the arm only when it sits
+        at or before the raw read it protects. `X="$2"; [[ $# -ge 2 ]] || die` reads
+        $2 first, so the trailing guard does not save it."""
         frame = top()
         if not frame or not frame["arm"] or not frame["arm"]["is_flag"]:
             return
         if frame["arm"]["guarded"]:
             return
-        if (
-            _has_arity_guard(code)
-            or _calls_allowlisted_helper(code)
-            or _reads_self_guarded(code)
-        ):
+        guard_pos = _guard_pos(code)
+        read_pos = _raw_read_pos(code)
+        if guard_pos is not None and (read_pos is None or guard_pos <= read_pos):
             frame["arm"]["guarded"] = True
             return
-        if not _reads_bare_positional(code) and not _shifts_past_first(code):
-            return
+        if read_pos is None:
+            return  # neither a resolving guard nor a raw read in this fragment yet
 
         prev = lines[line_no - 2] if line_no - 2 >= 0 else ""
         marker = _OPTOUT_RE.search(raw_frag) or _OPTOUT_RE.search(prev)

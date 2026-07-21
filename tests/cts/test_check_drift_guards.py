@@ -123,6 +123,62 @@ def test_violations_ignores_non_guards(source: str) -> None:
     assert mod.violations(source) == []
 
 
+@pytest.mark.parametrize(
+    "line, flagged",
+    [
+        ("  it('configs must stay in sync', () => {", True),
+        ("  // asserted on the source so it can't drift", True),
+        ("  it('the two pins move in lockstep', () => {", True),
+        ("  # the host and container lists are kept in sync", True),
+        # a same-line reason-bearing annotation excuses it
+        ("  it('must stay in sync'); // drift-guard-ok: cross-language SSOT", False),
+        # a mere mention of drift without guard intent is not flagged
+        ("  // the tool reports drift and rewrites", False),
+        ("  echo 'building'", False),
+    ],
+)
+def test_text_violations_phrase_pass(line: str, flagged: bool) -> None:
+    hits = mod.text_violations(line + "\n")
+    assert bool(hits) is flagged
+    if flagged:
+        assert hits[0][0] == 1
+
+
+def test_text_violations_annotation_on_preceding_line() -> None:
+    text = (
+        "// drift-guard-ok: two runtimes, no shared SSOT\n"
+        "it('the two configs must stay in sync', () => {});\n"
+    )
+    assert mod.text_violations(text) == []
+
+
+def test_text_violations_bare_annotation_without_reason_still_fires() -> None:
+    # A reasonless `drift-guard-ok` (no colon/value) does not suppress.
+    text = "it('must stay in sync'); // drift-guard-ok\n"
+    assert len(mod.text_violations(text)) == 1
+
+
+def test_main_flags_non_python_guard_and_names_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "config.test.mjs"
+    bad.write_text("test('configs must stay in sync', () => {});\n", encoding="utf-8")
+    assert mod.main([str(bad)]) == 1
+    err = capsys.readouterr().err
+    assert f"{bad}:1: drift-guard intent" in err
+    assert "drift-guard-ok:" in err
+
+
+def test_main_accepts_annotated_non_python_guard(tmp_path: Path) -> None:
+    good = tmp_path / "check.sh"
+    good.write_text(
+        "# drift-guard-ok: mirrors an external upstream value, no SSOT\n"
+        "assert_equal must stay in sync\n",
+        encoding="utf-8",
+    )
+    assert mod.main([str(good)]) == 0
+
+
 def test_main_returns_one_on_violation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
