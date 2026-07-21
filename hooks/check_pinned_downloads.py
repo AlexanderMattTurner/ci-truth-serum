@@ -8,9 +8,11 @@ you execute. The same is true of a Dockerfile ``ADD <url> <dest>``, which writes
 the remote bytes straight into the image. This check fires on any ``curl``/``wget``
 invocation that writes an artifact — an explicit output flag (``-o FILE`` / ``-O`` /
 ``--output`` / ``--remote-name``), a shell redirect into a file (``> FILE`` /
-``>> FILE``), or a bare ``wget <url>`` (which saves to disk by default) — and on any
-``ADD`` from an ``http(s)://`` URL, unless a verification token appears close after
-it:
+``>> FILE``), a bare ``wget <url>`` (which saves to disk by default), or a pipe
+straight into a shell (``curl … | sh`` / ``curl -fsSL … | sudo bash``, the marquee
+one-line installer, which never touches disk but *executes* the unverified bytes) —
+and on any ``ADD`` from an ``http(s)://`` URL, unless a verification token appears
+close after it:
 
   * ``sha256sum`` / ``sha512sum`` / ``shasum`` / ``md5sum`` (a ``… -c`` check)
   * ``cosign verify`` or ``gpg --verify`` (signature check)
@@ -18,7 +20,9 @@ it:
   * ``ADD --checksum=sha256:<digest>`` (Docker's own built-in pin)
 
 Downloads to ``/dev/null``/``/dev/stdout``/``-`` (reachability probes, piped
-API reads) are not artifacts and are ignored, as are commands inside message
+API reads to a data reader like ``| jq``) are not artifacts and are ignored — but a
+stdout sink piped into a *shell* (``curl -O- … | sh``) still executes, so it fires.
+The same goes for commands inside message
 strings (``echo``/``printf``/``warn``/``status``/``die``/``log`` lines). A
 download that genuinely cannot be pinned opts out with a same-line or
 preceding-line ``# pin-exempt: <reason>``.
@@ -69,6 +73,29 @@ _REDIRECT = re.compile(r"(?:^|\s)>>?\s*(?P<rt>[^\s&|<>]+)")
 # `wget <url>` with no output flag or redirect is still an artifact download.
 _WGET = re.compile(r"\bwget\b")
 
+# `curl … | sh` / `curl -fsSL … | sudo bash`: the streamed bytes never hit disk, but
+# the shell EXECUTES them — the same supply-chain exposure as save-then-run, and the
+# marquee one-line installer. A pipe to a data reader (`| jq`, `| tar`, `| grep`) is
+# NOT an execution, so only a shell interpreter counts. `ssh`/`bashful` are rejected
+# by the `\b…\b` word boundaries. An optional `sudo` (with its flags) and an absolute
+# path (`/bin/sh`) are tolerated between the pipe and the interpreter name.
+_PIPE_TO_SHELL = re.compile(
+    r"\|\s*"
+    r"(?:sudo\b[^|]*?\s)?"
+    r"(?:\S*/)?"
+    r"\b(?:sh|bash|dash|zsh|ksh|ash)\b"
+)
+
+# `bash -c "$(curl …)"`, `sh -c "$(curl…)"`, `eval "$(curl…)"`, `bash <(curl…)`: an
+# interpreter executing bytes fetched inline via command/process substitution — the
+# Homebrew-style installer. The same execute-unverified exposure as the pipe form,
+# just spelled with `$(…)`/`<(…)`. The curl/wget must sit INSIDE the substitution
+# (before its closing `)`), so a `bash -c "$(build_cfg)"` that merely shares a line
+# with an unrelated, already-verified curl is not swept in.
+_EXEC_SUBST = re.compile(
+    r"\b(?:sh|bash|dash|zsh|ksh|ash|eval)\b[^\n]*?(?:\$\(|<\()[^)]*\b(?:curl|wget)\b"
+)
+
 _VERIFY = re.compile(
     r"\b(?:sha256sum|sha512sum|sha384sum|sha1sum|shasum|md5sum|_sha256_verify)\b"
     r"|\bcosign\s+verify\b"
@@ -84,9 +111,17 @@ def _is_artifact_download(line: str) -> bool:
     (``-o FILE``/``-O``/``--output``/``--remote-name``), a shell redirect into a
     file (``curl url > f``), and a bare ``wget url`` (wget saves by default; curl,
     which defaults to stdout, does not — so a flag-less, redirect-less curl is not
-    an artifact)."""
+    an artifact) — plus two execute-without-saving forms: a pipe straight into a
+    shell (``curl … | sh``) and an interpreter run on an inline substitution
+    (``bash -c "$(curl …)"`` / ``bash <(curl …)`` / ``eval "$(curl …)"``)."""
     if not _DOWNLOADER.search(line):
         return False
+    # Executing the fetched bytes (piped into a shell, or run from a `$(…)`/`<(…)`
+    # substitution) is an artifact regardless of any stdout sink, so these are checked
+    # before the `-O-`/`-o -` early-returns below (which would otherwise excuse
+    # `curl -O- … | sh` as a mere stdout write).
+    if _PIPE_TO_SHELL.search(line) or _EXEC_SUBST.search(line):
+        return True
     m = _OUTPUT_FLAG.search(line)
     if m:
         if m.group("stdout"):  # `-O-` writes to stdout, not an artifact

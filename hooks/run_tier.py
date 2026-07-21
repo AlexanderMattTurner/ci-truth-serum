@@ -34,6 +34,10 @@ SHELL_OR_DOCKERFILE = "shell_or_dockerfile"
 MARKDOWN = "markdown"
 COMMENTED_CODE = "commented_code"
 PROSE_OR_COMMENTED_CODE = "prose_or_commented_code"
+# check_drift_guards dispatches by extension: `.py` → AST marker pass, else → a
+# phrase pass. Its file class is therefore Python plus the JS/TS/shell suites that
+# carry copies-agree tests but no @pytest.mark.
+DRIFT = "drift"
 
 # The file classes whose `#`/`//` comments the comment lints can read, and the
 # prose classes scanned line-by-line.
@@ -66,7 +70,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_unnamed_regex_groups", PYTHON),
         ("check_global_stdio_swap", PYTHON),
         ("check_claude_model", WORKFLOW),
-        ("check_drift_guards", PYTHON),
+        ("check_drift_guards", DRIFT),
         ("check_graceful_handwave", PROSE_OR_COMMENTED_CODE),
         ("check_historical_comments", COMMENTED_CODE),
         ("check_doc_line_refs", MARKDOWN),
@@ -93,6 +97,8 @@ def matches(path: str, kind: str) -> bool:
         return bool(tags & _COMMENT_TAGS)
     if kind == PROSE_OR_COMMENTED_CODE:
         return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS))
+    if kind == DRIFT:
+        return bool(tags & {"python", "javascript", "ts", "shell"})
     return False
 
 

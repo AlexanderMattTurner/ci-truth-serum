@@ -98,6 +98,27 @@ def test_annotation_two_lines_above_does_not_count() -> None:
     assert mod.violations(text) == [3]
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # bare annotation, no colon / no reason -> does not suppress
+        "reap || true  # allow-exit-suppress",
+        # colon but an empty reason -> does not suppress
+        "reap || true  # allow-exit-suppress:",
+        "reap || true  # allow-exit-suppress:   ",
+    ],
+)
+def test_bare_annotation_without_reason_still_fires(text: str) -> None:
+    assert mod.violations(text) == [1]
+
+
+def test_bare_annotation_on_preceding_line_does_not_suppress() -> None:
+    # A reasonless opt-out on the line above is treated as absent, so the suppressor
+    # on the next line is still flagged (at its own physical line).
+    text = "# allow-exit-suppress\nls -la || true\n"
+    assert mod.violations(text) == [2]
+
+
 def test_multiline_pipe_continuation_is_joined() -> None:
     # A command whose `$( … )` capture spans a trailing-pipe continuation must be
     # analyzed whole: the `|| true` is inside the capture, so it must not fire.
