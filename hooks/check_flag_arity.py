@@ -22,6 +22,12 @@ not stop the read), and an arity guard that runs AFTER the read
 (``X="$2"; [[ $# -ge 2 ]] || die`` still dereferences ``$2`` raw first). Both are
 flagged; only a guard that bails and precedes the read passes.
 
+The bail may span lines — a multi-line ``if [[ $# -lt 2 ]]; then … die … fi`` (the
+common idiom) or a ``[[ $# -ge 2 ]] ||`` whose exiting command sits on the
+continuation line — is recognized: the opener parks the arm pending and the
+``die``/``exit``/… on a following line resolves it. A multi-line ``if`` whose body
+never exits (only warns) does NOT resolve, so the later read is still flagged.
+
 Scope is deliberately narrow to keep false positives at zero: only arms whose
 LABEL is one or more ``-x`` / ``--xxx`` / ``--xxx=*`` options fire the check.
 Subcommand dispatch (``read)``, ``write)``), catch-alls (``*)``), and value
@@ -68,6 +74,18 @@ _POS_BAIL = re.compile(r"\s*(?:\]\]|\)\))?\s*\|\|\s*(?:\{\s*)?" + _EXIT_CMD)
 _NEG_BAIL = re.compile(
     r"\s*(?:\]\]|\)\))?\s*(?:&&\s*|;?\s*then\s+)(?:\{\s*)?" + _EXIT_CMD
 )
+# A guard whose bail lands on a LATER physical line (a multi-line `if …; then`, or a
+# comparison whose `||`/`&&` connective — or the test itself — trails a line
+# continuation). It marks the arm "pending"; the exiting command on a following line
+# resolves it. `then` here need not carry an inline exit (that case is a complete
+# guard, matched by _*_BAIL above and preferred): a bare `if [[ $# -lt 2 ]]; then`
+# opener is resolved by the `die`/`exit`/… that its body puts on the next line.
+_POS_OPENER = re.compile(r"^\s*(?:\]\]|\)\))?\s*\|\|\s*\\?\s*$")
+_NEG_OPENER = re.compile(r"^\s*(?:\]\]|\)\))?\s*(?:&&\s*\\?\s*$|;?\s*then\b)")
+# A bare test closed and continued (`[[ $# -ge 2 ]] \`) with its bail on the next line.
+_BARE_CONT = re.compile(r"^\s*(?:\]\]|\)\))?\s*\\\s*$")
+# An exiting command at a command position — resolves a pending multi-line guard.
+_EXIT_AT_CMD = re.compile(r"(?:^|[\s;&|(){}])\s*(?:\{\s*)?" + _EXIT_CMD)
 # `${2:?…}` / `${2:-…}` / `${2:=…}` / `${2:+…}`: a self-guarding read.
 _SELF_GUARD_RE = re.compile(r"\$\{2:[?=+-]")
 # A bare positional read past $1 that is NOT a self-guarding `${2:…}` expansion.
@@ -128,6 +146,36 @@ def _arity_guard_pos(code: str) -> int | None:
             if best is None or m.start() < best:
                 best = m.start()
     return best
+
+
+def _guard_opener_pos(code: str) -> int | None:
+    """Offset of an arity comparison that OPENS a guard whose bail is on a LATER line
+    (a multi-line `if …; then`, or a comparison trailing an `||`/`&&`/`\\`
+    continuation), or None. Distinct from a complete same-line guard: an opener only
+    marks the arm pending, and the exiting command on a following line resolves it."""
+    best: int | None = None
+    for m in _ARITY_RE.finditer(code):
+        op, n = m.group("op"), int(m.group("n"))
+        positive = (op in ("-ge", ">=", "-eq", "==") and n >= 2) or (
+            op in ("-gt", ">") and n >= 1
+        )
+        negative = (op in ("-lt", "<") and n >= 2) or (op in ("-le", "<=") and n >= 1)
+        tail = code[m.end() :]
+        opens = (
+            (positive and _POS_OPENER.search(tail))
+            or (negative and _NEG_OPENER.search(tail))
+            or ((positive or negative) and _BARE_CONT.search(tail))
+        )
+        if opens and (best is None or m.start() < best):
+            best = m.start()
+    return best
+
+
+def _exit_cmd_pos(code: str) -> int | None:
+    """Offset of an exiting command (`die`/`exit`/…) at a command position, or None —
+    the consequent that resolves a pending multi-line guard opened on an earlier line."""
+    m = _EXIT_AT_CMD.search(code)
+    return m.start() if m else None
 
 
 def _helper_pos(code: str) -> int | None:
@@ -209,17 +257,38 @@ def violations(text: str) -> list[tuple[int, str]]:
 
         Order matters WITHIN a fragment: a guard resolves the arm only when it sits
         at or before the raw read it protects. `X="$2"; [[ $# -ge 2 ]] || die` reads
-        $2 first, so the trailing guard does not save it."""
+        $2 first, so the trailing guard does not save it. A guard whose bail spans
+        LINES (`if [[ $# -lt 2 ]]; then` … `die` … `fi`) opens a pending state that
+        the exiting command on a later line resolves before the read is reached."""
         frame = top()
         if not frame or not frame["arm"] or not frame["arm"]["is_flag"]:
             return
-        if frame["arm"]["guarded"]:
+        arm = frame["arm"]
+        if arm["guarded"]:
             return
-        guard_pos = _guard_pos(code)
         read_pos = _raw_read_pos(code)
+
+        # A guard opened on an earlier line resolves here if its exiting command
+        # arrives before any read in this fragment.
+        if arm["pending"]:
+            exit_pos = _exit_cmd_pos(code)
+            if exit_pos is not None and (read_pos is None or exit_pos <= read_pos):
+                arm["guarded"] = True
+                return
+
+        guard_pos = _guard_pos(code)
         if guard_pos is not None and (read_pos is None or guard_pos <= read_pos):
-            frame["arm"]["guarded"] = True
+            arm["guarded"] = True
             return
+
+        # A multi-line guard opener (before any read) parks the arm pending, awaiting
+        # the exiting command on a following line.
+        opener_pos = _guard_opener_pos(code)
+        if opener_pos is not None and (read_pos is None or opener_pos <= read_pos):
+            arm["pending"] = True
+            if read_pos is None:
+                return
+
         if read_pos is None:
             return  # neither a resolving guard nor a raw read in this fragment yet
 
@@ -286,7 +355,11 @@ def violations(text: str) -> list[tuple[int, str]]:
                 rest = rest[adv:]
                 continue
             # kind == "label": open the arm and continue past `)` for inline body.
-            frame["arm"] = {"is_flag": _is_flag_label(label), "guarded": False}
+            frame["arm"] = {
+                "is_flag": _is_flag_label(label),
+                "guarded": False,
+                "pending": False,
+            }
             rest_raw = raw[label_pos + 1 :] if len(raw) > label_pos else ""
             rest = rest[label_pos + 1 :]
 

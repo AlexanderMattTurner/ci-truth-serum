@@ -81,6 +81,24 @@ def test_pipe_to_non_shell_reader_is_not_flagged() -> None:
     assert _flags("curl -sL https://x | ssh host cat\n") == []
 
 
+def test_exec_from_substitution_is_flagged() -> None:
+    # An interpreter run on bytes fetched inline via command/process substitution —
+    # the Homebrew-style installer — executes them unverified, same as the pipe form.
+    assert _flags('bash -c "$(curl -fsSL https://example.com/install.sh)"\n') == [1]
+    assert _flags('/bin/bash -c "$(curl -fsSL https://x)"\n') == [1]
+    assert _flags('sh -c "$(curl -fsSL https://x)"\n') == [1]
+    assert _flags("bash <(curl -fsSL https://x/install.sh)\n") == [1]
+    assert _flags('eval "$(curl -fsSL https://x)"\n') == [1]
+    assert _flags('zsh -c "$(wget -qO- https://x)"\n') == [1]
+
+
+def test_exec_from_substitution_needs_curl_inside_it() -> None:
+    # A verified curl that merely shares a line with an unrelated interpreter+subst is
+    # not swept in: the curl must sit inside the executed `$(…)`/`<(…)`.
+    text = 'curl "$u" -o cfg && sha256sum -c cfg.sha256 && bash -c "$(cat cfg)"\n'
+    assert _flags(text) == []
+
+
 def test_pipe_to_shell_respects_pin_exempt() -> None:
     # The escape hatch still applies to a piped installer that genuinely can't be
     # pinned (e.g. an upstream that publishes no digest).
