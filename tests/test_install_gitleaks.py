@@ -5,6 +5,7 @@ unless the downloaded tarball matches the committed SHA-256, and it refuses to
 run at all for a version it has no pinned digest for.
 """
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,7 +15,8 @@ import pytest
 from tests._helpers import REPO_ROOT
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("sha256sum") is None, reason="sha256sum not available"
+    shutil.which("sha256sum") is None and not os.environ.get("CI"),
+    reason="sha256sum not available (CI runners must have it: skipping there would silently drop this suite)",
 )
 
 
