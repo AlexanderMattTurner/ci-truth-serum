@@ -22,9 +22,17 @@ rt = load_hook("run_tier.py", "run_tier")
 MANIFEST = yaml.safe_load((REPO_ROOT / ".pre-commit-hooks.yaml").read_text())
 
 # Map a name-prefix (the manifest encodes the tier in `name:`) to a TIERS key.
-PREFIX_TIER = {"honesty": "1", "identity": "1", "opinionated": "2", "extra": "extras"}
-# The lone non-Python hook: a language:script shell hook, intentionally unaggregated.
-UNAGGREGATED = {"check-symlinks"}
+PREFIX_TIER = {
+    "honesty": "1",
+    "identity": "1",
+    "security": "1",
+    "opinionated": "2",
+    "extra": "extras",
+}
+# Hooks intentionally left out of every aggregate: `check-symlinks` (a
+# language:script shell hook, not a Python module) and `check-env-symmetry` (a
+# whole-tree scan needing a per-project `--prefix` arg an aggregate can't supply).
+UNAGGREGATED = {"check-symlinks", "check-env-symmetry"}
 
 
 def _python_member_hooks() -> list[dict]:

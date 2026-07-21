@@ -54,4 +54,6 @@ jobs:
         # script AND the changelog assembler it shells out to, not the PR's. Fall
         # back to a PR copy only to bootstrap the very PR that first adds each
         # (base has no copy yet).
+        # trusted-base-ok: privileged job runs only the base branch's trusted
+        # script copies, never the PR-controlled checkout.
         run: bash .github/scripts/release-prep-bump-version.sh

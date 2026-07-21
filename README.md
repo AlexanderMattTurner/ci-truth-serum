@@ -30,12 +30,19 @@ lints that catch two kinds of lie a green check can hide:
 | `check-pinned-base-images` | The base image you reviewed and the one CI built diverged, because `FROM node:22` is a mutable tag the registry can re-point. **Demands a `@sha256:` digest.** |
 | `check-pinned-downloads`   | A tampered release or compromised mirror swapped the binary you `curl`ed and then ran, because the download carried no checksum/signature check.               |
 
+### Security (Tier 1, default-on)
+
+| Hook                | Failure it prevents                                                                                                                                                                                                                                                                                                                       |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-trusted-base` | A PR author read your secrets and pushed with your write token (the pwn-request hole), because a `pull_request(_target)` job checked out the PR **head** ref _and_ ran privileged (write `permissions:` or a `secrets.*` in `env:`)—so the PR's own code executed with the base repo's credentials. Read-only, secret-free head checkouts (the safe way to lint untrusted code) are not flagged; opt out with `# trusted-base-ok: <reason>`. |
+
 ### Opinionated (Tier 2, opt-in)
 
 | Hook                         | Failure it prevents                                                                                                                                                                                                                                                                                                      |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `check-always-reporter`      | A gated workflow stranded a required check at “Expected—Waiting” when the decide gate skipped every work job. Assumes a **decide-job + `always()` reporter** pattern.                                                                                                                                                    |
 | `check-required-reporter`    | A new `always()` reporter shipped as a green-but-never-required check because nothing tied a workflow’s reporters to the branch-protection required-set. Assumes the required-set is mirrored from these annotations.                                                                                                    |
+| `check-job-timeout`          | A wedged step (a network fetch with no deadline, a hung test) pinned a shared runner slot for **six hours**, because the job set no `timeout-minutes` and inherited GitHub's 360-minute default. Requires every job to declare its own ceiling; reusable-workflow (`uses:`) jobs are exempt. Opt out with `# allow-no-timeout: <reason>`. |
 | `check-inline-run-length`    | A long inline `run:` block shipped unchecked (unquoted expansions, missing `pipefail`) because shellcheck/shfmt/shellharden only see standalone `.sh` files.                                                                                                                                                             |
 | `check-concurrency`          | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.                                                                                                                                                             |
 | `check-static-concurrency`   | A required check hung at “Expected—Waiting” forever, because a static workflow-level `concurrency.group` (no `github.ref`/`head_ref` key) let a sibling ref’s run cancel this one’s pending run wholesale before any job—and its `always()` reporter—ever started.                                                       |
@@ -57,6 +64,7 @@ lints that catch two kinds of lie a green check can hide:
 | `check-historical-comments`  | A comment narrating the past ("renamed from X", "now uses Y") rotted into a lie the moment the code moved—the reader can't see the old code, so the note was unverifiable from day one. Bans only tokens with no present-tense reading; opt out (e.g. a reader of a legacy on-disk format) with `# allow-history: <reason>`. |
 | `check-doc-line-refs`        | A doc cited source by exact line number and pointed at whatever now happens to live there after the next refactor. Bans `<file>.<ext>:<N>` and `(L<N>)`-style cites in Markdown (fenced code blocks and any `CHANGELOG.md` are skipped); cite a function/section/anchor instead, or suppress with `<!-- allow-line-ref: <reason> -->`. |
 | `check-flag-arity`           | A CLI parser died with a raw `$2: unbound variable` instead of a clean "--branch needs a value", because a `--branch) X="$2"; shift 2` arm trusted the loop's outer `$# -gt 0` (which proves only `$1`) and the flag was passed last. Flags any `case` arm whose label is a `-x`/`--xxx`/`--xxx=*` option that reads `$2`/`shift 2` without its own guard; satisfied by `[[ $# -ge 2 ]] \|\| die`, a self-guarding `${2:?…}`, or a `need_val`/`need_arg` helper. Suppress with `# flag-arity-ok: <why>`. |
+| `check-env-symmetry`         | A half-finished env-var rename silently broke a feature: the var was renamed in the code that **sets** it but not the code that **reads** it (or vice-versa), so the reader just saw an unset value and took its default. Scans the whole tracked tree for every var matching a `--prefix` (e.g. `GLOVEBOX_`) and flags any that is written-but-never-read or read-but-never-written. Conservative extraction keeps false positives near zero; dynamically-composed names are skipped, and an out-of-band var opts out with `# env-symmetry-ok: <VARNAME> <reason>`. Needs `args: [--prefix, <PREFIX>]`; not part of a tier aggregate. |
 
 ## Usage
 
@@ -88,7 +96,10 @@ repos:
       # ── Tier 1 · Identity (default-on) ──
       - id: check-pinned-base-images
       - id: check-pinned-downloads
+      # ── Tier 1 · Security (default-on) ──
+      - id: check-trusted-base
       # ── Tier 2 · Opinionated (opt-in: uncomment to enable) ──
+      # - id: check-job-timeout          # every job must declare timeout-minutes
       # - id: check-always-reporter      # assumes a decide-job + always() reporter
       # - id: check-required-reporter    # classify each always() reporter required-check: true|false
       # - id: check-inline-run-length
@@ -108,6 +119,8 @@ repos:
       # - id: check-historical-comments  # comments describe the present code, not its past
       # - id: check-doc-line-refs        # docs cite symbols/sections, not line numbers
       # - id: check-flag-arity           # value-taking CLI flag arms must guard $2 before reading it
+      # - id: check-env-symmetry         # prefixed env vars must be both written and read
+      #   args: [--prefix, GLOVEBOX_]    # required: only <PREFIX>… vars are checked
 ```
 
 `pre-commit run --all-files` sweeps the whole repo (handy on first adoption).
@@ -128,10 +141,11 @@ repos:
       # - id: check-extras  # the Python extras (vendor-/style-specific)
 ```
 
-`check-symlinks` is the only check not in an aggregate: it is a shell
-(`language: script`) hook, not a Python module, so add its `- id:` separately if
-you want it. Mixing an aggregate with individual ids is fine (a check just runs
-twice).
+Two checks are not in an aggregate, so add each `- id:` separately if you want
+it: `check-symlinks` (a shell `language: script` hook, not a Python module) and
+`check-env-symmetry` (a whole-tree scan that needs a per-project `--prefix` arg an
+aggregate can't supply). Mixing an aggregate with individual ids is fine (a check
+just runs twice).
 
 ### Scope one check to specific paths
 

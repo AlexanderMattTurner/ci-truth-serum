@@ -67,6 +67,9 @@ FUZZ_REQUIRED = {
     "check_historical_comments": "violations",
     "check_doc_line_refs": "violations",
     "check_flag_arity": "violations",
+    "check_job_timeout": "check_file",
+    "check_trusted_base": "check_file",
+    "check_env_symmetry": "analyze",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the

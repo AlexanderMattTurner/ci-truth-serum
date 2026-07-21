@@ -12,9 +12,10 @@ and the content lints receive only the committed files of their kind (shell /
 python / Dockerfile), classified with ``identify`` — the same library pre-commit
 uses for its own ``types:`` filtering.
 
-``check-symlinks`` is intentionally NOT aggregated: it is a ``language: script``
-shell hook, not a Python module, so it cannot run inside this Python aggregate.
-Enable it on its own if you want it. The contract test in
+Two checks are intentionally NOT aggregated: ``check-symlinks`` (a
+``language: script`` shell hook, not a Python module) and ``check-env-symmetry``
+(a whole-tree scan needing a per-project ``--prefix`` arg no aggregate can supply).
+Enable each on its own if you want it. The contract test in
 ``tests/cts/test_run_tier.py`` asserts this registry stays in sync with
 ``.pre-commit-hooks.yaml`` so a newly added hook can't silently escape its tier.
 """
@@ -50,8 +51,10 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_pr_paths", WORKFLOW),
         ("check_pinned_base_images", DOCKERFILE),
         ("check_pinned_downloads", SHELL_OR_DOCKERFILE),
+        ("check_trusted_base", WORKFLOW),
     ],
     "2": [
+        ("check_job_timeout", WORKFLOW),
         ("check_always_reporter", WORKFLOW),
         ("check_required_reporter", WORKFLOW),
         ("check_inline_run_length", WORKFLOW),
