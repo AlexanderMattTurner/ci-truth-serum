@@ -19,7 +19,9 @@ is kept (so a failure leaves no trace at all). Auto-allowed without annotation:
 Everything else — ``some_func || true`` with its output intact — must opt out
 with a same-line or immediately-preceding-line ``# allow-exit-suppress: <reason>``
 stating why the failure is safe to ignore (e.g. "best-effort GC reaper; the
-callee warns internally on a real failure").
+callee warns internally on a real failure"). The reason is REQUIRED — a bare
+``# allow-exit-suppress`` with no colon-and-reason does not suppress, matching the
+sibling ``check_substitution_exit_swallow`` / ``check_flag_arity`` contract.
 
 Invoked by pre-commit with the staged shell files as arguments.
 """
@@ -51,7 +53,10 @@ _REDIRECT_DEVNULL = re.compile(r"(?:[0-9&]?>|&>)\s*/dev/null")
 # `var=$(cmd) || true` is a value capture (empty var on failure, handled by the
 # caller) exactly like `var=$(cmd || true)`, so it carries the same safety.
 _ASSIGN_CAPTURE = re.compile(r"""^\s*\w+=["']?(?:\$\(.*\)|<\(.*\)|`.*`)["']?\s*$""")
-_ALLOW = "allow-exit-suppress"
+# The opt-out suppresses only when it carries a non-empty reason after the colon.
+# A bare `# allow-exit-suppress` (no colon, or an empty reason) states nothing and
+# does not silence the finding — the sibling checks demand the same.
+_ALLOW_WITH_REASON = re.compile(r"allow-exit-suppress:\s*\S")
 
 
 # A line that ends in a backslash, a pipe, or a boolean operator is continued on
@@ -122,10 +127,10 @@ def violations(text: str) -> list[int]:
         stripped = logical.lstrip()
         if stripped.startswith("#") or _MESSAGE_PREFIX.match(stripped):
             continue
-        if _ALLOW in logical:
+        if _ALLOW_WITH_REASON.search(logical):
             continue
         # Annotation may sit on the line immediately above the suppressor.
-        if start >= 2 and _ALLOW in physical[start - 2]:
+        if start >= 2 and _ALLOW_WITH_REASON.search(physical[start - 2]):
             continue
         prefix = logical[: m.start()]
         if _inside_substitution(prefix) or _ASSIGN_CAPTURE.match(prefix):

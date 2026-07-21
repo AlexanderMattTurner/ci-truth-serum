@@ -210,7 +210,9 @@
   description: A test asserting two copies agree hides a missing SSOT; mark it @pytest.mark.drift_guard("<why>") so the reason is reviewed.
   entry: python -m hooks.check_drift_guards
   language: python
-  types: [python]
+  # Python tests use @pytest.mark.drift_guard; JS/TS/shell suites carry copies-agree
+  # tests too, caught by a phrase pass and excused with `drift-guard-ok: <reason>`.
+  types_or: [python, javascript, ts, shell]
 
 - id: check-graceful-handwave
   name: "extra: ban graceful-degradation hand-waves in prose and comments"
@@ -239,6 +241,7 @@
   entry: python -m hooks.check_flag_arity
   language: python
   types: [shell]
+  additional_dependencies: [tree-sitter, tree-sitter-bash]
 
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
@@ -265,4 +268,4 @@
   description: Runs the Python extras under one id (check-symlinks, a shell hook, is enabled separately).
   entry: python -m hooks.run_tier extras
   language: python
-  additional_dependencies: [PyYAML, identify]
+  additional_dependencies: [PyYAML, identify, tree-sitter, tree-sitter-bash]

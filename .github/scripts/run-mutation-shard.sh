@@ -4,8 +4,8 @@
 #
 # The shard config is generated from the committed cosmic-ray.toml by
 # mutation_shards.py (SSOT for timeout + operator filters; the shard only swaps
-# module-path and narrows the test-command), so the two can never drift. A shard
-# never fails on a surviving mutant — survivors are diagnostic, exactly as the
+# module-path and narrows the test-command), so the two can never drift.  drift-guard-ok: one generated file derived from a single committed SSOT, no second copy exists to diverge
+# A shard never fails on a surviving mutant — survivors are diagnostic, exactly as the
 # unsharded run-mutation.sh — so its only failure modes are a red baseline or a
 # cosmic-ray error (set -e). It always writes reports/mutation/$SHARD_ID.json so
 # the aggregate can demand one report per shard and catch a silently missing slice.
