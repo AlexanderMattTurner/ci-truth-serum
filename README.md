@@ -57,6 +57,7 @@ lints that catch two kinds of lie a green check can hide:
 | `check-historical-comments`  | A comment narrating the past ("renamed from X", "now uses Y") rotted into a lie the moment the code moved—the reader can't see the old code, so the note was unverifiable from day one. Bans only tokens with no present-tense reading; opt out (e.g. a reader of a legacy on-disk format) with `# allow-history: <reason>`.                                                                                                                                                                                                                                                                                                                                     |
 | `check-doc-line-refs`        | A doc cited source by exact line number and pointed at whatever now happens to live there after the next refactor. Bans `<file>.<ext>:<N>` and `(L<N>)`-style cites in Markdown (fenced code blocks and any `CHANGELOG.md` are skipped); cite a function/section/anchor instead, or suppress with `<!-- allow-line-ref: <reason> -->`.                                                                                                                                                                                                                                                                                                                           |
 | `check-flag-arity`           | A CLI parser died with a raw `$2: unbound variable` instead of a clean "--branch needs a value", because a `--branch) X="$2"; shift 2` arm trusted the loop's outer `$# -gt 0` (which proves only `$1`) and the flag was passed last. Flags any `case` arm whose label is a `-x`/`--xxx`/`--xxx=*` option that reads `$2`/`shift 2` without its own guard; the guard must both **precede** the read and actually **bail** (`[[ $# -ge 2 ]] \|\| die`, a self-guarding `${2:?…}`, or a `need_val`/`need_arg` helper)—a bare `[[ $# -ge 2 ]]` whose result is discarded, or a guard placed after the read, does not count. Suppress with `# flag-arity-ok: <why>`. |
+| `check-secret-file-perms`    | A credential file (`*token*`, `*.pem`, `*npmrc*`, …) was created world-readable with the default umask and only `chmod 600`'d on a later line, so a co-tenant could read it in the window between. Flags a secret-named create (`>`/`>>`, `touch`, `tee`, non-private `install`) that is tightened by a `chmod 0?[46]00` on the same path within ~3 lines; a standing/inline `umask 077` or `install -m 600` is accepted, and a create with no nearby chmod is not flagged. Suppress with `# secret-perms-ok: <reason>`. |
 
 ## Usage
 
@@ -108,6 +109,7 @@ repos:
       # - id: check-historical-comments  # comments describe the present code, not its past
       # - id: check-doc-line-refs        # docs cite symbols/sections, not line numbers
       # - id: check-flag-arity           # value-taking CLI flag arms must guard $2 before reading it
+      # - id: check-secret-file-perms    # secret-named files must be created private, not chmod'd late
 ```
 
 `pre-commit run --all-files` sweeps the whole repo (handy on first adoption).

@@ -243,6 +243,13 @@
   types: [shell]
   additional_dependencies: [tree-sitter, tree-sitter-bash]
 
+- id: check-secret-file-perms
+  name: "extra: flag a secret file created world-readable then chmod'd private after"
+  description: A credential file created with the default umask and only tightened to 0600 on a later line is world-readable in the window between; create it private from the start.
+  entry: python -m hooks.check_secret_file_perms
+  language: python
+  types: [shell]
+
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
 # picked up with no consumer change. `check-symlinks` (a language:script shell

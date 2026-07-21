@@ -35,6 +35,7 @@ substitution_exit_swallow = load_hook(
 pinned_downloads = load_hook("check_pinned_downloads.py", "fuzz_pinned_downloads")
 pinned_base_images = load_hook("check_pinned_base_images.py", "fuzz_pinned_base_images")
 global_stdio_swap = load_hook("check_global_stdio_swap.py", "fuzz_global_stdio_swap")
+secret_file_perms = load_hook("check_secret_file_perms.py", "fuzz_secret_file_perms")
 workflow_pipefail = load_hook("check_workflow_pipefail.py", "fuzz_workflow_pipefail")
 inline_run_length = load_hook("check_inline_run_length.py", "fuzz_inline_run_length")
 linecheck = load_hook("_linecheck.py", "fuzz_linecheck")
@@ -49,6 +50,7 @@ LINE_DETECTORS = {
     "check_pinned_downloads": pinned_downloads.violations,
     "check_pinned_base_images": pinned_base_images.violations,
     "check_global_stdio_swap": global_stdio_swap.violations,
+    "check_secret_file_perms": secret_file_perms.violations,
 }
 
 
@@ -77,6 +79,13 @@ _INTERESTING_TOKENS = [
     "--platform=linux/amd64",
     "sys.stdout = x",
     "redirect_stdout(buf)",
+    "printf x > tokenfile",
+    "touch id_rsa",
+    "install auth.pem /etc/auth.pem",
+    "chmod 600 tokenfile",
+    "umask 077",
+    "(umask 077; echo x > credfile)",
+    "# secret-perms-ok: x",
     "set -o pipefail",
     "<<EOF",
     "<<'EOF'",
