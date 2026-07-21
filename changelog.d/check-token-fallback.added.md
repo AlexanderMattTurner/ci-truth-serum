@@ -1,0 +1,1 @@
+- `check-token-fallback` (Tier 2): flags `secrets.A || secrets.B` fallbacks in token positions, where setting the first secret silently switches the workflow's push identity. Opt out with `# token-fallback-ok: <reason>`.

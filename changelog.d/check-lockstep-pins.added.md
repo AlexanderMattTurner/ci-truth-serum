@@ -1,0 +1,1 @@
+- `check-lockstep-pins` (Tier 2, standalone): config-driven twin-pin equality — each `--pair FILE1 REGEX1 FILE2 REGEX2` must extract exactly one value per file and the values must match; zero/multiple matches is a hard error. Not in the `check-tier2` aggregate.

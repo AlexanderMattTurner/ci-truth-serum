@@ -67,6 +67,17 @@ FUZZ_REQUIRED = {
     "check_historical_comments": "violations",
     "check_doc_line_refs": "violations",
     "check_flag_arity": "violations",
+    "check_token_fallback": "violations",
+    "check_workflow_secret_names": "referenced_names",
+    "check_provenance_repo_url": "normalize_repo_url",
+    "check_pin_comment_truth": "pin_records",
+    "check_stderr_merge_parse": "violations",
+    "check_echo_fallback": "violations",
+    "check_case_default": "violations",
+    "check_lockstep_pins": "check_pair",
+    "check_cron_comment": "violations",
+    "check_toolchain_skips": "violations",
+    "release_canary": "changelog_top_version",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the
