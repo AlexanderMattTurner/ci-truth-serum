@@ -210,7 +210,9 @@
   description: A test asserting two copies agree hides a missing SSOT; mark it @pytest.mark.drift_guard("<why>") so the reason is reviewed.
   entry: python -m hooks.check_drift_guards
   language: python
-  types: [python]
+  # Python tests use @pytest.mark.drift_guard; JS/TS/shell suites carry copies-agree
+  # tests too, caught by a phrase pass and excused with `drift-guard-ok: <reason>`.
+  types_or: [python, javascript, ts, shell]
 
 - id: check-graceful-handwave
   name: "extra: ban graceful-degradation hand-waves in prose and comments"
@@ -239,6 +241,14 @@
   entry: python -m hooks.check_flag_arity
   language: python
   additional_dependencies: [tree-sitter, tree-sitter-bash]
+  types: [shell]
+  additional_dependencies: [tree-sitter, tree-sitter-bash]
+
+- id: check-secret-file-perms
+  name: "extra: flag a secret file created world-readable then chmod'd private after"
+  description: A credential file created with the default umask and only tightened to 0600 on a later line is world-readable in the window between; create it private from the start.
+  entry: python -m hooks.check_secret_file_perms
+  language: python
   types: [shell]
 
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────

@@ -11,7 +11,7 @@ boundary), and that judgement belongs in the open. A guard MUST carry
 
 so review checks the stated reason, not the mere existence of the guard.
 
-A guard is detected two ways, because either alone is evadable:
+A Python guard is detected two ways, because either alone is evadable:
 
   1. INTENT PHRASING — the name or docstring says what it is ("drift guard",
      "must stay in sync", ...). Honest, but a guard reworded to dodge the
@@ -29,25 +29,27 @@ The structural trigger is deliberately NARROW to stay quiet on legitimate tests
 (precision over recall — a noisy guard trains reviewers to ignore it). It fires
 only on read-source + maintained-copy-vs-collection; it does NOT fire on the
 sanctioned single-source form (read one config, assert code handles every entry
-via membership/iteration), nor on an ordinary output-vs-expected unit assertion
-(`assertCountEqual(fn(x), {...})` where neither side is a maintained copy) — the
-common shape that makes a blanket "two collections compared" rule useless (it
-false-matched 12 honest tests in this very repo when tried).
-
+via membership/iteration), nor on an ordinary output-vs-expected unit assertion.
 A structural hit that is a genuine non-guard clears with an explicit, reasoned
 opt-out comment anywhere in the function body:
 
     # not-a-drift-guard: <why this collection equality is not two copies>
 
-Honest limits, stated so this check is not itself laundered: detection is a
-heuristic, not proof. It reads PYTHON only — a guard in a JS/other-language test
-is out of scope here (the CLAUDE.md prose rule and human review cover that, and a
-JS-side check is the follow-up). A copies-agree comparison the AST can't see (a
-hand-rolled element-by-element loop, two module constants compared with no file
-read, a value fetched at runtime) still slips. The structural trigger closes the
-common maintained-copy-vs-config case; it does not make laundering impossible.
+Copies-agree tests also live in JavaScript/TypeScript (``*.test.mjs``) and shell
+suites, which carry no ``@pytest.mark``. For those a SIBLING phrase pass runs
+(``text_violations``): any line expressing drift-guard intent must carry a
+same-line or immediately-preceding ``drift-guard-ok: <why a true SSOT is
+infeasible>`` annotation, or it is flagged. That non-Python surface is
+phrase-only — it has the same dodge-the-phrasing weakness the structural trigger
+closes for Python; a JS-side structural pass is the honest follow-up.
 
-Invoked by pre-commit with the staged Python files as arguments.
+Honest limits, stated so this check is not itself laundered: detection is a
+heuristic, not proof. A copies-agree comparison the AST can't see (a hand-rolled
+element-by-element loop, two module constants compared with no file read, a value
+fetched at runtime) still slips. The triggers close the common cases; they do not
+make laundering impossible.
+
+Invoked by pre-commit with the staged Python / JS / TS / shell files as arguments.
 """
 
 import ast
@@ -74,9 +76,14 @@ _GUARD_RE = re.compile("|".join(_GUARD_PATTERNS), re.IGNORECASE)
 
 _MARKER = "drift_guard"
 
-# An explicit, reasoned "this collection-equality is a real unit test, not two
-# copies" opt-out for a STRUCTURAL hit. A non-empty reason is required so the
-# escape hatch is a stated judgement, not a silent mute.
+# The non-Python opt-out: a comment `drift-guard-ok: <reason>` with a non-empty
+# reason. (The bare token `drift-guard` inside it also matches _GUARD_RE, but the
+# annotation check runs first, so an annotation line never flags itself.)
+_ALLOW_MARKER = re.compile(r"drift-guard-ok:\s*\S", re.IGNORECASE)
+
+# The Python structural opt-out: `# not-a-drift-guard: <reason>` clears a
+# STRUCTURAL hit (a genuine collection-equality unit test), with a non-empty
+# reason so the escape is a stated judgement, not a silent mute.
 _OPTOUT_RE = re.compile(r"#\s*not-a-drift-guard:\s*\S", re.IGNORECASE)
 
 # Callables that construct/return a collection, and the collection-view methods.
@@ -223,20 +230,20 @@ def _justification(decorator: ast.expr) -> str | None:
     return None
 
 
-def violations(source: str) -> list[tuple[int, str, str]]:
-    """(1-based line, function name, trigger) for every test in SOURCE that reads
-    as a drift guard but lacks a justified @pytest.mark.drift_guard marker.
-    `trigger` is "phrasing" or "copies-agree structure". A structural-only hit is
-    cleared by a `# not-a-drift-guard:` opt-out; a phrasing hit is not (naming a
-    test a guard is a self-declaration). A file that does not parse as Python
-    produces no findings (other tooling owns syntax errors)."""
+def violations(source: str) -> list[tuple[int, str]]:
+    """(1-based line, function name) for every test in SOURCE that reads as a
+    drift guard — by intent PHRASING or copies-agree STRUCTURE — but lacks a
+    justified @pytest.mark.drift_guard marker. A structural-only hit is cleared by
+    a `# not-a-drift-guard:` opt-out; a phrasing hit is not (naming a test a guard
+    is a self-declaration). A file that does not parse as Python produces no
+    findings (other tooling owns syntax errors)."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return []
 
     lines = source.splitlines()
-    hits: list[tuple[int, str, str]] = []
+    hits: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -248,13 +255,30 @@ def violations(source: str) -> list[tuple[int, str, str]]:
             continue
         if any(_justification(dec) for dec in node.decorator_list):
             continue
-        # The opt-out clears a purely-structural hit (a real unit test whose
-        # equality happens to be maintained-copy-shaped); it cannot excuse a test
-        # that NAMES itself a guard.
         if structural and not phrasing and _has_optout(node, lines):
             continue
-        trigger = "phrasing" if phrasing else "copies-agree structure"
-        hits.append((node.lineno, node.name, trigger))
+        hits.append((node.lineno, node.name))
+    return hits
+
+
+def text_violations(text: str) -> list[tuple[int, str]]:
+    """(1-based line, matched phrase) for every line of TEXT that expresses
+    drift-guard intent without a reason-bearing ``drift-guard-ok:`` annotation on
+    that line or the one immediately above.
+
+    The non-AST sibling of ``violations()``: JS/TS/shell tests carry no
+    ``@pytest.mark``, so intent is detected by phrase and excused inline instead."""
+    lines = text.splitlines()
+    hits: list[tuple[int, str]] = []
+    for i, line in enumerate(lines):
+        match = _GUARD_RE.search(line)
+        if not match:
+            continue
+        if _ALLOW_MARKER.search(line):
+            continue
+        if i > 0 and _ALLOW_MARKER.search(lines[i - 1]):
+            continue
+        hits.append((i + 1, match.group(0)))
     return hits
 
 
@@ -265,19 +289,24 @@ def main(argv: list[str]) -> int:
             source = Path(path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for lineno, name, trigger in violations(source):
-            hint = (
-                'add @pytest.mark.drift_guard("why a true SSOT is infeasible"), '
-                "or make one source authoritative so the guard is unnecessary"
-            )
-            if trigger == "copies-agree structure":
-                hint += (
-                    ", or — if this equality is a genuine unit test, not two "
-                    "copies — add a `# not-a-drift-guard: <reason>` comment"
+        if path.endswith(".py"):
+            for lineno, name in violations(source):
+                print(
+                    f"{path}:{lineno}: drift guard {name!r} lacks a justification — "
+                    "prefer removing the duplication (make one source authoritative), "
+                    f'add @pytest.mark.{_MARKER}("why a true SSOT is infeasible"), or — '
+                    "for a genuine non-guard collection-equality — a "
+                    "`# not-a-drift-guard: <reason>` comment.",
+                    file=sys.stderr,
                 )
+                status = 1
+            continue
+        for lineno, phrase in text_violations(source):
             print(
-                f"{path}:{lineno}: {name!r} reads as a drift guard "
-                f"({trigger}) but lacks a justification — {hint}.",
+                f"{path}:{lineno}: drift-guard intent ({phrase!r}) lacks a "
+                "justification — prefer removing the duplication (make one source "
+                "authoritative), or annotate "
+                "`drift-guard-ok: <why a true SSOT is infeasible>`.",
                 file=sys.stderr,
             )
             status = 1

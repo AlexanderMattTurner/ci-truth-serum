@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 keywords = ["pre-commit", "ci", "github-actions", "linter", "supply-chain"]
-dependencies = ["PyYAML", "identify", "tree-sitter>=0.23", "tree-sitter-bash>=0.23"]
+dependencies = ["PyYAML", "identify", "tree-sitter>=0.25", "tree-sitter-bash>=0.25"]
 
 [project.urls]
 Homepage = "https://github.com/alexander-turner/ci-truth-serum"

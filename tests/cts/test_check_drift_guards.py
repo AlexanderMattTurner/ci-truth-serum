@@ -93,7 +93,7 @@ def test_justification(decorator_src: str, expected: str | None) -> None:
     ],
 )
 def test_violations_flags_unmarked_drift_guard(src: str) -> None:
-    assert mod.violations(src) == [(1, "test_a", "phrasing")]
+    assert mod.violations(src) == [(1, "test_a")]
 
 
 def test_violations_passes_justified_drift_guard() -> None:
@@ -121,9 +121,7 @@ def test_structural_trigger_catches_laundered_guard() -> None:
     """A guard that avoids every intent phrase (calls itself an 'SSOT-coverage
     contract') is still caught by the copies-agree structure: it reads a source
     and asserts an UPPER_CASE constant's keys equal it."""
-    assert mod.violations(_LAUNDERED_GUARD) == [
-        (1, "test_examples_cover_the_config", "copies-agree structure")
-    ]
+    assert mod.violations(_LAUNDERED_GUARD) == [(1, "test_examples_cover_the_config")]
 
 
 def test_structural_trigger_cleared_by_marker() -> None:
@@ -191,7 +189,7 @@ def test_assert_count_equal_needs_a_maintained_copy() -> None:
         "    self.assertCountEqual(got, EXPECTED_SET)\n"
     )
     assert mod.violations(non_guard) == []
-    assert mod.violations(guard) == [(1, "test_x", "copies-agree structure")]
+    assert mod.violations(guard) == [(1, "test_x")]
 
 
 @pytest.mark.parametrize(
@@ -213,6 +211,62 @@ def test_violations_ignores_non_guards(source: str) -> None:
     assert mod.violations(source) == []
 
 
+@pytest.mark.parametrize(
+    "line, flagged",
+    [
+        ("  it('configs must stay in sync', () => {", True),
+        ("  // asserted on the source so it can't drift", True),
+        ("  it('the two pins move in lockstep', () => {", True),
+        ("  # the host and container lists are kept in sync", True),
+        # a same-line reason-bearing annotation excuses it
+        ("  it('must stay in sync'); // drift-guard-ok: cross-language SSOT", False),
+        # a mere mention of drift without guard intent is not flagged
+        ("  // the tool reports drift and rewrites", False),
+        ("  echo 'building'", False),
+    ],
+)
+def test_text_violations_phrase_pass(line: str, flagged: bool) -> None:
+    hits = mod.text_violations(line + "\n")
+    assert bool(hits) is flagged
+    if flagged:
+        assert hits[0][0] == 1
+
+
+def test_text_violations_annotation_on_preceding_line() -> None:
+    text = (
+        "// drift-guard-ok: two runtimes, no shared SSOT\n"
+        "it('the two configs must stay in sync', () => {});\n"
+    )
+    assert mod.text_violations(text) == []
+
+
+def test_text_violations_bare_annotation_without_reason_still_fires() -> None:
+    # A reasonless `drift-guard-ok` (no colon/value) does not suppress.
+    text = "it('must stay in sync'); // drift-guard-ok\n"
+    assert len(mod.text_violations(text)) == 1
+
+
+def test_main_flags_non_python_guard_and_names_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "config.test.mjs"
+    bad.write_text("test('configs must stay in sync', () => {});\n", encoding="utf-8")
+    assert mod.main([str(bad)]) == 1
+    err = capsys.readouterr().err
+    assert f"{bad}:1: drift-guard intent" in err
+    assert "drift-guard-ok:" in err
+
+
+def test_main_accepts_annotated_non_python_guard(tmp_path: Path) -> None:
+    good = tmp_path / "check.sh"
+    good.write_text(
+        "# drift-guard-ok: mirrors an external upstream value, no SSOT\n"
+        "assert_equal must stay in sync\n",
+        encoding="utf-8",
+    )
+    assert mod.main([str(good)]) == 0
+
+
 def test_main_returns_one_on_violation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -220,8 +274,7 @@ def test_main_returns_one_on_violation(
     bad.write_text('def test_a():\n    """drift guard: x"""\n', encoding="utf-8")
     assert mod.main([str(bad)]) == 1
     err = capsys.readouterr().err
-    assert f"{bad}:1: 'test_a' reads as a drift guard (phrasing)" in err
-    assert "lacks a justification" in err
+    assert f"{bad}:1: drift guard 'test_a' lacks a justification" in err
 
 
 def test_main_returns_zero_when_clean(tmp_path: Path) -> None:
@@ -295,6 +348,6 @@ def test_own_test_tree_is_clean() -> None:
         for p in sorted((REPO_ROOT / "tests").rglob("*.py"))
         for rel in [str(p.relative_to(REPO_ROOT))]
         if not exclude.match(rel)
-        for lineno, name, _trigger in mod.violations(p.read_text(encoding="utf-8"))
+        for lineno, name in mod.violations(p.read_text(encoding="utf-8"))
     ]
     assert offenders == []

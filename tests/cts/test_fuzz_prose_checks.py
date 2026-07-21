@@ -109,10 +109,9 @@ def test_graceful_violations_no_crash_and_valid_lines(text: str, prose: bool) ->
 def test_drift_guards_violations_no_crash_and_shape(text: str) -> None:
     hits = drift_guards.violations(text)
     assert hits == drift_guards.violations(text)  # deterministic
-    for lineno, name, trigger in hits:
+    for lineno, name in hits:
         assert isinstance(lineno, int) and lineno >= 1
         assert name.startswith("test_")
-        assert trigger in {"phrasing", "copies-agree structure"}
 
 
 @given(_texts())

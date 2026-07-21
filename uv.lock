@@ -233,8 +233,8 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'mutation'" },
     { name = "pyyaml" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "tree-sitter", specifier = ">=0.23" },
-    { name = "tree-sitter-bash", specifier = ">=0.23" },
+    { name = "tree-sitter", specifier = ">=0.25" },
+    { name = "tree-sitter-bash", specifier = ">=0.25" },
 ]
 provides-extras = ["dev", "mutation"]
 

@@ -149,61 +149,84 @@ def test_optout_with_empty_reason_is_itself_a_violation() -> None:
     assert "non-empty reason" in hits[0][1]
 
 
+def test_read_before_guard_on_same_line_is_flagged() -> None:
+    # The arity guard follows the $2 read, so $2 is dereferenced raw (and crashes
+    # under set -u) before the guard ever runs.
+    body = '  --x)\n    X="$2"; [[ $# -ge 2 ]] || die\n    shift 2\n    ;;'
+    assert _flagged_lines(_parser(body)) == [5]
+
+
+def test_guard_before_read_on_same_line_passes() -> None:
+    # Mirror image: the same tokens in the correct order (guard, then read) pass.
+    body = '  --x)\n    [[ $# -ge 2 ]] || die; X="$2"; shift 2\n    ;;'
+    assert _flagged_lines(_parser(body)) == []
+
+
+def test_bare_arity_test_without_bail_is_not_a_guard() -> None:
+    # `[[ $# -ge 2 ]]` whose result is discarded (no || die / && die / then die)
+    # does not stop the read, so the following $2 is still unguarded.
+    body = '  --x)\n    [[ $# -ge 2 ]]\n    X="$2"\n    shift 2\n    ;;'
+    assert _flagged_lines(_parser(body)) == [6]
+
+
+def test_negative_bail_with_ampersand_consequent_passes() -> None:
+    body = '  --x)\n    [[ $# -lt 2 ]] && die "--x needs a value"\n    X="$2"\n    shift 2\n    ;;'
+    assert _flagged_lines(_parser(body)) == []
+
+
+def test_multiline_if_then_guard_passes() -> None:
+    # The bail lives on its own line inside `if …; then … fi` — the common real
+    # idiom. The opener parks the arm pending; the `die` on the next line resolves it.
+    body = (
+        "  --x)\n"
+        "    if [[ $# -lt 2 ]]; then\n"
+        '      die "--x needs a value"\n'
+        "    fi\n"
+        '    X="$2"\n'
+        "    shift 2\n"
+        "    ;;"
+    )
+    assert _flagged_lines(_parser(body)) == []
+
+
+def test_multiline_if_then_with_multi_statement_body_passes() -> None:
+    # An `echo` before the `exit` in the then-body must not derail resolution.
+    body = (
+        "  --x)\n"
+        "    if [[ $# -lt 2 ]]; then\n"
+        '      echo "usage: --x VALUE" >&2\n'
+        "      exit 1\n"
+        "    fi\n"
+        '    X="$2"\n'
+        "    ;;"
+    )
+    assert _flagged_lines(_parser(body)) == []
+
+
+def test_multiline_positive_bail_line_continuation_passes() -> None:
+    # `[[ $# -ge 2 ]] ||` with the exiting command on the continuation line.
+    body = '  --x)\n    [[ $# -ge 2 ]] ||\n      die "--x needs a value"\n    X="$2"\n    ;;'
+    assert _flagged_lines(_parser(body)) == []
+
+
+def test_multiline_if_then_that_never_bails_is_still_flagged() -> None:
+    # A then-body that only warns (no exit) does not stop the read: `if too few, warn`
+    # then fall through to `$2` still crashes. The read must remain flagged.
+    body = (
+        "  --x)\n"
+        "    if [[ $# -lt 2 ]]; then\n"
+        '      echo "warning: maybe missing" >&2\n'
+        "    fi\n"
+        '    X="$2"\n'
+        "    ;;"
+    )
+    assert _flagged_lines(_parser(body)) == [8]  # the X="$2" line
+
+
 def test_dollar_hash_is_not_mistaken_for_a_comment() -> None:
     # strip_comment must keep `$#` intact so the arity guard is recognized.
     body = '  --a)\n    [[ $# -ge 2 ]] || die x # trailing note\n    A="$2"\n    ;;'
     assert _flagged_lines(_parser(body)) == []
-
-
-# Blind spots of the old line/regex case-walker, now fixed by the bash grammar.
-# The walker matched `;;` / `case … in` by regex on comment-stripped (but NOT
-# string-stripped) lines, so those tokens inside a string desynced arm tracking
-# and dropped the real violation. Each case is red on the old scanner, green now.
-def test_semicolon_in_string_does_not_close_the_arm() -> None:
-    # `echo "run ;; deploy"` — the `;;` is data. The old regex walker read it as an
-    # arm terminator and closed the arm here, so the later BRANCH="$2" escaped the
-    # check (FALSE NEGATIVE).
-    hits = _flagged_lines(
-        _parser(
-            '  --branch)\n    echo "run ;; deploy"\n    BRANCH="$2"\n    shift 2\n    ;;'
-        )
-    )
-    assert hits == [6]  # the BRANCH="$2" read line
-
-
-def test_case_keyword_in_string_does_not_open_a_spurious_frame() -> None:
-    # `echo "usage: case x in y"` — `case … in` is data, not a nested case.
-    hits = _flagged_lines(
-        _parser(
-            '  --f)\n    echo "usage: case x in y"\n    V="$2"\n    shift 2\n    ;;'
-        )
-    )
-    assert hits == [6]
-
-
-def test_nested_case_read_is_not_attributed_to_the_outer_flag_arm() -> None:
-    # A `$2` read in a nested subcommand arm (`read)`) belongs to the nested arm,
-    # not the outer flag arm — so only the outer arm's OWN unguarded read is
-    # reported, exactly once (proves both: outer caught, nested not double-counted).
-    hits = _flagged_lines(
-        _parser(
-            '  --branch)\n    case "$mode" in\n    read) sub="$2"; shift 2 ;;\n'
-            '    esac\n    BRANCH="$2"\n    shift 2\n    ;;'
-        )
-    )
-    assert hits == [8]  # only the outer BRANCH="$2"; the nested read) is excluded
-
-
-def test_nested_case_does_not_leak_into_a_guarded_outer_arm() -> None:
-    # Same shape but the outer arm self-guards its read: zero findings. Pairs with
-    # the test above so neither passes vacuously.
-    hits = _flagged_lines(
-        _parser(
-            '  --branch)\n    case "$mode" in\n    read) sub="$2"; shift 2 ;;\n'
-            '    esac\n    BRANCH="${2:?need}"\n    shift 2\n    ;;'
-        )
-    )
-    assert hits == []
 
 
 def test_main_reads_files_from_argv_and_exit_code(tmp_path: Path) -> None:

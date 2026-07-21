@@ -114,6 +114,22 @@ def test_matches_commented_code_accepts_each_language(tmp_path):
         assert rt.matches(str(p), rt.PROSE_OR_COMMENTED_CODE) is True, name
 
 
+def test_matches_drift_accepts_python_js_ts_shell_only(tmp_path):
+    for name, body in [
+        ("m.py", "x = 1\n"),
+        ("c.test.mjs", "test('x', () => {});\n"),
+        ("j.js", "let x = 1;\n"),
+        ("t.ts", "let x = 1;\n"),
+        ("s.sh", "#!/usr/bin/env bash\n"),
+    ]:
+        p = tmp_path / name
+        p.write_text(body)
+        assert rt.matches(str(p), rt.DRIFT) is True, name
+    md = tmp_path / "notes.md"
+    md.write_text("# heading\n")
+    assert rt.matches(str(md), rt.DRIFT) is False
+
+
 def test_matches_prose_or_commented_code_accepts_prose(tmp_path):
     for name in ("notes.md", "doc.rst"):
         p = tmp_path / name
