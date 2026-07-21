@@ -89,7 +89,8 @@ repos:
             |tests/cts/test_fuzz_prose_checks\.py
           )$
         language: python
-        additional_dependencies: [PyYAML, identify]
+        additional_dependencies:
+          [PyYAML, identify, tree-sitter, tree-sitter-bash]
 
       - id: zizmor
         name: zizmor (GitHub Actions security audit)
