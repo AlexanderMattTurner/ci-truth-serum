@@ -78,6 +78,9 @@ FUZZ_REQUIRED = {
     "check_cron_comment": "violations",
     "check_toolchain_skips": "violations",
     "release_canary": "changelog_top_version",
+    "check_job_timeout": "check_file",
+    "check_trusted_base": "check_file",
+    "check_env_symmetry": "analyze",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the

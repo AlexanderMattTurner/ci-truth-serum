@@ -22,12 +22,19 @@ rt = load_hook("run_tier.py", "run_tier")
 MANIFEST = yaml.safe_load((REPO_ROOT / ".pre-commit-hooks.yaml").read_text())
 
 # Map a name-prefix (the manifest encodes the tier in `name:`) to a TIERS key.
-PREFIX_TIER = {"honesty": "1", "identity": "1", "opinionated": "2", "extra": "extras"}
-# Intentionally unaggregated hooks: check-symlinks is a language:script shell
-# hook (cannot run inside the Python aggregate); check-lockstep-pins is
-# config-driven and hard-errors without per-repo --pair args the aggregate
-# cannot supply.
-UNAGGREGATED = {"check-symlinks", "check-lockstep-pins"}
+PREFIX_TIER = {
+    "honesty": "1",
+    "identity": "1",
+    "security": "1",
+    "opinionated": "2",
+    "extra": "extras",
+}
+# Hooks intentionally left out of every aggregate, each enabled on its own:
+# `check-symlinks` (a language:script shell hook, not a Python module),
+# `check-lockstep-pins` (config-driven; hard-errors without per-repo `--pair`
+# args), and `check-env-symmetry` (a whole-tree scan needing a per-project
+# `--prefix` arg no aggregate can supply).
+UNAGGREGATED = {"check-symlinks", "check-lockstep-pins", "check-env-symmetry"}
 
 
 def _python_member_hooks() -> list[dict]:
@@ -55,15 +62,19 @@ def test_registry_covers_every_python_hook_in_its_declared_tier():
 
 def test_unaggregated_hooks_exist_and_appear_in_no_tier():
     # check-symlinks must exist, be a script hook, and appear in no tier;
-    # check-lockstep-pins must exist, demand its args, and appear in no tier.
+    # check-lockstep-pins and check-env-symmetry must exist, demand their args,
+    # and appear in no tier.
     symlinks = next(h for h in MANIFEST if h["id"] == "check-symlinks")
     assert symlinks["entry"].endswith(".sh") and symlinks["language"] == "script"
     lockstep = next(h for h in MANIFEST if h["id"] == "check-lockstep-pins")
     assert lockstep["entry"] == "python -m hooks.check_lockstep_pins"
     assert lockstep["pass_filenames"] is False and lockstep["always_run"] is True
+    env_symmetry = next(h for h in MANIFEST if h["id"] == "check-env-symmetry")
+    assert env_symmetry["entry"].startswith("python -m hooks.check_env_symmetry")
     all_modules = {mod for members in rt.TIERS.values() for mod, _ in members}
     assert "check_symlinks" not in all_modules
     assert "check_lockstep_pins" not in all_modules
+    assert "check_env_symmetry" not in all_modules
 
 
 def test_every_aggregate_id_has_a_tier():

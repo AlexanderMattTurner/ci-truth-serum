@@ -88,6 +88,17 @@
   # the check is one git call plus two small file reads — always run.
   always_run: true
 
+# ───────────────────────── Tier 1 · Security (default-on) ────────────────────
+- id: check-trusted-base
+  name: "security: forbid privileged pull_request-head checkout (pwn-request)"
+  description: A pull_request(_target) job that checks out the PR head AND holds write perms or a secret runs untrusted PR code with the base repo's privileges.
+  entry: python -m hooks.check_trusted_base
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 # ───────────────────────── Tier 2 · Opinionated (opt-in) ─────────────────────
 # These prescribe a specific architecture. Enable only if you follow it.
 - id: check-always-reporter
@@ -118,6 +129,16 @@
   additional_dependencies: [PyYAML]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-job-timeout
+  name: "opinionated: require timeout-minutes on every job"
+  description: A job without timeout-minutes inherits GitHub's 360-minute (6h) default, so one wedged step pins a runner slot for six hours and starves the pool.
+  entry: python -m hooks.check_job_timeout
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
   types: [yaml]
 
 - id: check-concurrency
@@ -323,14 +344,25 @@
   language: python
   types: [python]
 
+- id: check-env-symmetry
+  name: "extra: enforce write/read symmetry for prefixed env vars"
+  description: A prefixed env var written but never read (or read but never written) is a half-finished rename that silently reads unset; requires --prefix and scans the whole tracked tree.
+  entry: python -m hooks.check_env_symmetry
+  language: python
+  # Whole-tree scan (a write and its read live in different files) — self-
+  # discovers via `git ls-files`, so the passed file list is ignored. Supply the
+  # project prefix: `args: [--prefix, GLOVEBOX_]`.
+  pass_filenames: false
+
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
-# picked up with no consumer change. Two checks are not aggregated — enable
-# them on their own: `check-symlinks` (a language:script shell hook) and
+# picked up with no consumer change. Three checks are not aggregated — enable
+# each on its own: `check-symlinks` (a language:script shell hook),
 # `check-lockstep-pins` (config-driven; it hard-errors without the per-repo
-# --pair args an aggregate cannot supply). These have no files/types filter so
-# they always run (the workflow lints self-discover); the content lints inside
-# still receive only files of their kind.
+# --pair args an aggregate cannot supply), and `check-env-symmetry` (needs a
+# per-project --prefix arg an aggregate can't supply). These have no files/types
+# filter so they always run (the workflow lints self-discover); the content
+# lints inside still receive only files of their kind.
 - id: check-tier1
   name: "aggregate: every Tier 1 (honesty + identity) check"
   description: Runs the default-on honesty + identity lints under one id.

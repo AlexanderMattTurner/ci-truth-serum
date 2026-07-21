@@ -12,14 +12,15 @@ and the content lints receive only the committed files of their kind (shell /
 python / Dockerfile), classified with ``identify`` — the same library pre-commit
 uses for its own ``types:`` filtering.
 
-Two hooks are intentionally NOT aggregated: ``check-symlinks`` is a
-``language: script`` shell hook, not a Python module, so it cannot run inside
-this Python aggregate; ``check-lockstep-pins`` is config-driven (it does
-nothing without per-repo ``--pair`` args, and the aggregate passes none), so
-running it here would hard-error every consumer. Enable each on its own. The
-contract test in ``tests/cts/test_run_tier.py`` asserts this registry stays in
-sync with ``.pre-commit-hooks.yaml`` so a newly added hook can't silently
-escape its tier.
+Three hooks are intentionally NOT aggregated, each enabled on its own:
+``check-symlinks`` is a ``language: script`` shell hook, not a Python module, so
+it cannot run inside this Python aggregate; ``check-lockstep-pins`` is
+config-driven (it does nothing without per-repo ``--pair`` args, and the
+aggregate passes none), so running it here would hard-error every consumer; and
+``check-env-symmetry`` is a whole-tree scan needing a per-project ``--prefix``
+arg no aggregate can supply. The contract test in
+``tests/cts/test_run_tier.py`` asserts this registry stays in sync with
+``.pre-commit-hooks.yaml`` so a newly added hook can't silently escape its tier.
 """
 
 import re
@@ -60,8 +61,10 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_pinned_base_images", DOCKERFILE),
         ("check_pinned_downloads", SHELL_OR_DOCKERFILE),
         ("check_provenance_repo_url", WORKFLOW),
+        ("check_trusted_base", WORKFLOW),
     ],
     "2": [
+        ("check_job_timeout", WORKFLOW),
         ("check_always_reporter", WORKFLOW),
         ("check_required_reporter", WORKFLOW),
         ("check_inline_run_length", WORKFLOW),
