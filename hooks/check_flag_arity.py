@@ -30,6 +30,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
 # Helpers that themselves assert `[[ $# -ge 2 ]]` before returning — calling one
 # at the top of an arm is an accepted guard. A small named allowlist, not a
 # pattern, so a new helper is a deliberate one-line addition here.
@@ -54,10 +57,8 @@ _BARE_POS_RE = re.compile(r"\$(?P<d>[2-9])(?![0-9])")
 _BRACE_POS_RE = re.compile(r"\$\{(?P<n>[0-9]+)\}")
 _SHIFT_RE = re.compile(r"\bshift\s+(?P<n>[0-9]+)\b")
 
-_CASE_RE = re.compile(r"(?P<lead>^|[\s;])case\s+.*?\s+in(?:\s|;|$)")
-_IN_RE = re.compile(r"\s+in(?:\s|;|$)")
-_ARMEND_RE = re.compile(r";;&|;&|;;")
-_ESAC_RE = re.compile(r"(?P<lead>^|[\s;])esac(?:\s|;|$)")
+# Case-arm terminators the bash grammar emits as their own child token.
+_ARM_TERMINATORS = (";;", ";&", ";;&")
 
 _MSG_UNGUARDED = (
     "value flag consumes $2/shift without an arity guard — "
@@ -122,121 +123,104 @@ def _shifts_past_first(code: str) -> bool:
     return any(int(m.group("n")) >= 2 for m in _SHIFT_RE.finditer(code))
 
 
-def _arm_label(rest: str) -> str | None:
-    """The case-arm label from the text before the first ``)``, or None when the
-    line does not open an arm."""
-    trimmed = rest.strip()
-    if not trimmed or trimmed.startswith("("):
-        return None
-    close = trimmed.find(")")
-    if close <= 0:
-        return None
-    return trimmed[:close].strip()
-
-
 def _is_flag_label(label: str) -> bool:
     alts = [a.strip() for a in label.split("|")]
     alts = [a for a in alts if a]
     return bool(alts) and all(_FLAG_ALT_RE.match(a) for a in alts)
 
 
-def violations(text: str) -> list[tuple[int, str]]:
-    """(1-based line, message) for every value-taking flag arm in TEXT that
-    consumes ``$2`` / ``shift 2`` without an arity guard. One report per arm."""
-    lines = text.split("\n")
-    found: list[tuple[int, str]] = []
-    # Stack of case frames; each tracks the arm currently being scanned so a
-    # nested `case … esac` inside an arm never confuses the outer arm's state.
-    stack: list[dict] = []
+def _arm_label(item) -> str | None:
+    """The label of a ``case_item`` node — the source text before its own ``)``
+    delimiter (e.g. ``--branch``, ``-f | --file``, ``--privacy=*``), or None when
+    the arm has no closing ``)`` (malformed / partial parse)."""
+    close = next((c for c in item.children if c.type == ")"), None)
+    if close is None:
+        return None
+    return item.text[: close.start_byte - item.start_byte].decode().strip()
 
-    def top() -> dict | None:
-        return stack[-1] if stack else None
 
-    def consume(raw_frag: str, code: str, line_no: int) -> None:
-        """Fold one code fragment into the current arm's guard/consumption state,
-        recording a violation for an unguarded read."""
-        frame = top()
-        if not frame or not frame["arm"] or not frame["arm"]["is_flag"]:
-            return
-        if frame["arm"]["guarded"]:
-            return
+def _arm_body_bytes(item) -> tuple[int, int]:
+    """The [start, end) byte span of a ``case_item``'s BODY — after its ``)`` up to
+    its terminator (`;;`/`;&`/`;;&`), or the item end when the terminator is
+    omitted (a final arm may drop it)."""
+    close = next((c for c in item.children if c.type == ")"), None)
+    start = close.end_byte if close is not None else item.start_byte
+    term = next((c for c in item.children if c.type in _ARM_TERMINATORS), None)
+    end = term.start_byte if term is not None else item.end_byte
+    return start, end
+
+
+def _masked_lines(src: bytes, keep_start: int, keep_end: int, holes) -> list[str]:
+    """SRC decoded into physical lines with every byte OUTSIDE ``[keep_start,
+    keep_end)`` — or inside any ``holes`` span — blanked to a space, while newlines
+    are preserved everywhere.
+
+    This isolates one arm's own body: text belonging to other arms, the label, the
+    terminator, and any NESTED ``case`` inside this arm (the holes) becomes blank,
+    so a `$2` read in a sibling/nested arm is never attributed here. Node byte
+    offsets always fall on UTF-8 character boundaries, so a multi-byte character is
+    either wholly kept or wholly blanked — the result is always valid UTF-8 with the
+    same line count as ``src``."""
+    out = bytearray(0x20 if b != 0x0A else 0x0A for b in src)
+    for i in range(keep_start, min(keep_end, len(src))):
+        if not any(h0 <= i < h1 for h0, h1 in holes):
+            out[i] = src[i]
+    return out.decode("utf-8").split("\n")
+
+
+def _scan_arm(item, lines: list[str], src: bytes, found: list[tuple[int, str]]) -> None:
+    """Append at most one violation for a single flag-labelled ``case_item``.
+
+    Walks the arm's own body line by line: the FIRST line carrying an arity guard,
+    an allowlisted helper, or a self-guarding read resolves the arm as safe; the
+    first line that reads ``$2+``/``shift N>=2`` before any such guard is the
+    violation (unless a `# flag-arity-ok:` marker on that line or the one above
+    opts out — an empty reason is itself reported)."""
+    label = _arm_label(item)
+    if label is None or not _is_flag_label(label):
+        return
+    body_start, body_end = _arm_body_bytes(item)
+    holes = [(n.start_byte, n.end_byte) for n in iter_nodes(item, "case_statement")]
+    masked = _masked_lines(src, body_start, body_end, holes)
+
+    start_row = item.start_point[0]
+    end_row = min(len(masked), len(lines)) - 1
+    for row in range(start_row, end_row + 1):
+        arm_line = masked[row]
+        code = _strip_comment(arm_line)
         if (
             _has_arity_guard(code)
             or _calls_allowlisted_helper(code)
             or _reads_self_guarded(code)
         ):
-            frame["arm"]["guarded"] = True
-            return
+            return  # a guard before any unguarded read resolves the arm as safe
         if not _reads_bare_positional(code) and not _shifts_past_first(code):
-            return
-
-        prev = lines[line_no - 2] if line_no - 2 >= 0 else ""
-        marker = _OPTOUT_RE.search(raw_frag) or _OPTOUT_RE.search(prev)
+            continue
+        prev = lines[row - 1] if row - 1 >= 0 else ""
+        marker = _OPTOUT_RE.search(arm_line) or _OPTOUT_RE.search(prev)
         if marker:
-            frame["arm"]["guarded"] = True  # a marker resolves the arm either way
             if not marker.group("reason").strip():
-                found.append((line_no, _MSG_EMPTY_OPTOUT))
-            return
-        found.append((line_no, _MSG_UNGUARDED))
-        frame["arm"]["guarded"] = True  # one report per arm is enough
+                found.append((row + 1, _MSG_EMPTY_OPTOUT))
+            return  # a marker resolves the arm either way
+        found.append((row + 1, _MSG_UNGUARDED))
+        return  # one report per arm is enough
 
-    for i, raw in enumerate(lines):
-        line_no = i + 1
-        rest = _strip_comment(raw)
-        rest_raw = raw
-        # Walk the code left-to-right so a label and its inline body on one line
-        # (`--flag) x=1 ;;`) are handled in structural order.
-        while True:
-            frame = top()
-            case_m = _CASE_RE.search(rest)
-            arm_end_m = _ARMEND_RE.search(rest) if frame and frame["arm"] else None
-            esac_m = _ESAC_RE.search(rest)
-            label = _arm_label(rest) if frame and not frame["arm"] else None
-            label_pos = rest.find(")") if label is not None else -1
 
-            candidates: list[tuple[str, int]] = []
-            if case_m:
-                candidates.append(("case", case_m.start() + len(case_m.group("lead"))))
-            if arm_end_m:
-                candidates.append(("armend", arm_end_m.start()))
-            if esac_m:
-                candidates.append(("esac", esac_m.start() + len(esac_m.group("lead"))))
-            if label is not None:
-                candidates.append(("label", len(rest) - len(rest.lstrip())))
+def violations(text: str) -> list[tuple[int, str]]:
+    """(1-based line, message) for every value-taking flag arm in TEXT that
+    consumes ``$2`` / ``shift 2`` without an arity guard. One report per arm.
 
-            if not candidates:
-                consume(rest_raw, rest, line_no)
-                break
-            candidates.sort(key=lambda c: c[1])
-            kind, pos = candidates[0]
-            # Body text preceding the structural token still belongs to the arm.
-            consume(rest_raw, rest[:pos], line_no)
-
-            if kind == "case":
-                stack.append({"arm": None})
-                after = rest[case_m.start() :]
-                in_m = _IN_RE.search(after)
-                advance = case_m.start() + in_m.start() + len(in_m.group(0))
-                rest_raw = raw[min(advance, len(raw)) :]
-                rest = rest[advance:]
-                continue
-            if kind == "esac":
-                if stack:
-                    stack.pop()
-                rest_raw = raw[min(pos + 4, len(raw)) :]
-                rest = rest[pos + 4 :]
-                continue
-            if kind == "armend":
-                frame["arm"] = None
-                adv = pos + len(arm_end_m.group(0))
-                rest_raw = raw[min(adv, len(raw)) :]
-                rest = rest[adv:]
-                continue
-            # kind == "label": open the arm and continue past `)` for inline body.
-            frame["arm"] = {"is_flag": _is_flag_label(label), "guarded": False}
-            rest_raw = raw[label_pos + 1 :] if len(raw) > label_pos else ""
-            rest = rest[label_pos + 1 :]
-
+    Structure comes from a real bash parse: ``case_item`` nodes (at any nesting
+    depth) give exact arm boundaries and labels, so subcommand arms (``read)``),
+    catch-alls (``*)``), nested ``case``s, and value reads in ordinary function
+    bodies are excluded by construction rather than by an approximate line walker."""
+    lines = text.split("\n")
+    src = text.encode("utf-8")
+    found: list[tuple[int, str]] = []
+    for item in sorted(
+        iter_nodes(parse(text), "case_item"), key=lambda n: n.start_byte
+    ):
+        _scan_arm(item, lines, src, found)
     return found
 
 

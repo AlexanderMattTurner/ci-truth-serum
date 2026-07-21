@@ -155,6 +155,57 @@ def test_dollar_hash_is_not_mistaken_for_a_comment() -> None:
     assert _flagged_lines(_parser(body)) == []
 
 
+# Blind spots of the old line/regex case-walker, now fixed by the bash grammar.
+# The walker matched `;;` / `case … in` by regex on comment-stripped (but NOT
+# string-stripped) lines, so those tokens inside a string desynced arm tracking
+# and dropped the real violation. Each case is red on the old scanner, green now.
+def test_semicolon_in_string_does_not_close_the_arm() -> None:
+    # `echo "run ;; deploy"` — the `;;` is data. The old regex walker read it as an
+    # arm terminator and closed the arm here, so the later BRANCH="$2" escaped the
+    # check (FALSE NEGATIVE).
+    hits = _flagged_lines(
+        _parser(
+            '  --branch)\n    echo "run ;; deploy"\n    BRANCH="$2"\n    shift 2\n    ;;'
+        )
+    )
+    assert hits == [6]  # the BRANCH="$2" read line
+
+
+def test_case_keyword_in_string_does_not_open_a_spurious_frame() -> None:
+    # `echo "usage: case x in y"` — `case … in` is data, not a nested case.
+    hits = _flagged_lines(
+        _parser(
+            '  --f)\n    echo "usage: case x in y"\n    V="$2"\n    shift 2\n    ;;'
+        )
+    )
+    assert hits == [6]
+
+
+def test_nested_case_read_is_not_attributed_to_the_outer_flag_arm() -> None:
+    # A `$2` read in a nested subcommand arm (`read)`) belongs to the nested arm,
+    # not the outer flag arm — so only the outer arm's OWN unguarded read is
+    # reported, exactly once (proves both: outer caught, nested not double-counted).
+    hits = _flagged_lines(
+        _parser(
+            '  --branch)\n    case "$mode" in\n    read) sub="$2"; shift 2 ;;\n'
+            '    esac\n    BRANCH="$2"\n    shift 2\n    ;;'
+        )
+    )
+    assert hits == [8]  # only the outer BRANCH="$2"; the nested read) is excluded
+
+
+def test_nested_case_does_not_leak_into_a_guarded_outer_arm() -> None:
+    # Same shape but the outer arm self-guards its read: zero findings. Pairs with
+    # the test above so neither passes vacuously.
+    hits = _flagged_lines(
+        _parser(
+            '  --branch)\n    case "$mode" in\n    read) sub="$2"; shift 2 ;;\n'
+            '    esac\n    BRANCH="${2:?need}"\n    shift 2\n    ;;'
+        )
+    )
+    assert hits == []
+
+
 def test_main_reads_files_from_argv_and_exit_code(tmp_path: Path) -> None:
     bad = tmp_path / "bad.sh"
     bad.write_text(_parser('  --branch)\n    BRANCH="$2"\n    shift 2\n    ;;'))
