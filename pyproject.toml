@@ -14,12 +14,16 @@ keywords = ["pre-commit", "ci", "github-actions", "linter", "supply-chain"]
 dependencies = ["PyYAML", "identify"]
 
 [project.urls]
-Homepage = "https://github.com/alexander-turner/ci-truth-serum"
+Homepage = "https://github.com/AlexanderMattTurner/ci-truth-serum"
 
 [project.scripts]
 # Apply half of check-required-reporter: rewrite a repo's branch-protection
 # ruleset to the required checks the workflow annotations declare.
 sync-required-checks = "hooks.sync_required_checks:main"
+# Release verifier: assert the max published npm version, the max v* git tag,
+# and the changelog's top dated heading all agree (its `npm view` call is the
+# only network touch). Not a pre-commit lint and not in any tier aggregate.
+release-canary = "hooks.release_canary:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-xdist", "ruff", "hypothesis>=6"]

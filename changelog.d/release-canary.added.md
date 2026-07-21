@@ -1,0 +1,1 @@
+- `release-canary` console script: asserts the semver-max published npm version (`npm view <pkg> versions --json`, never the `latest` dist-tag), the semver-max `v*` git tag, and the changelog's top dated heading all agree; prints the three labeled values and exits non-zero on mismatch.
