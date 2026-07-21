@@ -20,7 +20,7 @@
   description: A pipe in a non-pipefail shell masks a failing left-hand command.
   entry: python -m hooks.check_workflow_pipefail
   language: python
-  additional_dependencies: [PyYAML]
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
   types: [yaml]
@@ -240,8 +240,8 @@
   description: A `--flag) x=$2; shift 2` arm relying only on the loop's `$# -gt 0` dies with a raw unbound-variable error when the flag is passed last; guard `$2` before reading it.
   entry: python -m hooks.check_flag_arity
   language: python
-  types: [shell]
   additional_dependencies: [tree-sitter, tree-sitter-bash]
+  types: [shell]
 
 - id: check-secret-file-perms
   name: "extra: flag a secret file created world-readable then chmod'd private after"
@@ -261,7 +261,7 @@
   description: Runs the default-on honesty + identity lints under one id.
   entry: python -m hooks.run_tier 1
   language: python
-  additional_dependencies: [PyYAML, identify]
+  additional_dependencies: [PyYAML, identify, tree-sitter, tree-sitter-bash]
 
 - id: check-tier2
   name: "aggregate: every Tier 2 (opinionated) check"

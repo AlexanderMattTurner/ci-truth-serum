@@ -88,107 +88,101 @@ def test_shell_has_pipefail_string_below_bash_is_not_pipefail():
     assert cwp._shell_has_pipefail("aaa") is False
 
 
-# ── _code_only ─────────────────────────────────────────────────────────────
-def test_code_only_drops_trailing_comment():
-    assert cwp._code_only("cat x | grep y  # note | here") == "cat x | grep y  "
+# ── _pipelines (AST-based pipe detection) ────────────────────────────────
+def test_pipelines_detects_real_pipe_only():
+    # Only a genuine pipeline is a pipe: `||` (logical or) and a plain command are
+    # not, and their source lines never appear.
+    assert cwp._pipelines("cat x | tee y\nfoo || bar\nbaz\n") == ["cat x | tee y"]
 
 
-def test_code_only_removes_quoted_pipe():
-    assert "|" not in cwp._code_only('echo "a | b"')
-    assert "|" not in cwp._code_only("echo 'a | b'")
+def test_pipelines_ignores_clobber_redirect_and_logical_or():
+    assert cwp._pipelines("echo hi >| file") == []
+    assert cwp._pipelines("foo || bar") == []
 
 
-def test_code_only_comment_resets_at_newline():
-    # The `#` comment runs only to ITS end of line; the next line is code again.
-    assert cwp._code_only("a # c\nb | d") == "a \nb | d"
+def test_pipelines_detects_fd_glued_and_pipe_amp():
+    # `2>&1| tee` (FD redirect glued to the pipe) and `|&` are real masking pipes.
+    assert cwp._pipelines("cmd 2>&1| tee y") == ["cmd 2>&1| tee y"]
+    assert cwp._pipelines("cmd |& tee y") == ["cmd |& tee y"]
 
 
-def test_code_only_lte_newline_treats_tab_as_real_code():
-    # `if ch == "\n"` must be equality, not `ch <= "\n"`: a tab (0x09 <= 0x0a) inside a
-    # `#` comment would, under the `<=` mutant, be misread as a line break that resets
-    # comment mode and re-emits the tab + the rest of the comment. Original drops the
-    # whole comment to end-of-line.
-    assert cwp._code_only("a #b\tc\n") == "a \n"
+def test_pipelines_ignores_pipe_in_string_comment_and_heredoc():
+    # A `|` inside a string, a `#` comment, or a heredoc body (quoted or not) is
+    # data, not a pipeline — the grammar never yields a pipeline node for it.
+    assert cwp._pipelines('echo "a | b"') == []
+    assert cwp._pipelines("echo a  # b | c") == []
+    assert cwp._pipelines("cat <<EOF\na | b\nEOF\n") == []
+    assert cwp._pipelines("cat <<'EOF'\na | b\nEOF\n") == []
 
 
-def test_code_only_break_would_drop_code_after_quoted_span():
-    # The `continue` after closing a single-quoted span must NOT be a `break`: code
-    # following the quote (here a real pipe) must still be scanned.
-    assert cwp._code_only("'ab' c | d") == " c | d"
-
-
-def test_code_only_tracks_quotes_across_lines():
-    # A double-quoted string spanning two lines (closing after `z`): everything
-    # inside, incl. the `|` and the wrapped `z`, is data; the closing quote restores
-    # code mode so the trailing `| tee` is still seen.
-    assert cwp._code_only('echo "x | y\nz" | tee') == "echo \n | tee"
-
-
-# ── _executable_lines ────────────────────────────────────────────────────────
-def test_executable_lines_detects_real_pipe_only():
-    script = "cat x | tee y\nfoo || bar\nbaz\n"
-    assert [ln for ln in cwp._executable_lines(script) if cwp._PIPE.search(ln)] == [
-        "cat x | tee y"
+def test_pipelines_keeps_intro_pipe_and_drops_body_pipe():
+    # A pipe on the heredoc INTRO line applies to the command and is reported by its
+    # source line; the body's own `|` is dropped; a pipe after the body is real.
+    assert cwp._pipelines("cat <<EOF | tee\nbody | x\nEOF\nreal | tee\n") == [
+        "cat <<EOF | tee",
+        "real | tee",
     ]
 
 
-def test_pipe_regex_ignores_clobber_redirect_and_logical_or():
-    assert cwp._PIPE.search("echo hi >| file") is None
-    assert cwp._PIPE.search("foo || bar") is None
+def test_pipelines_reports_source_order():
+    # Two pipes on distinct lines are returned first-to-last, so `_check_script`
+    # quotes the FIRST — pins the order the message depends on.
+    assert cwp._pipelines("alpha | tee a\nbeta | tee b") == [
+        "alpha | tee a",
+        "beta | tee b",
+    ]
 
 
-def test_pipe_regex_detects_fd_glued_pipe():
-    # `2>&1| tee` (FD redirect glued to the pipe, no space) is a real masking pipe;
-    # the digit before `|` must NOT exclude it.
-    assert cwp._PIPE.search("cmd 2>&1| tee y") is not None
+# ── _sets_pipefail (AST-based `set -o pipefail` detection) ────────────────
+def test_sets_pipefail_true_only_for_a_real_set_command():
+    assert cwp._sets_pipefail("set -o pipefail\na | b") is True
+    assert cwp._sets_pipefail("set -euo pipefail\na | b") is True  # flag bundle
 
 
-def test_executable_lines_drops_heredoc_body():
-    # The `|` inside the heredoc body is data; only the introducing command line
-    # (which here has no pipe) and the line after the terminator are code.
-    script = "cat <<EOF\na | b\nEOF\nreal | tee\n"
-    lines = cwp._executable_lines(script)
-    assert "a | b" not in lines
-    assert "real | tee" in lines
+def test_sets_pipefail_false_for_disable_comment_and_heredoc_body():
+    # `set +o pipefail` DISABLES it; a comment mention and a heredoc-body mention
+    # are not commands — none must read as enabling pipefail.
+    assert cwp._sets_pipefail("set +o pipefail\na | b") is False
+    assert cwp._sets_pipefail("# set -o pipefail\na | b") is False
+    assert cwp._sets_pipefail("cat <<EOF\nset -o pipefail\nEOF") is False
 
 
-def test_executable_lines_keeps_pipe_on_heredoc_intro_line():
-    # A pipe on the SAME line that opens the heredoc still applies to the command.
-    assert "cat <<EOF | tee" in cwp._executable_lines("cat <<EOF | tee\nbody\nEOF\n")
+# ── _allow_optout (AST-based comment detection) ──────────────────────────
+def test_allow_optout_true_only_for_a_real_shell_comment():
+    assert cwp._allow_optout("cat x | tee y  # allow-no-pipefail: intended") is True
+    # In a string / heredoc body the marker is data, not a comment — must not opt out.
+    assert cwp._allow_optout('echo "allow-no-pipefail"\ncat x | tee y') is False
+    assert (
+        cwp._allow_optout("cat <<EOF\nallow-no-pipefail\nEOF\ncat x | tee y") is False
+    )
 
 
-def test_code_only_normalizes_quoted_heredoc_delimiter():
-    # `<<'EOF'` / `<<"EOF"` / `<<-'EOF'` must survive quote-stripping as `<<EOF` /
-    # `<<-EOF` — otherwise `_code_only` swallows the delimiter as a quoted string and
-    # the body is never dropped (the fail-open this fix closes).
-    assert cwp._code_only("cat <<'EOF'\nbody\nEOF\n") == "cat <<EOF\nbody\nEOF\n"
-    assert cwp._code_only('cat <<"EOF"\nbody\nEOF\n') == "cat <<EOF\nbody\nEOF\n"
-    assert cwp._code_only("cat <<-'END'\nbody\nEND\n") == "cat <<-END\nbody\nEND\n"
+# ── blind spots the old char-by-char tokenizer missed ────────────────────
+# Each is red on the old quote/heredoc state machine (which desynced and lost the
+# real pipe) and green on the bash grammar. Driven through _check_script so the
+# assertion is on the observable violation, not an internal.
+def test_blindspot_escaped_quote_pipe_is_now_flagged():
+    # `echo "a\"" | tee y`: the old counter closed the string on the escaped `\"`,
+    # so the real `| tee y` was swallowed as string data → FALSE NEGATIVE.
+    assert cwp._check_script(r'echo "a\"" | tee y', "sh", "loc") != []
 
 
-def test_code_only_ignores_heredoc_operator_inside_a_string():
-    # A `<<` inside a quoted string is data, not a heredoc introducer: `_code_only`
-    # is inside the quote there, so it must not normalize it into a delimiter.
-    assert cwp._code_only('echo "a << b"\n') == "echo \n"
+def test_blindspot_ansi_c_string_pipe_is_now_flagged():
+    # `foo $'\'' | tee y`: `$'\''` is one ANSI-C literal quote; the old machine
+    # read the escaped `\'` as a quote toggle and lost the pipe → FALSE NEGATIVE.
+    assert cwp._check_script("foo $'\\'' | tee y", "sh", "loc") != []
 
 
-def test_executable_lines_drops_quoted_heredoc_body():
-    # The `|` inside a QUOTED heredoc body is data; only the intro line (no pipe
-    # here) and the post-terminator line are code. Kills the fail-open where a
-    # quoted delimiter left the whole body scanned as shell.
-    script = "cat <<'EOF'\na | b\nEOF\nreal | tee\n"
-    lines = cwp._executable_lines(script)
-    assert "a | b" not in lines
-    assert "real | tee" in lines
+def test_blindspot_nested_substitution_pipe_text_is_exact():
+    # Nested `"` inside `$(…)` desynced the old machine, garbling the reported pipe
+    # to `echo $f | tee y`. The grammar reports the true command verbatim.
+    out = cwp._check_script('echo "$(cat "$f")" | tee y', "sh", "loc")
+    assert len(out) == 1 and '$(cat "$f")' in out[0]
 
 
-def test_executable_lines_heredoc_body_bounded_exactly_by_terminator():
-    # The heredoc end test `line.strip() == terminator` must be a strict equality, not
-    # `<=`/`>`/`>=`/`!=`/`is not`/`not(==)`. A multi-line body straddling the
-    # terminator lexicographically (one line sorts below "EOF", one above) is dropped
-    # in full ONLY under `==`.
-    out = cwp._executable_lines("cat <<EOF\nAAA\nzzz\nEOF\ntail | tee\n")
-    assert out == ["cat <<EOF", "tail | tee"]
+def test_blindspot_backtick_substitution_pipe_text_is_exact():
+    out = cwp._check_script('x=`echo "a"` | tee y', "sh", "loc")
+    assert len(out) == 1 and '`echo "a"`' in out[0]
 
 
 # ── _default_shell ───────────────────────────────────────────────────────

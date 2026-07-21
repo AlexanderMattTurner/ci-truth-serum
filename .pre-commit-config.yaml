@@ -62,7 +62,7 @@ repos:
         name: "dogfood aggregate: every Tier 1 (honesty + identity) check"
         entry: python -m hooks.run_tier 1
         language: python
-        additional_dependencies: [PyYAML, identify]
+        additional_dependencies: [PyYAML, identify, tree-sitter, tree-sitter-bash]
       - id: check-tier2
         name: "dogfood aggregate: every Tier 2 (opinionated) check"
         entry: python -m hooks.run_tier 2
