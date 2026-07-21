@@ -5,15 +5,47 @@ A drift guard — a test that asserts two duplicated sources agree — is a desi
 smell: with a true single source of truth nothing can drift, so no such test is
 needed. The guard is legitimate only when an SSOT is genuinely infeasible (an
 external value you don't control, a hard cross-language or cross-process
-boundary), and that judgement belongs in the open. Any test whose name or
-docstring uses drift-guard intent ("drift guard", "can't drift", "must stay in
-sync", ...) MUST carry
+boundary), and that judgement belongs in the open. A guard MUST carry
 
     @pytest.mark.drift_guard("why a true SSOT is infeasible")
 
 so review checks the stated reason, not the mere existence of the guard.
-Detection is by convention, not proof — a guard worded to dodge the phrasing
-slips through, like the other heuristic lints in this pack.
+
+A guard is detected two ways, because either alone is evadable:
+
+  1. INTENT PHRASING — the name or docstring says what it is ("drift guard",
+     "must stay in sync", ...). Honest, but a guard reworded to dodge the
+     phrasing — calling itself an "SSOT-coverage contract" instead — slips
+     straight through. That laundering is the whole failure mode this check
+     exists to stop, so phrasing cannot be the only trigger.
+  2. COPIES-AGREE STRUCTURE — the test READS an external source (a file/config)
+     and asserts a COLLECTION equality where one side is a hand-maintained copy
+     (an in-source collection literal, or an UPPER_CASE constant / its
+     `.keys()`). That is the mechanical signature of "this hand-kept list must
+     match the live config", and it does not care what the docstring calls the
+     test, so relabeling can't hide it.
+
+The structural trigger is deliberately NARROW to stay quiet on legitimate tests
+(precision over recall — a noisy guard trains reviewers to ignore it). It fires
+only on read-source + maintained-copy-vs-collection; it does NOT fire on the
+sanctioned single-source form (read one config, assert code handles every entry
+via membership/iteration), nor on an ordinary output-vs-expected unit assertion
+(`assertCountEqual(fn(x), {...})` where neither side is a maintained copy) — the
+common shape that makes a blanket "two collections compared" rule useless (it
+false-matched 12 honest tests in this very repo when tried).
+
+A structural hit that is a genuine non-guard clears with an explicit, reasoned
+opt-out comment anywhere in the function body:
+
+    # not-a-drift-guard: <why this collection equality is not two copies>
+
+Honest limits, stated so this check is not itself laundered: detection is a
+heuristic, not proof. It reads PYTHON only — a guard in a JS/other-language test
+is out of scope here (the CLAUDE.md prose rule and human review cover that, and a
+JS-side check is the follow-up). A copies-agree comparison the AST can't see (a
+hand-rolled element-by-element loop, two module constants compared with no file
+read, a value fetched at runtime) still slips. The structural trigger closes the
+common maintained-copy-vs-config case; it does not make laundering impossible.
 
 Invoked by pre-commit with the staged Python files as arguments.
 """
@@ -42,11 +74,133 @@ _GUARD_RE = re.compile("|".join(_GUARD_PATTERNS), re.IGNORECASE)
 
 _MARKER = "drift_guard"
 
+# An explicit, reasoned "this collection-equality is a real unit test, not two
+# copies" opt-out for a STRUCTURAL hit. A non-empty reason is required so the
+# escape hatch is a stated judgement, not a silent mute.
+_OPTOUT_RE = re.compile(r"#\s*not-a-drift-guard:\s*\S", re.IGNORECASE)
+
+# Callables that construct/return a collection, and the collection-view methods.
+_COLLECTION_CTORS = frozenset({"set", "frozenset", "sorted", "list", "tuple", "dict"})
+_COLLECTION_METHODS = frozenset({"keys", "values", "items"})
+
+# unittest asserts that compare two collections for equality.
+_COLLECTION_ASSERTS = frozenset(
+    {
+        "assertEqual",
+        "assertCountEqual",
+        "assertSetEqual",
+        "assertListEqual",
+        "assertDictEqual",
+    }
+)
+
+# Calls that read an external source into the test — the other half of the
+# copies-agree signature (a *maintained copy* is only a drift guard when it is
+# pinned against a *separate source*, typically a file/config read here).
+_SOURCE_READS = frozenset(
+    {"read_text", "read_bytes", "read", "load", "loads", "safe_load", "open"}
+)
+
 
 def _is_drift_guard(name: str, docstring: str) -> bool:
     """A test reads as a drift guard if its name (underscores read as spaces) or
     its docstring uses guard-intent phrasing."""
     return bool(_GUARD_RE.search(name.replace("_", " ")) or _GUARD_RE.search(docstring))
+
+
+def _is_collection_shaped(node: ast.expr) -> bool:
+    """True when NODE is or constructs a collection — a set/list/dict/tuple
+    literal, a `set()/sorted()/list()/tuple()/dict()/frozenset()` call, or a
+    `.keys()/.values()/.items()` call."""
+    if isinstance(node, (ast.Set, ast.List, ast.Dict, ast.Tuple)):
+        return True
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in _COLLECTION_CTORS:
+            return True
+        if isinstance(func, ast.Attribute) and func.attr in _COLLECTION_METHODS:
+            return True
+    return False
+
+
+def _is_maintained_copy(node: ast.expr) -> bool:
+    """True when NODE is a HAND-MAINTAINED collection: an in-source
+    set/list/dict/tuple literal, an UPPER_CASE module constant (or its
+    `.keys()/.values()/.items()`), or a `set()/sorted()/...` wrapping one of
+    those. This is the side of a drift-guard equality that a human keeps in step
+    with a separate source by hand — the thing that drifts."""
+    if isinstance(node, (ast.Set, ast.List, ast.Dict, ast.Tuple)):
+        return True
+    if isinstance(node, ast.Name):
+        return node.id.isupper()
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in _COLLECTION_CTORS and node.args:
+            return _is_maintained_copy(node.args[0])
+        if isinstance(func, ast.Attribute) and func.attr in _COLLECTION_METHODS:
+            return isinstance(func.value, ast.Name) and func.value.id.isupper()
+    return False
+
+
+def _reads_source(node: ast.AST) -> bool:
+    """True when the function body reads an external source (a file/config load).
+    Half of the structural signature — a maintained copy pinned against a
+    separately-read source is the drift guard."""
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+            if child.func.attr in _SOURCE_READS:
+                return True
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
+            if child.func.id == "open":
+                return True
+    return False
+
+
+def _asserts_maintained_copy_equals(node: ast.AST) -> bool:
+    """True when the body asserts a COLLECTION equality with a hand-maintained
+    copy on one side — `assert MAINTAINED == other_collection`, or an
+    `assertEqual/assertCountEqual/...` where one argument is a maintained copy.
+    The maintained-copy requirement is what keeps this off ordinary
+    output-vs-expected unit assertions."""
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Assert)
+            and isinstance(child.test, ast.Compare)
+            and len(child.test.ops) == 1
+            and isinstance(child.test.ops[0], ast.Eq)
+        ):
+            left, right = child.test.left, child.test.comparators[0]
+            if (
+                _is_collection_shaped(left)
+                and _is_collection_shaped(right)
+                and (_is_maintained_copy(left) or _is_maintained_copy(right))
+            ):
+                return True
+        if (
+            isinstance(child, ast.Call)
+            and isinstance(child.func, ast.Attribute)
+            and child.func.attr in _COLLECTION_ASSERTS
+            and len(child.args) >= 2
+            and (
+                _is_maintained_copy(child.args[0]) or _is_maintained_copy(child.args[1])
+            )
+        ):
+            return True
+    return False
+
+
+def _is_structural_guard(node: ast.AST) -> bool:
+    """The copies-agree structural signature: the test reads a separate source
+    AND asserts a hand-maintained collection copy equals it."""
+    return _reads_source(node) and _asserts_maintained_copy_equals(node)
+
+
+def _has_optout(node: ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]) -> bool:
+    """True when a `# not-a-drift-guard: <reason>` comment sits within the
+    function's source span — the explicit escape for a genuine collection-equality
+    unit test that the structural trigger would otherwise flag."""
+    end = node.end_lineno or node.lineno
+    return any(_OPTOUT_RE.search(line) for line in lines[node.lineno - 1 : end])
 
 
 def _justification(decorator: ast.expr) -> str | None:
@@ -69,27 +223,38 @@ def _justification(decorator: ast.expr) -> str | None:
     return None
 
 
-def violations(source: str) -> list[tuple[int, str]]:
-    """(1-based line, function name) for every test in SOURCE that reads as a
-    drift guard but lacks a justified @pytest.mark.drift_guard marker. A file
-    that does not parse as Python produces no findings (other tooling owns
-    syntax errors)."""
+def violations(source: str) -> list[tuple[int, str, str]]:
+    """(1-based line, function name, trigger) for every test in SOURCE that reads
+    as a drift guard but lacks a justified @pytest.mark.drift_guard marker.
+    `trigger` is "phrasing" or "copies-agree structure". A structural-only hit is
+    cleared by a `# not-a-drift-guard:` opt-out; a phrasing hit is not (naming a
+    test a guard is a self-declaration). A file that does not parse as Python
+    produces no findings (other tooling owns syntax errors)."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return []
 
-    hits: list[tuple[int, str]] = []
+    lines = source.splitlines()
+    hits: list[tuple[int, str, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         if not node.name.startswith("test_"):
             continue
-        if not _is_drift_guard(node.name, ast.get_docstring(node) or ""):
+        phrasing = _is_drift_guard(node.name, ast.get_docstring(node) or "")
+        structural = _is_structural_guard(node)
+        if not (phrasing or structural):
             continue
         if any(_justification(dec) for dec in node.decorator_list):
             continue
-        hits.append((node.lineno, node.name))
+        # The opt-out clears a purely-structural hit (a real unit test whose
+        # equality happens to be maintained-copy-shaped); it cannot excuse a test
+        # that NAMES itself a guard.
+        if structural and not phrasing and _has_optout(node, lines):
+            continue
+        trigger = "phrasing" if phrasing else "copies-agree structure"
+        hits.append((node.lineno, node.name, trigger))
     return hits
 
 
@@ -100,11 +265,19 @@ def main(argv: list[str]) -> int:
             source = Path(path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for lineno, name in violations(source):
+        for lineno, name, trigger in violations(source):
+            hint = (
+                'add @pytest.mark.drift_guard("why a true SSOT is infeasible"), '
+                "or make one source authoritative so the guard is unnecessary"
+            )
+            if trigger == "copies-agree structure":
+                hint += (
+                    ", or — if this equality is a genuine unit test, not two "
+                    "copies — add a `# not-a-drift-guard: <reason>` comment"
+                )
             print(
-                f"{path}:{lineno}: drift guard {name!r} lacks a justification — "
-                "prefer removing the duplication (make one source authoritative), "
-                f'or add @pytest.mark.{_MARKER}("why a true SSOT is infeasible").',
+                f"{path}:{lineno}: {name!r} reads as a drift guard "
+                f"({trigger}) but lacks a justification — {hint}.",
                 file=sys.stderr,
             )
             status = 1

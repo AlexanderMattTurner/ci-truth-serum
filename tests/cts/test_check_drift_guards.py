@@ -93,7 +93,7 @@ def test_justification(decorator_src: str, expected: str | None) -> None:
     ],
 )
 def test_violations_flags_unmarked_drift_guard(src: str) -> None:
-    assert mod.violations(src) == [(1, "test_a")]
+    assert mod.violations(src) == [(1, "test_a", "phrasing")]
 
 
 def test_violations_passes_justified_drift_guard() -> None:
@@ -102,6 +102,96 @@ def test_violations_passes_justified_drift_guard() -> None:
         'def test_a():\n    """drift guard: lists agree"""\n'
     )
     assert mod.violations(src) == []
+
+
+# ── Structural trigger: a maintained copy pinned against a read source ────────
+# The laundering that motivated this trigger: a test worded to dodge the phrase
+# lint ("SSOT-coverage contract") that still, structurally, asserts a
+# hand-maintained collection equals a file-derived one.
+
+_LAUNDERED_GUARD = (
+    "def test_examples_cover_the_config():\n"
+    '    """SSOT-coverage contract: examples cover the live set."""\n'
+    "    live = json.load(open('detectors.json'))\n"
+    "    assert sorted(EXAMPLES.keys()) == sorted(live)\n"
+)
+
+
+def test_structural_trigger_catches_laundered_guard() -> None:
+    """A guard that avoids every intent phrase (calls itself an 'SSOT-coverage
+    contract') is still caught by the copies-agree structure: it reads a source
+    and asserts an UPPER_CASE constant's keys equal it."""
+    assert mod.violations(_LAUNDERED_GUARD) == [
+        (1, "test_examples_cover_the_config", "copies-agree structure")
+    ]
+
+
+def test_structural_trigger_cleared_by_marker() -> None:
+    marked = (
+        '@pytest.mark.drift_guard("JS pre-gate is a distinct ReDoS-safe representation")\n'
+        + _LAUNDERED_GUARD
+    )
+    assert mod.violations(marked) == []
+
+
+def test_structural_trigger_cleared_by_optout() -> None:
+    """A genuine collection-equality unit test clears with an explicit reasoned
+    opt-out, so the trigger doesn't force a false drift_guard label."""
+    opted = (
+        "def test_examples_cover_the_config():\n"
+        "    live = json.load(open('detectors.json'))\n"
+        "    # not-a-drift-guard: EXAMPLES is the code output, live is the fixture\n"
+        "    assert sorted(EXAMPLES.keys()) == sorted(live)\n"
+    )
+    assert mod.violations(opted) == []
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # Ordinary output-vs-expected: neither side is a maintained copy, and the
+        # left is a call to the code under test. The false-positive shape that a
+        # blanket "two collections compared" rule would wrongly flag.
+        (
+            "def test_collector_returns_expected():\n"
+            "    data = json.load(open('x.json'))\n"
+            "    assertCountEqual(collect(data), {'a', 'b'})\n"
+        ),
+        # Maintained-copy equality but NO source read — not pinned against a
+        # separate source here, so below the trigger (a known, stated gap).
+        (
+            "def test_two_local_lists():\n"
+            "    assert sorted(EXAMPLES.keys()) == ['a', 'b']\n"
+        ),
+        # Single-source coverage (sanctioned): reads one config, asserts code
+        # handles each entry via membership — no collection equality.
+        (
+            "def test_code_handles_every_entry():\n"
+            "    for e in json.load(open('cfg.json')):\n"
+            "        assert handles(e)\n"
+        ),
+    ],
+)
+def test_structural_trigger_ignores_non_guards(src: str) -> None:
+    assert mod.violations(src) == []
+
+
+def test_assert_count_equal_needs_a_maintained_copy() -> None:
+    """assertCountEqual alone is NOT the tell (it's the common output-vs-expected
+    idiom); it fires only when an argument is a maintained copy pinned to a read
+    source."""
+    non_guard = (
+        "def test_x(self):\n"
+        "    got = json.load(open('x.json'))\n"
+        "    self.assertCountEqual(got, expected)\n"
+    )
+    guard = (
+        "def test_x(self):\n"
+        "    got = json.load(open('x.json'))\n"
+        "    self.assertCountEqual(got, EXPECTED_SET)\n"
+    )
+    assert mod.violations(non_guard) == []
+    assert mod.violations(guard) == [(1, "test_x", "copies-agree structure")]
 
 
 @pytest.mark.parametrize(
@@ -130,7 +220,8 @@ def test_main_returns_one_on_violation(
     bad.write_text('def test_a():\n    """drift guard: x"""\n', encoding="utf-8")
     assert mod.main([str(bad)]) == 1
     err = capsys.readouterr().err
-    assert f"{bad}:1: drift guard 'test_a' lacks a justification" in err
+    assert f"{bad}:1: 'test_a' reads as a drift guard (phrasing)" in err
+    assert "lacks a justification" in err
 
 
 def test_main_returns_zero_when_clean(tmp_path: Path) -> None:
@@ -204,6 +295,6 @@ def test_own_test_tree_is_clean() -> None:
         for p in sorted((REPO_ROOT / "tests").rglob("*.py"))
         for rel in [str(p.relative_to(REPO_ROOT))]
         if not exclude.match(rel)
-        for lineno, name in mod.violations(p.read_text(encoding="utf-8"))
+        for lineno, name, _trigger in mod.violations(p.read_text(encoding="utf-8"))
     ]
     assert offenders == []
