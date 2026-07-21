@@ -71,6 +71,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_historical_comments", COMMENTED_CODE),
         ("check_doc_line_refs", MARKDOWN),
         ("check_flag_arity", SHELL),
+        ("check_secret_file_perms", SHELL),
     ],
 }
 
