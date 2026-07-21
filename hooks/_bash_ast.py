@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Shared tree-sitter-bash parsing for the shell-analyzing lints.
 
 `check_workflow_pipefail` and `check_flag_arity` used to approximate bash with
