@@ -198,7 +198,7 @@ standalone hook with normal pre-commit `files:`/`exclude:` filters:
 `--skip` is repeatable: pass one `--skip <name>` pair per check to drop.
 **An unknown name is a hard error** (to catch typos that would silently
 re-include the check). Module names use underscores and match the TIERS
-registry in `hooks/run_tier.py` (e.g., `check_exit_suppression`, not
+registry in `ci_truth_serum/run_tier.py` (e.g., `check_exit_suppression`, not
 `check-exit-suppression`).
 
 The key property is preserved: any new check added to the tier upstream still

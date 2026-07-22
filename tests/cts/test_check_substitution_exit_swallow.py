@@ -1,4 +1,4 @@
-"""Tests for hooks/check_substitution_exit_swallow.py — the pre-commit lint that
+"""Tests for ci_truth_serum/check_substitution_exit_swallow.py — the pre-commit lint that
 bans a structured-data producer (jq/yq) feeding a shell loop through a construct
 that discards the producer's exit status (`done < <(jq …)` / `jq … | while`).
 
@@ -179,7 +179,7 @@ def _is_shell(path: Path) -> bool:
 def test_own_shell_tree_is_clean() -> None:
     """ci-truth-serum's own shell hooks must pass the lint. Scoped to hooks/."""
     tracked = subprocess.check_output(
-        ["git", "ls-files", "hooks/"], text=True, cwd=REPO_ROOT
+        ["git", "ls-files", "ci_truth_serum/"], text=True, cwd=REPO_ROOT
     ).split()
     offenders = []
     for rel in tracked:

@@ -1,4 +1,4 @@
-"""Tests for hooks/check_echo_fallback.py — the lint that bans `|| echo` /
+"""Tests for ci_truth_serum/check_echo_fallback.py — the lint that bans `|| echo` /
 `|| printf` fallbacks which convert a failure into a benign parseable string
 (inside command substitutions, and as unaborted bare statements).
 

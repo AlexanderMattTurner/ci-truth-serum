@@ -1,4 +1,4 @@
-"""Tests for hooks/check_drift_guards.py — the pre-commit lint that requires a
+"""Tests for ci_truth_serum/check_drift_guards.py — the pre-commit lint that requires a
 justified @pytest.mark.drift_guard marker on any test that reads as a drift
 guard.
 

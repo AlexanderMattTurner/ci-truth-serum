@@ -1,4 +1,4 @@
-"""Tests for hooks/check_historical_comments.py — the pre-commit lint that bans
+"""Tests for ci_truth_serum/check_historical_comments.py — the pre-commit lint that bans
 historical narration in code comments.
 
 Drives `violations()` and `comment_body()` directly so each rule is asserted in

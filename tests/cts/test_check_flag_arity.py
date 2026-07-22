@@ -1,4 +1,4 @@
-"""Tests for hooks/check_flag_arity.py — the pre-commit lint that flags a
+"""Tests for ci_truth_serum/check_flag_arity.py — the pre-commit lint that flags a
 value-taking CLI flag arm which consumes ``$2`` / ``shift 2`` without proving
 the value exists.
 
@@ -247,7 +247,7 @@ def test_main_ignores_a_nonexistent_path(tmp_path: Path) -> None:
 def test_live_contract_all_over_the_repo_is_clean() -> None:
     # Dogfood: the pack's own tracked shell surface must pass flag-arity.
     proc = subprocess.run(
-        [sys.executable, "-m", "hooks.check_flag_arity", "--all"],
+        [sys.executable, "-m", "ci_truth_serum.check_flag_arity", "--all"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,

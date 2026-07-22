@@ -1,4 +1,4 @@
-"""Tests for hooks/sync_required_checks.py — the apply half of the
+"""Tests for ci_truth_serum/sync_required_checks.py — the apply half of the
 check-required-reporter pair, which rewrites a repo's branch-protection ruleset
 `required_status_checks` to the set of `# required-check: true` jobs declared in
 the workflows.

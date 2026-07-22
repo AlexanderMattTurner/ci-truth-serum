@@ -27,7 +27,7 @@ REPO_ROOT = Path(
         check=True,
     ).stdout.strip()
 )
-HOOKS_DIR = REPO_ROOT / "hooks"
+HOOKS_DIR = REPO_ROOT / "ci_truth_serum"
 FUZZ_DIR = REPO_ROOT / "tests" / "cts"
 
 # Every hook that ingests external/untrusted input (file text, parsed YAML, a CLI

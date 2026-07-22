@@ -1,4 +1,4 @@
-"""Tests for hooks/_linecheck.py — the machinery shared by the line-oriented
+"""Tests for ci_truth_serum/_linecheck.py — the machinery shared by the line-oriented
 pre-commit lints (the read-each-path loop, the skip-on-unreadable, the
 ``<path>:<lineno>: <message>`` print loop and exit code) and the workflow-file
 discovery glob shared by the YAML lints.

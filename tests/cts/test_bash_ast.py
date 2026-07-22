@@ -1,4 +1,4 @@
-"""Example-based tests (mutation oracle) for hooks/_bash_ast.py — the shared
+"""Example-based tests (mutation oracle) for ci_truth_serum/_bash_ast.py — the shared
 tree-sitter-bash wrapper the two shell lints parse through.
 
 Pins the exact contract of ``parse`` and ``iter_nodes``: a real bash tree, node

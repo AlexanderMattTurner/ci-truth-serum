@@ -14,8 +14,8 @@ The workflow lints (``check_pr_paths``, ``check_workflow_pipefail``,
 required-check-shape probes (``has_decide_gate``, ``has_always_reporter``) are
 shared by ``check_always_reporter`` and ``check_concurrency`` and live here too.
 
-Imported as a sibling: the scripts run as ``python3 hooks/check_*.py`` (or
-``python -m hooks.check_*``), so each script prepends its own dir to ``sys.path``
+Imported as a sibling: the scripts run as ``python3 ci_truth_serum/check_*.py`` (or
+``python -m ci_truth_serum.check_*``), so each script prepends its own dir to ``sys.path``
 before importing this module; the tests load each script by path.
 """
 

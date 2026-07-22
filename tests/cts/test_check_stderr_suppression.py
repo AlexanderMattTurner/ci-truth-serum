@@ -1,4 +1,4 @@
-"""Tests for hooks/check_stderr_suppression.py — the pre-commit lint that bans
+"""Tests for ci_truth_serum/check_stderr_suppression.py — the pre-commit lint that bans
 stderr suppression on container launch/build commands.
 
 Drives `violations()` directly so each rule is asserted in isolation.
@@ -121,7 +121,7 @@ def test_main_wires_violations_and_message(
 def test_own_shell_tree_is_clean() -> None:
     """ci-truth-serum's own shell hooks must pass the lint. Scoped to hooks/."""
     tracked = subprocess.check_output(
-        ["git", "ls-files", "hooks/"], text=True, cwd=REPO_ROOT
+        ["git", "ls-files", "ci_truth_serum/"], text=True, cwd=REPO_ROOT
     ).split()
     offenders = []
     for rel in tracked:

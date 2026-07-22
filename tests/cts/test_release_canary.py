@@ -1,4 +1,4 @@
-"""Tests for hooks/release_canary.py — the apply-side console script that
+"""Tests for ci_truth_serum/release_canary.py — the apply-side console script that
 asserts the max published npm version, the max `v*` git tag, and the
 changelog's top dated heading all agree.
 

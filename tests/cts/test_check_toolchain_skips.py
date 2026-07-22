@@ -1,4 +1,4 @@
-"""Tests for hooks/check_toolchain_skips.py — the lint that flags pytest skips
+"""Tests for ci_truth_serum/check_toolchain_skips.py — the lint that flags pytest skips
 gated on binary discovery (shutil.which / which( / find_executable) with no CI
 env guard, so a runner missing the tool fails loud instead of silently zeroing
 the guarded coverage.
@@ -84,7 +84,7 @@ def test_line_numbers_for_multiple_hits() -> None:
         ("tests/test_foo.py", True),
         ("pkg/foo_test.py", True),
         ("tests/helpers.py", True),  # under a tests/ dir
-        ("hooks/check_x.py", False),
+        ("ci_truth_serum/check_x.py", False),
         ("scripts/tool.py", False),
     ],
 )

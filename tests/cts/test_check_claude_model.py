@@ -1,4 +1,4 @@
-"""Tests for hooks/check_claude_model.py — the pre-commit lint that flags an
+"""Tests for ci_truth_serum/check_claude_model.py — the pre-commit lint that flags an
 ``anthropics/claude-code-action`` step with no explicit model (which silently
 runs on the action's default Opus tier).
 

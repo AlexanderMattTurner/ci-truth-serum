@@ -1,4 +1,4 @@
-"""Tests for hooks/check_inline_run_length.py — the pre-commit lint that forces
+"""Tests for ci_truth_serum/check_inline_run_length.py — the pre-commit lint that forces
 substantial inline `run:` shell out to .github/scripts/*.sh (where
 shellcheck/shfmt/shellharden can lint it) by failing any block over the line
 limit that does not opt out."""

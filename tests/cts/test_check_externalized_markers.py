@@ -1,4 +1,4 @@
-"""Tests for hooks/check_externalized_markers.py — the pre-commit lint that flags
+"""Tests for ci_truth_serum/check_externalized_markers.py — the pre-commit lint that flags
 a workflow job where a policy marker (default: git history-rewrite commands) is
 reachable only through `.github/scripts/*.sh` or `./.github/actions/*`
 indirection, never in an inline `run:`. That delta is precisely the blind spot of

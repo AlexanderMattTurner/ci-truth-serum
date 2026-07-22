@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ci-truth-serum"
-version = "0.1.0"
+version = "0.2.0"
 description = "Fast, offline pre-commit lints that make a CI pipeline confess what it's hiding."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,11 +19,11 @@ Homepage = "https://github.com/AlexanderMattTurner/ci-truth-serum"
 [project.scripts]
 # Apply half of check-required-reporter: rewrite a repo's branch-protection
 # ruleset to the required checks the workflow annotations declare.
-sync-required-checks = "hooks.sync_required_checks:main"
+sync-required-checks = "ci_truth_serum.sync_required_checks:main"
 # Release verifier: assert the max published npm version, the max v* git tag,
 # and the changelog's top dated heading all agree (its `npm view` call is the
 # only network touch). Not a pre-commit lint and not in any tier aggregate.
-release-canary = "hooks.release_canary:main"
+release-canary = "ci_truth_serum.release_canary:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-xdist", "ruff", "hypothesis>=6"]
@@ -31,15 +31,15 @@ dev = ["pytest>=7", "pytest-xdist", "ruff", "hypothesis>=6"]
 # `dev` install so the fast test/lint path stays lean. CI's scheduled mutation
 # job installs `--extra mutation` explicitly. cosmic-ray (not mutmut) because the
 # test harness loads each hook by FILE PATH (tests/_helpers.load_hook), not via
-# `import hooks.x` — mutmut 3.x instruments through an import trampoline that
+# `import ci_truth_serum.x` — mutmut 3.x instruments through an import trampoline that
 # file-path loading bypasses, so its mutants are never reached. cosmic-ray mutates
 # the file on disk and reruns the suite, so it is agnostic to how tests import.
 mutation = ["pytest>=7", "pytest-xdist", "hypothesis>=6", "cosmic-ray>=8"]
 
 [tool.setuptools]
-# The lints are importable/runnable as `hooks.check_*`; pre-commit invokes them
-# as `python -m hooks.check_foo` from the installed package.
-packages = ["hooks"]
+# The lints are importable/runnable as `ci_truth_serum.check_*`; pre-commit invokes them
+# as `python -m ci_truth_serum.check_foo` from the installed package.
+packages = ["ci_truth_serum"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

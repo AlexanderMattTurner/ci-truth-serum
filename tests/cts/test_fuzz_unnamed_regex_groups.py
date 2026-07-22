@@ -1,4 +1,4 @@
-"""Property/fuzz tests for hooks/check_unnamed_regex_groups.py.
+"""Property/fuzz tests for ci_truth_serum/check_unnamed_regex_groups.py.
 
 This lint parses Python source with ``ast`` and inspects ``re.*`` calls whose
 first argument is a string literal. Crash-resistance contract: feeding it

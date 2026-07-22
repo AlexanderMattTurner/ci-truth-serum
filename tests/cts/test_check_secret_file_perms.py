@@ -1,4 +1,4 @@
-"""Tests for hooks/check_secret_file_perms.py — the pre-commit lint that flags a
+"""Tests for ci_truth_serum/check_secret_file_perms.py — the pre-commit lint that flags a
 secret file created world-readable and only chmod'd private on a later line.
 
 Drives `violations()` directly so each rule is asserted in isolation, pinning the

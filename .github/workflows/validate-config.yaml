@@ -23,7 +23,7 @@ jobs:
       filters: |
         run:
           - '.claude/**'
-          - '.hooks/**'
+          - '.ci_truth_serum/**'
           - '.github/actions/setup-base-env/**'
           - '.github/scripts/validate-config.sh'
           - '.github/workflows/**'

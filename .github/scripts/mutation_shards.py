@@ -8,7 +8,7 @@ from the tree at CI time (no hand-maintained tiling that can drift), fan the
 slices across parallel runners, and let a separate aggregate step demand one
 report per shard so a vanished slice can never score a subset as the whole.
 
-Each shard mutates exactly ONE module (``hooks/check_x.py``) and runs only that
+Each shard mutates exactly ONE module (``ci_truth_serum/check_x.py``) and runs only that
 module's own example suite (``tests/cts/test_check_x.py``) as the oracle. Scoping
 the per-mutant test command to the module's own suite is both the speed lever
 (one small test file per mutant instead of the entire ``tests/cts`` tree) and the
@@ -58,8 +58,8 @@ def _base_config(repo_root: Path) -> dict:
 
 
 def _test_file(stem: str) -> str:
-    """The example suite that is a module's mutation oracle. `hooks/check_x.py`
-    -> `tests/cts/test_check_x.py`; the shared `hooks/_linecheck.py` ->
+    """The example suite that is a module's mutation oracle. `ci_truth_serum/check_x.py`
+    -> `tests/cts/test_check_x.py`; the shared `ci_truth_serum/_linecheck.py` ->
     `tests/cts/test_linecheck.py` (the leading underscore is dropped, matching
     the committed test filename)."""
     return f"{TEST_DIR}/test_{stem.lstrip('_')}.py"
@@ -69,7 +69,7 @@ def expand_shards(repo_root: Path) -> list[dict]:
     """The mutation shard matrix, id-sorted.
 
     Reads ``cosmic-ray.toml`` for the mutated package (``module-path``) and the
-    modules it excludes, then emits shards for every remaining ``hooks/*.py``.
+    modules it excludes, then emits shards for every remaining ``ci_truth_serum/*.py``.
     A module up to ``SPLIT_EVERY_LINES`` lines is one shard ``{id=stem, index=0,
     total=1}``; a larger module is split into ``ceil(lines / SPLIT_EVERY_LINES)``
     sub-shards ``{id=f"{stem}-{k+1}", index=k, total=N}`` that each mutate the
