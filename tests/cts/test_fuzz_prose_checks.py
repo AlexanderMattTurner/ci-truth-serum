@@ -19,6 +19,7 @@ drift_guards = load_hook("check_drift_guards.py", "fuzz_check_drift_guards")
 graceful = load_hook("check_graceful_handwave.py", "fuzz_check_graceful_handwave")
 historical = load_hook("check_historical_comments.py", "fuzz_check_historical_comments")
 doc_line_refs = load_hook("check_doc_line_refs.py", "fuzz_check_doc_line_refs")
+stray_markup = load_hook("check_stray_tool_markup.py", "fuzz_check_stray_tool_markup")
 
 # Tokens the detectors actually look for, so generated text isn't all inert
 # noise — it hits real branches (guard phrasing, markers, annotations, fences,
@@ -52,6 +53,12 @@ _TOKENS = [
     "localhost:8080",
     "<!-- allow-line-ref: pinned banner -->",
     "<!-- allow-line-ref: -->",
+    "</invoke>",
+    '<parameter name="content">',
+    "<function_calls>",
+    "</content>",
+    "# allow-stray-markup: fixture",
+    "<!-- allow-stray-markup: docs -->",
     'echo "${#arr}"',
     "    ",
     "\\",
@@ -122,3 +129,10 @@ def test_doc_line_refs_violations_no_crash_and_shape(text: str) -> None:
     for lineno, match in hits:
         assert 1 <= lineno <= n
         assert match in text.splitlines()[lineno - 1]
+
+
+@given(_texts())
+def test_stray_markup_violations_no_crash_and_valid_lines(text: str) -> None:
+    hits = stray_markup.violations(text)
+    assert hits == stray_markup.violations(text)  # deterministic
+    _assert_line_numbers_valid(hits, text)

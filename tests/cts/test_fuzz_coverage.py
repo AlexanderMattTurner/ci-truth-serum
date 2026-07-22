@@ -70,6 +70,7 @@ FUZZ_REQUIRED = {
     "check_doc_line_refs": "violations",
     "check_flag_arity": "violations",
     "check_secret_file_perms": "violations",
+    "check_stray_tool_markup": "violations",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the

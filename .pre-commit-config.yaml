@@ -85,7 +85,7 @@ repos:
           (?x)^(
             README\.md
             |\.claude/.*
-            |tests/cts/test_check_(drift_guards|graceful_handwave|historical_comments|doc_line_refs)\.py
+            |tests/cts/test_check_(drift_guards|graceful_handwave|historical_comments|doc_line_refs|stray_tool_markup)\.py
             |tests/cts/test_fuzz_prose_checks\.py
           )$
         language: python
