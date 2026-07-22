@@ -290,6 +290,40 @@ def test_add_and_curl_each_need_their_own_check() -> None:
     assert _flags(text) == [3]
 
 
+def test_verification_token_in_comment_does_not_count() -> None:
+    # BYPASS FIX (Finding 1): a verification token that lives only in a comment must
+    # NOT satisfy the gate — detection runs over a comment-stripped view. Before the
+    # fix these returned [] (the TODO comment was read as verification).
+    assert _flags("curl -o tool.tar.gz https://x/tool.tar.gz\n# TODO: sha256sum\n") == [
+        1
+    ]
+    assert _flags("curl -o t https://x  # verify: sha256sum -c later\nrun t\n") == [1]
+    assert _flags("ADD https://x/y /y\nRUN echo done  # sha256sum was here\n") == [1]
+
+
+def test_real_verification_still_passes_after_comment_stripping() -> None:
+    # Green control for the fix: a genuine sha256sum in executed code (even with a
+    # trailing comment on the download line) still verifies.
+    assert _flags("curl -o f https://x  # fetch it\nsha256sum -c f.sha256\n") == []
+    assert _flags('curl "$u" -o f https://x && sha256sum -c f  # inline check\n') == []
+
+
+def test_hash_inside_quotes_is_code_not_a_comment() -> None:
+    # The AST (not a naive `#` split) decides what a comment is, so a `#` inside a
+    # quoted output target is still executed code — the download is a real artifact.
+    assert _flags('curl -o "a#b.tar" https://x\nrun a#b.tar\n') == [1]
+
+
+def test_pin_exempt_bare_substring_does_not_exempt() -> None:
+    # BYPASS FIX (Finding 2): `pin-exempt` as a bare substring — in a URL path or a
+    # quoted string, not an actual `# pin-exempt:` comment — must NOT opt out.
+    assert _flags("curl -o x https://cdn/pin-exempt/x | sh\n") == [1]
+    assert _flags('curl -o "pin-exempt" https://x\nrun x\n') == [1]
+    # A `#` comment mentioning pin-exempt without a colon-and-reason states nothing.
+    assert _flags("curl -o f https://x  # pin-exempt\nrun f\n") == [1]
+    assert _flags("curl -o f https://x  # pin-exempt:\nrun f\n") == [1]
+
+
 def test_main_wires_violations_and_message(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
