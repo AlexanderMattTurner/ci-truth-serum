@@ -36,6 +36,8 @@ externalized_markers = load_hook(
     "check_externalized_markers.py", "fuzz_externalized_markers"
 )
 path_gate_deps = load_hook("check_path_gate_deps.py", "fuzz_path_gate_deps")
+job_timeout = load_hook("check_job_timeout.py", "fuzz_job_timeout")
+trusted_base = load_hook("check_trusted_base.py", "fuzz_trusted_base")
 
 # Each returns a finding shape; the contract under fuzz is only "no crash, and a
 # well-typed result". `expects_list` distinguishes the list-returning checks from
@@ -53,6 +55,8 @@ WORKFLOW_CHECKS = [
     ("check_claude_model", claude_model.check_file, True),
     ("check_externalized_markers", externalized_markers.check_file, True),
     ("check_path_gate_deps", path_gate_deps.check_file, True),
+    ("check_job_timeout", job_timeout.check_file, True),
+    ("check_trusted_base", trusted_base.check_file, True),
 ]
 
 
@@ -105,6 +109,19 @@ _WORKFLOW_FRAGMENTS = [
         "    if: needs.decide.outputs.run == 'true'\n"
         "    steps:\n      - run: bash .github/scripts/x.sh\n"
     ),
+    # job-timeout shapes: a job missing timeout-minutes, one that sets it, and a
+    # reusable-call job (exempt).
+    "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n",
+    "jobs:\n  build:\n    timeout-minutes: 10\n    steps: []\n",
+    "jobs:\n  build:  # allow-no-timeout: watcher\n    steps: []\n",
+    # trusted-base shapes: a privileged PR-head checkout and its opt-out.
+    "permissions:\n  contents: write\n",
+    (
+        "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n"
+        "        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+    ),
+    "on:\n  pull_request_target:\n",
+    "# trusted-base-ok: base-trusted only\n",
     "jobs: null\n",
     "[]\n",
     "just a scalar\n",

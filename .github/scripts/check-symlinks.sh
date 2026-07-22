@@ -14,6 +14,7 @@ while IFS= read -r line; do
   target=$(git cat-file blob "${hash}")
   case "${target}" in
   /*) violations="${violations}${path} -> ${target}"$'\n' ;;
+  *) : ;; # relative targets are portable — explicitly fine
   esac
 done < <(git ls-files -s)
 

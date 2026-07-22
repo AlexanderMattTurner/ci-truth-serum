@@ -1,0 +1,1 @@
+- `check-workflow-secret-names` (Tier 2): round-trips every `secrets.*`/`vars.*` name referenced under `.github/` against a checked-in `.github/workflow-secrets.txt` allowlist (both directions, `GITHUB_TOKEN` implicit) and prints the corrected file on mismatch, so a misspelled secret fails at commit time instead of silently degrading at runtime.

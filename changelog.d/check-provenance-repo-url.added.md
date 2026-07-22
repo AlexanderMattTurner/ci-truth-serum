@@ -1,0 +1,1 @@
+- `check-provenance-repo-url` (Tier 1, Identity): compares `package.json` `repository.url` and `pyproject.toml` `[project.urls]` repository keys against the local `origin` remote (normalized), and fails a workflow that runs `npm/pnpm publish` with no `repository.url` — the mismatch npm provenance rejects with E422 on a fork's first release.

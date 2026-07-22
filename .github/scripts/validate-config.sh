@@ -30,6 +30,7 @@ if [[ -f .claude/settings.json ]]; then
           error "Hook script missing: ${token}"
         fi
         ;;
+      *) : ;; # other command tokens are not hook-script paths — not ours to validate
       esac
     done
   done <<<"${commands}"
