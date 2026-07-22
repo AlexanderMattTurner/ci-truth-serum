@@ -156,6 +156,39 @@ def has_always_reporter(jobs: dict) -> bool:
     )
 
 
+def opted_out(text: str, token: str) -> bool:
+    """True only when the opt-out TOKEN appears inside an actual `#` comment, not
+    anywhere in the byte stream — a `group: "<token>"` string value must not
+    silently disable a lint (that would be a fail-open). Shared by the
+    concurrency lints, each of which passes its own token."""
+    return any(
+        token in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
+    )
+
+
+def concurrency_line(text: str) -> int:
+    """Return the 1-based line number of the top-level `concurrency:` key, or 1
+    when the text has none (the fallback anchor). Shared by the concurrency
+    lints so their `::error line=` annotations agree byte-for-byte."""
+    for num, line in enumerate(text.splitlines(), 1):
+        if re.match(r"^concurrency\s*:", line):
+            return num
+    return 1
+
+
+def job_concurrency_line(block: tuple[int, str] | None, fallback: int) -> int:
+    """The 1-based line of a job's `concurrency:` key within its source BLOCK
+    (from `_job_blocks`), else FALLBACK. Scoping the scan to the job's own block
+    anchors the annotation on the offending job, not a sibling's block."""
+    if block is None:
+        return fallback
+    start, body = block
+    for offset, line in enumerate(body.splitlines()):
+        if re.match(r"^\s+concurrency\s*:", line):
+            return start + offset
+    return fallback
+
+
 def _job_blocks(text: str) -> dict[str, tuple[int, str]]:
     """Map each top-level job name to (1-based key line, its source block).
 
