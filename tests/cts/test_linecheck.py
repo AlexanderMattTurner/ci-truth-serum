@@ -408,6 +408,34 @@ def test_opted_out(text: str, expected: bool) -> None:
     assert lc.opted_out(text, "my-token") is expected
 
 
+# ── comment_opt_out ──────────────────────────────────────────────────────
+# Reasoned, comment-scoped opt-out shared by the pinning and pipefail lints. A
+# bare substring (URL path, quoted arg) must never opt out — that is the exact
+# fail-open the pinned-downloads / pipefail-grep bypasses exploited.
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # A real `# token: <reason>` comment (standalone or trailing) opts out.
+        ("# pin-exempt: upstream has no digest", True),
+        ("curl -o f https://x  # pin-exempt: vendored mirror", True),
+        # Token present but NO colon-and-reason states nothing.
+        ("curl -o f https://x  # pin-exempt", False),
+        ("curl -o f https://x  # pin-exempt:", False),
+        ("curl -o f https://x  # pin-exempt:   ", False),
+        # Bare substring outside any comment (URL path, quoted string) never opts out.
+        ("curl -o x https://cdn/pin-exempt/x | sh", False),
+        ('curl -o "pin-exempt" https://x', False),
+        ("curl -o pin-exempt:tag https://x", False),
+        # A longer word must not match the token (boundary guard).
+        ("# xpin-exempt: nope", False),
+    ],
+)
+def test_comment_opt_out(line: str, expected: bool) -> None:
+    assert lc.comment_opt_out(line, "pin-exempt") is expected
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
