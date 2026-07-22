@@ -130,6 +130,16 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-pending-cancel-concurrency
+  name: "opinionated: no ref-keyed concurrency group where PR types storm one SHA"
+  description: With pull_request types beyond opened/synchronize/reopened, multiple runs queue on ONE head SHA; a per-ref/per-PR group then cancels a current-SHA sibling and its always() reporter reddens the required check with no real failure.
+  entry: python -m hooks.check_pending_cancel_concurrency
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 - id: check-requires-concurrency
   name: "opinionated: require a concurrency block on pull_request workflows"
   description: A PR workflow with no concurrency block stacks a fresh run per push instead of cancelling the superseded one, starving a capped runner pool.

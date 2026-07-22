@@ -20,6 +20,9 @@ always_reporter = load_hook("check_always_reporter.py", "fuzz_always_reporter")
 required_reporter = load_hook("check_required_reporter.py", "fuzz_required_reporter")
 concurrency = load_hook("check_concurrency.py", "fuzz_concurrency")
 static_concurrency = load_hook("check_static_concurrency.py", "fuzz_static_concurrency")
+pending_cancel = load_hook(
+    "check_pending_cancel_concurrency.py", "fuzz_pending_cancel_concurrency"
+)
 requires_concurrency = load_hook(
     "check_requires_concurrency.py", "fuzz_requires_concurrency"
 )
@@ -38,6 +41,7 @@ WORKFLOW_CHECKS = [
     ("check_required_reporter", required_reporter.check_file, True),
     ("check_concurrency", concurrency.check_file, True),
     ("check_static_concurrency", static_concurrency.check_file, False),
+    ("check_pending_cancel_concurrency", pending_cancel.check_file, True),
     ("check_requires_concurrency", requires_concurrency.check_file, False),
     ("check_pr_paths", pr_paths.check_file, False),
     ("check_claude_model", claude_model.check_file, True),
@@ -55,6 +59,12 @@ _WORKFLOW_FRAGMENTS = [
     "concurrency:\n  group: x\n",
     "concurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: true\n",
     "concurrency:\n  group: static\n  # static-concurrency-ok\n",
+    "on:\n  pull_request:\n    types: [opened, labeled]\n",
+    (
+        "jobs:\n  scan:\n    concurrency:\n"
+        "      group: ${{ github.head_ref || github.ref }}\n"
+        "      cancel-in-progress: false\n"
+    ),
     "permissions:\n  contents: read\n",
     "jobs:\n  decide:\n    uses: ./.github/workflows/decide-reusable.yaml\n",
     "jobs:\n  build:\n    if: needs.decide.outputs.run == 'true'\n    steps: []\n",
