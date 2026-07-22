@@ -193,6 +193,22 @@ def opted_out(text: str, token: str) -> bool:
     )
 
 
+def comment_opt_out(line: str, token: str) -> bool:
+    """True only when TOKEN is a *reasoned* opt-out inside an actual ``#`` comment on
+    LINE — ``# … <token>: <non-empty reason>``.
+
+    A bare occurrence of TOKEN anywhere else on the line does NOT opt out: a token
+    smuggled into a URL path or string (``curl https://cdn/<token>/x | sh``) must
+    never silence the lint, which is exactly the fail-open a substring test allows.
+    The colon-and-reason is required, matching the sibling exit-suppression and
+    concurrency opt-out contracts. Shared by the pinning and pipefail lints, each
+    passing its own token, so there is one matcher instead of a copy per hook."""
+    if "#" not in line:
+        return False
+    comment = line.split("#", 1)[1]
+    return re.search(rf"(?<![\w-]){re.escape(token)}\s*:\s*\S", comment) is not None
+
+
 def concurrency_line(text: str) -> int:
     """Return the 1-based line number of the top-level `concurrency:` key, or 1
     when the text has none (the fallback anchor). Shared by the concurrency

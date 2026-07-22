@@ -160,6 +160,24 @@ def test_annotation_two_lines_above_does_not_count() -> None:
     assert _flag("# pipefail-grep-ok: stale\nnoop\nproducer | grep -qF x\n") == [4]
 
 
+def test_allow_bare_substring_does_not_suppress() -> None:
+    # BYPASS FIX (Finding 2): `pipefail-grep-ok` as a bare substring — in a URL path
+    # or a quoted arg, not an actual `# pipefail-grep-ok:` comment — must NOT opt
+    # out. Before the fix `_ALLOW in raw` silenced any of these.
+    assert _flag("curl https://cdn/pipefail-grep-ok/x | grep -qF foo\n") == [2]
+    assert _flag('emit "pipefail-grep-ok" | grep -qF foo\n') == [2]
+    # A `#` comment without a colon-and-reason states nothing and does not suppress.
+    assert _flag("producer | grep -qF x  # pipefail-grep-ok\n") == [2]
+    assert _flag("producer | grep -qF x  # pipefail-grep-ok:\n") == [2]
+
+
+def test_reasoned_allow_still_suppresses() -> None:
+    # Green control: a genuine reasoned opt-out (same line or preceding line) still
+    # suppresses after the bare-substring hole is closed.
+    assert _flag("producer | grep -qF x  # pipefail-grep-ok: bounded output\n") == []
+    assert _flag("# pipefail-grep-ok: bounded output\nproducer | grep -qF x\n") == []
+
+
 def test_main_wires_violations_and_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

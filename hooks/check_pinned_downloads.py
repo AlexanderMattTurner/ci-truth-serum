@@ -35,7 +35,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import MESSAGE_PREFIX, run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _bash_ast import strip_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MESSAGE_PREFIX,
+    comment_opt_out,
+    run_line_checks,
+)
 
 # How many lines after a download to scan for its verification before giving up.
 # The scan also stops early at the next download, so one check can't cover two.
@@ -142,29 +147,40 @@ def _is_download(line: str) -> bool:
 
 
 def violations(text: str) -> list[int]:
-    """1-based line numbers of artifact downloads with no nearby verification."""
+    """1-based line numbers of artifact downloads with no nearby verification.
+
+    Download and verification detection run over a COMMENT-STRIPPED view of the
+    text (bash `comment` nodes blanked), so a verification token that lives only in
+    a comment — ``# TODO: verify with sha256sum`` — no longer satisfies the gate;
+    the token must sit in executed code. The raw lines are kept for the
+    ``# pin-exempt:`` opt-out, which by definition lives in a comment."""
     lines = text.splitlines()
+    code = strip_comments(text).splitlines()
     hits = []
     for i, line in enumerate(lines):
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
             continue
-        if not _is_download(line):
+        if not _is_download(code[i]):
             continue
-        if "pin-exempt" in line or (i > 0 and "pin-exempt" in lines[i - 1]):
+        if comment_opt_out(line, "pin-exempt") or (
+            i > 0 and comment_opt_out(lines[i - 1], "pin-exempt")
+        ):
             continue
-        if not _verified_within_window(lines, i):
+        if not _verified_within_window(code, i):
             hits.append(i + 1)
     return hits
 
 
-def _verified_within_window(lines: list[str], start: int) -> bool:
-    """Scan [start, start+_WINDOW] for a verification token, stopping at the next
-    download so each fetch must carry its own check."""
-    for j in range(start, min(len(lines), start + _WINDOW + 1)):
-        if j > start and _is_download(lines[j]):
+def _verified_within_window(code: list[str], start: int) -> bool:
+    """Scan [start, start+_WINDOW] of the comment-stripped CODE lines for a
+    verification token, stopping at the next download so each fetch must carry its
+    own check. Because the lines are comment-stripped, a ``sha256sum`` mentioned in
+    a comment cannot count as verification."""
+    for j in range(start, min(len(code), start + _WINDOW + 1)):
+        if j > start and _is_download(code[j]):
             return False
-        if _VERIFY.search(lines[j]):
+        if _VERIFY.search(code[j]):
             return True
     return False
 
