@@ -29,6 +29,13 @@ lints that catch two kinds of lie a green check can hide:
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `check-pinned-base-images` | The base image you reviewed and the one CI built diverged, because `FROM node:22` is a mutable tag the registry can re-point. **Demands a `@sha256:` digest.**                                                                                                                              |
 | `check-pinned-downloads`   | A tampered release or compromised mirror swapped the binary you `curl`ed and then ran, because the download carried no checksum/signature check. Also fires on the one-line installer that never touches disk—`curl -fsSL … \| sudo sh`—which pipes unverified bytes straight into a shell. |
+| `check-provenance-repo-url` | A fork's very first release died at `npm publish --provenance` with `E422 … Failed to validate repository information`, because `package.json`'s `repository.url` still named the upstream it was forked from (it killed the first releases of three sibling repos). Compares `package.json` `repository`/`repository.url` and `pyproject.toml` `[project.urls]` repository-ish keys (never `Homepage`) against the local `origin` remote, normalized; also fails a workflow that runs `npm/pnpm publish` with no `repository.url` at all. No opt-out for a mismatch—forks must repoint their self-referential URLs. A repo with no origin remote is skipped. |
+
+### Security (Tier 1, default-on)
+
+| Hook                 | Failure it prevents                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `check-trusted-base` | A PR author read your secrets and pushed with your write token (the pwn-request hole), because a `pull_request(_target)` job checked out the PR **head** ref _and_ ran privileged (write `permissions:` or a `secrets.*` in `env:`)—so the PR's own code executed with the base repo's credentials. Read-only, secret-free head checkouts (the safe way to lint untrusted code) are not flagged; opt out with `# trusted-base-ok: <reason>`. |
 
 ### Opinionated (Tier 2, opt-in)
 
@@ -36,6 +43,7 @@ lints that catch two kinds of lie a green check can hide:
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `check-always-reporter`            | A gated workflow stranded a required check at “Expected—Waiting” when the decide gate skipped every work job. Assumes a **decide-job + `always()` reporter** pattern.                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `check-required-reporter`          | A new `always()` reporter shipped as a green-but-never-required check because nothing tied a workflow’s reporters to the branch-protection required-set. Assumes the required-set is mirrored from these annotations.                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `check-job-timeout`                | A wedged step (a network fetch with no deadline, a hung test) pinned a shared runner slot for **six hours**, because the job set no `timeout-minutes` and inherited GitHub's 360-minute default. Requires every job to declare its own ceiling; reusable-workflow (`uses:`) jobs are exempt. Opt out with `# allow-no-timeout: <reason>`.                                                                                                                                                                                                                                                                                                            |
 | `check-inline-run-length`          | A long inline `run:` block shipped unchecked (unquoted expansions, missing `pipefail`) because shellcheck/shfmt/shellharden only see standalone `.sh` files.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `check-concurrency`                | New pushes queued behind stale runs instead of cancelling, because a `concurrency:` block omitted `cancel-in-progress` and it silently defaulted to `false`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `check-static-concurrency`         | A required check hung at “Expected—Waiting” forever, because a static workflow-level `concurrency.group` (no `github.ref`/`head_ref` key) let a sibling ref’s run cancel this one’s pending run wholesale before any job—and its `always()` reporter—ever started.                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -44,6 +52,12 @@ lints that catch two kinds of lie a green check can hide:
 | `check-externalized-markers`       | A workflow guard that scans inline `run:` for a policy marker (e.g. a history-rewrite command that demands `fetch-depth: 0`) went blind and passed vacuously the moment that command moved into `.github/scripts/*.sh` or a composite action. Flags any job where the marker is reachable only through that indirection.                                                                                                                                                                                                                                                                                                                            |
 | `check-path-gate-deps`             | A gated job silently skipped—and its `always()` reporter went green—on the exact PR that changed a file the job depends on, because the decide job's path filters omitted a composite action or `.github/scripts/` helper. Verifies every gated job's static dependencies (composites, run scripts one `source` hop deep, and `# gate-deps:`-declared paths) are covered by the decide filters; suppress one dep with `# path-gate-ok: <dep> <reason>`.                                                                                                                                                                                             |
 | `check-failure-notifier-coverage`  | A new push/schedule workflow failed silently forever because `ci-failure-notify.yaml`'s `on.workflow_run.workflows` list (necessarily a hand-copied list—`workflow_run` has no wildcard) was never updated. Round-trip freshness check: the list must equal the tree's push/schedule workflow names; prints the corrected block on mismatch. Pass `--require-notifier` to fail when the notifier workflow itself is missing.                                                                                                                                                                                                                        |
+| `check-token-fallback`             | A tag push started 403'ing and a retrying version-bump loop walked an npm package from 1.x to 5.x, because `token: ${{ secrets.PAT \|\| secrets.GITHUB_TOKEN }}` silently switched push identity the day someone set the first secret. Flags any `secrets.A \|\| secrets.B` fallback in a token position (a `token:`/`github-token:` input, or a `GITHUB_TOKEN`/`GH_TOKEN` env var); opt out with `# token-fallback-ok: <reason>` when the switch is designed.                                                                                                                                                                                       |
+| `check-workflow-secret-names`      | A workflow read `secrets.ANTHROPIC_API_KEY` while the configured secret was `GH_ACTION_ANTHROPIC_API_KEY`, and changelog drafting silently degraded for a week (a misspelled secret just evaluates empty); three renames of a release token each surfaced only at runtime. Round-trip contract: every `secrets.*`/`vars.*` name referenced under `.github/` must equal the checked-in `.github/workflow-secrets.txt` allowlist exactly (both directions; `GITHUB_TOKEN` is implicit). Prints the corrected file content on mismatch.                                                                                                                  |
+| `check-pin-comment-truth`          | The same `actions/checkout@<sha>` carried `# v6` on one line and `# v7.0.0` on twelve others—at most one comment could be true, and the comment is the only part of a SHA pin a reviewer can read. Offline rules: every SHA-pinned `uses:` needs a wellformed `# v<digits>[.<digits>[.<digits>]]` comment (trailing text allowed), and one SHA must carry ONE comment string repo-wide. No network resolution; opt out with `# pin-comment-ok`.                                                                                                                                                                                                      |
+| `check-stderr-merge-parse`         | An npm stderr warning merged via `2>&1` became "the version" and every release aborted on the nonsense comparison. Flags a substitution that merges and pipes into a parser (`v=$(cmd 2>&1 \| tail -1)`), and a merged capture later piped into head/tail/grep/awk/cut/sed/jq/sort/wc or used in a `[[ … ]]`/`(( … ))` comparison. `out=$(cmd 2>&1)` followed only by echo/printf is never flagged—capture-for-diagnostics is the dominant legit use. Opt out with `# stderr-merge-ok: <reason>`.                                                                                                                                                    |
+| `check-echo-fallback`              | A release-version decision was fed the literal strings `error` and `Unable to get diff`, because `$(cmd \|\| echo "…")` converted each failure into a benign parseable value. Flags `\|\| echo`/`\|\| printf` inside command substitutions and as unaborted bare statements; a fallback that redirects to stderr or aborts (`\|\| { echo … >&2; exit 1; }`) is a real recovery and passes. Opt out with `# echo-fallback-ok: <reason>`.                                                                                                                                                                                                             |
+| `check-lockstep-pins`              | A repo's `.pre-commit-config.yaml` ci-truth-serum `rev:` and a workflow's `pip install git+…@<sha>` pin were hand-bumped three times in one week, each time with a "keep in lockstep" note that enforced nothing. Config-driven: each repeatable `--pair FILE1 REGEX1 FILE2 REGEX2` (one capture group each) must match exactly once per file and the captures must be equal—zero or multiple matches is a hard error. Not in the `check-tier2` aggregate (it needs per-repo args); enable it standalone.                                                                                                                                             |
 
 ### Unrelated bonus checks (Extras)
 
@@ -59,6 +73,10 @@ lints that catch two kinds of lie a green check can hide:
 | `check-doc-line-refs`        | A doc cited source by exact line number and pointed at whatever now happens to live there after the next refactor. Bans `<file>.<ext>:<N>` and `(L<N>)`-style cites in Markdown (fenced code blocks and any `CHANGELOG.md` are skipped); cite a function/section/anchor instead, or suppress with `<!-- allow-line-ref: <reason> -->`.                                                                                                                                                                                                                                                                                                                           |
 | `check-flag-arity`           | A CLI parser died with a raw `$2: unbound variable` instead of a clean "--branch needs a value", because a `--branch) X="$2"; shift 2` arm trusted the loop's outer `$# -gt 0` (which proves only `$1`) and the flag was passed last. Flags any `case` arm whose label is a `-x`/`--xxx`/`--xxx=*` option that reads `$2`/`shift 2` without its own guard; the guard must both **precede** the read and actually **bail** (`[[ $# -ge 2 ]] \|\| die`, a self-guarding `${2:?…}`, or a `need_val`/`need_arg` helper)—a bare `[[ $# -ge 2 ]]` whose result is discarded, or a guard placed after the read, does not count. Suppress with `# flag-arity-ok: <why>`. |
 | `check-secret-file-perms`    | A credential file (`*token*`, `*.pem`, `*npmrc*`, …) was created world-readable with the default umask and only `chmod 600`'d on a later line, so a co-tenant could read it in the window between. Flags a secret-named create (`>`/`>>`, `touch`, `tee`, non-private `install`) that is tightened by a `chmod 0?[46]00` on the same path within ~3 lines; a standing/inline `umask 077` or `install -m 600` is accepted, and a create with no nearby chmod is not flagged. Suppress with `# secret-perms-ok: <reason>`.                                                                                                                                         |
+| `check-case-default`         | An unexpected bump-type value matched no `case` arm, left `NEW_VERSION` unset, and the release script continued on garbage. Requires a bare `*)` (or `(*)` / `* )` / a `x\|*)` alternative) default arm on every `case … esac`—globs like `*.txt)` or `--*)` don't count. One-liners and quoted `case` text are parsed conservatively (fail open). Opt out with `# case-default-ok: <reason>` on the `case` line.                                                                                                                                                                                                                      |
+| `check-cron-comment`         | In two repos a schedule's header comment said "daily" while the cron was weekly, and the job silently ran 1/7th as often as everyone believed. Pairs a cadence claim (`hourly`/`daily`/`weekly`/`monthly`/`every N minutes\|hours\|days`) in a comment on or within 3 lines above a `cron:` line with the expression's shape, and fails only on a clean contradiction—lists, ranges, and exotic crons are unclassifiable and always pass. Opt out with `# cron-comment-ok`.                                                                                                                                                            |
+| `check-toolchain-skips`      | `skipif(shutil.which("node") is None)` silently zeroed the coverage of every guarded script on a runner missing the tool, and the suite stayed green. Flags `pytest.mark.skipif`/`pytest.importorskip` conditions that do binary discovery (`shutil.which`, `which(`, `find_executable`) with no CI env guard—the skip must FAIL in CI: `shutil.which("node") is None and not os.environ.get("CI")`. Only test files are scanned. Opt out with `# toolchain-skip-ok: <reason>`.                                                                                                                                                        |
+| `check-env-symmetry`         | A half-finished env-var rename silently broke a feature: the var was renamed in the code that **sets** it but not the code that **reads** it (or vice-versa), so the reader just saw an unset value and took its default. Scans the whole tracked tree for every var matching a `--prefix` (e.g. `GLOVEBOX_`) and flags any that is written-but-never-read or read-but-never-written. Conservative extraction keeps false positives near zero; dynamically-composed names are skipped, and an out-of-band var opts out with `# env-symmetry-ok: <VARNAME> <reason>`. Needs `args: [--prefix, <PREFIX>]`; not part of a tier aggregate. |
 
 ## Usage
 
@@ -77,7 +95,7 @@ the only prerequisite.
 
 ```yaml
 repos:
-  - repo: https://github.com/alexander-turner/ci-truth-serum
+  - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
     rev: v0.1.0 # pin to a tag
     hooks:
       # ── Tier 1 · Honesty (default-on) ──
@@ -90,7 +108,11 @@ repos:
       # ── Tier 1 · Identity (default-on) ──
       - id: check-pinned-base-images
       - id: check-pinned-downloads
+      - id: check-provenance-repo-url
+      # ── Tier 1 · Security (default-on) ──
+      - id: check-trusted-base
       # ── Tier 2 · Opinionated (opt-in: uncomment to enable) ──
+      # - id: check-job-timeout          # every job must declare timeout-minutes
       # - id: check-always-reporter      # assumes a decide-job + always() reporter
       # - id: check-required-reporter    # classify each always() reporter required-check: true|false
       # - id: check-inline-run-length
@@ -101,6 +123,12 @@ repos:
       # - id: check-externalized-markers  # marker reachable only via script/composite indirection
       # - id: check-path-gate-deps       # decide filters must cover every gated-job dependency
       # - id: check-failure-notifier-coverage  # keep ci-failure-notify's workflow_run list fresh
+      # - id: check-token-fallback       # no secrets.A || secrets.B fallbacks in token positions
+      # - id: check-workflow-secret-names  # referenced secrets/vars == .github/workflow-secrets.txt
+      # - id: check-pin-comment-truth    # `# vX.Y` comments on SHA pins: present + consistent
+      # - id: check-stderr-merge-parse   # never parse a 2>&1-merged stream
+      # - id: check-echo-fallback        # no `|| echo` fallbacks that fake a value
+      # - id: check-lockstep-pins        # config-driven twin-pin equality (needs --pair args)
       # ── Extras · Unrelated bonus checks (opt-in) ──
       # - id: check-symlinks
       # - id: check-unnamed-regex-groups
@@ -112,6 +140,11 @@ repos:
       # - id: check-doc-line-refs        # docs cite symbols/sections, not line numbers
       # - id: check-flag-arity           # value-taking CLI flag arms must guard $2 before reading it
       # - id: check-secret-file-perms    # secret-named files must be created private, not chmod'd late
+      # - id: check-case-default         # every shell case block needs a bare *) default arm
+      # - id: check-cron-comment         # schedule comments must not contradict their cron
+      # - id: check-toolchain-skips      # which()-gated pytest skips must fail (not skip) in CI
+      # - id: check-env-symmetry         # prefixed env vars must be both written and read
+      #   args: [--prefix, GLOVEBOX_]    # required: only <PREFIX>… vars are checked
 ```
 
 `pre-commit run --all-files` sweeps the whole repo (handy on first adoption).
@@ -124,7 +157,7 @@ are picked up with **no change to your config**:
 
 ```yaml
 repos:
-  - repo: https://github.com/alexander-turner/ci-truth-serum
+  - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
     rev: v0.1.0 # pin to a tag
     hooks:
       - id: check-tier1 # all honesty + identity checks (the safe default-on set)
@@ -132,9 +165,12 @@ repos:
       # - id: check-extras  # the Python extras (vendor-/style-specific)
 ```
 
-`check-symlinks` is the only check not in an aggregate: it is a shell
-(`language: script`) hook, not a Python module, so add its `- id:` separately if
-you want it. Mixing an aggregate with individual ids is fine (a check just runs
+Three checks are not in any aggregate—add each `- id:` separately if you want
+it: `check-symlinks` (a shell `language: script` hook, not a Python module),
+`check-lockstep-pins` (config-driven; it hard-errors without the per-repo
+`--pair` args an aggregate cannot supply), and `check-env-symmetry` (a
+whole-tree scan that needs a per-project `--prefix` arg an aggregate can't
+supply). Mixing an aggregate with individual ids is fine (a check just runs
 twice).
 
 ### Scope one check to specific paths
@@ -145,7 +181,7 @@ When one check in a tier needs tighter file scoping than the rest (e.g.,
 standalone hook with normal pre-commit `files:`/`exclude:` filters:
 
 ```yaml
-- repo: https://github.com/alexander-turner/ci-truth-serum
+- repo: https://github.com/AlexanderMattTurner/ci-truth-serum
   rev: v0.1.0
   hooks:
     - id: check-tier1
@@ -202,6 +238,47 @@ The mutation path needs a token (`GH_TOKEN` / `GITHUB_TOKEN`) with
 `administration: write`; it reads the marker from the same scoped lines the lint
 classifies, so the gate and the apply step can never disagree. Pass
 `--ruleset-id` if the repo has more than one branch ruleset.
+
+### Config: enforce twin pins with check-lockstep-pins
+
+`check-lockstep-pins` replaces "keep these in lockstep" comments with a gate.
+The motivating pair—a `.pre-commit-config.yaml` `rev:` and a workflow's
+`pip install git+…@` pin of the same release:
+
+```yaml
+- id: check-lockstep-pins
+  args:
+    - --pair
+    - .pre-commit-config.yaml
+    - 'ci-truth-serum\s+rev:\s*(\S+)'
+    - .github/workflows/lint.yaml
+    - 'ci-truth-serum\.git@(\S+)'
+```
+
+Each regex needs exactly one capture group and must match exactly once in its
+file—zero (the pattern rotted) or several (ambiguous) is a hard error, and the
+two captures must be equal. Repeat `--pair` for more pins.
+
+### Apply: verify a release with release-canary
+
+`release-canary` asserts the three places a release leaves its version agree:
+the npm registry (semver-max of `npm view <pkg> versions --json`—deliberately
+NOT `npm view <pkg> version`, which returns the `latest` dist-tag and silently
+misreports when a publish set the tag wrong), the semver-max `v*` git tag, and
+the changelog's top dated `## [x.y.z]` heading (`## Unreleased` is skipped).
+On mismatch it prints all three labeled values and exits non-zero; the
+`npm view` call is its only network touch.
+
+```bash
+pip install ci-truth-serum
+
+release-canary                    # package name read from ./package.json
+release-canary --package my-pkg --changelog CHANGELOG.md --repo-dir .
+```
+
+Run it as a post-release workflow step so a publish that died after tagging
+(or a tag push that 403'd after publishing) is caught the day it happens, not
+at the next release.
 
 ## Complements, doesn’t replace
 

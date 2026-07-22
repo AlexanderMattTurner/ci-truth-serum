@@ -1,0 +1,1 @@
+- `check-stderr-merge-parse` (Tier 2): flags `2>&1`-merged output being parsed — piped into head/tail/grep/awk/cut/sed/jq/sort/wc inside a substitution, or a merged capture later piped/compared — while never flagging diagnostic captures. Scans shell files and workflow inline `run:` blocks. Opt out with `# stderr-merge-ok: <reason>`.

@@ -86,6 +86,7 @@ Edit | Write | MultiEdit | NotebookEdit)
     fi
   done
   ;;
+*) : ;; # non-edit tools get the "ask" default emitted below
 esac
 
 # Default: surface the failure as an "ask" decision so the user can choose.

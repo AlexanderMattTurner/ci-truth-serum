@@ -19,13 +19,13 @@
     "pinning",
     "devops"
   ],
-  "homepage": "https://github.com/alexander-turner/ci-truth-serum#readme",
+  "homepage": "https://github.com/AlexanderMattTurner/ci-truth-serum#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/alexander-turner/ci-truth-serum.git"
+    "url": "git+https://github.com/AlexanderMattTurner/ci-truth-serum.git"
   },
   "bugs": {
-    "url": "https://github.com/alexander-turner/ci-truth-serum/issues"
+    "url": "https://github.com/AlexanderMattTurner/ci-truth-serum/issues"
   },
   "author": "Alexander Turner",
   "license": "Apache-2.0",

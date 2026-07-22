@@ -1,0 +1,1 @@
+- `check-cron-comment` (Extras): fails a workflow schedule whose comment cadence claim (hourly/daily/weekly/monthly/every N …) contradicts the cron expression's shape; ambiguous crons and claim-free comments always pass. Opt out with `# cron-comment-ok`.

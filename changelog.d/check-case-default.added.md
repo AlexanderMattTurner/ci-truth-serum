@@ -1,0 +1,1 @@
+- `check-case-default` (Extras): requires a bare `*)` default arm on every shell `case … esac` block so an unexpected value runs something instead of silently leaving variables unset. Opt out with `# case-default-ok: <reason>` on the `case` line.

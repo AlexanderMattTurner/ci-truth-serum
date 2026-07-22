@@ -39,6 +39,7 @@ secret_file_perms = load_hook("check_secret_file_perms.py", "fuzz_secret_file_pe
 workflow_pipefail = load_hook("check_workflow_pipefail.py", "fuzz_workflow_pipefail")
 inline_run_length = load_hook("check_inline_run_length.py", "fuzz_inline_run_length")
 linecheck = load_hook("_linecheck.py", "fuzz_linecheck")
+env_symmetry = load_hook("check_env_symmetry.py", "fuzz_env_symmetry")
 
 # `violations(text) -> list[int]` line-oriented detectors. Each maps text to the
 # 1-based physical line numbers it flags.
@@ -107,6 +108,13 @@ _INTERESTING_TOKENS = [
     "DC=(docker compose)",
     '"${DC[@]}" up',
     "var=$(x) || true",
+    "export GLOVEBOX_A=1",
+    "GLOVEBOX_B=v run",
+    "$GLOVEBOX_C",
+    "${GLOVEBOX_D:-x}",
+    'os.environ.get("GLOVEBOX_E")',
+    "process.env.GLOVEBOX_F",
+    "# env-symmetry-ok: GLOVEBOX_A supplied externally",
     "  ",
     "#",
     "'",
@@ -342,6 +350,32 @@ def test_expand_name_never_crashes(name: str, matrix: dict) -> None:
     out = linecheck.expand_name(name, matrix)
     assert isinstance(out, list)
     assert all(isinstance(c, str) for c in out)
+
+
+# --- check_env_symmetry: whole-tree write/read scanner -----------------------
+
+
+@given(a=source_text(), b=source_text())
+def test_env_symmetry_analyze_never_crashes(a: str, b: str) -> None:
+    # The scanner is fed arbitrary tree text (a shell file and a YAML file). Its
+    # detectors must return well-typed sets and analyze() a well-typed result list
+    # for any input, and the two-direction result is mutually exclusive per name.
+    prefix = "GLOVEBOX_"
+    for text, is_yaml in ((a, False), (b, True)):
+        assert isinstance(env_symmetry.find_writes(text, prefix, is_yaml), set)
+        assert isinstance(env_symmetry.find_reads(text, prefix), set)
+        assert isinstance(env_symmetry.collect_optouts(text), set)
+    results = env_symmetry.analyze({"f.sh": a, "g.yaml": b}, prefix)
+    assert isinstance(results, list)
+    seen = set()
+    for item in results:
+        assert isinstance(item, tuple) and len(item) == 3
+        name, kind, files = item
+        assert isinstance(name, str)
+        assert kind in ("write-only", "read-only")
+        assert isinstance(files, list) and files == sorted(files)
+        assert name not in seen  # each var reported at most once
+        seen.add(name)
 
 
 # --- check_pinned_base_images: the fix/resolver helpers (offline only) --------
