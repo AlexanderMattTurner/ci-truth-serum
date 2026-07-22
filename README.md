@@ -261,19 +261,24 @@ two captures must be equal. Repeat `--pair` for more pins.
 
 ### Apply: verify a release with release-canary
 
-`release-canary` asserts the three places a release leaves its version agree:
-the npm registry (semver-max of `npm view <pkg> versions --json`—deliberately
-NOT `npm view <pkg> version`, which returns the `latest` dist-tag and silently
+`release-canary` asserts the places a release leaves its version agree: the
+npm registry (semver-max of `npm view <pkg> versions --json`—deliberately NOT
+`npm view <pkg> version`, which returns the `latest` dist-tag and silently
 misreports when a publish set the tag wrong), the semver-max `v*` git tag, and
-the changelog's top dated `## [x.y.z]` heading (`## Unreleased` is skipped).
-On mismatch it prints all three labeled values and exits non-zero; the
-`npm view` call is its only network touch.
+the changelog's top dated `## [x.y.z]` heading (`## Unreleased` is skipped). If
+the repo also ships to the AUR, a `PKGBUILD`'s `pkgver=` is folded in as an
+optional fourth marker — checked only when a PKGBUILD is present, so forgetting
+to bump it is caught while a repo without one is unaffected (a build-time
+`pkgver()` that can't be read offline is skipped, never a failure). On mismatch
+it prints all present labeled values and exits non-zero; the `npm view` call is
+its only network touch.
 
 ```bash
 pip install ci-truth-serum
 
 release-canary                    # package name read from ./package.json
 release-canary --package my-pkg --changelog CHANGELOG.md --repo-dir .
+release-canary --pkgbuild aur/PKGBUILD   # non-default PKGBUILD location
 ```
 
 Run it as a post-release workflow step so a publish that died after tagging

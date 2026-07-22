@@ -73,6 +73,10 @@ _TOKENS = [
     "## [1.2.3] - 2026-01-01",
     "## Unreleased",
     "1.10.0",
+    "pkgver=1.2.3",
+    "pkgver=$(git describe)",
+    "pkgver() {",
+    "pkgrel=1",
     "$(",
     ")",
     "`",
@@ -164,3 +168,5 @@ def test_changelog_and_semver_parsing_are_total(text: str) -> None:
     assert top is None or isinstance(top, str)
     best = canary.max_semver(text.split())
     assert best is None or canary.semver_key(best) is not None
+    pkgver = canary.pkgbuild_version(text)
+    assert pkgver is None or isinstance(pkgver, str)
