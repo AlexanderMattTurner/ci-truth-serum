@@ -20,6 +20,10 @@ always_reporter = load_hook("check_always_reporter.py", "fuzz_always_reporter")
 required_reporter = load_hook("check_required_reporter.py", "fuzz_required_reporter")
 concurrency = load_hook("check_concurrency.py", "fuzz_concurrency")
 static_concurrency = load_hook("check_static_concurrency.py", "fuzz_static_concurrency")
+cancellable_required_check = load_hook(
+    "check_cancellable_required_check.py", "fuzz_cancellable_required_check"
+)
+frozen_head_sha = load_hook("check_frozen_head_sha.py", "fuzz_frozen_head_sha")
 pending_cancel = load_hook(
     "check_pending_cancel_concurrency.py", "fuzz_pending_cancel_concurrency"
 )
@@ -43,6 +47,8 @@ WORKFLOW_CHECKS = [
     ("check_required_reporter", required_reporter.check_file, True),
     ("check_concurrency", concurrency.check_file, True),
     ("check_static_concurrency", static_concurrency.check_file, False),
+    ("check_cancellable_required_check", cancellable_required_check.check_file, False),
+    ("check_frozen_head_sha", frozen_head_sha.check_file, True),
     ("check_pending_cancel_concurrency", pending_cancel.check_file, True),
     ("check_requires_concurrency", requires_concurrency.check_file, False),
     ("check_pr_paths", pr_paths.check_file, False),
@@ -63,6 +69,14 @@ _WORKFLOW_FRAGMENTS = [
     "concurrency:\n  group: x\n",
     "concurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: true\n",
     "concurrency:\n  group: static\n  # static-concurrency-ok\n",
+    "concurrency:\n  group: static\n  cancel-in-progress: true\n",
+    "concurrency:\n  group: static\n  # cancellable-required-check-ok\n",
+    # A frozen head-SHA in run: and in a with: value (check_frozen_head_sha).
+    "jobs:\n  b:\n    steps:\n      - run: git diff ${{ github.event.pull_request.head.sha }}...HEAD\n",
+    (
+        "jobs:\n  b:\n    steps:\n      - uses: actions/checkout@v4\n"
+        "        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+    ),
     "on:\n  pull_request:\n    types: [opened, labeled]\n",
     (
         "jobs:\n  scan:\n    concurrency:\n"

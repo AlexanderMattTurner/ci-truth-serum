@@ -56,6 +56,16 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-frozen-head-sha
+  name: "honesty: ban github.event.pull_request.head.sha in run:/with: range/checkout steps"
+  description: The event head SHA is frozen at trigger time; a force-push/autofix-amend mis-scopes a diff range or checks out a stale commit. Derive the head from the checkout.
+  entry: python -m hooks.check_frozen_head_sha
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 - id: check-pipefail-grep-pipe
   name: "honesty: ban `producer | grep -q` under set -o pipefail (SIGPIPE false-negative)"
   description: grep -q's early exit SIGPIPEs the producer; pipefail surfaces 141, so a match reads as no-match.
@@ -197,6 +207,16 @@
   name: "opinionated: keep ci-failure-notify's workflow_run list in sync with the tree"
   description: workflow_run has no wildcard, so the notifier's workflows list is a derived copy; a stale copy silently drops failure notifications.
   entry: python -m hooks.check_failure_notifier_coverage
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
+- id: check-cancellable-required-check
+  name: "opinionated: no static cancellable workflow-level concurrency lock on required checks"
+  description: "A static cancellable concurrency group on a `# required-check: true` workflow lets a sibling ref cancel the run and its workflow-level always() reporter wholesale, hanging the check at 'Expected — Waiting'."
+  entry: python -m hooks.check_cancellable_required_check
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
