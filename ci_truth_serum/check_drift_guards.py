@@ -57,6 +57,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
 # Phrases that express guard INTENT — the author is asserting two sources can't
 # diverge — rather than merely mentioning the word "drift" (which a test of
 # drift-detection tooling, e.g. test_main_check_mode_detects_drift, also does).
@@ -79,12 +82,12 @@ _MARKER = "drift_guard"
 # The non-Python opt-out: a comment `drift-guard-ok: <reason>` with a non-empty
 # reason. (The bare token `drift-guard` inside it also matches _GUARD_RE, but the
 # annotation check runs first, so an annotation line never flags itself.)
-_ALLOW_MARKER = re.compile(r"drift-guard-ok:\s*\S", re.IGNORECASE)
+_ALLOW_MARKER = annotation_re("drift-guard-ok")
 
 # The Python structural opt-out: `# not-a-drift-guard: <reason>` clears a
 # STRUCTURAL hit (a genuine collection-equality unit test), with a non-empty
 # reason so the escape is a stated judgement, not a silent mute.
-_OPTOUT_RE = re.compile(r"#\s*not-a-drift-guard:\s*\S", re.IGNORECASE)
+_OPTOUT_RE = annotation_re("not-a-drift-guard")
 
 # Callables that construct/return a collection, and the collection-view methods.
 _COLLECTION_CTORS = frozenset({"set", "frozenset", "sorted", "list", "tuple", "dict"})
@@ -282,6 +285,24 @@ def text_violations(text: str) -> list[tuple[int, str]]:
     return hits
 
 
+# The non-Python phrase pass runs only on TEST files: a drift guard is a TEST
+# asserting two copies agree, so a guard-intent phrase in production shell/JS is
+# prose about behaviour (a sync script's own comments legitimately say "keeps X
+# in sync") — scanning it there was pure false-positive surface. Python needs no
+# path filter: its AST pass already scopes to `test_*` functions.
+_TEST_PATH = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|spec)/"
+    r"|(?:^|/)test_[^/]*$"
+    r"|[._-](?:test|spec)s?\.[^./]+$"
+)
+
+
+def is_test_path(path: str) -> bool:
+    """True when PATH names a test file (a tests/ directory, a test_* module,
+    or a *.test.* / *.spec.* suite)."""
+    return bool(_TEST_PATH.search(path.replace("\\", "/")))
+
+
 def main(argv: list[str]) -> int:
     status = 0
     for path in argv:
@@ -300,6 +321,8 @@ def main(argv: list[str]) -> int:
                     file=sys.stderr,
                 )
                 status = 1
+            continue
+        if not is_test_path(path):
             continue
         for lineno, phrase in text_violations(source):
             print(

@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
+    annotated,
     logical_lines,
     run_line_checks,
 )
@@ -91,7 +92,7 @@ def violations(text: str) -> list[int]:
         stripped = line.lstrip()
         if stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
             continue  # whole-line comment or a printed example, not real code
-        if not _suppresses_stderr(line) or "allow-stderr-suppress" in line:
+        if not _suppresses_stderr(line) or annotated(line, "allow-stderr-suppress"):
             continue
         if _LITERAL_LAUNCH.search(line) or _array_launch(line, arrays):
             hits.append(lineno)

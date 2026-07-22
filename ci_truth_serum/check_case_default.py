@@ -29,7 +29,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated,
+    run_line_checks,
+)
 
 OPT_OUT = "case-default-ok"
 
@@ -68,7 +71,9 @@ def violations(text: str) -> list[int]:
             continue
         lineno = case_node.start_point[0] + 1
         raw = physical[lineno - 1] if lineno - 1 < len(physical) else ""
-        if OPT_OUT in raw or (lineno >= 2 and OPT_OUT in physical[lineno - 2]):
+        if annotated(raw, OPT_OUT) or (
+            lineno >= 2 and annotated(physical[lineno - 2], OPT_OUT)
+        ):
             continue
         hits.append(lineno)
     return sorted(hits)

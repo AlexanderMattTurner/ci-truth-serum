@@ -38,6 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
+    annotated,
     inside_substitution,
     logical_lines,
     run_line_checks,
@@ -71,7 +72,9 @@ def violations(text: str) -> list[int]:
         stripped = logical.lstrip()
         if stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
             continue
-        if OPT_OUT in logical or (start >= 2 and OPT_OUT in physical[start - 2]):
+        if annotated(logical, OPT_OUT) or (
+            start >= 2 and annotated(physical[start - 2], OPT_OUT)
+        ):
             continue
         for m in _FALLBACK.finditer(logical):
             segment = _fallback_segment(logical, m.end())

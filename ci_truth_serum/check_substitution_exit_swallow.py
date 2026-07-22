@@ -36,6 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
+    annotation_re,
     logical_lines,
     run_line_checks,
 )
@@ -60,7 +61,7 @@ _PIPE_WHILE = re.compile(
 )
 
 # The annotation only suppresses when it carries a non-empty reason after the colon.
-_ALLOW_WITH_REASON = re.compile(r"allow-substitution-exit:\s*\S")
+_ALLOW_WITH_REASON = annotation_re("allow-substitution-exit")
 
 
 def _annotation_suppresses(physical: list[str], lineno: int) -> bool:

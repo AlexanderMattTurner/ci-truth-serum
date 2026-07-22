@@ -440,3 +440,21 @@ def test_concurrency_line(text: str, expected: int) -> None:
 )
 def test_job_concurrency_line(block, expected: int) -> None:
     assert lc.job_concurrency_line(block, 99) == expected
+
+
+# ── group_is_per_ref: the key must sit inside a ${{ }} expression span ────
+@pytest.mark.parametrize(
+    "group,per_ref",
+    [
+        ("ci-${{ github.ref }}", True),
+        ("${{ github.workflow }}-${{ github.head_ref || github.run_id }}", True),
+        ("pr-${{ github.event.number }}", True),
+        # literal mention outside any expression span: one static string for
+        # every ref — treating it as per-ref would fail open
+        ("github.ref-shared", False),
+        ("docs about ${{ github.workflow }} and github.head_ref", False),
+        ("static-lock", False),
+    ],
+)
+def test_group_is_per_ref_requires_expression_span(group: str, per_ref: bool) -> None:
+    assert lc.group_is_per_ref(group) is per_ref

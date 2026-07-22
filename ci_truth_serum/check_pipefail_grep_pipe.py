@@ -49,7 +49,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated,
+    run_line_checks,
+)
 
 # pipefail turned ON: `set` then a short-flag cluster ending in `o` whose option-argument
 # is `pipefail` (`set -o pipefail`, `set -euo pipefail`, `set -Eeuo pipefail`, `set -eo
@@ -177,9 +180,9 @@ def violations(text: str) -> list[int]:
                 continue
             lineno = stage.start_point[0] + 1
             raw = physical[lineno - 1] if lineno - 1 < len(physical) else ""
-            if _ALLOW in raw:
+            if annotated(raw, _ALLOW):
                 continue
-            if lineno >= 2 and _ALLOW in physical[lineno - 2]:
+            if lineno >= 2 and annotated(physical[lineno - 2], _ALLOW):
                 continue
             hits.add(lineno)
     return sorted(hits)

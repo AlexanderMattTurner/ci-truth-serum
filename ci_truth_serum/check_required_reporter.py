@@ -38,6 +38,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated,
     _classification_text,
     _job_blocks,
     is_always_reporter,
@@ -62,7 +63,7 @@ def _locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
     """Return (1-based line number, opted-out) for the first occurrence of trigger."""
     for num, line in enumerate(text.splitlines(), 1):
         if re.match(rf"^\s*{trigger}\s*:", line):
-            return num, OPT_OUT in line
+            return num, annotated(line, OPT_OUT, require_reason=False)
     return 1, False
 
 

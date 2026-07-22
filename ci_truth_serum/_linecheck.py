@@ -72,6 +72,33 @@ MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.(?P<key>[A-Za-z_][\w-]*)\s*\}\}")
 _IF_WRAPPER = re.compile(r"^\$\{\{\s*(?P<inner>.*?)\s*\}\}$")
 
 
+# A comment introducer: `#` (shell/YAML/Python), `<!--` (Markdown/HTML), or `//`
+# (JS/TS). An annotation token counts only AFTER one of these on its line, so a
+# token smuggled into live data (a `group: "<token>"` string value, a printed
+# message, a URL fragment) can never silently disable a lint — that would be a
+# fail-open. One SSOT for every annotation-matching hook in this package.
+_COMMENT_INTRO = r"(?:#|<!--|//)"
+
+
+def annotation_re(token: str, require_reason: bool = True) -> "re.Pattern[str]":
+    """The compiled matcher for an opt-out/annotation TOKEN on one line.
+
+    Comment-scoped: the token must follow a comment introducer. With
+    REQUIRE_REASON (the default), the token must also carry `: <non-empty
+    reason>` — a bare marker states nothing and does not suppress. Every hook
+    that recognizes a per-line annotation builds its matcher here; the
+    meta-test in tests/cts/test_annotation_predicates.py bans the bare
+    `token in line` substring predicate this replaces."""
+    tail = r":\s*\S" if require_reason else r"\b"
+    return re.compile(rf"{_COMMENT_INTRO}[^\n]*\b{re.escape(token)}{tail}")
+
+
+def annotated(line: str, token: str, require_reason: bool = True) -> bool:
+    """True when LINE carries the comment-scoped annotation TOKEN (see
+    ``annotation_re``)."""
+    return bool(annotation_re(token, require_reason).search(line))
+
+
 # A line that ends in a backslash, a pipe, or a boolean operator is continued on
 # the next line by the shell — join them so a command (and its `$(…)` / redirects)
 # spanning lines is analyzed whole, not mis-split mid-capture.
@@ -218,11 +245,10 @@ def has_always_reporter(jobs: dict) -> bool:
 # A concurrency group keyed by any of these is per-ref / per-PR / per-run, so a
 # run is only ever superseded by a *newer run of the same ref* — whose own
 # reporter then posts the check. Without one of these the group is static and a
-# sibling ref's run can cancel this one with no replacement report. Matched as a
-# best-effort substring of the group expression, not a full ${{ }} parse. Shared
-# by the concurrency lints (check_static_concurrency, which flags a static
-# group on the decide+always() shape, and check_cancellable_required_check, which
-# flags a static *cancellable* group on any required-check-marked workflow) so the
+# sibling ref's run can cancel this one with no replacement report. Shared by
+# the concurrency lints (check_static_concurrency, which flags a static group on
+# the decide+always() shape, and check_cancellable_required_check, which flags a
+# static *cancellable* group on any required-check-marked workflow) so the
 # per-ref definition is one SSOT, not two copies that could drift.
 PER_REF_CONCURRENCY_KEYS = (
     "github.ref",
@@ -234,12 +260,23 @@ PER_REF_CONCURRENCY_KEYS = (
     "github.event.number",
 )
 
+# A `${{ … }}` expression span. Non-greedy: each span ends at its own `}}`.
+_EXPR_SPAN = re.compile(r"\$\{\{(?P<expr>.*?)\}\}", re.DOTALL)
+
 
 def group_is_per_ref(group: str) -> bool:
     """True if a concurrency `group:` expression carries a per-ref/per-PR/per-run
-    key — meaning a superseding run is always the same ref's newer run, which
-    re-reports, so the group cannot strand a required check."""
-    return any(key in group for key in PER_REF_CONCURRENCY_KEYS)
+    key INSIDE a `${{ … }}` expression span — meaning a superseding run is always
+    the same ref's newer run, which re-reports, so the group cannot strand a
+    required check. Outside a span the key is a literal: a group named
+    `"github.ref-shared"` is one static string for every ref, so a bare
+    substring match would fail open exactly on the workflows this guard exists
+    to flag."""
+    return any(
+        key in span.group("expr")
+        for span in _EXPR_SPAN.finditer(group)
+        for key in PER_REF_CONCURRENCY_KEYS
+    )
 
 
 def opted_out(text: str, token: str) -> bool:

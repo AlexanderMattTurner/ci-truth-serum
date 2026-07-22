@@ -35,6 +35,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
+    annotated,
     logical_lines,
 )
 
@@ -120,7 +121,9 @@ def _is_piped_to_parser(logical: str, var: str) -> bool:
 
 def _opted_out(physical: list[str], start: int, logical: str) -> bool:
     """Opt-out marker on the logical line itself or the physical line above it."""
-    return OPT_OUT in logical or (start >= 2 and OPT_OUT in physical[start - 2])
+    return annotated(logical, OPT_OUT) or (
+        start >= 2 and annotated(physical[start - 2], OPT_OUT)
+    )
 
 
 def violations(text: str) -> list[tuple[int, str]]:

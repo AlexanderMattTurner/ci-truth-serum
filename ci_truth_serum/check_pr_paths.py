@@ -31,6 +31,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "not-required-check"
@@ -47,7 +48,7 @@ def locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
     """Return the trigger declaration's 1-based line number and whether it's opted out."""
     for num, line in enumerate(text.splitlines(), 1):
         if re.match(rf"^\s*{trigger}\s*:", line):
-            return num, OPT_OUT in line
+            return num, annotated(line, OPT_OUT, require_reason=False)
     return 1, False
 
 

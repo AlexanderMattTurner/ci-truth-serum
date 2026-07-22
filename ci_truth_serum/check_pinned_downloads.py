@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
+    annotated,
     logical_lines,
     run_line_checks,
 )
@@ -59,8 +60,13 @@ _ADD_URL = re.compile(r"^\s*ADD\s+(?:--\S+\s+)*\S*https?://", re.IGNORECASE)
 # curl's `-O` and `--remote-name` derive the name from the URL and take none. The
 # target may be space-separated (`-o f`) or `=`-joined (`--output=f`); the `-O-`
 # shorthand (write to stdout, no space) is captured by the `stdout` alternative.
+# `o`/`O` is also recognized at the END of a short-flag cluster (`wget -qO-`,
+# `curl -sSLo f`, `curl -fsSLO`): a `-q` on wget is quiet mode, not an output
+# flag, and misreading `-qO-` as flag-less made a piped stdout read a "bare wget
+# artifact download". A cluster whose target is GLUED after a non-final `o`/`O`
+# (`-Oq`) is not matched and conservatively stays an artifact download.
 _OUTPUT_FLAG = re.compile(
-    r"(?:^|\s)(?:-o|-O|--output|--remote-name(?:-all)?)\b"
+    r"(?:^|\s)(?:-[A-Za-z]*[oO]|--output|--remote-name(?:-all)?)\b"
     r"(?:[=\s]+(?P<target>\S+)|(?P<stdout>-)(?=\s|$))?"
 )
 
@@ -126,6 +132,12 @@ def _is_artifact_download(line: str) -> bool:
     # `curl -O- … | sh` as a mere stdout write).
     if _PIPE_TO_SHELL.search(line) or _EXEC_SUBST.search(line):
         return True
+    # A shell redirect into a real file saves the bytes regardless of any
+    # stdout-sink output flag (`wget -qO- url > tool` writes `tool`), so it is
+    # checked before the stdout early-return below.
+    rm = _REDIRECT.search(line)
+    if rm and rm.group("rt") not in _NULL_TARGETS:
+        return True
     m = _OUTPUT_FLAG.search(line)
     if m:
         if m.group("stdout"):  # `-O-` writes to stdout, not an artifact
@@ -133,9 +145,6 @@ def _is_artifact_download(line: str) -> bool:
         # A captured target may be a null sink; `-O`/`--remote-name` capture none
         # (they derive the name from the URL) and so are always a real artifact.
         return m.group("target") not in _NULL_TARGETS
-    rm = _REDIRECT.search(line)
-    if rm and rm.group("rt") not in _NULL_TARGETS:
-        return True
     return bool(_WGET.search(line))
 
 
@@ -158,7 +167,9 @@ def violations(text: str) -> list[int]:
             continue
         if not _is_download(line):
             continue
-        if "pin-exempt" in line or (i > 0 and "pin-exempt" in lines[i - 1]):
+        if annotated(line, "pin-exempt") or (
+            i > 0 and annotated(lines[i - 1], "pin-exempt")
+        ):
             continue
         if not _verified_within_window(lines, i):
             hits.append(start)

@@ -26,12 +26,14 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 ALLOW = "allow-long-run"
+_ALLOW_RE = annotation_re(ALLOW)
 MAX_LINES = 15
 
 
@@ -50,7 +52,7 @@ def _significant_lines(script: str) -> int:
 def _check_script(script: str, location: str) -> list[str]:
     """Return a one-element message list when SCRIPT is over the line limit and
     does not opt out; else empty."""
-    if not isinstance(script, str) or ALLOW in script:
+    if not isinstance(script, str) or _ALLOW_RE.search(script):
         return []
     count = _significant_lines(script)
     if count <= MAX_LINES:

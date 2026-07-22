@@ -35,6 +35,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 
@@ -98,8 +99,10 @@ def _allow_optout(script: str) -> bool:
     a human wrote a genuine `#` comment — never when it is buried in a string, a
     piped command's data, or a heredoc body (all of which are non-`comment` nodes),
     which would otherwise be a fail-open that disables the check on unrelated text."""
+    marker = annotation_re(ALLOW)
     return any(
-        ALLOW in node.text.decode() for node in iter_nodes(parse(script), "comment")
+        marker.search(node.text.decode())
+        for node in iter_nodes(parse(script), "comment")
     )
 
 

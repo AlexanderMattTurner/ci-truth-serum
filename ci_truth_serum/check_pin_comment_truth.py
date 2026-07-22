@@ -29,6 +29,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -67,7 +68,7 @@ def pin_records(text: str) -> list[tuple[int, str, str | None, bool]]:
                 lineno,
                 f"{m.group('ref')}@{m.group('sha')}",
                 version.group("version") if version else None,
-                OPT_OUT in rest,
+                annotated(rest, OPT_OUT, require_reason=False),
             )
         )
     return records

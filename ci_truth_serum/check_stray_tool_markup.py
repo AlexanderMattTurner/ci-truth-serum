@@ -40,6 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated,
     run_line_checks,
 )
 
@@ -73,7 +74,7 @@ def violations(text: str) -> list[int]:
             continue
         # A bare tag fills the whole line, so any suppression sits on the line
         # above (an inline annotation would stop the line from being a bare tag).
-        if lineno >= 2 and _ALLOW in lines[lineno - 2]:
+        if lineno >= 2 and annotated(lines[lineno - 2], _ALLOW):
             continue
         hits.append(lineno)
     return hits

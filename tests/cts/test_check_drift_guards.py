@@ -351,3 +351,34 @@ def test_own_test_tree_is_clean() -> None:
         for lineno, name in mod.violations(p.read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+# ── the non-Python phrase pass is scoped to test files ────────────────────
+@pytest.mark.parametrize(
+    "path,is_test",
+    [
+        ("tests/foo.test.mjs", True),
+        ("src/__tests__/bar.mjs", True),
+        ("spec/thing.sh", True),
+        ("scripts/widget.spec.ts", True),
+        ("tests/cts/test_x.sh", True),
+        ("bin/sync-required-checks.sh", False),
+        ("scripts/release.sh", False),
+        ("src/index.mjs", False),
+    ],
+)
+def test_is_test_path(path: str, is_test: bool) -> None:
+    assert mod.is_test_path(path) is is_test
+
+
+def test_phrase_pass_skips_production_shell(tmp_path) -> None:
+    """A production script's own comments legitimately narrate sync behaviour
+    ("keeps the ruleset in sync"); only TEST files carry copies-agree tests, so
+    the phrase pass must not fire outside them."""
+    prod = tmp_path / "sync.sh"
+    prod.write_text("#!/bin/bash\n# keeps the ruleset in lockstep with main\n")
+    assert mod.main([str(prod)]) == 0
+    test_file = tmp_path / "tests" / "sync.test.mjs"
+    test_file.parent.mkdir()
+    test_file.write_text("// this suite is a drift guard for the ruleset\n")
+    assert mod.main([str(test_file)]) == 1

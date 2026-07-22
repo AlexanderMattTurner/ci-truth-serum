@@ -65,24 +65,17 @@ _OPTOUT_RE = re.compile(r"#\s*flag-arity-ok:(?P<reason>.*)$")
 # quoted/globbed data labels fail this and are skipped.
 _FLAG_ALT_RE = re.compile(r"^-{1,2}[A-Za-z0-9][A-Za-z0-9_-]*(?:=\*)?$")
 
-# A command name that ABORTS the arm/loop/script before the read is reached — the
-# consequent that makes an arity test an actual guard rather than a discarded
-# boolean.
-_EXIT_NAMES = frozenset(
-    {
-        "die",
-        "exit",
-        "return",
-        "usage",
-        "fatal",
-        "abort",
-        "bail",
-        "fail",
-        "error",
-        "err",
-        "continue",
-        "break",
-    }
+# Shell control transfers that ALWAYS abort the arm/loop/script — the consequent
+# that makes an arity test an actual guard rather than a discarded boolean.
+_BUILTIN_EXITS = frozenset({"exit", "return", "continue", "break"})
+
+# Conventional names for sourced/external abort helpers. These are trusted by
+# name ONLY when the file does not define them: a function DEFINED in the file
+# is resolved against its actual body (see `exit_names`) — a local `fail() {
+# echo "oops"; }` that merely narrates does not stop the read that follows, so
+# its name must not clear the guard.
+_CONVENTIONAL_EXITS = frozenset(
+    {"die", "usage", "fatal", "abort", "bail", "fail", "error", "err"}
 )
 
 # `${2:?…}` / `${2:-…}` / `${2:=…}` / `${2:+…}`: a self-guarding read. tree-sitter
@@ -131,13 +124,18 @@ def _first_child(node: Node, type_: str) -> Node | None:
     return None
 
 
-def _polarity(op: str, n: int) -> str | None:
-    """ "pos" if the comparison proves >=2 args remain on success, "neg" if it is
-    true exactly when the value is missing, else None."""
-    if (op in ("-ge", ">=", "-eq", "==") and n >= 2) or (op in ("-gt", ">") and n >= 1):
-        return "pos"
-    if (op in ("-lt", "<") and n >= 2) or (op in ("-le", "<=") and n >= 1):
-        return "neg"
+def _bound(op: str, n: int) -> tuple[str, int] | None:
+    """("pos", b): comparison success proves $# >= b. ("neg", b): the comparison
+    is true exactly when fewer than b args remain, so BAILING on true proves
+    $# >= b for the code after it. None: not an arity shape."""
+    if op in ("-ge", ">=", "-eq", "=="):
+        return ("pos", n)
+    if op in ("-gt", ">"):
+        return ("pos", n + 1)
+    if op in ("-lt", "<"):
+        return ("neg", n)
+    if op in ("-le", "<="):
+        return ("neg", n + 1)
     return None
 
 
@@ -157,9 +155,9 @@ def _first_number(nodes: list[Node]) -> int | None:
     return None
 
 
-def _binexpr_polarity(binexpr: Node) -> str | None:
-    """Polarity of a `$# <op> <number>` comparison (either operand order), or None
-    if BINEXPR is not a `$#`-vs-literal arity test."""
+def _binexpr_bound(binexpr: Node) -> tuple[str, int] | None:
+    """Polarity and proven bound of a `$# <op> <number>` comparison (either
+    operand order), or None if BINEXPR is not a `$#`-vs-literal arity test."""
     kids = binexpr.children
     op_idx = next((i for i, c in enumerate(kids) if _text(c) in _ARITY_OPS), None)
     if op_idx is None:
@@ -172,38 +170,74 @@ def _binexpr_polarity(binexpr: Node) -> str | None:
         n, op = _first_number(left), _FLIP.get(op, op)
     else:
         return None
-    return _polarity(op, n) if n is not None else None
+    return _bound(op, n) if n is not None else None
 
 
-def _arity_polarity(node: Node) -> str | None:
-    """Polarity of the first `$#`-vs-number comparison anywhere under NODE, or None."""
+def _arity_bound(node: Node) -> tuple[str, int] | None:
+    """Polarity/bound of the first `$#`-vs-number comparison under NODE, or None."""
     for n in _walk(node):
         if n.type == "binary_expression":
-            pol = _binexpr_polarity(n)
-            if pol is not None:
-                return pol
+            found = _binexpr_bound(n)
+            if found is not None:
+                return found
     return None
 
 
-def _has_exit(node: Node) -> bool:
-    """True if NODE runs a command that aborts (`die`/`exit`/…) — the bail that
-    turns an arity test into a real guard."""
-    return any(
-        c.type == "command_name" and _text(c) in _EXIT_NAMES for c in _walk(node)
-    )
+def _function_bodies(root: Node) -> dict[str, Node]:
+    """Map each function DEFINED in the file to its body node."""
+    out: dict[str, Node] = {}
+    for node in _walk(root):
+        if node.type != "function_definition" or not node.children:
+            continue
+        name = _first_child(node, "word")
+        if name is not None:
+            out[_text(name)] = node.children[-1]
+    return out
 
 
-def _list_guards(node: Node) -> bool:
-    """`[[ $# -ge 2 ]] || die` (positive test bailing on failure) or
-    `[[ $# -lt 2 ]] && die` (negative test bailing when true)."""
-    pol = _arity_polarity(node)
-    if pol is None or not _has_exit(node):
-        return False
+def exit_names(root: Node) -> frozenset[str]:
+    """The command names that abort when run, resolved against the file itself.
+
+    Builtin control transfers always count. A function defined in the file
+    counts only when its body (transitively, to a fixed point) runs an aborting
+    command — the name alone proves nothing. An UNdefined conventional helper
+    name (`die`, `fatal`, …) is trusted: it is sourced from elsewhere and the
+    naming convention is the only signal available."""
+    bodies = _function_bodies(root)
+    known = set(_BUILTIN_EXITS) | (_CONVENTIONAL_EXITS - bodies.keys())
+    changed = True
+    while changed:
+        changed = False
+        for name, body in bodies.items():
+            if name in known:
+                continue
+            if any(c.type == "command_name" and _text(c) in known for c in _walk(body)):
+                known.add(name)
+                changed = True
+    return frozenset(known)
+
+
+def _has_exit(node: Node, exits: frozenset[str]) -> bool:
+    """True if NODE runs a command that aborts — the bail that turns an arity
+    test into a real guard. EXITS is the file's resolved `exit_names`."""
+    return any(c.type == "command_name" and _text(c) in exits for c in _walk(node))
+
+
+def _list_guards(node: Node, exits: frozenset[str]) -> int | None:
+    """The bound proven by `[[ $# -ge N ]] || die` (positive test bailing on
+    failure) or `[[ $# -lt N ]] && die` (negative test bailing when true), or
+    None when NODE is no such guard."""
+    found = _arity_bound(node)
+    if found is None or not _has_exit(node, exits):
+        return None
+    pol, bound = found
     ops = {c.type for c in node.children}
-    return (pol == "pos" and "||" in ops) or (pol == "neg" and "&&" in ops)
+    if (pol == "pos" and "||" in ops) or (pol == "neg" and "&&" in ops):
+        return bound
+    return None
 
 
-def _then_body_has_exit(if_node: Node) -> bool:
+def _then_body_has_exit(if_node: Node, exits: frozenset[str]) -> bool:
     in_then = False
     for c in if_node.children:
         if c.type == "then":
@@ -211,21 +245,22 @@ def _then_body_has_exit(if_node: Node) -> bool:
             continue
         if c.type in ("else_clause", "elif_clause", "fi"):
             break
-        if in_then and _has_exit(c):
+        if in_then and _has_exit(c, exits):
             return True
     return False
 
 
-def _else_has_exit(if_node: Node) -> bool:
+def _else_has_exit(if_node: Node, exits: frozenset[str]) -> bool:
     return any(
-        c.type in ("else_clause", "elif_clause") and _has_exit(c)
+        c.type in ("else_clause", "elif_clause") and _has_exit(c, exits)
         for c in if_node.children
     )
 
 
-def _if_guards(node: Node) -> bool:
-    """`if [[ $# -lt 2 ]]; then die; fi` (negative test, then-body bails) or the
-    positive mirror with the bail in the `else`."""
+def _if_guards(node: Node, exits: frozenset[str]) -> int | None:
+    """The bound proven by `if [[ $# -lt N ]]; then die; fi` (negative test,
+    then-body bails) or the positive mirror with the bail in the `else`; None
+    when NODE is no such guard."""
     cond = next(
         (
             c
@@ -234,26 +269,32 @@ def _if_guards(node: Node) -> bool:
         ),
         None,
     )
-    pol = _arity_polarity(cond) if cond is not None else None
-    if pol == "neg":
-        return _then_body_has_exit(node)
-    if pol == "pos":
-        return _else_has_exit(node)
-    return False
+    found = _arity_bound(cond) if cond is not None else None
+    if found is None:
+        return None
+    pol, bound = found
+    if pol == "neg" and _then_body_has_exit(node, exits):
+        return bound
+    if pol == "pos" and _else_has_exit(node, exits):
+        return bound
+    return None
 
 
-def _has_self_guard(node: Node) -> bool:
-    """A `${2:?…}` / `${2:-…}` / `${2:=…}` / `${2:+…}` self-guarding read anywhere
-    under NODE."""
+def _self_guard_bound(node: Node) -> int:
+    """The highest positional PROVEN to exist by a `${N:?…}` read under NODE
+    (the script dies otherwise), or 0. A defaulting `${N:-…}`/`${N:=…}`/`${N:+…}`
+    read is safe for ITSELF (it is never a raw read) but proves nothing about
+    $#, so it earns no bound — a later raw `$N` still owes its own guard."""
+    best = 0
     for n in _walk(node):
         if n.type != "expansion":
             continue
         var = _first_child(n, "variable_name")
-        if var is None or not _text(var).isdigit() or int(_text(var)) < 2:
+        if var is None or not _text(var).isdigit():
             continue
-        if any(c.type in _SELF_GUARD_OPS for c in n.children):
-            return True
-    return False
+        if any(c.type == ":?" for c in n.children):
+            best = max(best, int(_text(var)))
+    return best
 
 
 def _is_helper(node: Node) -> bool:
@@ -263,42 +304,62 @@ def _is_helper(node: Node) -> bool:
     return name is not None and _text(name) in ALLOWLISTED_HELPERS
 
 
-def _statement_guards(stmt: Node) -> bool:
-    """True if STMT proves >=2 args remain (and bails otherwise) before any read —
-    a bailing `||`/`&&` list, a bailing `if`, a self-guarding read, or an
-    allowlisted helper."""
+def _statement_guard_bound(stmt: Node, exits: frozenset[str]) -> int | None:
+    """The arg count STMT proves remains (bailing otherwise) — a bailing
+    `||`/`&&` list or a bailing `if` — or None when STMT is no such guard.
+    (Self-guarding `${N:?}` reads and allowlisted helpers are credited by the
+    caller, which must still scan the same statement for raw reads.)"""
     if stmt.type == "list":
-        return _list_guards(stmt)
+        return _list_guards(stmt, exits)
     if stmt.type == "if_statement":
-        return _if_guards(stmt)
-    return _has_self_guard(stmt) or _is_helper(stmt)
+        return _if_guards(stmt, exits)
+    return None
 
 
-def _first_raw_read(stmt: Node) -> Node | None:
-    """Earliest (by source position) UNGUARDED positional read past $1 in STMT — a
-    bare `$2`..`$9`, a plain `${N}` with N>=2, or `shift N` with N>=2. A
-    self-guarding `${2:?…}` is not a raw read. Nested `case` statements are pruned
-    so an inner arm's reads are never attributed to this arm."""
-    reads: list[Node] = []
+def _positional_reads(stmt: Node) -> list[tuple[Node, int]]:
+    """(node, required $#) for every positional read in STMT, in source order —
+    a bare `$N`, a plain `${N}`, or `shift N` (which errors when fewer than N
+    args remain). A self-guarding `${N:?…}` / defaulting `${N:-…}` is not a raw
+    read. Nested `case` statements are pruned so an inner arm's reads are never
+    attributed to this arm."""
+    reads: list[tuple[Node, int]] = []
     for n in _walk(stmt, prune=("case_statement",)):
         if n.type == "simple_expansion":
             var = _first_child(n, "variable_name")
-            if var is not None and _text(var).isdigit() and int(_text(var)) >= 2:
-                reads.append(n)
+            if var is not None and _text(var).isdigit():
+                reads.append((n, int(_text(var))))
         elif n.type == "expansion":
             # A plain `${N}` is exactly `${`, the name, and `}` — anything else
             # (an operator, a substring, an array index) is not a bare read.
             if [c.type for c in n.children] == ["${", "variable_name", "}"]:
                 var = _first_child(n, "variable_name")
-                if _text(var).isdigit() and int(_text(var)) >= 2:
-                    reads.append(n)
+                if _text(var).isdigit():
+                    reads.append((n, int(_text(var))))
         elif n.type == "command":
             name = _first_child(n, "command_name")
             if name is not None and _text(name) == "shift":
                 num = _first_child(n, "number")
-                if num is not None and _text(num).isdigit() and int(_text(num)) >= 2:
-                    reads.append(n)
-    return min(reads, key=lambda n: n.start_byte) if reads else None
+                amount = (
+                    int(_text(num)) if num is not None and _text(num).isdigit() else 1
+                )
+                reads.append((n, amount))
+    reads.sort(key=lambda pair: pair[0].start_byte)
+    return reads
+
+
+def _shift_amount(stmt: Node) -> int:
+    """Total positions the statement shifts away (`shift` = 1, `shift N` = N),
+    so the proven bound can be decremented after the statement runs."""
+    total = 0
+    for n in _walk(stmt, prune=("case_statement",)):
+        if n.type == "command":
+            name = _first_child(n, "command_name")
+            if name is not None and _text(name) == "shift":
+                num = _first_child(n, "number")
+                total += (
+                    int(_text(num)) if num is not None and _text(num).isdigit() else 1
+                )
+    return total
 
 
 def _label_is_flag(case_item: Node) -> bool:
@@ -335,38 +396,60 @@ def _optout(lines: list[str], lineno: int) -> "re.Match[str] | None":
     return _OPTOUT_RE.search(cur) or _OPTOUT_RE.search(prev)
 
 
-def _scan_arm(case_item: Node, lines: list[str], found: list[tuple[int, str]]) -> None:
-    """Record at most one violation for a flag-labelled arm: the first raw read
-    reached before any bailing arity guard."""
+def _scan_arm(
+    case_item: Node,
+    lines: list[str],
+    exits: frozenset[str],
+    found: list[tuple[int, str]],
+) -> None:
+    """Record at most one violation for a flag-labelled arm: the first positional
+    read whose requirement exceeds what the guards so far have PROVEN.
+
+    The proven bound starts at 1 (the parse loop's `while [[ $# -gt 0 ]]`) and
+    rises with each bailing arity guard / `${N:?}` read / allowlisted helper —
+    tracked as a NUMBER, so a `[[ $# -ge 2 ]] || die` guard does not clear an
+    arm that goes on to read `$3` (the guard proves two args, the read needs
+    three). A `shift N` lowers the bound by N: positions past the shift point
+    are unproven again."""
     if not _label_is_flag(case_item):
         return
+    proven = 1
     for stmt in _body_statements(case_item):
         if stmt.type == "case_statement":
             continue  # a nested case is scanned as its own arms
-        if _statement_guards(stmt):
-            return
-        read = _first_raw_read(stmt)
-        if read is None:
+        proven = max(proven, _self_guard_bound(stmt))
+        if _is_helper(stmt):
+            proven = max(proven, 2)
             continue
-        lineno = read.start_point[0] + 1
-        marker = _optout(lines, lineno)
-        if marker is not None:
-            if not marker.group("reason").strip():
-                found.append((lineno, _MSG_EMPTY_OPTOUT))
-            return  # a marker resolves the arm either way
-        found.append((lineno, _MSG_UNGUARDED))
-        return
+        guard = _statement_guard_bound(stmt, exits)
+        if guard is not None:
+            proven = max(proven, guard)
+            continue
+        for read, required in _positional_reads(stmt):
+            if required <= proven:
+                continue
+            lineno = read.start_point[0] + 1
+            marker = _optout(lines, lineno)
+            if marker is not None:
+                if not marker.group("reason").strip():
+                    found.append((lineno, _MSG_EMPTY_OPTOUT))
+                return  # a marker resolves the arm either way
+            found.append((lineno, _MSG_UNGUARDED))
+            return
+        proven = max(1, proven - _shift_amount(stmt))
 
 
 def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for every value-taking flag arm in TEXT that
-    consumes ``$2`` / ``shift 2`` without an arity guard. One report per arm."""
+    reads a positional (``$N`` / ``shift N``) beyond what its arity guards
+    prove exists. One report per arm."""
     root = parse(text)
     lines = text.split("\n")
+    exits = exit_names(root)
     found: list[tuple[int, str]] = []
     for node in _walk(root):
         if node.type == "case_item":
-            _scan_arm(node, lines, found)
+            _scan_arm(node, lines, exits, found)
     found.sort()
     return found
 

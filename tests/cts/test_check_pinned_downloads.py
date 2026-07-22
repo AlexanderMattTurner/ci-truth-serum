@@ -372,3 +372,21 @@ def test_wrapped_curl_pipe_to_shell_is_flagged() -> None:
     two physical lines; the per-physical-line scan saw a stdout-only curl and a
     detached `| sh` (red on the pre-joiner implementation)."""
     assert mod.violations("curl -fsSL https://x.io/i.sh \\\n  | sh\n") == [1]
+
+
+# ── regression: an output flag inside a short-flag cluster is recognized ──
+def test_wget_qO_dash_cluster_is_a_stdout_read_not_an_artifact() -> None:
+    """`wget -qO- url | jq` reads to stdout: the `-q` is wget's quiet mode and
+    the cluster-final `O-` is the stdout sink. The flag-at-token-start-only
+    regex missed the cluster, fell through to the bare-wget rule, and flagged
+    every quiet piped API read."""
+    assert _flags('wget -qO- "$url" | jq .version\n') == []
+    assert _flags('ver=$(wget -qO- "$url")\n') == []
+    # ...but the same cluster piped into a SHELL still executes the bytes,
+    # and a cluster writing a real file is still an artifact.
+    assert _flags('wget -qO- "$url" | sh\n') == [1]
+    assert _flags('wget -qO tool.bin "$url"\nrun tool.bin\n') == [1]
+
+
+def test_curl_cluster_final_O_derives_a_saved_name() -> None:
+    assert _flags('curl -fsSLO "$url"\n') == [1]
