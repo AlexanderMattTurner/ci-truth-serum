@@ -72,6 +72,65 @@ MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.(?P<key>[A-Za-z_][\w-]*)\s*\}\}")
 _IF_WRAPPER = re.compile(r"^\$\{\{\s*(?P<inner>.*?)\s*\}\}$")
 
 
+# A line that ends in a backslash, a pipe, or a boolean operator is continued on
+# the next line by the shell — join them so a command (and its `$(…)` / redirects)
+# spanning lines is analyzed whole, not mis-split mid-capture.
+_CONTINUES = re.compile(r"(?:\\|\||&&)\s*$")
+
+# The only tokens that affect substitution nesting: an escaped char (`\x`, inert —
+# so `\`` is a literal backtick and `\$` never opens `$(`), an opening `$(` / `<(`,
+# a closing `)`, or a bare backtick. Walking these instead of indexing characters
+# keeps `inside_substitution` a plain fold with no manual offset bookkeeping.
+_SUBST_TOKEN = re.compile(r"\\.|\$\(|<\(|`|\)")
+
+
+def inside_substitution(prefix: str) -> bool:
+    """True if PREFIX has an unclosed ``$(`` / ``<(`` / backtick — i.e. text after
+    it is still inside a command substitution (so the line continues, or a
+    ``|| true`` after it is a value capture)."""
+    depth = 0
+    backtick = False
+    for token in _SUBST_TOKEN.finditer(prefix):
+        tok = token.group()
+        if tok[0] == "\\":
+            continue  # escaped character — inert
+        if tok in ("$(", "<("):
+            depth += 1
+        elif tok == ")" and depth:
+            depth -= 1
+        elif tok == "`":
+            backtick = not backtick
+    return depth > 0 or backtick
+
+
+def logical_lines(text: str) -> list[tuple[int, str]]:
+    """Join continued lines into one logical line, tagged with the 1-based
+    physical line number where it STARTS.
+
+    A line continues when it ends in ``\\`` / ``|`` / ``&&`` (shell line
+    continuation) OR when a command substitution it opened (``$(`` / ``<(`` /
+    backtick) is still unclosed. This is the ONE joiner every line-oriented shell
+    lint in this package scans through, so a construct wrapped across physical
+    lines cannot evade any of them; the meta-test in
+    tests/cts/test_shell_hook_traversal.py holds each shell lint to it (or to the
+    full ``_bash_ast`` grammar)."""
+    out: list[tuple[int, str]] = []
+    pending = ""
+    start = 0
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        if not pending:
+            start = lineno
+        joined = raw[:-1] if raw.endswith("\\") else raw
+        if _CONTINUES.search(raw) or inside_substitution(pending + joined):
+            pending += joined + " "
+            continue
+        out.append((start, pending + raw))
+        pending = ""
+    if pending:
+        out.append((start, pending))
+    return out
+
+
 def run_line_checks(
     argv: list[str],
     find_violations: Callable[[str], list[int]],

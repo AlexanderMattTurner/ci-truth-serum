@@ -37,7 +37,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    logical_lines,
+    run_line_checks,
+)
 
 # A path token is secret-named when its text contains one of these (case-insensitive).
 # Substrings on purpose: `.credentials.json` matches `cred`, `gateway-key.pem`
@@ -204,21 +207,24 @@ def _chmod_follows(stripped_lines: list[str], start: int, target: str) -> bool:
 
 def violations(text: str) -> list[int]:
     """1-based line numbers in TEXT of unguarded secret creates that are tightened
-    by a nearby later chmod, without a ``# secret-perms-ok:`` opt-out."""
-    raw_lines = text.splitlines()
-    stripped = [strip_comment(ln) for ln in raw_lines]
+    by a nearby later chmod, without a ``# secret-perms-ok:`` opt-out. Scanned per
+    LOGICAL line (continuations joined), so a create wrapped across physical
+    lines is analyzed as one command."""
+    logicals = logical_lines(text)
+    stripped = [strip_comment(ln) for _, ln in logicals]
     hits: list[int] = []
     standing_umask = False
-    for idx, line in enumerate(stripped):
+    for idx, (start, raw) in enumerate(logicals):
+        line = stripped[idx]
         if _STANDALONE_UMASK_RE.match(line):
             standing_umask = True
-        if _ANNOTATION_RE.search(raw_lines[idx]):
+        if _ANNOTATION_RE.search(raw):
             continue
         if standing_umask or _INLINE_UMASK_RE.search(line):
             continue
         for target in _secret_create_targets(line):
             if _chmod_follows(stripped, idx, target):
-                hits.append(idx + 1)
+                hits.append(start)
                 break
     return hits
 

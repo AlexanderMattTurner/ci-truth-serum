@@ -38,6 +38,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
+    inside_substitution,
+    logical_lines,
     run_line_checks,
 )
 
@@ -52,47 +54,6 @@ _STDERR_REDIRECT = re.compile(r">\s*&\s*2|>&2|1>&2|>>\s*/dev/stderr")
 # An abort after the narration: the failure still stops the script.
 _ABORTS = re.compile(r"\b(?:exit|return)\b")
 
-_CONTINUES = re.compile(r"(?:\\|\||&&)\s*$")
-_SUBST_TOKEN = re.compile(r"\\.|\$\(|<\(|`|\)")
-
-
-def _inside_substitution(prefix: str) -> bool:
-    """True if PREFIX has an unclosed ``$(`` / ``<(`` / backtick."""
-    depth = 0
-    backtick = False
-    for token in _SUBST_TOKEN.finditer(prefix):
-        tok = token.group()
-        if tok[0] == "\\":
-            continue
-        if tok in ("$(", "<("):
-            depth += 1
-        elif tok == ")" and depth:
-            depth -= 1
-        elif tok == "`":
-            backtick = not backtick
-    return depth > 0 or backtick
-
-
-def _logical_lines(text: str) -> list[tuple[int, str]]:
-    """Join continued lines into one logical line, tagged with the 1-based
-    physical line number where it starts (a multi-line ``$( … )`` capture is
-    analyzed whole)."""
-    out: list[tuple[int, str]] = []
-    pending = ""
-    start = 0
-    for lineno, raw in enumerate(text.splitlines(), 1):
-        if not pending:
-            start = lineno
-        joined = raw[:-1] if raw.endswith("\\") else raw
-        if _CONTINUES.search(raw) or _inside_substitution(pending + joined):
-            pending += joined + " "
-            continue
-        out.append((start, pending + raw))
-        pending = ""
-    if pending:
-        out.append((start, pending))
-    return out
-
 
 def _fallback_segment(logical: str, start: int) -> str:
     """The fallback's own simple command: text from START (the echo/printf) to
@@ -106,7 +67,7 @@ def violations(text: str) -> list[int]:
     a parseable value (no stderr redirect, no abort, no annotation)."""
     physical = text.splitlines()
     hits: list[int] = []
-    for start, logical in _logical_lines(text):
+    for start, logical in logical_lines(text):
         stripped = logical.lstrip()
         if stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
             continue
@@ -116,7 +77,7 @@ def violations(text: str) -> list[int]:
             segment = _fallback_segment(logical, m.end())
             if _STDERR_REDIRECT.search(segment):
                 continue  # narrated on stderr — never a captured value
-            if not _inside_substitution(logical[: m.start()]) and _ABORTS.search(
+            if not inside_substitution(logical[: m.start()]) and _ABORTS.search(
                 logical[m.end() :]
             ):
                 continue  # bare form that still aborts — a real recovery

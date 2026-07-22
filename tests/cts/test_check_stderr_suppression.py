@@ -133,3 +133,11 @@ def test_own_shell_tree_is_clean() -> None:
     assert offenders == [], (
         f"unannotated launch-command stderr suppression: {offenders}"
     )
+
+
+# ── regression: continuation-wrapped launches are one logical line ────────
+def test_wrapped_launch_with_suppression_is_flagged() -> None:
+    """A launch whose stderr suppression sits on a continuation line is the
+    same command — the per-physical-line scan missed it (red on the pre-joiner
+    implementation)."""
+    assert mod.violations("docker compose up \\\n  2>/dev/null\n") == [1]

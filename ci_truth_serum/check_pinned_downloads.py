@@ -35,7 +35,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import MESSAGE_PREFIX, run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MESSAGE_PREFIX,
+    logical_lines,
+    run_line_checks,
+)
 
 # How many lines after a download to scan for its verification before giving up.
 # The scan also stops early at the next download, so one check can't cover two.
@@ -142,10 +146,13 @@ def _is_download(line: str) -> bool:
 
 
 def violations(text: str) -> list[int]:
-    """1-based line numbers of artifact downloads with no nearby verification."""
-    lines = text.splitlines()
+    """1-based line numbers of artifact downloads with no nearby verification.
+    Scanned per LOGICAL line (continuations joined), so a `curl … \\`-wrapped
+    download and its flags/pipe are analyzed as one command."""
+    logicals = logical_lines(text)
+    lines = [line for _, line in logicals]
     hits = []
-    for i, line in enumerate(lines):
+    for i, (start, line) in enumerate(logicals):
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
             continue
@@ -154,7 +161,7 @@ def violations(text: str) -> list[int]:
         if "pin-exempt" in line or (i > 0 and "pin-exempt" in lines[i - 1]):
             continue
         if not _verified_within_window(lines, i):
-            hits.append(i + 1)
+            hits.append(start)
     return hits
 
 

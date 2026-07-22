@@ -364,3 +364,11 @@ def test_own_shell_tree_is_clean() -> None:
         if v:
             offenders[rel] = v
     assert not offenders, f"unverified downloads: {offenders}"
+
+
+# ── regression: continuation-wrapped downloads are one logical line ───────
+def test_wrapped_curl_pipe_to_shell_is_flagged() -> None:
+    """`curl … \\<newline> | sh` is the marquee one-line installer split over
+    two physical lines; the per-physical-line scan saw a stdout-only curl and a
+    detached `| sh` (red on the pre-joiner implementation)."""
+    assert mod.violations("curl -fsSL https://x.io/i.sh \\\n  | sh\n") == [1]

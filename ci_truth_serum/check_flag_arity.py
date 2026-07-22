@@ -48,11 +48,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-import tree_sitter_bash
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Node
 
-_LANGUAGE = Language(tree_sitter_bash.language())
-_PARSER = Parser(_LANGUAGE)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bash_ast import parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # Helpers that themselves assert `[[ $# -ge 2 ]]` before returning — calling one
 # at the top of an arm is an accepted guard. A small named allowlist, not a
@@ -362,10 +361,10 @@ def _scan_arm(case_item: Node, lines: list[str], found: list[tuple[int, str]]) -
 def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for every value-taking flag arm in TEXT that
     consumes ``$2`` / ``shift 2`` without an arity guard. One report per arm."""
-    tree = _PARSER.parse(text.encode("utf-8"))
+    root = parse(text)
     lines = text.split("\n")
     found: list[tuple[int, str]] = []
-    for node in _walk(tree.root_node):
+    for node in _walk(root):
         if node.type == "case_item":
             _scan_arm(node, lines, found)
     found.sort()
