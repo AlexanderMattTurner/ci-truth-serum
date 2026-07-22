@@ -38,7 +38,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import comment_opt_out, run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # Lines whose first word only prints text — a `producer | grep -q` quoted inside them is an
 # example or hint, not executed code. Extends the shared MESSAGE_PREFIX (_linecheck) with
@@ -163,9 +163,9 @@ def violations(text: str) -> list[int]:
         stripped = raw.lstrip()
         if stripped.startswith("#") or _MESSAGE_PREFIX.match(stripped):
             continue
-        if _ALLOW in raw:
+        if comment_opt_out(raw, _ALLOW):
             continue
-        if lineno >= 2 and _ALLOW in physical[lineno - 2]:
+        if lineno >= 2 and comment_opt_out(physical[lineno - 2], _ALLOW):
             continue
         if _pipes_into_quiet_grep(raw):
             hits.append(lineno)
