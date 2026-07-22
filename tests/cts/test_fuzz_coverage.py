@@ -86,6 +86,7 @@ FUZZ_REQUIRED = {
     "check_job_timeout": "check_file",
     "check_trusted_base": "check_file",
     "check_env_symmetry": "analyze",
+    "check_stray_tool_markup": "violations",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the

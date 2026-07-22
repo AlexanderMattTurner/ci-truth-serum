@@ -361,6 +361,13 @@
   language: python
   types: [shell]
 
+- id: check-stray-tool-markup
+  name: "extra: ban stray agent tool-call markup committed into a file"
+  description: A leaked closing/opening tool-call tag (</invoke>, <parameter …>, </content>) on its own line renders as literal garbage; only whole-line bare tags are flagged, fenced examples are skipped.
+  entry: python -m hooks.check_stray_tool_markup
+  language: python
+  types_or: [shell, python, javascript, ts, markdown, rst]
+
 - id: check-case-default
   name: "extra: require a bare `*)` default arm on every shell case block"
   description: A case with no default silently no-ops on an unexpected value and leaves its variables unset.

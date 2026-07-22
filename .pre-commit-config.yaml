@@ -62,7 +62,8 @@ repos:
         name: "dogfood aggregate: every Tier 1 (honesty + identity) check"
         entry: python -m hooks.run_tier 1
         language: python
-        additional_dependencies: [PyYAML, identify, tree-sitter, tree-sitter-bash]
+        additional_dependencies:
+          [PyYAML, identify, tree-sitter, tree-sitter-bash]
       - id: check-tier2
         name: "dogfood aggregate: every Tier 2 (opinionated) check"
         entry: python -m hooks.run_tier 2
@@ -85,7 +86,7 @@ repos:
           (?x)^(
             README\.md
             |\.claude/.*
-            |tests/cts/test_check_(drift_guards|graceful_handwave|historical_comments|doc_line_refs|toolchain_skips)\.py
+            |tests/cts/test_check_(drift_guards|graceful_handwave|historical_comments|doc_line_refs|toolchain_skips|stray_tool_markup)\.py
             |tests/cts/test_fuzz_prose_checks\.py
             |tests/cts/test_fuzz_new_checks\.py
           )$
