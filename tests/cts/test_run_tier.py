@@ -22,9 +22,19 @@ rt = load_hook("run_tier.py", "run_tier")
 MANIFEST = yaml.safe_load((REPO_ROOT / ".pre-commit-hooks.yaml").read_text())
 
 # Map a name-prefix (the manifest encodes the tier in `name:`) to a TIERS key.
-PREFIX_TIER = {"honesty": "1", "identity": "1", "opinionated": "2", "extra": "extras"}
-# The lone non-Python hook: a language:script shell hook, intentionally unaggregated.
-UNAGGREGATED = {"check-symlinks"}
+PREFIX_TIER = {
+    "honesty": "1",
+    "identity": "1",
+    "security": "1",
+    "opinionated": "2",
+    "extra": "extras",
+}
+# Hooks intentionally left out of every aggregate, each enabled on its own:
+# `check-symlinks` (a language:script shell hook, not a Python module),
+# `check-lockstep-pins` (config-driven; hard-errors without per-repo `--pair`
+# args), and `check-env-symmetry` (a whole-tree scan needing a per-project
+# `--prefix` arg no aggregate can supply).
+UNAGGREGATED = {"check-symlinks", "check-lockstep-pins", "check-env-symmetry"}
 
 
 def _python_member_hooks() -> list[dict]:
@@ -50,12 +60,21 @@ def test_registry_covers_every_python_hook_in_its_declared_tier():
     assert registry == expected
 
 
-def test_unaggregated_hook_is_the_only_non_python_member():
-    # check-symlinks must exist, be a script hook, and appear in no tier.
+def test_unaggregated_hooks_exist_and_appear_in_no_tier():
+    # check-symlinks must exist, be a script hook, and appear in no tier;
+    # check-lockstep-pins and check-env-symmetry must exist, demand their args,
+    # and appear in no tier.
     symlinks = next(h for h in MANIFEST if h["id"] == "check-symlinks")
     assert symlinks["entry"].endswith(".sh") and symlinks["language"] == "script"
+    lockstep = next(h for h in MANIFEST if h["id"] == "check-lockstep-pins")
+    assert lockstep["entry"] == "python -m hooks.check_lockstep_pins"
+    assert lockstep["pass_filenames"] is False and lockstep["always_run"] is True
+    env_symmetry = next(h for h in MANIFEST if h["id"] == "check-env-symmetry")
+    assert env_symmetry["entry"].startswith("python -m hooks.check_env_symmetry")
     all_modules = {mod for members in rt.TIERS.values() for mod, _ in members}
     assert "check_symlinks" not in all_modules
+    assert "check_lockstep_pins" not in all_modules
+    assert "check_env_symmetry" not in all_modules
 
 
 def test_every_aggregate_id_has_a_tier():
@@ -92,6 +111,21 @@ def test_matches_shell_or_dockerfile_accepts_shell(tmp_path):
     p = tmp_path / "x.bash"
     p.write_text("#!/usr/bin/env bash\n")
     assert rt.matches(str(p), rt.SHELL_OR_DOCKERFILE) is True
+
+
+def test_matches_shell_or_workflow_yaml(tmp_path):
+    sh = tmp_path / "s.sh"
+    sh.write_text("#!/usr/bin/env bash\n")
+    assert rt.matches(str(sh), rt.SHELL_OR_WORKFLOW_YAML) is True
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    for name in ("ci.yaml", "ci.yml"):
+        p = wf / name
+        p.write_text("jobs: {}\n")
+        assert rt.matches(str(p), rt.SHELL_OR_WORKFLOW_YAML) is True, name
+    other_yaml = tmp_path / "data.yaml"
+    other_yaml.write_text("x: 1\n")
+    assert rt.matches(str(other_yaml), rt.SHELL_OR_WORKFLOW_YAML) is False
 
 
 def test_matches_markdown(tmp_path):

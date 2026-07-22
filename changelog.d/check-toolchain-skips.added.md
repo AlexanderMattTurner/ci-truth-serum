@@ -1,0 +1,1 @@
+- `check-toolchain-skips` (Extras): flags `pytest.mark.skipif`/`pytest.importorskip` conditions gated on binary discovery (`shutil.which` etc.) with no CI env guard, so a runner missing the tool fails loud instead of silently skipping the guarded coverage. Opt out with `# toolchain-skip-ok: <reason>`.

@@ -78,6 +78,27 @@
   language: python
   files: '\.(sh|bash)$|(^|/)Dockerfile(\.[\w-]+)?$'
 
+- id: check-provenance-repo-url
+  name: "identity: package repository URLs must name the repo that publishes"
+  description: A repository.url naming another owner/repo (a fork's stale upstream URL) kills the release at npm's provenance validation (E422).
+  entry: python -m hooks.check_provenance_repo_url
+  language: python
+  pass_filenames: false
+  # The compared value (the origin remote) can change with no file edit, and
+  # the check is one git call plus two small file reads — always run.
+  always_run: true
+
+# ───────────────────────── Tier 1 · Security (default-on) ────────────────────
+- id: check-trusted-base
+  name: "security: forbid privileged pull_request-head checkout (pwn-request)"
+  description: A pull_request(_target) job that checks out the PR head AND holds write perms or a secret runs untrusted PR code with the base repo's privileges.
+  entry: python -m hooks.check_trusted_base
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 # ───────────────────────── Tier 2 · Opinionated (opt-in) ─────────────────────
 # These prescribe a specific architecture. Enable only if you follow it.
 - id: check-always-reporter
@@ -108,6 +129,16 @@
   additional_dependencies: [PyYAML]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-job-timeout
+  name: "opinionated: require timeout-minutes on every job"
+  description: A job without timeout-minutes inherits GitHub's 360-minute (6h) default, so one wedged step pins a runner slot for six hours and starves the pool.
+  entry: python -m hooks.check_job_timeout
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
   types: [yaml]
 
 - id: check-concurrency
@@ -181,6 +212,56 @@
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
   types: [yaml]
+
+- id: check-token-fallback
+  name: "opinionated: ban `secrets.A || secrets.B` fallbacks in token positions"
+  description: The fallback silently switches push identity the day the first secret is set.
+  entry: python -m hooks.check_token_fallback
+  language: python
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-workflow-secret-names
+  name: "opinionated: round-trip referenced secrets/vars against .github/workflow-secrets.txt"
+  description: A misspelled secret evaluates to empty and the workflow silently degrades; the allowlist makes every name a reviewed choice. Prints the corrected file on mismatch.
+  entry: python -m hooks.check_workflow_secret_names
+  language: python
+  pass_filenames: false
+  files: ^\.github/(workflows|actions|workflow-secrets\.txt)
+  types_or: [yaml, text]
+
+- id: check-pin-comment-truth
+  name: "opinionated: keep `# vX.Y` comments on SHA-pinned uses: present and consistent"
+  description: The version comment is the only human-readable part of a SHA pin; the same SHA annotated `# v6` here and `# v7.0.0` there means at most one is true.
+  entry: python -m hooks.check_pin_comment_truth
+  language: python
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-stderr-merge-parse
+  name: "opinionated: ban parsing a 2>&1-merged stream (stderr noise becomes data)"
+  description: '`v=$(cmd 2>&1 | tail -1)` makes any stderr warning part of "the value"; diagnostic captures (`out=$(cmd 2>&1)` + echo) are never flagged.'
+  entry: python -m hooks.check_stderr_merge_parse
+  language: python
+  additional_dependencies: [PyYAML]
+  types_or: [shell, yaml]
+
+- id: check-echo-fallback
+  name: "opinionated: ban `|| echo` fallbacks that convert a failure into a parseable string"
+  description: '`$(cmd || echo "error")` hands the caller a benign-looking value where a failure happened.'
+  entry: python -m hooks.check_echo_fallback
+  language: python
+  types: [shell]
+
+- id: check-lockstep-pins
+  name: "opinionated: verify configured twin pins agree (the enforced 'keep in lockstep' comment)"
+  description: Each --pair extracts one value from each of two files and fails unless they are equal; zero or multiple matches is a hard error. Config-driven, so it is NOT in the check-tier2 aggregate — enable it standalone with args.
+  entry: python -m hooks.check_lockstep_pins
+  language: python
+  pass_filenames: false
+  always_run: true
 
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
@@ -260,12 +341,48 @@
   language: python
   types: [shell]
 
+- id: check-case-default
+  name: "extra: require a bare `*)` default arm on every shell case block"
+  description: A case with no default silently no-ops on an unexpected value and leaves its variables unset.
+  entry: python -m hooks.check_case_default
+  language: python
+  types: [shell]
+
+- id: check-cron-comment
+  name: "extra: fail a schedule comment that contradicts its cron expression"
+  description: '"# daily" above a weekly cron misleads every reviewer; ambiguous shapes always pass.'
+  entry: python -m hooks.check_cron_comment
+  language: python
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-toolchain-skips
+  name: "extra: pytest skips gated on binary discovery must fail (not skip) in CI"
+  description: A which()-gated skipif silently zeroes the guarded coverage on a runner missing the tool; demand a CI env guard in the condition.
+  entry: python -m hooks.check_toolchain_skips
+  language: python
+  types: [python]
+
+- id: check-env-symmetry
+  name: "extra: enforce write/read symmetry for prefixed env vars"
+  description: A prefixed env var written but never read (or read but never written) is a half-finished rename that silently reads unset; requires --prefix and scans the whole tracked tree.
+  entry: python -m hooks.check_env_symmetry
+  language: python
+  # Whole-tree scan (a write and its read live in different files) — self-
+  # discovers via `git ls-files`, so the passed file list is ignored. Supply the
+  # project prefix: `args: [--prefix, GLOVEBOX_]`.
+  pass_filenames: false
+
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
-# picked up with no consumer change. `check-symlinks` (a language:script shell
-# hook) is the one check not aggregated — enable it on its own. These have no
-# files/types filter so they always run (the workflow lints self-discover); the
-# content lints inside still receive only files of their kind.
+# picked up with no consumer change. Three checks are not aggregated — enable
+# each on its own: `check-symlinks` (a language:script shell hook),
+# `check-lockstep-pins` (config-driven; it hard-errors without the per-repo
+# --pair args an aggregate cannot supply), and `check-env-symmetry` (needs a
+# per-project --prefix arg an aggregate can't supply). These have no files/types
+# filter so they always run (the workflow lints self-discover); the content
+# lints inside still receive only files of their kind.
 - id: check-tier1
   name: "aggregate: every Tier 1 (honesty + identity) check"
   description: Runs the default-on honesty + identity lints under one id.

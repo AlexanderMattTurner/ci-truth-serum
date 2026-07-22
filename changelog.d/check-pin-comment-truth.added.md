@@ -1,0 +1,1 @@
+- `check-pin-comment-truth` (Tier 2): requires a wellformed `# vX[.Y[.Z]]` comment on every SHA-pinned `uses:` and one consistent comment per `owner/repo@sha` repo-wide (offline; no registry resolution). Opt out with `# pin-comment-ok`.
