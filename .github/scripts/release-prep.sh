@@ -138,11 +138,14 @@ fi
 CLAUDE_RESPONSE_FILE="$TMP_DIR/claude-response.json"
 _call_claude_api() {
   # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted
-  HTTP_CODE=$(curl -s -o "$CLAUDE_RESPONSE_FILE" -w "%{http_code}" \
+  if ! HTTP_CODE=$(curl -s -o "$CLAUDE_RESPONSE_FILE" -w "%{http_code}" \
     --max-time 30 https://api.anthropic.com/v1/messages \
     -H "Content-Type: application/json" \
     "${AUTH_HEADERS[@]}" \
-    -d "$REQUEST_BODY" || echo "000")
+    -d "$REQUEST_BODY"); then
+    echo "Claude API call failed (curl transport error)" >&2
+    return 1
+  fi
   if [[ "$HTTP_CODE" != "200" ]]; then
     echo "Claude API call failed (HTTP $HTTP_CODE)" >&2
     return 1
@@ -167,6 +170,12 @@ IFS='.' read -r MAJOR MINOR PATCH_NUM <<<"$BASE_VERSION"
 case "$BUMP" in
 minor) NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
 patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH_NUM + 1))" ;;
+*)
+  # Unreachable after the guard above, but a silent fallthrough here would
+  # leave NEW_VERSION empty and let the release continue on garbage.
+  echo "Error: unhandled bump type: $BUMP" >&2
+  exit 1
+  ;;
 esac
 echo "New version: $NEW_VERSION"
 

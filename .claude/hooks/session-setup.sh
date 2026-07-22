@@ -77,6 +77,7 @@ _check_hook_syntax() {
           [[ -n "${out}" ]] && echo "${out}" >&2
         fi
         ;;
+      *) : ;; # other file types carry no shell/python syntax to check
       esac
     done < <(find "${dir}" -maxdepth 1 -type f -print0)
   done

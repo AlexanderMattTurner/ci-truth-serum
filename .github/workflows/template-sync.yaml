@@ -80,14 +80,14 @@ jobs:
         with:
           repository: ${{ env.TEMPLATE_REPO }}
           path: _template
-          token: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
           fetch-depth: 0
           filter: blob:none
           persist-credentials: false
 
       - name: Check token workflow scope
         env:
-          TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
+          TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
         # Run the child repo's own copy — never execute scripts directly from
         # the template checkout. Template script updates arrive via sync PRs
         # and go through human review before they can execute.
@@ -114,7 +114,7 @@ jobs:
         id: create-pr
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8
         with:
-          token: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
           commit-message: "chore: sync from template repository (${{ steps.sync.outputs.template_sha_short }})"
           title: "chore: sync from template repository"
           body: |

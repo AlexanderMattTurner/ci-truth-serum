@@ -20,6 +20,10 @@ always_reporter = load_hook("check_always_reporter.py", "fuzz_always_reporter")
 required_reporter = load_hook("check_required_reporter.py", "fuzz_required_reporter")
 concurrency = load_hook("check_concurrency.py", "fuzz_concurrency")
 static_concurrency = load_hook("check_static_concurrency.py", "fuzz_static_concurrency")
+cancellable_required_check = load_hook(
+    "check_cancellable_required_check.py", "fuzz_cancellable_required_check"
+)
+frozen_head_sha = load_hook("check_frozen_head_sha.py", "fuzz_frozen_head_sha")
 pending_cancel = load_hook(
     "check_pending_cancel_concurrency.py", "fuzz_pending_cancel_concurrency"
 )
@@ -32,6 +36,8 @@ externalized_markers = load_hook(
     "check_externalized_markers.py", "fuzz_externalized_markers"
 )
 path_gate_deps = load_hook("check_path_gate_deps.py", "fuzz_path_gate_deps")
+job_timeout = load_hook("check_job_timeout.py", "fuzz_job_timeout")
+trusted_base = load_hook("check_trusted_base.py", "fuzz_trusted_base")
 
 # Each returns a finding shape; the contract under fuzz is only "no crash, and a
 # well-typed result". `expects_list` distinguishes the list-returning checks from
@@ -41,12 +47,16 @@ WORKFLOW_CHECKS = [
     ("check_required_reporter", required_reporter.check_file, True),
     ("check_concurrency", concurrency.check_file, True),
     ("check_static_concurrency", static_concurrency.check_file, False),
+    ("check_cancellable_required_check", cancellable_required_check.check_file, False),
+    ("check_frozen_head_sha", frozen_head_sha.check_file, True),
     ("check_pending_cancel_concurrency", pending_cancel.check_file, True),
     ("check_requires_concurrency", requires_concurrency.check_file, False),
     ("check_pr_paths", pr_paths.check_file, False),
     ("check_claude_model", claude_model.check_file, True),
     ("check_externalized_markers", externalized_markers.check_file, True),
     ("check_path_gate_deps", path_gate_deps.check_file, True),
+    ("check_job_timeout", job_timeout.check_file, True),
+    ("check_trusted_base", trusted_base.check_file, True),
 ]
 
 
@@ -59,6 +69,14 @@ _WORKFLOW_FRAGMENTS = [
     "concurrency:\n  group: x\n",
     "concurrency:\n  group: ci-${{ github.ref }}\n  cancel-in-progress: true\n",
     "concurrency:\n  group: static\n  # static-concurrency-ok\n",
+    "concurrency:\n  group: static\n  cancel-in-progress: true\n",
+    "concurrency:\n  group: static\n  # cancellable-required-check-ok\n",
+    # A frozen head-SHA in run: and in a with: value (check_frozen_head_sha).
+    "jobs:\n  b:\n    steps:\n      - run: git diff ${{ github.event.pull_request.head.sha }}...HEAD\n",
+    (
+        "jobs:\n  b:\n    steps:\n      - uses: actions/checkout@v4\n"
+        "        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+    ),
     "on:\n  pull_request:\n    types: [opened, labeled]\n",
     (
         "jobs:\n  scan:\n    concurrency:\n"
@@ -91,6 +109,19 @@ _WORKFLOW_FRAGMENTS = [
         "    if: needs.decide.outputs.run == 'true'\n"
         "    steps:\n      - run: bash .github/scripts/x.sh\n"
     ),
+    # job-timeout shapes: a job missing timeout-minutes, one that sets it, and a
+    # reusable-call job (exempt).
+    "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n",
+    "jobs:\n  build:\n    timeout-minutes: 10\n    steps: []\n",
+    "jobs:\n  build:  # allow-no-timeout: watcher\n    steps: []\n",
+    # trusted-base shapes: a privileged PR-head checkout and its opt-out.
+    "permissions:\n  contents: write\n",
+    (
+        "jobs:\n  build:\n    steps:\n      - uses: actions/checkout@v4\n"
+        "        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+    ),
+    "on:\n  pull_request_target:\n",
+    "# trusted-base-ok: base-trusted only\n",
     "jobs: null\n",
     "[]\n",
     "just a scalar\n",

@@ -1,0 +1,1 @@
+- `check-echo-fallback` (Tier 2): flags `|| echo`/`|| printf` fallbacks that convert a failure into a benign parseable string, inside command substitutions and as unaborted bare statements; stderr-redirected or aborting recoveries pass. Opt out with `# echo-fallback-ok: <reason>`.

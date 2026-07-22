@@ -6,6 +6,7 @@ Under rebase-and-merge the bump commit need not be HEAD~1, so a HEAD~1 diff
 silently skips the tag — the exact regression these tests pin.
 """
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,7 +16,8 @@ import pytest
 from tests._helpers import REPO_ROOT, commit_all, git_env, init_test_repo
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("node") is None, reason="node not available"
+    shutil.which("node") is None and not os.environ.get("CI"),
+    reason="node not available (CI runners must have it: skipping there would silently drop this suite)",
 )
 
 
