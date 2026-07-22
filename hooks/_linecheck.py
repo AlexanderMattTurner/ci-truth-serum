@@ -161,7 +161,7 @@ def has_always_reporter(jobs: dict) -> bool:
 # reporter then posts the check. Without one of these the group is static and a
 # sibling ref's run can cancel this one with no replacement report. Matched as a
 # best-effort substring of the group expression, not a full ${{ }} parse. Shared
-# by the two concurrency lints (check_static_concurrency, which flags a static
+# by the concurrency lints (check_static_concurrency, which flags a static
 # group on the decide+always() shape, and check_cancellable_required_check, which
 # flags a static *cancellable* group on any required-check-marked workflow) so the
 # per-ref definition is one SSOT, not two copies that could drift.
@@ -181,6 +181,39 @@ def group_is_per_ref(group: str) -> bool:
     key — meaning a superseding run is always the same ref's newer run, which
     re-reports, so the group cannot strand a required check."""
     return any(key in group for key in PER_REF_CONCURRENCY_KEYS)
+
+
+def opted_out(text: str, token: str) -> bool:
+    """True only when the opt-out TOKEN appears inside an actual `#` comment, not
+    anywhere in the byte stream — a `group: "<token>"` string value must not
+    silently disable a lint (that would be a fail-open). Shared by the
+    concurrency lints, each of which passes its own token."""
+    return any(
+        token in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
+    )
+
+
+def concurrency_line(text: str) -> int:
+    """Return the 1-based line number of the top-level `concurrency:` key, or 1
+    when the text has none (the fallback anchor). Shared by the concurrency
+    lints so their `::error line=` annotations agree byte-for-byte."""
+    for num, line in enumerate(text.splitlines(), 1):
+        if re.match(r"^concurrency\s*:", line):
+            return num
+    return 1
+
+
+def job_concurrency_line(block: tuple[int, str] | None, fallback: int) -> int:
+    """The 1-based line of a job's `concurrency:` key within its source BLOCK
+    (from `_job_blocks`), else FALLBACK. Scoping the scan to the job's own block
+    anchors the annotation on the offending job, not a sibling's block."""
+    if block is None:
+        return fallback
+    start, body = block
+    for offset, line in enumerate(body.splitlines()):
+        if re.match(r"^\s+concurrency\s*:", line):
+            return start + offset
+    return fallback
 
 
 def _job_blocks(text: str) -> dict[str, tuple[int, str]]:

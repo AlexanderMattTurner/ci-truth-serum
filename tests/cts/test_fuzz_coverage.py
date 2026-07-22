@@ -58,6 +58,7 @@ FUZZ_REQUIRED = {
     "check_static_concurrency": "check_file",
     "check_cancellable_required_check": "check_file",
     "check_frozen_head_sha": "check_file",
+    "check_pending_cancel_concurrency": "check_file",
     "check_requires_concurrency": "check_file",
     "check_externalized_markers": "check_file",
     "check_pr_paths": "check_file",

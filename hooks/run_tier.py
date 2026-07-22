@@ -62,6 +62,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_inline_run_length", WORKFLOW),
         ("check_concurrency", WORKFLOW),
         ("check_static_concurrency", WORKFLOW),
+        ("check_pending_cancel_concurrency", WORKFLOW),
         ("check_requires_concurrency", WORKFLOW),
         ("check_externalized_markers", WORKFLOW),
         ("check_path_gate_deps", WORKFLOW),

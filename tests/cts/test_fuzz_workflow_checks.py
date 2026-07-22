@@ -24,6 +24,9 @@ cancellable_required_check = load_hook(
     "check_cancellable_required_check.py", "fuzz_cancellable_required_check"
 )
 frozen_head_sha = load_hook("check_frozen_head_sha.py", "fuzz_frozen_head_sha")
+pending_cancel = load_hook(
+    "check_pending_cancel_concurrency.py", "fuzz_pending_cancel_concurrency"
+)
 requires_concurrency = load_hook(
     "check_requires_concurrency.py", "fuzz_requires_concurrency"
 )
@@ -44,6 +47,7 @@ WORKFLOW_CHECKS = [
     ("check_static_concurrency", static_concurrency.check_file, False),
     ("check_cancellable_required_check", cancellable_required_check.check_file, False),
     ("check_frozen_head_sha", frozen_head_sha.check_file, True),
+    ("check_pending_cancel_concurrency", pending_cancel.check_file, True),
     ("check_requires_concurrency", requires_concurrency.check_file, False),
     ("check_pr_paths", pr_paths.check_file, False),
     ("check_claude_model", claude_model.check_file, True),
@@ -68,6 +72,12 @@ _WORKFLOW_FRAGMENTS = [
     (
         "jobs:\n  b:\n    steps:\n      - uses: actions/checkout@v4\n"
         "        with:\n          ref: ${{ github.event.pull_request.head.sha }}\n"
+    ),
+    "on:\n  pull_request:\n    types: [opened, labeled]\n",
+    (
+        "jobs:\n  scan:\n    concurrency:\n"
+        "      group: ${{ github.head_ref || github.ref }}\n"
+        "      cancel-in-progress: false\n"
     ),
     "permissions:\n  contents: read\n",
     "jobs:\n  decide:\n    uses: ./.github/workflows/decide-reusable.yaml\n",

@@ -172,14 +172,6 @@ def test_non_dict_concurrency_is_ignored(tmp_path):
     assert cc.check_file(path) == []
 
 
-# ── _concurrency_line fallback ────────────────────────────────────────────────
-
-
-def test_concurrency_line_returns_1_when_no_match():
-    """Text with no top-level concurrency: key falls back to line 1."""
-    assert cc._concurrency_line("name: x\njobs: {}\n") == 1
-
-
 # ── check_file: non-dict YAML ─────────────────────────────────────────────────
 
 
