@@ -21,7 +21,6 @@ Opt out with "# static-concurrency-ok" for a serialized workflow that is
 deliberately never a required check.
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -29,8 +28,10 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    concurrency_line,
     has_always_reporter,
     has_decide_gate,
+    opted_out,
 )
 
 OPT_OUT = "static-concurrency-ok"
@@ -51,23 +52,6 @@ PER_REF_KEYS = (
     "pull_request.number",
     "github.event.number",
 )
-
-
-def _concurrency_line(text: str) -> int:
-    """Return the 1-based line number of the top-level `concurrency:` key."""
-    for num, line in enumerate(text.splitlines(), 1):
-        if re.match(r"^concurrency\s*:", line):
-            return num
-    return 1
-
-
-def _opted_out(text: str) -> bool:
-    """True only when the opt-out token appears inside an actual `#` comment, not
-    anywhere in the byte stream — a `group: "static-concurrency-ok"` string value
-    must not silently disable the lint (that would be a fail-open)."""
-    return any(
-        OPT_OUT in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
-    )
 
 
 def check_file(path: Path) -> tuple[int | None, str] | None:
@@ -91,7 +75,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     conc = doc.get("concurrency")
     if not isinstance(conc, dict) or "group" not in conc:
         return None
-    if _opted_out(text):
+    if opted_out(text, OPT_OUT):
         return None
 
     group = str(conc.get("group", ""))
@@ -104,7 +88,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     if not (has_decide_gate(jobs) and has_always_reporter(jobs)):
         return None  # not a required-check shape — a static lock is fine here
 
-    line = _concurrency_line(text)
+    line = concurrency_line(text)
     return line, (
         "workflow-level concurrency.group is static (no github.ref / "
         "github.head_ref key) on a workflow that backs a required check "

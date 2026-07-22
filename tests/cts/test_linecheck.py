@@ -381,3 +381,62 @@ def test_required_check_contexts_falls_back_to_job_key_when_name_absent() -> Non
         """
     )
     assert lc.required_check_contexts(text) == ["bare"]
+
+
+# ── opted_out / concurrency_line / job_concurrency_line ──────────────────
+# Shared by the concurrency lints (check_concurrency, check_static_concurrency,
+# check_requires_concurrency, check_pending_cancel_concurrency), which each pass
+# their own opt-out token. Direct tests live here because this module is the
+# helpers' mutation oracle.
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Token inside a real comment — standalone or trailing — opts out.
+        ("# my-token\nconcurrency:\n  group: x\n", True),
+        ("concurrency:  # my-token\n  group: x\n", True),
+        # Token in a string VALUE must not opt out (fail-open otherwise).
+        ('concurrency:\n  group: "my-token"\n', False),
+        # Token before the `#` on a commented line is value text, not comment.
+        ("group: my-token # unrelated\n", False),
+        # No comment characters at all.
+        ("concurrency:\n  group: x\n", False),
+    ],
+)
+def test_opted_out(text: str, expected: bool) -> None:
+    assert lc.opted_out(text, "my-token") is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Exact 1-based line of the TOP-LEVEL key, past earlier lines.
+        ("name: x\non: push\nconcurrency:\n  group: x\n", 3),
+        ("concurrency:\n  group: x\n", 1),
+        # Spacing before the colon is tolerated.
+        ("name: x\nconcurrency :\n  group: x\n", 2),
+        # An INDENTED (job-level) key is not the top-level block.
+        ("name: x\njobs:\n  a:\n    concurrency:\n      group: x\n", 1),
+        # No key at all falls back to line 1.
+        ("name: x\njobs: {}\n", 1),
+    ],
+)
+def test_concurrency_line(text: str, expected: int) -> None:
+    assert lc.concurrency_line(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("block", "expected"),
+    [
+        # Key on the 3rd body line of a job block starting at line 10 → 10 + 2.
+        ((10, "  job:\n    needs: a\n    concurrency:\n      group: x\n"), 12),
+        # Key on the line right after the job key.
+        ((4, "  job:\n    concurrency:\n      group: x\n"), 5),
+        # Block without the key, and no block at all, both fall back.
+        ((10, "  job:\n    runs-on: ubuntu-latest\n"), 99),
+        (None, 99),
+    ],
+)
+def test_job_concurrency_line(block, expected: int) -> None:
+    assert lc.job_concurrency_line(block, 99) == expected

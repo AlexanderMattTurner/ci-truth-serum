@@ -8,6 +8,8 @@ the required check with no real failure."""
 
 from pathlib import Path
 
+import pytest
+
 from tests._helpers import REPO_ROOT, load_hook
 
 pc = load_hook("check_pending_cancel_concurrency.py", "check_pending_cancel")
@@ -136,22 +138,37 @@ def test_pull_request_target_storm_types_also_flag(tmp_path):
     assert len(pc.check_file(_write(tmp_path, body))) == 1
 
 
+def test_quoted_on_key_is_parsed(tmp_path):
+    """A quoted `"on":` key parses as the string "on", not YAML 1.1's boolean
+    True — the trigger lookup must find it either way."""
+    body = (
+        '"on":\n  pull_request:\n    types: [opened, labeled]\n'
+        + REF_GROUP
+        + REQUIRED_CHECK_JOBS
+    )
+    assert len(pc.check_file(_write(tmp_path, body))) == 1
+
+
 # ── GREEN: each condition individually absent ────────────────────────────────
 
 
-def test_run_id_keyed_group_is_clean(tmp_path):
-    """github.run_id makes the group a group of one — it cannot cancel a sibling,
-    even when a ref key is also present."""
-    for group in (
+@pytest.mark.parametrize(
+    "group",
+    [
         "${{ github.run_id }}",
         "x-${{ github.head_ref || github.ref }}-${{ github.run_id }}",
-    ):
-        body = (
-            STORM_TRIGGER
-            + (f"concurrency:\n  group: {group}\n  cancel-in-progress: false\n")
-            + REQUIRED_CHECK_JOBS
-        )
-        assert pc.check_file(_write(tmp_path, body)) == []
+        "x-${{ github.ref }}-${{ github.run_number }}",
+    ],
+)
+def test_per_run_keyed_group_is_clean(tmp_path, group):
+    """github.run_id / github.run_number make the group a group of one — it
+    cannot cancel a sibling, even when a ref key is also present."""
+    body = (
+        STORM_TRIGGER
+        + (f"concurrency:\n  group: {group}\n  cancel-in-progress: false\n")
+        + REQUIRED_CHECK_JOBS
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
 
 
 def test_absent_group_is_clean(tmp_path):
@@ -166,14 +183,14 @@ def test_default_types_only_is_clean(tmp_path):
     assert pc.check_file(_write(tmp_path, body)) == []
 
 
-def test_bare_pull_request_shorthand_is_clean(tmp_path):
+@pytest.mark.parametrize(
+    "trigger",
+    ["name: x\non:\n  pull_request:\n", "name: x\non:\n  pull_request: ~\n"],
+)
+def test_bare_pull_request_shorthand_is_clean(tmp_path, trigger):
     """`pull_request:` with no `types:` (and the `~` form) means the default set."""
-    for trigger in (
-        "name: x\non:\n  pull_request:\n",
-        "name: x\non:\n  pull_request: ~\n",
-    ):
-        body = trigger + REF_GROUP + REQUIRED_CHECK_JOBS
-        assert pc.check_file(_write(tmp_path, body)) == []
+    body = trigger + REF_GROUP + REQUIRED_CHECK_JOBS
+    assert pc.check_file(_write(tmp_path, body)) == []
 
 
 def test_list_form_trigger_is_clean(tmp_path):
@@ -211,7 +228,9 @@ def test_decide_gate_without_reporter_is_clean(tmp_path):
 
 
 def test_static_group_is_not_this_lints_business(tmp_path):
-    """A group with no per-ref key is check_static_concurrency's territory."""
+    """A group with no per-ref key is out of scope: at the workflow level it is
+    check_static_concurrency's territory; a job-level static group is a
+    documented handoff gap neither lint flags (see the module docstring)."""
     body = (
         STORM_TRIGGER
         + ("concurrency:\n  group: my-static-lock\n  cancel-in-progress: false\n")
@@ -262,9 +281,16 @@ def test_non_mapping_jobs_is_ignored(tmp_path):
     assert pc.check_file(_write(tmp_path, body)) == []
 
 
-def test_scalar_concurrency_is_ignored(tmp_path):
-    """`concurrency: some-string` has no group mapping to inspect."""
-    body = STORM_TRIGGER + "concurrency: ${{ github.ref }}\n" + REQUIRED_CHECK_JOBS
+def test_scalar_concurrency_shorthand_is_the_group(tmp_path):
+    """`concurrency: <expr>` is GitHub shorthand for `{group: <expr>,
+    cancel-in-progress: false}` — a ref-keyed scalar is the incident shape."""
+    body = STORM_TRIGGER + "concurrency: ci-${{ github.ref }}\n" + REQUIRED_CHECK_JOBS
+    assert len(pc.check_file(_write(tmp_path, body))) == 1
+
+
+def test_scalar_static_concurrency_is_clean(tmp_path):
+    """A static scalar shorthand has no per-ref key — not this lint's business."""
+    body = STORM_TRIGGER + "concurrency: my-lock\n" + REQUIRED_CHECK_JOBS
     assert pc.check_file(_write(tmp_path, body)) == []
 
 

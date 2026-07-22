@@ -39,6 +39,9 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import opted_out  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
 OPT_OUT = "concurrency-not-required"
 PR_TRIGGERS = ("pull_request", "pull_request_target")
 REPO_ROOT = Path.cwd()
@@ -70,15 +73,6 @@ def _has_concurrency(doc: dict) -> bool:
     return any(
         isinstance(cfg, dict) and cfg.get("concurrency") is not None
         for cfg in jobs.values()
-    )
-
-
-def _opted_out(text: str) -> bool:
-    """True only when the opt-out token appears inside an actual `#` comment, not
-    anywhere in the byte stream — a string value that happens to contain the token
-    must not silently disable the lint (that would be a fail-open)."""
-    return any(
-        OPT_OUT in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
     )
 
 
@@ -117,7 +111,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
         return None
     if _has_concurrency(doc):
         return None
-    if _opted_out(text):
+    if opted_out(text, OPT_OUT):
         return None
     return _trigger_line(text), (
         "pull_request-triggered workflow declares no concurrency: block — a new "

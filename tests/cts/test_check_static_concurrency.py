@@ -173,14 +173,6 @@ def test_non_dict_yaml_top_level_is_ignored(tmp_path):
     assert sc.check_file(path) is None
 
 
-# ── _concurrency_line fallback ────────────────────────────────────────────────
-
-
-def test_concurrency_line_returns_1_when_no_match():
-    """Text with no top-level concurrency: key falls back to line 1."""
-    assert sc._concurrency_line("name: x\njobs: {}\n") == 1
-
-
 # ── main ──────────────────────────────────────────────────────────────────────
 
 

@@ -23,13 +23,16 @@ current SHA → red). The safe fixes are to drop the group or key it on
 A workflow "backs a required check" when it has both a decide gate and an
 `always()` reporter (the decide-job + reporter architecture) — and BOTH the
 workflow-level `concurrency:` block and every job-level one are checked, since
-the incident groups were per-job.
+the incident groups were per-job. This lint is deliberately scoped to per-ref/
+per-PR groups (the key polarity check_static_concurrency calls safe); a STATIC
+group under the same type storm shares the failure mode but stays that lint's
+territory at the workflow level — a job-level static group is a known handoff
+gap neither lint flags today.
 
 Opt out with "# pending-cancel-ok" for a deliberately-serialized workflow that
 is genuinely never a required check.
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -38,8 +41,11 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _job_blocks,
+    concurrency_line,
     has_always_reporter,
     has_decide_gate,
+    job_concurrency_line,
+    opted_out,
     workflow_files,
 )
 
@@ -67,38 +73,9 @@ PER_REF_KEYS = (
 )
 
 # A group also keyed per-run is a group of one: it can never hold two runs, so
-# it can never pending-cancel a sibling.
-PER_RUN_KEY = "github.run_id"
-
-
-def _concurrency_line(text: str) -> int:
-    """Return the 1-based line number of the top-level `concurrency:` key."""
-    for num, line in enumerate(text.splitlines(), 1):
-        if re.match(r"^concurrency\s*:", line):
-            return num
-    return 1
-
-
-def _job_concurrency_line(block: tuple[int, str] | None, fallback: int) -> int:
-    """The 1-based line of a job's `concurrency:` key within its source BLOCK
-    (from `_job_blocks`), else FALLBACK — anchoring the annotation on the
-    offending job, not a sibling's block."""
-    if block is None:
-        return fallback
-    start, body = block
-    for offset, line in enumerate(body.splitlines()):
-        if re.match(r"^\s+concurrency\s*:", line):
-            return start + offset
-    return fallback
-
-
-def _opted_out(text: str) -> bool:
-    """True only when the opt-out token appears inside an actual `#` comment, not
-    anywhere in the byte stream — a `group: "pending-cancel-ok"` string value
-    must not silently disable the lint (that would be a fail-open)."""
-    return any(
-        OPT_OUT in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
-    )
+# it can never pending-cancel a sibling. (Not run_attempt — concurrent runs
+# share attempt 1.)
+PER_RUN_KEYS = ("github.run_id", "github.run_number")
 
 
 def _storm_types(doc: dict) -> set[str]:
@@ -123,19 +100,30 @@ def _storm_types(doc: dict) -> set[str]:
     return extra
 
 
+def _group_of(conc: object) -> object:
+    """The group expression of a `concurrency:` value: the mapping's `group`
+    key, or the scalar shorthand itself — GitHub treats `concurrency: <expr>`
+    as `concurrency: {group: <expr>, cancel-in-progress: false}`."""
+    if isinstance(conc, dict):
+        return conc.get("group")
+    return conc
+
+
 def _ref_keyed(group: object) -> bool:
     """True when a concurrency group expression is keyed per-ref/per-PR and NOT
-    also per-run (github.run_id makes it a group of one — safe)."""
+    also per-run (github.run_id / run_number make it a group of one — safe)."""
+    if group is None:
+        return False
     text = str(group)
-    if PER_RUN_KEY in text:
+    if any(key in text for key in PER_RUN_KEYS):
         return False
     return any(key in text for key in PER_REF_KEYS)
 
 
-def _message(where: str, storm: set[str]) -> str:
+def _message(storm: set[str]) -> str:
     types = ", ".join(sorted(storm))
     return (
-        f"{where} concurrency.group is keyed per-ref/per-PR on a workflow that "
+        "concurrency.group is keyed per-ref/per-PR on a workflow that "
         "backs a required check (decide gate + always() reporter) AND declares "
         f"pull_request types beyond opened/synchronize/reopened ({types}). Those "
         "types fire extra runs on the SAME head SHA; GitHub holds at most one "
@@ -170,7 +158,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
                 "fix the syntax (or run actionlint) and re-check.",
             )
         ]
-    if not isinstance(doc, dict) or _opted_out(text):
+    if not isinstance(doc, dict) or opted_out(text, OPT_OUT):
         return []
 
     storm = _storm_types(doc)
@@ -184,20 +172,18 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
         return []  # not a required-check shape — a reddened cancel self-describes
 
     violations: list[tuple[int | None, str]] = []
-    conc = doc.get("concurrency")
-    if isinstance(conc, dict) and _ref_keyed(conc.get("group", "")):
-        violations.append((_concurrency_line(text), _message("workflow-level", storm)))
+    if _ref_keyed(_group_of(doc.get("concurrency"))):
+        violations.append((concurrency_line(text), f"workflow-level {_message(storm)}"))
 
     blocks = _job_blocks(text)
     for name, cfg in jobs.items():
         if not isinstance(cfg, dict):
             continue
-        job_conc = cfg.get("concurrency")
-        if isinstance(job_conc, dict) and _ref_keyed(job_conc.get("group", "")):
+        if _ref_keyed(_group_of(cfg.get("concurrency"))):
             block = blocks.get(str(name))
-            fallback = block[0] if block else _concurrency_line(text)
-            line = _job_concurrency_line(block, fallback)
-            violations.append((line, _message(f"job '{name}':", storm)))
+            fallback = block[0] if block else concurrency_line(text)
+            line = job_concurrency_line(block, fallback)
+            violations.append((line, f"job '{name}': {_message(storm)}"))
     return violations
 
 
