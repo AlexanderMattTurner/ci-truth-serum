@@ -38,6 +38,14 @@ from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wro
 
 _FROM = re.compile(r"^\s*FROM\s+(?P<rest>.+?)\s*$", re.IGNORECASE)
 _AS = re.compile(r"\bAS\s+(?P<name>\S+)\s*$", re.IGNORECASE)
+# `ARG NAME=default` with a default value present — the pin a `FROM ${NAME}` resolves
+# against. A valueless `ARG NAME` carries no ref to check, so only `=`-defaulted ARGs
+# are recorded. ARG is case-insensitive to match `_FROM`'s tolerance.
+_ARG_DEFAULT = re.compile(
+    r"^\s*ARG\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>.+?)\s*$", re.IGNORECASE
+)
+# A FROM ref that is ONLY a build-arg expansion: `${NAME}` or `$NAME`.
+_ARG_REF = re.compile(r"^\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?$")
 # A digest: `sha256:` + exactly 64 lowercase hex chars. One source of truth, anchored
 # two ways below — at the end of an in-ref pin, and as a whole registry header value.
 _SHA256_HEX = r"sha256:[0-9a-f]{64}"
@@ -60,10 +68,33 @@ def _stage_names(lines: list[str]) -> set[str]:
     return names
 
 
+def _arg_defaults(lines: list[str]) -> dict[str, str]:
+    """`{NAME: default}` for every `ARG NAME=default` line — the values a later
+    `FROM ${NAME}` resolves against so a digest pin carried in an ARG default stays
+    enforced."""
+    return {
+        m.group("name"): m.group("value")
+        for line in lines
+        if (m := _ARG_DEFAULT.match(line))
+    }
+
+
+def _resolve_arg(image: str, arg_defaults: dict[str, str]) -> str:
+    """IMAGE with a whole-value `${NAME}` / `$NAME` build-arg reference resolved to its
+    recorded ARG default. An unresolvable reference (no matching `ARG NAME=default`) is
+    returned VERBATIM so it fails the digest-pin check downstream — fail-closed: a base
+    the lint cannot read is refused, never silently waved through."""
+    m = _ARG_REF.match(image)
+    if m and m.group("name") in arg_defaults:
+        return arg_defaults[m.group("name")]
+    return image
+
+
 def violations(text: str) -> list[int]:
     """1-based line numbers of FROM lines whose base image isn't digest-pinned."""
     lines = text.splitlines()
     stages = _stage_names(lines)
+    arg_defaults = _arg_defaults(lines)
     hits = []
     for i, line in enumerate(lines):
         m = _FROM.match(line)
@@ -74,7 +105,10 @@ def violations(text: str) -> list[int]:
         tokens = [t for t in m.group("rest").split() if not t.startswith("--")]
         if not tokens:
             continue
-        image = tokens[0]
+        # Resolve a `FROM ${ARG}` against its `ARG NAME=default` so a base parametrized
+        # by a build arg is judged on the pinned default (a common reusable-Dockerfile
+        # idiom), not on the literal `${ARG}` — which is never digest-shaped.
+        image = _resolve_arg(tokens[0], arg_defaults)
         if image.lower() == "scratch" or image.lower() in stages:
             continue
         if not _DIGEST_PINNED.search(image):
