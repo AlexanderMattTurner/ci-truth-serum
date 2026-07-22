@@ -36,6 +36,7 @@ Use the `/pr-creation` skill. For contributions to others’ repos, before writi
 
 ## Code Style
 
+- **Always ask whether a real parser (added as a dependency) can do the job before handrolling regex / case-by-case string matching.** When input has a grammar — manifests, lockfiles, YAML/TOML/INI, HTML, shell words, semver, dates — reach for an established parsing library rather than reinventing it. Adding a new dependency is fine except in rare circumstances; don't reinvent the wheel.
 - Fail loudly: throw errors over silent warnings; never remove error output unless the user explicitly asks
 - Let exceptions propagate—never use try/except unless there is a specific, necessary recovery action. Default to crashing on unexpected input
 - Un-nest conditionals; combine related checks
