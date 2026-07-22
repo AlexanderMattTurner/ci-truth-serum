@@ -54,6 +54,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_pr_paths", WORKFLOW),
         ("check_pinned_base_images", DOCKERFILE),
         ("check_pinned_downloads", SHELL_OR_DOCKERFILE),
+        ("check_frozen_head_sha", WORKFLOW),
     ],
     "2": [
         ("check_always_reporter", WORKFLOW),
@@ -65,6 +66,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_externalized_markers", WORKFLOW),
         ("check_path_gate_deps", WORKFLOW),
         ("check_failure_notifier_coverage", WORKFLOW),
+        ("check_cancellable_required_check", WORKFLOW),
     ],
     "extras": [
         ("check_unnamed_regex_groups", PYTHON),

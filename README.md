@@ -86,6 +86,7 @@ repos:
       - id: check-substitution-exit-swallow
       - id: check-pr-paths
       - id: check-pipefail-grep-pipe
+      - id: check-frozen-head-sha       # ban frozen event head.sha in diff-range/checkout steps
       # ── Tier 1 · Identity (default-on) ──
       - id: check-pinned-base-images
       - id: check-pinned-downloads
@@ -99,6 +100,7 @@ repos:
       # - id: check-externalized-markers  # marker reachable only via script/composite indirection
       # - id: check-path-gate-deps       # decide filters must cover every gated-job dependency
       # - id: check-failure-notifier-coverage  # keep ci-failure-notify's workflow_run list fresh
+      # - id: check-cancellable-required-check  # no static cancellable concurrency lock on required checks
       # ── Extras · Unrelated bonus checks (opt-in) ──
       # - id: check-symlinks
       # - id: check-unnamed-regex-groups

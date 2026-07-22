@@ -29,6 +29,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    group_is_per_ref,
     has_always_reporter,
     has_decide_gate,
 )
@@ -36,21 +37,6 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 OPT_OUT = "static-concurrency-ok"
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
-
-# A concurrency group keyed by any of these is per-ref / per-PR / per-run, so a
-# run is only ever superseded by a *newer run of the same ref* — whose own
-# reporter then posts the check. Without one of these the group is static and a
-# sibling ref's run can cancel this one with no replacement report. Matched as a
-# best-effort substring of the group expression, not a full ${{ }} parse.
-PER_REF_KEYS = (
-    "github.ref",
-    "github.ref_name",
-    "github.head_ref",
-    "github.run_id",
-    "github.run_number",
-    "pull_request.number",
-    "github.event.number",
-)
 
 
 def _concurrency_line(text: str) -> int:
@@ -95,7 +81,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
         return None
 
     group = str(conc.get("group", ""))
-    if any(key in group for key in PER_REF_KEYS):
+    if group_is_per_ref(group):
         return None  # per-ref / per-PR group — only superseded by its own ref
 
     jobs = doc.get("jobs", {})

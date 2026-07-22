@@ -156,6 +156,33 @@ def has_always_reporter(jobs: dict) -> bool:
     )
 
 
+# A concurrency group keyed by any of these is per-ref / per-PR / per-run, so a
+# run is only ever superseded by a *newer run of the same ref* — whose own
+# reporter then posts the check. Without one of these the group is static and a
+# sibling ref's run can cancel this one with no replacement report. Matched as a
+# best-effort substring of the group expression, not a full ${{ }} parse. Shared
+# by the two concurrency lints (check_static_concurrency, which flags a static
+# group on the decide+always() shape, and check_cancellable_required_check, which
+# flags a static *cancellable* group on any required-check-marked workflow) so the
+# per-ref definition is one SSOT, not two copies that could drift.
+PER_REF_CONCURRENCY_KEYS = (
+    "github.ref",
+    "github.ref_name",
+    "github.head_ref",
+    "github.run_id",
+    "github.run_number",
+    "pull_request.number",
+    "github.event.number",
+)
+
+
+def group_is_per_ref(group: str) -> bool:
+    """True if a concurrency `group:` expression carries a per-ref/per-PR/per-run
+    key — meaning a superseding run is always the same ref's newer run, which
+    re-reports, so the group cannot strand a required check."""
+    return any(key in group for key in PER_REF_CONCURRENCY_KEYS)
+
+
 def _job_blocks(text: str) -> dict[str, tuple[int, str]]:
     """Map each top-level job name to (1-based key line, its source block).
 
