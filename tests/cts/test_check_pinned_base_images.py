@@ -53,6 +53,46 @@ def test_from_with_only_flags_is_skipped_not_crashed() -> None:
     assert _flags("FROM --platform=linux/amd64\n") == []
 
 
+# ── FROM ${ARG} resolved against a preceding ARG default ──────────────────────
+# A parametrized base (`ARG BASE=…@sha256:…` + `FROM ${BASE}`) is a common reusable-
+# Dockerfile idiom; the pin lives in the ARG default and must stay enforced there.
+
+
+def test_from_arg_ref_resolves_to_pinned_default() -> None:
+    # `${ARG}` and bare `$ARG` both resolve to the ARG's digest-pinned default -> not flagged.
+    pin = "docker.io/lib/base@sha256:" + "a" * 64
+    assert _flags(f"ARG BASE={pin}\nFROM ${{BASE}}\nRUN true\n") == []
+    assert _flags(f"ARG BASE={pin}\nFROM $BASE\n") == []
+
+
+def test_from_arg_ref_with_floating_default_is_flagged() -> None:
+    # The ARG default is a mutable tag -> resolving must NOT launder it past the pin check.
+    assert _flags("ARG BASE=node:22\nFROM ${BASE}\nRUN true\n") == [2]
+
+
+def test_from_unresolvable_arg_is_flagged_fail_closed() -> None:
+    # No `ARG NAME=` to resolve against -> the `${NAME}` ref is judged verbatim, is not
+    # digest-shaped, and is flagged (fail-closed: a base the lint can't read is refused).
+    assert _flags("FROM ${UNDECLARED}\nRUN true\n") == [1]
+
+
+def test_valueless_arg_does_not_resolve() -> None:
+    # `ARG BASE` (no default) records no value, so `FROM ${BASE}` stays unresolved -> flagged.
+    assert _flags("ARG BASE\nFROM ${BASE}\n") == [2]
+
+
+def test_arg_pinned_default_end_to_end_accepts(tmp_path) -> None:
+    # The script (not just violations()) accepts a `FROM ${ARG}` whose ARG default is pinned.
+    df = tmp_path / "Dockerfile"
+    df.write_text("ARG BASE=node:22@sha256:" + "a" * 64 + "\nFROM ${BASE}\nRUN true\n")
+    proc = subprocess.run(
+        [sys.executable, str(HOOKS_DIR / "check_pinned_base_images.py"), str(df)],
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_main_wires_violations_and_message(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
