@@ -162,6 +162,70 @@ def test_guard_before_read_on_same_line_passes() -> None:
     assert _flagged_lines(_parser(body)) == []
 
 
+# ── C9: the guard must prove the arity the arm actually reads ────────────
+def test_guard_proving_less_than_read_requires_is_flagged() -> None:
+    # `[[ $# -ge 2 ]] || die` proves only $# >= 2, but the arm goes on to read $3
+    # and `shift 3` (needs $# >= 3). The lower read $2 is cleared; the raw $3 is not.
+    body = '  --two)\n    [[ $# -ge 2 ]] || die; A="$2"; B="$3"; shift 3\n    ;;'
+    hits = mod.violations(_parser(body))
+    assert [line for line, _ in hits] == [5]  # the B="$3" read
+    assert "$# >= 3" in hits[0][1]
+
+
+def test_guard_proving_exact_arity_the_arm_reads_passes() -> None:
+    # Green control: a `-ge 3` guard covers the $3 read and shift 3.
+    body = '  --two)\n    [[ $# -ge 3 ]] || die; A="$2"; B="$3"; shift 3\n    ;;'
+    assert _flagged_lines(_parser(body)) == []
+    # A `> 2` (i.e. >= 3) guard is equivalent.
+    body_gt = '  --two)\n    [[ $# -gt 2 ]] || die; B="$3"; shift 3\n    ;;'
+    assert _flagged_lines(_parser(body_gt)) == []
+
+
+def test_if_guard_proving_less_than_read_requires_is_flagged() -> None:
+    body = (
+        '  --two)\n    if [[ $# -lt 2 ]]; then die; fi\n    B="$3"\n    shift 3\n    ;;'
+    )
+    assert _flagged_lines(_parser(body)) == [6]  # the B="$3" read
+
+
+# ── C11: a locally-defined bail name that only warns is not a guard ──────
+def test_local_warn_only_bail_name_is_not_trusted() -> None:
+    # `error()` is defined in this script and only prints — it does NOT abort — so
+    # `[[ $# -ge 2 ]] || error` is not a real guard and the following $2 is unguarded.
+    src = (
+        "#!/usr/bin/env bash\n"
+        'error() { printf "%s\\n" "$1"; }\n'
+        "while [[ $# -gt 0 ]]; do\n"
+        '  case "$1" in\n'
+        '  --b) [[ $# -ge 2 ]] || error "need"; X="$2"; shift 2 ;;\n'
+        "  esac\n"
+        "done\n"
+    )
+    assert _flagged_lines(src) == [5]  # X="$2" is unguarded
+
+
+def test_local_bail_name_that_actually_aborts_is_trusted() -> None:
+    # Green control: the same helper, but its body exits — now it is a real bail, so
+    # `[[ $# -ge 2 ]] || error` guards the $2 read.
+    src = (
+        "#!/usr/bin/env bash\n"
+        'error() { printf "%s\\n" "$1"; exit 1; }\n'
+        "while [[ $# -gt 0 ]]; do\n"
+        '  case "$1" in\n'
+        '  --b) [[ $# -ge 2 ]] || error "need"; X="$2"; shift 2 ;;\n'
+        "  esac\n"
+        "done\n"
+    )
+    assert _flagged_lines(src) == []
+
+
+def test_external_bail_name_is_still_trusted() -> None:
+    # A conventional bail name NOT defined in this script (sourced from a lib) is
+    # trusted as before — we cannot see its body, so the convention stands.
+    body = '  --b) [[ $# -ge 2 ]] || die "need"; X="$2"; shift 2 ;;'
+    assert _flagged_lines(_parser(body)) == []
+
+
 def test_bare_arity_test_without_bail_is_not_a_guard() -> None:
     # `[[ $# -ge 2 ]]` whose result is discarded (no || die / && die / then die)
     # does not stop the read, so the following $2 is still unguarded.
