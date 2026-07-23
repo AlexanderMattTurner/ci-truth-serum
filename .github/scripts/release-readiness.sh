@@ -20,6 +20,13 @@ ROOT="$(git rev-parse --show-toplevel)"
 # shellcheck source=../../bin/lib/retry.bash disable=SC1091
 source "$ROOT/bin/lib/retry.bash"
 
+# Fail fast when a credential the run needs is unset — a dropped workflow env var
+# must abort loudly here, before any real work, not surface as a misparse deep in
+# the run. ANTHROPIC_API_KEY is the readiness model call; GH_TOKEN (github.token)
+# is the concurrent-release probe, label + branch push, and PR creation.
+: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is not set. Configure it as a repository secret.}"
+: "${GH_TOKEN:?GH_TOKEN is not set. The workflow must pass github.token.}"
+
 ASSEMBLE_CHANGELOG="${ASSEMBLE_CHANGELOG:-$ROOT/scripts/assemble-changelog.mjs}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 
@@ -87,7 +94,6 @@ if [[ -n "$LAST_DATE" ]] && last_epoch=$(date -u -d "$LAST_DATE" +%s 2>/dev/null
   DAYS_SINCE=$(((${SOURCE_DATE_EPOCH:-$(date -u +%s)} - last_epoch) / 86400))
 fi
 
-: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is not set. Configure it as a repository secret.}"
 SANITIZED=$(sanitize_changelog_section "$UNRELEASED")
 
 PROMPT="Decide whether this project should cut a new release right now, based on
@@ -182,7 +188,7 @@ _call_claude_api() {
     --max-time 30 https://api.anthropic.com/v1/messages \
     -H "Content-Type: application/json" \
     "${AUTH_HEADERS[@]}" \
-    -d "$REQUEST_BODY" || echo "000")
+    -d "$REQUEST_BODY" || echo "000") # echo-fallback-ok: a curl transport error maps to the sentinel 000, a non-200 that the retry logic below treats as retryable — not a value fed to a decision
   [[ "$code" == "200" ]] && return 0
   _report_api_failure "$code"
   # A 400/401/403 fails identically on every retry — a malformed request, a
@@ -227,8 +233,18 @@ echo "Decision: should_release=$SHOULD_RELEASE bump=$BUMP candidate=v$CANDIDATE"
 # merges it; tag-release.yaml fires on that merge and cuts the vX.Y.Z tag. The
 # branch push and PR creation both ride the job's GITHUB_TOKEN.
 cut_release() {
-  : "${GH_TOKEN:?GH_TOKEN is required for the concurrent-release probe and PR creation (gh pr list / gh pr create).}"
   local others release_date pr_branch
+
+  # Ensure the shared `release` label exists FIRST — the stand-down probe below
+  # filters on it, and `gh pr list --label release` errors ("could not resolve to
+  # a label") when it does not exist yet, which on a fresh repo would wedge every
+  # run before it could create the label. --force creates it or updates in place,
+  # exiting 0 either way. release-prep.yaml keys off the same label.
+  if ! gh label create release --force \
+    --color 0E8A16 --description "Release automation: version bump, tagged on merge"; then
+    echo "Error: could not ensure the 'release' label exists." >&2
+    exit 1
+  fi
 
   # Stand down if a release PR is already open — human (release-prep.yaml, a
   # maintainer-labelled PR) or a still-open auto-release PR from an earlier run.
@@ -266,18 +282,20 @@ fs.writeFileSync(process.argv[1], JSON.stringify(pkg, null, 2) + "\n");
     -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
     commit -aqm "chore(release): v$CANDIDATE"
 
+  # A prior run's branch for this same version can linger when its PR was closed
+  # unmerged (GitHub auto-deletes a PR branch only on merge). The stand-down above
+  # proved no OPEN release PR references it, so a same-named remote branch is stale
+  # — delete it so the push below is a clean create, not a non-fast-forward
+  # rejection that would retry deterministically and wedge every future run.
+  # Absence is the normal case (the `if` swallows the delete's non-zero without
+  # aborting under set -e); a real push problem still surfaces at the push below.
+  if git push --no-verify origin --delete "$pr_branch" 2>/dev/null; then
+    echo "Deleted a stale remote branch '$pr_branch' from an earlier closed release PR."
+  fi
+
   # Ordinary branch push, retried with backoff on transient failures.
   if ! retry_cmd 4 2 git push --no-verify -u origin "$pr_branch"; then
     echo "Error: failed to push the release branch '$pr_branch' after 4 attempts." >&2
-    exit 1
-  fi
-
-  # A PR cannot be labelled with a label the repo lacks, and `release` may not
-  # exist yet (release-prep.yaml keys off the same label). Ensure it idempotently:
-  # --force creates it or updates in place, exiting 0 either way.
-  if ! gh label create release --force \
-    --color 0E8A16 --description "Release automation: version bump, tagged on merge"; then
-    echo "Error: could not ensure the 'release' label exists before opening the PR." >&2
     exit 1
   fi
 
