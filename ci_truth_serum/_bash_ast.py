@@ -35,6 +35,32 @@ class PathologicalInputError(ValueError):
 # below the cap (this repo's largest script carries a few dozen `|` bytes).
 _MAX_PIPE_BYTES = 2_000
 
+# tree-sitter-bash 0.25's external (C) scanner corrupts the heap when it lexes a
+# SUPPLEMENTARY-PLANE character (codepoint ≥ U+10000, a 4-byte UTF-8 sequence)
+# adjacent to certain word-opening tokens — e.g. a `{` immediately followed by an
+# astral char. The overrun is a memory-safety bug, not a Python exception: it
+# scribbles past a lexeme buffer and segfaults the whole process (SIGSEGV)
+# NON-DETERMINISTICALLY, depending on heap layout, so no input-level allowlist can
+# be proven exhaustive. The only safe posture is to never hand such a character to
+# the C parser. `parse` therefore folds every non-BMP codepoint down to U+FFFD
+# (the Unicode REPLACEMENT CHARACTER, a BMP char the scanner lexes safely) before
+# encoding. The substitution is one-char-for-one-char and touches no line
+# boundary, so line numbers and character indices stay aligned for callers; a
+# supplementary-plane char is a plain word byte to bash (never a metacharacter),
+# so collapsing it to another word byte cannot change any lint's verdict.
+_REPLACEMENT = "\ufffd"
+
+
+def _neutralize_supplementary(script: str) -> str:
+    """SCRIPT with every supplementary-plane (non-BMP) codepoint replaced by
+    U+FFFD, so tree-sitter-bash's scanner never lexes the 4-byte sequence that
+    corrupts its heap. One-to-one on characters (line count and character indices
+    preserved); idempotent (U+FFFD is BMP, so a second pass is a no-op)."""
+    if all(ord(char) <= 0xFFFF for char in script):
+        return script
+    return "".join(_REPLACEMENT if ord(char) > 0xFFFF else char for char in script)
+
+
 # Building the Language once is cheap; reuse it across every parse in a run.
 _PARSER: Parser | None = None
 
@@ -54,7 +80,9 @@ def parse(script: str) -> Node:
     benign) instead of crashing a pre-commit hook on an unrelated commit. The one
     exception is a pipe-byte count past ``_MAX_PIPE_BYTES``, which raises
     ``PathologicalInputError`` (loud, never a silent pass) rather than letting
-    the C parser's quadratic allocation kill the process."""
+    the C parser's quadratic allocation kill the process. Supplementary-plane
+    characters, which segfault that same C parser, are folded to U+FFFD up front
+    (see ``_neutralize_supplementary``)."""
     if script.count("|") > _MAX_PIPE_BYTES:
         raise PathologicalInputError(
             f"input carries more than {_MAX_PIPE_BYTES} pipe bytes; "
@@ -62,7 +90,7 @@ def parse(script: str) -> Node:
             "parsing it could exhaust memory. Split the file or reduce the "
             "pipeline chain to lint it."
         )
-    return _parser().parse(script.encode("utf-8")).root_node
+    return _parser().parse(_neutralize_supplementary(script).encode("utf-8")).root_node
 
 
 def iter_nodes(node: Node, *types: str):
@@ -95,17 +123,23 @@ def strip_comments(script: str) -> str:
     ``#`` comment — and, because the grammar (not a naive ``#`` split) decides what
     a comment is, a ``#`` inside a quoted string or word (``curl -o "a#b" url``) is
     correctly left as code."""
-    spans = [(n.start_byte, n.end_byte) for n in iter_nodes(parse(script), "comment")]
+    # `parse` folds supplementary-plane chars to U+FFFD before lexing, so the
+    # tree's byte offsets index the NEUTRALIZED string, not `script`. Map them
+    # against that same string; the fold is one-char-for-one-char, so character
+    # index i in it is character index i in `script` and blanking `script[i]` below
+    # stays correct.
+    safe = _neutralize_supplementary(script)
+    spans = [(n.start_byte, n.end_byte) for n in iter_nodes(parse(safe), "comment")]
     if not spans:
         return script
     # tree-sitter reports byte offsets; map them to character indices so blanking
     # respects multibyte Unicode boundaries.
     char_at_byte: dict[int, int] = {}
     byte = 0
-    for index, char in enumerate(script):
+    for index, char in enumerate(safe):
         char_at_byte[byte] = index
         byte += len(char.encode("utf-8"))
-    char_at_byte[byte] = len(script)
+    char_at_byte[byte] = len(safe)
 
     out = list(script)
     for start_byte, end_byte in spans:
