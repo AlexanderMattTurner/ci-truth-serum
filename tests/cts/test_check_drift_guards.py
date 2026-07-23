@@ -258,13 +258,53 @@ def test_main_flags_non_python_guard_and_names_it(
 
 
 def test_main_accepts_annotated_non_python_guard(tmp_path: Path) -> None:
-    good = tmp_path / "check.sh"
+    # A test-shaped path so the phrase pass actually runs and the annotation is what
+    # clears it (not the path gate).
+    good = tmp_path / "check_thing.test.sh"
     good.write_text(
         "# drift-guard-ok: mirrors an external upstream value, no SSOT\n"
         "assert_equal must stay in sync\n",
         encoding="utf-8",
     )
     assert mod.main([str(good)]) == 0
+
+
+def test_main_phrase_pass_scoped_to_test_paths(tmp_path: Path) -> None:
+    # A PRODUCTION shell/JS file carrying ordinary in-sync prose is not a
+    # copies-agree test, so the phrase pass must not fire on it (C8).
+    prose = "# these two values are kept in sync with deploy.yaml\n"
+    for name in ("deploy.sh", "src/config.mjs", "lib/util.ts"):
+        prod = tmp_path / name
+        prod.parent.mkdir(parents=True, exist_ok=True)
+        prod.write_text(prose, encoding="utf-8")
+        assert mod.main([str(prod)]) == 0
+    # The identical prose in a test-shaped file IS flagged.
+    for name in ("config.test.mjs", "tests/wiring.sh", "test_deploy.sh", "x.spec.ts"):
+        tst = tmp_path / name
+        tst.parent.mkdir(parents=True, exist_ok=True)
+        tst.write_text(prose, encoding="utf-8")
+        assert mod.main([str(tst)]) == 1, name
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("tests/foo.sh", True),
+        ("a/test/foo.mjs", True),
+        ("test_helpers.sh", True),
+        ("test-utils.mjs", True),
+        ("foo.test.mjs", True),
+        ("foo_test.sh", True),
+        ("foo.spec.ts", True),
+        ("suite.bats", True),
+        ("deploy.sh", False),
+        ("src/config.mjs", False),
+        ("latest.sh", False),  # 'test' only as a substring, not a segment/basename
+        ("contest.mjs", False),
+    ],
+)
+def test_is_test_path(path: str, expected: bool) -> None:
+    assert mod._is_test_path(path) is expected
 
 
 def test_main_returns_one_on_violation(
