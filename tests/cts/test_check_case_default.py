@@ -34,6 +34,15 @@ def test_two_incomplete_cases_both_flagged() -> None:
     assert mod.violations(src) == [1, 5]
 
 
+def test_single_line_case_without_default_is_flagged() -> None:
+    # A whole `case … esac` on one physical line — the AST sees the case_statement
+    # even though the opener and `esac` share a line. (The old line-scanner missed
+    # this: it pushed the frame and `continue`d past the same-line `esac`.)
+    assert mod.violations('case "$x" in a) f ;; esac\n') == [1]
+    # A same-line default still passes.
+    assert mod.violations('case "$x" in a) f ;; *) g ;; esac\n') == []
+
+
 # ── not flagged: a default arm in any accepted spelling ──────────────────
 @pytest.mark.parametrize(
     "arms",
@@ -67,17 +76,18 @@ def test_nested_case_blocks_tracked_independently() -> None:
     assert mod.violations(src) == [3]
 
 
-# ── fail-open: shapes the scanner cannot parse confidently ───────────────
+# ── not a case_statement: quoted / commented text is never a block ───────
 @pytest.mark.parametrize(
     "src",
     [
-        'case "$1" in a) : ;; esac\n',  # one-liner: opener+esac on one line
         'echo "case x in"\n',  # case quoted in a string
         "# case $x in a) ;; esac\n",  # commented out
         'echo "esac"\n',
     ],
 )
-def test_unparseable_or_quoted_shapes_pass(src: str) -> None:
+def test_non_case_shapes_pass(src: str) -> None:
+    # The grammar yields no `case_statement` node for a `case`/`esac` that lives in
+    # a string or a comment, so none is flagged.
     assert mod.violations(src) == []
 
 

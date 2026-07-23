@@ -19,99 +19,55 @@ the line immediately above) when falling through really is the intent.
 Invoked by pre-commit with the staged shell files as arguments.
 """
 
-import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "case-default-ok"
 
-# A `case … in` opener / `esac` closer, as statement words.
-_CASE_OPEN = re.compile(r"(?:^|[\s;(])case\s+\S.*?\s+in(?:\s|;|$)")
-_ESAC = re.compile(r"(?:^|[\s;])esac(?:\s|;|\)|$)")
-# An arm label: pattern list ending in `)` at the start of a line (after `;;`
-# resets, arms begin at line starts in practice). The label may be
-# paren-wrapped: `(pattern)`.
-_ARM = re.compile(r"^\s*\(?\s*(?P<patterns>[^)]*?)\s*\)")
-# Words that begin compound statements an arm body may open with — a line
-# starting with one of these is body, not a label.
-_BODY_STARTERS = re.compile(
-    r"^\s*(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|function)\b"
-)
 
+def _arm_is_default(case_item) -> bool:
+    """True when a `case_item`'s pattern list contains a bare `*` alternative —
+    the catch-all default.
 
-def _strip_comment(line: str) -> str:
-    """LINE up to the first unquoted `#` (quote-aware, single-line scope)."""
-    in_s = in_d = False
-    for idx, ch in enumerate(line):
-        if in_s:
-            in_s = ch != "'"
-        elif in_d:
-            in_d = ch != '"'
-        elif ch == "'":
-            in_s = True
-        elif ch == '"':
-            in_d = True
-        elif ch == "#":
-            return line[:idx]
-    return line
-
-
-def _has_default_alternative(patterns: str) -> bool:
-    """True when the arm's `|`-separated pattern list contains a bare `*`."""
-    return any(alt.strip() == "*" for alt in patterns.split("|"))
+    The grammar yields each alternative before the `)` as a `word` /
+    `extglob_pattern` node (separated by `|`, optionally paren-wrapped), so a bare
+    `*` is exactly a pattern node whose text is `*`. A subset glob (`*.txt`, `--*`)
+    has other text and is not a default; a quoted `"*"` is a `string` node (a
+    literal asterisk), so it is correctly NOT a default. A multi-pattern arm with a
+    bare `*` alternative (`x|*)`) does count."""
+    for child in case_item.children:
+        if child.type == ")":
+            break
+        if child.type in ("word", "extglob_pattern") and child.text.decode() == "*":
+            return True
+    return False
 
 
 def violations(text: str) -> list[int]:
-    """1-based line numbers of `case` openers whose block reaches `esac`
-    without a bare `*)` arm (and without an opt-out annotation)."""
+    """1-based line numbers of `case … esac` statements with no bare `*)` default
+    arm (and without an opt-out annotation).
+
+    Driven off the bash AST's `case_statement` nodes, so a single-line
+    `case … esac`, a compact `a) x ;; *) y ;;`, a nested case, comments, and quoted
+    patterns are all parsed by the grammar rather than a hand-rolled line scanner.
+    The finding is anchored on the `case` keyword's line; the opt-out is read from
+    that line or the one immediately above."""
     physical = text.splitlines()
     hits: list[int] = []
-    # Stack of open case frames: (opener line, has_default, expecting_label).
-    stack: list[dict] = []
-    for lineno, raw in enumerate(physical, 1):
-        line = _strip_comment(raw)
-        stripped = line.strip()
-        if not stripped and not stack:
+    for case_node in iter_nodes(parse(text), "case_statement"):
+        arms = [c for c in case_node.children if c.type == "case_item"]
+        if any(_arm_is_default(arm) for arm in arms):
             continue
-
-        opened_here = _CASE_OPEN.search(line)
-        if stack and not opened_here:
-            frame = stack[-1]
-            # Fail-open catch-all: a bare `*)` anywhere on the line (e.g. the
-            # compact `a) x ;; *) y ;;` form) counts as the default — over-
-            # accepting here only ever suppresses a finding, never adds one.
-            if re.search(r"(?:^|[;\s(|])\*\s*\)", line):
-                frame["has_default"] = True
-            # A label is only read where an arm may begin: right after `case
-            # … in` or after a `;;`-family terminator.
-            if frame["expecting"] and stripped and not _BODY_STARTERS.match(line):
-                arm = _ARM.match(line)
-                if arm:
-                    frame["expecting"] = False
-                    if _has_default_alternative(arm.group("patterns")):
-                        frame["has_default"] = True
-            if re.search(r";;&?|;&", line):
-                frame["expecting"] = True
-
-        if opened_here:
-            opted = OPT_OUT in raw or (lineno >= 2 and OPT_OUT in physical[lineno - 2])
-            stack.append(
-                {
-                    "line": lineno,
-                    "has_default": False,
-                    "expecting": True,
-                    "opted": opted,
-                }
-            )
+        line = case_node.start_point[0] + 1
+        raw = physical[line - 1] if 0 <= line - 1 < len(physical) else ""
+        prev = physical[line - 2] if line - 2 >= 0 else ""
+        if OPT_OUT in raw or OPT_OUT in prev:
             continue
-
-        if stack and _ESAC.search(line):
-            frame = stack.pop()
-            if not frame["has_default"] and not frame["opted"]:
-                hits.append(frame["line"])
+        hits.append(line)
     return sorted(hits)
 
 
