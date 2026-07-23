@@ -19,25 +19,50 @@ pre-commit and CI always have them.
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
 
+
+class PathologicalInputError(ValueError):
+    """Raised instead of feeding tree-sitter an input shape measured to allocate
+    quadratically. Deliberately LOUD: a lint that silently skipped the file
+    would false-green exactly the input an adversary controls."""
+
+
+# tree-sitter-bash's GLR machinery allocates roughly QUADRATICALLY in the number
+# of chained pipeline stages: 5k `cmd |` stages cost ~330 MB, 20k cost ~3.3 GB,
+# 50k exhaust a 16 GB host (measured via resource.ru_maxrss on tree-sitter-bash
+# 0.25). A hostile or generated file can therefore take the whole process down
+# inside the C parser — an allocation-failure segfault, not a Python exception —
+# so `parse` refuses such inputs up front. Real shell sits orders of magnitude
+# below the cap (this repo's largest script carries a few dozen `|` bytes).
+_MAX_PIPE_BYTES = 2_000
+
+# tree-sitter-bash 0.25's external (C) scanner corrupts the heap when it lexes a
+# SUPPLEMENTARY-PLANE character (codepoint ≥ U+10000, a 4-byte UTF-8 sequence)
+# adjacent to certain word-opening tokens — e.g. a `{` immediately followed by an
+# astral char. The overrun is a memory-safety bug, not a Python exception: it
+# scribbles past a lexeme buffer and segfaults the whole process (SIGSEGV)
+# NON-DETERMINISTICALLY, depending on heap layout, so no input-level allowlist can
+# be proven exhaustive. The only safe posture is to never hand such a character to
+# the C parser. `parse` therefore folds every non-BMP codepoint down to U+FFFD
+# (the Unicode REPLACEMENT CHARACTER, a BMP char the scanner lexes safely) before
+# encoding. The substitution is one-char-for-one-char and touches no line
+# boundary, so line numbers and character indices stay aligned for callers; a
+# supplementary-plane char is a plain word byte to bash (never a metacharacter),
+# so collapsing it to another word byte cannot change any lint's verdict.
+_REPLACEMENT = "\ufffd"
+
+
+def _neutralize_supplementary(script: str) -> str:
+    """SCRIPT with every supplementary-plane (non-BMP) codepoint replaced by
+    U+FFFD, so tree-sitter-bash's scanner never lexes the 4-byte sequence that
+    corrupts its heap. One-to-one on characters (line count and character indices
+    preserved); idempotent (U+FFFD is BMP, so a second pass is a no-op)."""
+    if all(ord(char) <= 0xFFFF for char in script):
+        return script
+    return "".join(_REPLACEMENT if ord(char) > 0xFFFF else char for char in script)
+
+
 # Building the Language once is cheap; reuse it across every parse in a run.
 _PARSER: Parser | None = None
-
-# tree-sitter-bash 0.25.1 has a native heap-corruption bug: on certain adversarial
-# byte sequences — a fuzz-generated mix of high-plane codepoints, combining marks,
-# zero-width / BOM / paragraph-separator, and C0 control bytes — its C parser
-# corrupts memory and SEGFAULTs the interpreter, a crash no Python `try` can catch
-# (confirmed against tree-sitter core 0.24–0.26 alike, so it is the grammar's bug,
-# not a version skew, and 0.25.1 is the latest release). Shell SYNTAX is ASCII;
-# non-ASCII bytes only ever occur INSIDE string/comment/heredoc bodies, which every
-# lint here treats as opaque. So before parsing we map every byte that is not
-# printable ASCII (or tab/newline/CR) to a benign 'x' — a fixed 256-entry table, so
-# it is one C-level `bytes.translate`. This is LENGTH-PRESERVING: each byte keeps
-# its position, so node byte-offsets and row numbers are identical to the original
-# and callers that map offsets back into the source string stay correct; it only
-# rewrites bytes the parser must never crash on, changing no structural finding.
-_SAFE_BYTE_TABLE = bytes(
-    b if (0x20 <= b <= 0x7E or b in (0x09, 0x0A, 0x0D)) else 0x78 for b in range(256)
-)
 
 
 def _parser() -> Parser:
@@ -52,12 +77,20 @@ def parse(script: str) -> Node:
 
     tree-sitter NEVER raises on malformed input — a syntax error surfaces as
     ``ERROR`` nodes in the tree, so callers fail OPEN (treat unparseable spans as
-    benign) instead of crashing a pre-commit hook on an unrelated commit. The bytes
-    are first passed through ``_SAFE_BYTE_TABLE`` (a length-preserving map of every
-    non-ASCII / control byte to ``x``) so an adversarial-unicode input can't trip
-    tree-sitter-bash's native heap-corruption segfault — see the table's comment."""
-    safe = script.encode("utf-8").translate(_SAFE_BYTE_TABLE)
-    return _parser().parse(safe).root_node
+    benign) instead of crashing a pre-commit hook on an unrelated commit. The one
+    exception is a pipe-byte count past ``_MAX_PIPE_BYTES``, which raises
+    ``PathologicalInputError`` (loud, never a silent pass) rather than letting
+    the C parser's quadratic allocation kill the process. Supplementary-plane
+    characters, which segfault that same C parser, are folded to U+FFFD up front
+    (see ``_neutralize_supplementary``)."""
+    if script.count("|") > _MAX_PIPE_BYTES:
+        raise PathologicalInputError(
+            f"input carries more than {_MAX_PIPE_BYTES} pipe bytes; "
+            "tree-sitter-bash allocates quadratically on chained pipelines, so "
+            "parsing it could exhaust memory. Split the file or reduce the "
+            "pipeline chain to lint it."
+        )
+    return _parser().parse(_neutralize_supplementary(script).encode("utf-8")).root_node
 
 
 def iter_nodes(node: Node, *types: str):
@@ -90,17 +123,23 @@ def strip_comments(script: str) -> str:
     ``#`` comment — and, because the grammar (not a naive ``#`` split) decides what
     a comment is, a ``#`` inside a quoted string or word (``curl -o "a#b" url``) is
     correctly left as code."""
-    spans = [(n.start_byte, n.end_byte) for n in iter_nodes(parse(script), "comment")]
+    # `parse` folds supplementary-plane chars to U+FFFD before lexing, so the
+    # tree's byte offsets index the NEUTRALIZED string, not `script`. Map them
+    # against that same string; the fold is one-char-for-one-char, so character
+    # index i in it is character index i in `script` and blanking `script[i]` below
+    # stays correct.
+    safe = _neutralize_supplementary(script)
+    spans = [(n.start_byte, n.end_byte) for n in iter_nodes(parse(safe), "comment")]
     if not spans:
         return script
     # tree-sitter reports byte offsets; map them to character indices so blanking
     # respects multibyte Unicode boundaries.
     char_at_byte: dict[int, int] = {}
     byte = 0
-    for index, char in enumerate(script):
+    for index, char in enumerate(safe):
         char_at_byte[byte] = index
         byte += len(char.encode("utf-8"))
-    char_at_byte[byte] = len(script)
+    char_at_byte[byte] = len(safe)
 
     out = list(script)
     for start_byte, end_byte in spans:

@@ -94,15 +94,10 @@ identity) is enabled below; Tier 2 and Extras are commented out: uncomment what
 you want. pre-commit builds each hook’s isolated Python environment, so it is
 the only prerequisite.
 
-Replace `<latest release tag>` with a concrete `rev` — the newest tag from the
-[Releases page](https://github.com/AlexanderMattTurner/ci-truth-serum/releases),
-or a full commit SHA. pre-commit requires a pinned ref; `<latest release tag>` is
-a placeholder, not a valid revision.
-
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: <latest release tag> # see the Releases page; or pin a full commit SHA
+    rev: v0.2.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       # ── Tier 1 · Honesty (default-on) ──
       - id: check-workflow-pipefail
@@ -167,7 +162,7 @@ are picked up with **no change to your config**:
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: <latest release tag> # see the Releases page; or pin a full commit SHA
+    rev: v0.2.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       - id: check-tier1 # all honesty + identity checks (the safe default-on set)
       # - id: check-tier2   # all opinionated checks: assumes the decide-gate + reporter architecture
@@ -191,7 +186,7 @@ standalone hook with normal pre-commit `files:`/`exclude:` filters:
 
 ```yaml
 - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-  rev: <latest release tag> # see the Releases page; or pin a full commit SHA
+  rev: v0.2.0
   hooks:
     - id: check-tier1
       args: [--skip, check_exit_suppression] # drop from aggregate...

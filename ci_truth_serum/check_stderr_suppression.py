@@ -25,7 +25,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import MESSAGE_PREFIX, run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MESSAGE_PREFIX,
+    annotated,
+    logical_lines,
+    run_line_checks,
+)
 
 _SUPPRESS = re.compile(r"(?:2|&)>\s*/dev/null")
 # The canonical `>/dev/null 2>&1` sends stdout to the bit-bucket and then dups
@@ -76,14 +81,18 @@ def _array_launch(line: str, arrays: set[str]) -> bool:
 
 
 def violations(text: str) -> list[int]:
-    """1-based line numbers in TEXT that suppress stderr on a launch/build."""
-    arrays = set(_ARRAY_ASSIGN.findall(text))  # collected file-wide (two-pass)
+    """1-based line numbers in TEXT that suppress stderr on a launch/build.
+    Scanned per LOGICAL line (continuations joined), so wrapping the launch
+    across physical lines cannot split the suppression from the command."""
+    logicals = logical_lines(text)
+    joined = "\n".join(line for _, line in logicals)
+    arrays = set(_ARRAY_ASSIGN.findall(joined))  # collected file-wide (two-pass)
     hits = []
-    for lineno, line in enumerate(text.splitlines(), 1):
+    for lineno, line in logicals:
         stripped = line.lstrip()
         if stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
             continue  # whole-line comment or a printed example, not real code
-        if not _suppresses_stderr(line) or "allow-stderr-suppress" in line:
+        if not _suppresses_stderr(line) or annotated(line, "allow-stderr-suppress"):
             continue
         if _LITERAL_LAUNCH.search(line) or _array_launch(line, arrays):
             hits.append(lineno)

@@ -33,6 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated,
     run_line_checks,
 )
 
@@ -91,10 +92,10 @@ def violations(text: str) -> list[int]:
         body = comment_body(raw)
         if body is None or not _MARKER_RE.search(body):
             continue
-        if _ALLOW in raw:
+        if annotated(raw, _ALLOW):
             continue
         # The annotation may sit on the line immediately above the comment.
-        if lineno >= 2 and _ALLOW in physical[lineno - 2]:
+        if lineno >= 2 and annotated(physical[lineno - 2], _ALLOW):
             continue
         hits.append(lineno)
     return hits

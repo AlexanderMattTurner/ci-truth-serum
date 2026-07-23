@@ -71,6 +71,7 @@
   description: grep -q's early exit SIGPIPEs the producer; pipefail surfaces 141, so a match reads as no-match.
   entry: python -m ci_truth_serum.check_pipefail_grep_pipe
   language: python
+  additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
 
 # ───────────────────────── Tier 1 · Identity (default-on) ────────────────────

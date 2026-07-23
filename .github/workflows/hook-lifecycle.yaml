@@ -26,8 +26,8 @@ jobs:
     with:
       filters: |
         run:
-          - '.claude/hooks/**'
-          - '.hooks/**'
+          - '.claude/ci_truth_serum/**'
+          - '.ci_truth_serum/**'
           - 'setup.sh'
           - 'package.json'
           - 'pnpm-lock.yaml'

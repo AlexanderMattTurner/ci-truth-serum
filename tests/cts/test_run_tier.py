@@ -206,7 +206,7 @@ def test_run_member_workflow_ignores_files_and_runs(monkeypatch):
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
     assert rt.run_member("check_pr_paths", rt.WORKFLOW, ["ignored.py"]) == 0
-    # WORKFLOW members get no file args appended — just `-m ci_truth_serum.<module>`.
+    # WORKFLOW members get no file args appended — just `-m hooks.<module>`.
     assert captured["cmd"][1:] == ["-m", "ci_truth_serum.check_pr_paths"]
 
 

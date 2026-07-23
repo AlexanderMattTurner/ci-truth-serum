@@ -43,6 +43,9 @@ packages = ["ci_truth_serum"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "drift_guard(reason): acknowledged copies-agree test whose true SSOT is infeasible (see check-drift-guards)",
+]
 
 [tool.ruff]
 target-version = "py310"

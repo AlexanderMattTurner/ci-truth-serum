@@ -37,8 +37,14 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
 _WORD_RE = re.compile(r"\bgraceful(?:ly)?\b", re.IGNORECASE)
 _ALLOW = "allow-graceful"
+# A free-standing prose document (--prose) is excused by a reason-bearing
+# annotation anywhere, comment syntax or not — a PR body has no comments.
+_DOC_ALLOW = re.compile(rf"\b{_ALLOW}:\s*\S")
 _PROSE_SUFFIXES = frozenset({".md", ".markdown", ".mdx", ".rst"})
 
 MESSAGE = (
@@ -75,7 +81,9 @@ def violations(text: str, prose: bool) -> list[int]:
         target = raw if prose else comment_body(raw)
         if target is None or not _WORD_RE.search(target):
             continue
-        if _ALLOW in raw or (lineno >= 2 and _ALLOW in lines[lineno - 2]):
+        if annotated(raw, _ALLOW) or (
+            lineno >= 2 and annotated(lines[lineno - 2], _ALLOW)
+        ):
             continue
         hits.append(lineno)
     return hits
@@ -91,11 +99,12 @@ def main(argv: list[str]) -> int:
         except (OSError, UnicodeDecodeError):
             continue
         # --prose scans a single free-standing document (e.g. a PR title+body),
-        # which makes one argument as a whole — there, one `allow-graceful:
-        # <reason>` line anywhere excuses the document (a document ABOUT the
-        # word could never satisfy per-line annotation). Files keep per-line
-        # annotation: each occurrence owes its own stated behaviour.
-        if force_prose and _ALLOW in text:
+        # which makes one argument as a whole — there, one reason-bearing
+        # `allow-graceful: reason` line anywhere excuses the document (a
+        # document ABOUT the word could never satisfy per-line annotation).
+        # Files keep per-line annotation: each occurrence owes its own stated
+        # behaviour.
+        if force_prose and _DOC_ALLOW.search(text):
             continue
         prose = force_prose or Path(path).suffix.lower() in _PROSE_SUFFIXES
         for lineno in violations(text, prose):

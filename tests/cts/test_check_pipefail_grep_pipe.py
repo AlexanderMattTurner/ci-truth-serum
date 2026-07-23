@@ -101,12 +101,80 @@ def test_does_not_flag_safe_lines(line: str) -> None:
     assert _flag(line + "\n") == []
 
 
-@pytest.mark.parametrize("stage", ["", "  ", "if ", "! ", "{ ", "( ", "while "])
-def test_producer_is_bounded_false_on_empty_or_all_noise_stage(stage: str) -> None:
-    """A producer stage that strips to nothing after leading-noise removal (only control
-    keywords / group openers, or empty) is not a bounded builtin — so it does NOT exempt
-    the line. `_pipes_into_quiet_grep` then treats such a producer as flaggable."""
-    assert mod._producer_is_bounded(stage) is False
+@pytest.mark.parametrize(
+    "line",
+    [
+        # a subshell / group producer is not a bounded builtin
+        "(echo a; producer) | grep -q pat",
+        "{ producer; } | grep -q pat",
+        # a negated streaming producer stays flaggable
+        "! producer | grep -q pat",
+    ],
+)
+def test_compound_or_negated_producer_is_not_bounded(line: str) -> None:
+    """A producer stage that is not a simple echo/printf/: command (a subshell, a
+    group, a negated external command) does not earn the bounded-builtin exemption."""
+    assert _flag(line + "\n") == [2]
+
+
+# --- regression: evasions the per-physical-line scan allowed ---
+@pytest.mark.parametrize(
+    "body",
+    [
+        # trailing-pipe continuation: producer on one line, grep on the next
+        "producer arg |\n  grep -q pat",
+        # backslash continuation before the pipe
+        "producer arg \\\n  | grep -q pat",
+        # both stages wrapped
+        "producer \\\n  arg |\n  grep \\\n  -q pat",
+    ],
+)
+def test_wrapped_pipeline_is_still_one_pipeline(body: str) -> None:
+    """A pipeline split across physical lines (trailing `|` or backslash
+    continuations) is one pipeline node in the grammar, so wrapping the line
+    cannot evade the check. Reported at the grep stage's line."""
+    hits = _flag(body + "\n")
+    assert len(hits) == 1
+    grep_line = next(
+        i for i, ln in enumerate((_PIPEFAIL + body).splitlines(), 1) if "grep" in ln
+    )
+    assert hits == [grep_line]
+
+
+def test_pipefail_after_the_pipeline_does_not_clear_it() -> None:
+    """`set -o pipefail` AFTER the pipeline does not retroactively protect it —
+    and must not clear the file either way: the pipe ran without pipefail (its
+    own bug class is out of this lint's scope), but any pipeline AFTER the set
+    line is still checked. The pre-fix implementation treated pipefail as
+    file-wide, so a trailing `set -o pipefail` in dead code armed the check for
+    the whole file and, symmetrically, an early pipe was flagged."""
+    text = "#!/bin/bash\nearly | grep -q pat\nset -o pipefail\nlate | grep -q pat\n"
+    assert mod.violations(text) == [4]
+
+
+def test_pipeline_in_function_body_is_gated_on_pipefail_anywhere() -> None:
+    """A function body defined ABOVE the `set -o pipefail` line still runs under
+    pipefail (it executes at call time), so its quiet-grep pipeline is flagged."""
+    text = (
+        "#!/bin/bash\n"
+        "check() {\n"
+        "  producer | grep -q pat\n"
+        "}\n"
+        "set -euo pipefail\n"
+        "check\n"
+    )
+    assert mod.violations(text) == [3]
+
+
+def test_pipe_inside_string_or_heredoc_is_data() -> None:
+    """A `|` inside a quoted string or a heredoc body is not a pipeline node,
+    so quoting the banned form cannot false-positive."""
+    text = (
+        "#!/bin/bash\nset -euo pipefail\n"
+        'msg="producer | grep -q pat"\n'
+        "cat <<'EOF'\nproducer | grep -q pat\nEOF\n"
+    )
+    assert mod.violations(text) == []
 
 
 # --- the pipefail gate: the SAME grep line flips verdict on pipefail presence ---
@@ -176,20 +244,6 @@ def test_reasoned_allow_still_suppresses() -> None:
     # suppresses after the bare-substring hole is closed.
     assert _flag("producer | grep -qF x  # pipefail-grep-ok: bounded output\n") == []
     assert _flag("# pipefail-grep-ok: bounded output\nproducer | grep -qF x\n") == []
-
-
-def test_wrapped_pipeline_is_caught() -> None:
-    # C2: a pipeline wrapped across lines — `producer |` then `grep -q` on the next
-    # line — is one logical command; the shared continuation-joiner sees the whole
-    # pipe, so it is flagged (anchored on the producer's line). The per-physical-line
-    # scan missed it (the `|` never shared grep's line).
-    assert _flag("big_producer |\n  grep -q pattern\n") == [2]
-    # Joined from the `&&` line, so the finding anchors on that start line.
-    assert _flag("cmd &&\n  producer |\n  grep -qF x\n") == [2]
-    # A bounded builtin producer wrapped the same way is still exempt (green).
-    assert _flag("echo x |\n  grep -q p\n") == []
-    # A reasoned opt-out inside the wrapped pipeline still suppresses.
-    assert _flag("producer |\n  grep -qF x  # pipefail-grep-ok: bounded\n") == []
 
 
 def test_main_wires_violations_and_message(

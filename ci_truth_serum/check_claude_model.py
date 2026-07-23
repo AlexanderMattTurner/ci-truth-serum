@@ -23,6 +23,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated,
     LineLoader,
     workflow_files as _workflow_files,
 )
@@ -118,7 +119,9 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
         if not uses_action(step):
             continue
         line = _uses_line(source_lines, step.get("__line__", 1))
-        opted_out = 1 <= line <= len(source_lines) and OPT_OUT in source_lines[line - 1]
+        opted_out = 1 <= line <= len(source_lines) and annotated(
+            source_lines[line - 1], OPT_OUT, require_reason=False
+        )
         if not has_model(step) and not opted_out:
             violations.append((line, MESSAGE))
     return violations

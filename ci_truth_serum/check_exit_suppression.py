@@ -32,6 +32,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotation_re,
     inside_substitution,
     logical_lines,
     run_line_checks,
@@ -60,7 +61,7 @@ _ASSIGN_CAPTURE = re.compile(r"""^\s*\w+=["']?(?:\$\(.*\)|<\(.*\)|`.*`)["']?\s*$
 # The opt-out suppresses only when it carries a non-empty reason after the colon.
 # A bare `# allow-exit-suppress` (no colon, or an empty reason) states nothing and
 # does not silence the finding — the sibling checks demand the same.
-_ALLOW_WITH_REASON = re.compile(r"allow-exit-suppress:\s*\S")
+_ALLOW_WITH_REASON = annotation_re("allow-exit-suppress")
 
 
 def violations(text: str) -> list[int]:

@@ -34,15 +34,6 @@ def test_two_incomplete_cases_both_flagged() -> None:
     assert mod.violations(src) == [1, 5]
 
 
-def test_single_line_case_without_default_is_flagged() -> None:
-    # A whole `case … esac` on one physical line — the AST sees the case_statement
-    # even though the opener and `esac` share a line. (The old line-scanner missed
-    # this: it pushed the frame and `continue`d past the same-line `esac`.)
-    assert mod.violations('case "$x" in a) f ;; esac\n') == [1]
-    # A same-line default still passes.
-    assert mod.violations('case "$x" in a) f ;; *) g ;; esac\n') == []
-
-
 # ── not flagged: a default arm in any accepted spelling ──────────────────
 @pytest.mark.parametrize(
     "arms",
@@ -76,19 +67,31 @@ def test_nested_case_blocks_tracked_independently() -> None:
     assert mod.violations(src) == [3]
 
 
-# ── not a case_statement: quoted / commented text is never a block ───────
+# ── quoted/commented shapes are data, not case blocks ────────────────────
 @pytest.mark.parametrize(
     "src",
     [
         'echo "case x in"\n',  # case quoted in a string
         "# case $x in a) ;; esac\n",  # commented out
         'echo "esac"\n',
+        'echo "case $x in a) : ;; esac"\n',  # a whole quoted block is data
     ],
 )
-def test_non_case_shapes_pass(src: str) -> None:
-    # The grammar yields no `case_statement` node for a `case`/`esac` that lives in
-    # a string or a comment, so none is flagged.
+def test_quoted_shapes_pass(src: str) -> None:
     assert mod.violations(src) == []
+
+
+# ── regression: single-line case … esac is a real block and is checked ───
+def test_single_line_case_without_default_is_flagged() -> None:
+    """A one-line `case … esac` is the same block bash runs — the pre-AST
+    stack scanner pushed a frame on the `case` opener and `continue`d before
+    ever seeing the same-line `esac`, leaking the frame and never checking
+    the block."""
+    assert mod.violations('case "$1" in a) : ;; esac\n') == [1]
+
+
+def test_single_line_case_with_default_passes() -> None:
+    assert mod.violations('case "$1" in a) : ;; *) die x ;; esac\n') == []
 
 
 # ── opt-out ──────────────────────────────────────────────────────────────

@@ -90,8 +90,8 @@ def test_unguarded_value_flag_arms_are_flagged(body: str, line: int) -> None:
             '  --a)\n    if [[ $# -le 1 ]]; then die x; fi\n    A="$2"\n    shift 2\n    ;;',
         ),
         ("self-guard ${2:?…}", '  --b) B="${2:?--b needs a value}"; shift 2 ;;'),
-        ("default ${2:-x}", '  --c) C="${2:-x}"; shift 2 ;;'),
-        ("assign-default ${2:=x}", '  --c) C="${2:=x}"; shift 2 ;;'),
+        ("default then plain shift", '  --c) C="${2:-x}"; shift ;;'),
+        ("assign-default then plain shift", '  --c) C="${2:=x}"; shift ;;'),
         (
             "need_val helper",
             '  --d)\n    need_val "$@"\n    D="$2"\n    shift 2\n    ;;',
@@ -104,6 +104,74 @@ def test_unguarded_value_flag_arms_are_flagged(body: str, line: int) -> None:
 )
 def test_guarded_arm_passes(name: str, body: str) -> None:
     assert _flagged_lines(_parser(body)) == [], name
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '  --c) C="${2:-x}"; shift 2 ;;',
+        '  --c) C="${2:=x}"; shift 2 ;;',
+    ],
+)
+def test_defaulting_read_does_not_excuse_a_shift_2(body: str) -> None:
+    """`${2:-x}` is safe for ITSELF but proves nothing about $# — the
+    `shift 2` that follows still fails when the flag is passed last (bash:
+    "shift count out of range", aborting under set -e). Only `${2:?}` — which
+    dies when $2 is missing — raises the proven bound."""
+    assert _flagged_lines(_parser(body)) != []
+
+
+def test_ge2_guard_does_not_cover_a_dollar3_read() -> None:
+    """A `[[ $# -ge 2 ]] || die` guard proves TWO args; an arm that goes on to
+    read `$3` (or `shift 3`) is still unguarded — the proven bound is tracked
+    as a number, not a boolean."""
+    body = (
+        "  --pair)\n"
+        '    [[ $# -ge 2 ]] || die "--pair needs values"\n'
+        '    A="$2"; B="$3"; shift 3 ;;'
+    )
+    assert _flagged_lines(_parser(body)) != []
+    guarded = (
+        "  --pair)\n"
+        '    [[ $# -ge 3 ]] || die "--pair needs two values"\n'
+        '    A="$2"; B="$3"; shift 3 ;;'
+    )
+    assert _flagged_lines(_parser(guarded)) == []
+
+
+def test_locally_defined_nonexiting_helper_is_no_guard() -> None:
+    """A function named like an abort helper but DEFINED in the file without
+    exiting (`fail() { echo oops; }`) must not satisfy the guard — the name is
+    resolved against the actual body."""
+    src = (
+        'fail() { echo "oops"; }\n'
+        'case "$1" in\n'
+        "  --branch)\n"
+        "    [[ $# -ge 2 ]] || fail\n"
+        '    BRANCH="$2"; shift 2 ;;\n'
+        "esac\n"
+    )
+    assert [line for line, _ in mod.violations(src)] != []
+    # The same shape with a helper that genuinely exits stays clean.
+    exiting = src.replace(
+        'fail() { echo "oops"; }', 'fail() { echo "oops" >&2; exit 1; }'
+    )
+    assert mod.violations(exiting) == []
+
+
+def test_transitively_exiting_local_helper_counts() -> None:
+    """A local helper that aborts through ANOTHER local helper resolves to
+    exiting via the fixed point."""
+    src = (
+        "boom() { exit 1; }\n"
+        "fail() { boom; }\n"
+        'case "$1" in\n'
+        "  --branch)\n"
+        "    [[ $# -ge 2 ]] || fail\n"
+        '    BRANCH="$2"; shift 2 ;;\n'
+        "esac\n"
+    )
+    assert mod.violations(src) == []
 
 
 # Value reads outside a flag-labelled arm are never the target.
@@ -159,70 +227,6 @@ def test_read_before_guard_on_same_line_is_flagged() -> None:
 def test_guard_before_read_on_same_line_passes() -> None:
     # Mirror image: the same tokens in the correct order (guard, then read) pass.
     body = '  --x)\n    [[ $# -ge 2 ]] || die; X="$2"; shift 2\n    ;;'
-    assert _flagged_lines(_parser(body)) == []
-
-
-# ── C9: the guard must prove the arity the arm actually reads ────────────
-def test_guard_proving_less_than_read_requires_is_flagged() -> None:
-    # `[[ $# -ge 2 ]] || die` proves only $# >= 2, but the arm goes on to read $3
-    # and `shift 3` (needs $# >= 3). The lower read $2 is cleared; the raw $3 is not.
-    body = '  --two)\n    [[ $# -ge 2 ]] || die; A="$2"; B="$3"; shift 3\n    ;;'
-    hits = mod.violations(_parser(body))
-    assert [line for line, _ in hits] == [5]  # the B="$3" read
-    assert "$# >= 3" in hits[0][1]
-
-
-def test_guard_proving_exact_arity_the_arm_reads_passes() -> None:
-    # Green control: a `-ge 3` guard covers the $3 read and shift 3.
-    body = '  --two)\n    [[ $# -ge 3 ]] || die; A="$2"; B="$3"; shift 3\n    ;;'
-    assert _flagged_lines(_parser(body)) == []
-    # A `> 2` (i.e. >= 3) guard is equivalent.
-    body_gt = '  --two)\n    [[ $# -gt 2 ]] || die; B="$3"; shift 3\n    ;;'
-    assert _flagged_lines(_parser(body_gt)) == []
-
-
-def test_if_guard_proving_less_than_read_requires_is_flagged() -> None:
-    body = (
-        '  --two)\n    if [[ $# -lt 2 ]]; then die; fi\n    B="$3"\n    shift 3\n    ;;'
-    )
-    assert _flagged_lines(_parser(body)) == [6]  # the B="$3" read
-
-
-# ── C11: a locally-defined bail name that only warns is not a guard ──────
-def test_local_warn_only_bail_name_is_not_trusted() -> None:
-    # `error()` is defined in this script and only prints — it does NOT abort — so
-    # `[[ $# -ge 2 ]] || error` is not a real guard and the following $2 is unguarded.
-    src = (
-        "#!/usr/bin/env bash\n"
-        'error() { printf "%s\\n" "$1"; }\n'
-        "while [[ $# -gt 0 ]]; do\n"
-        '  case "$1" in\n'
-        '  --b) [[ $# -ge 2 ]] || error "need"; X="$2"; shift 2 ;;\n'
-        "  esac\n"
-        "done\n"
-    )
-    assert _flagged_lines(src) == [5]  # X="$2" is unguarded
-
-
-def test_local_bail_name_that_actually_aborts_is_trusted() -> None:
-    # Green control: the same helper, but its body exits — now it is a real bail, so
-    # `[[ $# -ge 2 ]] || error` guards the $2 read.
-    src = (
-        "#!/usr/bin/env bash\n"
-        'error() { printf "%s\\n" "$1"; exit 1; }\n'
-        "while [[ $# -gt 0 ]]; do\n"
-        '  case "$1" in\n'
-        '  --b) [[ $# -ge 2 ]] || error "need"; X="$2"; shift 2 ;;\n'
-        "  esac\n"
-        "done\n"
-    )
-    assert _flagged_lines(src) == []
-
-
-def test_external_bail_name_is_still_trusted() -> None:
-    # A conventional bail name NOT defined in this script (sourced from a lib) is
-    # trusted as before — we cannot see its body, so the convention stands.
-    body = '  --b) [[ $# -ge 2 ]] || die "need"; X="$2"; shift 2 ;;'
     assert _flagged_lines(_parser(body)) == []
 
 

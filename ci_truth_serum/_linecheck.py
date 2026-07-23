@@ -72,11 +72,36 @@ MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.(?P<key>[A-Za-z_][\w-]*)\s*\}\}")
 _IF_WRAPPER = re.compile(r"^\$\{\{\s*(?P<inner>.*?)\s*\}\}$")
 
 
+# A comment introducer: `#` (shell/YAML/Python), `<!--` (Markdown/HTML), or `//`
+# (JS/TS). An annotation token counts only AFTER one of these on its line, so a
+# token smuggled into live data (a `group: "<token>"` string value, a printed
+# message, a URL fragment) can never silently disable a lint — that would be a
+# fail-open. One SSOT for every annotation-matching hook in this package.
+_COMMENT_INTRO = r"(?:#|<!--|//)"
+
+
+def annotation_re(token: str, require_reason: bool = True) -> "re.Pattern[str]":
+    """The compiled matcher for an opt-out/annotation TOKEN on one line.
+
+    Comment-scoped: the token must follow a comment introducer. With
+    REQUIRE_REASON (the default), the token must also carry `: <non-empty
+    reason>` — a bare marker states nothing and does not suppress. Every hook
+    that recognizes a per-line annotation builds its matcher here; the
+    meta-test in tests/cts/test_annotation_predicates.py bans the bare
+    `token in line` substring predicate this replaces."""
+    tail = r":\s*\S" if require_reason else r"\b"
+    return re.compile(rf"{_COMMENT_INTRO}[^\n]*\b{re.escape(token)}{tail}")
+
+
+def annotated(line: str, token: str, require_reason: bool = True) -> bool:
+    """True when LINE carries the comment-scoped annotation TOKEN (see
+    ``annotation_re``)."""
+    return bool(annotation_re(token, require_reason).search(line))
+
+
 # A line that ends in a backslash, a pipe, or a boolean operator is continued on
-# the next line by the shell — join them so a command (and its `$(…)` / redirects
-# / a `producer |` whose `grep` sits on the next line) spanning lines is analyzed
-# whole, not mis-split mid-pipeline. Shared by the exit-suppression and
-# pipefail-grep lints so both see a wrapped pipeline as one logical command.
+# the next line by the shell — join them so a command (and its `$(…)` / redirects)
+# spanning lines is analyzed whole, not mis-split mid-capture.
 _CONTINUES = re.compile(r"(?:\\|\||&&)\s*$")
 
 # The only tokens that affect substitution nesting: an escaped char (`\x`, inert —
@@ -88,8 +113,8 @@ _SUBST_TOKEN = re.compile(r"\\.|\$\(|<\(|`|\)")
 
 def inside_substitution(prefix: str) -> bool:
     """True if PREFIX has an unclosed ``$(`` / ``<(`` / backtick — i.e. text after
-    it is still inside a command substitution (a value capture, or a line that
-    continues until the substitution closes)."""
+    it is still inside a command substitution (so the line continues, or a
+    ``|| true`` after it is a value capture)."""
     depth = 0
     backtick = False
     for token in _SUBST_TOKEN.finditer(prefix):
@@ -106,14 +131,16 @@ def inside_substitution(prefix: str) -> bool:
 
 
 def logical_lines(text: str) -> list[tuple[int, str]]:
-    """Join shell-continued physical lines into one logical line, tagged with the
-    1-based physical line number where it STARTS.
+    """Join continued lines into one logical line, tagged with the 1-based
+    physical line number where it STARTS.
 
     A line continues when it ends in ``\\`` / ``|`` / ``&&`` (shell line
     continuation) OR when a command substitution it opened (``$(`` / ``<(`` /
-    backtick) is still unclosed. So a ``|| true`` on the line that *closes* a
-    multi-line ``$( … )`` capture, and a ``grep`` on the line after a trailing
-    ``producer |``, are both analyzed as part of the one command they belong to."""
+    backtick) is still unclosed. This is the ONE joiner every line-oriented shell
+    lint in this package scans through, so a construct wrapped across physical
+    lines cannot evade any of them; the meta-test in
+    tests/cts/test_shell_hook_traversal.py holds each shell lint to it (or to the
+    full ``_bash_ast`` grammar)."""
     out: list[tuple[int, str]] = []
     pending = ""
     start = 0
@@ -218,11 +245,10 @@ def has_always_reporter(jobs: dict) -> bool:
 # A concurrency group keyed by any of these is per-ref / per-PR / per-run, so a
 # run is only ever superseded by a *newer run of the same ref* — whose own
 # reporter then posts the check. Without one of these the group is static and a
-# sibling ref's run can cancel this one with no replacement report. Matched as a
-# best-effort substring of the group expression, not a full ${{ }} parse. Shared
-# by the concurrency lints (check_static_concurrency, which flags a static
-# group on the decide+always() shape, and check_cancellable_required_check, which
-# flags a static *cancellable* group on any required-check-marked workflow) so the
+# sibling ref's run can cancel this one with no replacement report. Shared by
+# the concurrency lints (check_static_concurrency, which flags a static group on
+# the decide+always() shape, and check_cancellable_required_check, which flags a
+# static *cancellable* group on any required-check-marked workflow) so the
 # per-ref definition is one SSOT, not two copies that could drift.
 PER_REF_CONCURRENCY_KEYS = (
     "github.ref",
@@ -234,25 +260,23 @@ PER_REF_CONCURRENCY_KEYS = (
     "github.event.number",
 )
 
-
-# A `${{ … }}` GitHub-expression span. A per-ref key is only meaningful inside such
-# a span — evaluated context, not literal text — so the key search is scoped to the
-# expression bodies. A bare `github.ref` substring in a static group name (e.g.
-# `group: deploy-github.ref-thing`) is literal text GitHub never evaluates, so it
-# must NOT read as per-ref (that would be a fail-open: a static group wrongly cleared).
-_EXPR_SPAN = re.compile(r"\$\{\{(?P<body>.*?)\}\}", re.DOTALL)
+# A `${{ … }}` expression span. Non-greedy: each span ends at its own `}}`.
+_EXPR_SPAN = re.compile(r"\$\{\{(?P<expr>.*?)\}\}", re.DOTALL)
 
 
 def group_is_per_ref(group: str) -> bool:
     """True if a concurrency `group:` expression carries a per-ref/per-PR/per-run
-    key — meaning a superseding run is always the same ref's newer run, which
-    re-reports, so the group cannot strand a required check.
-
-    The key must appear inside a `${{ … }}` expression span (the only text GitHub
-    evaluates); a literal `github.ref` substring elsewhere in the group name does
-    not count."""
-    expressions = "".join(m.group("body") for m in _EXPR_SPAN.finditer(group))
-    return any(key in expressions for key in PER_REF_CONCURRENCY_KEYS)
+    key INSIDE a `${{ … }}` expression span — meaning a superseding run is always
+    the same ref's newer run, which re-reports, so the group cannot strand a
+    required check. Outside a span the key is a literal: a group named
+    `"github.ref-shared"` is one static string for every ref, so a bare
+    substring match would fail open exactly on the workflows this guard exists
+    to flag."""
+    return any(
+        key in span.group("expr")
+        for span in _EXPR_SPAN.finditer(group)
+        for key in PER_REF_CONCURRENCY_KEYS
+    )
 
 
 def opted_out(text: str, token: str) -> bool:
@@ -263,22 +287,6 @@ def opted_out(text: str, token: str) -> bool:
     return any(
         token in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
     )
-
-
-def comment_opt_out(line: str, token: str) -> bool:
-    """True only when TOKEN is a *reasoned* opt-out inside an actual ``#`` comment on
-    LINE — ``# … <token>: <non-empty reason>``.
-
-    A bare occurrence of TOKEN anywhere else on the line does NOT opt out: a token
-    smuggled into a URL path or string (``curl https://cdn/<token>/x | sh``) must
-    never silence the lint, which is exactly the fail-open a substring test allows.
-    The colon-and-reason is required, matching the sibling exit-suppression and
-    concurrency opt-out contracts. Shared by the pinning and pipefail lints, each
-    passing its own token, so there is one matcher instead of a copy per hook."""
-    if "#" not in line:
-        return False
-    comment = line.split("#", 1)[1]
-    return re.search(rf"(?<![\w-]){re.escape(token)}\s*:\s*\S", comment) is not None
 
 
 def concurrency_line(text: str) -> int:

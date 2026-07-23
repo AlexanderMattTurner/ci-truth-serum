@@ -38,7 +38,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import strip_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
-    comment_opt_out,
+    annotated,
+    logical_lines,
     run_line_checks,
 )
 
@@ -56,16 +57,18 @@ _DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")
 _ADD_URL = re.compile(r"^\s*ADD\s+(?:--\S+\s+)*\S*https?://", re.IGNORECASE)
 
 # An output flag that makes the fetch write a file. `-o`/`--output` and wget's
-# `-O` take a target (captured so a /dev/null/stdout/- sink can be excused); curl's
-# `-O` and `--remote-name` derive the name from the URL and take none. The `[oO]`
-# flag may be CLUSTERED with other short flags (`wget -qO- url`, `curl -fsSLo f`),
-# so the short form matches `-[A-Za-z]*[oO]` — the value is then either GLUED to the
-# flag (`-qO-` → `-`, `-Ofile` → `file`) or the next `=`/space-separated token. A
-# `-` value (write to stdout) is captured either way so the sink is excused.
+# `-O` take a target (captured so a /dev/null/stdout/- sink can be excused);
+# curl's `-O` and `--remote-name` derive the name from the URL and take none. The
+# target may be space-separated (`-o f`) or `=`-joined (`--output=f`); the `-O-`
+# shorthand (write to stdout, no space) is captured by the `stdout` alternative.
+# `o`/`O` is also recognized at the END of a short-flag cluster (`wget -qO-`,
+# `curl -sSLo f`, `curl -fsSLO`): a `-q` on wget is quiet mode, not an output
+# flag, and misreading `-qO-` as flag-less made a piped stdout read a "bare wget
+# artifact download". A cluster whose target is GLUED after a non-final `o`/`O`
+# (`-Oq`) is not matched and conservatively stays an artifact download.
 _OUTPUT_FLAG = re.compile(
-    r"(?:^|\s)"
-    r"(?:--output|--remote-name(?:-all)?|-[A-Za-z]*[oO])"
-    r"(?:(?P<glued>-(?=\s|$)|[^\s=-]\S*)|[=\s]+(?P<target>\S+))?"
+    r"(?:^|\s)(?:-[A-Za-z]*[oO]|--output|--remote-name(?:-all)?)\b"
+    r"(?:[=\s]+(?P<target>\S+)|(?P<stdout>-)(?=\s|$))?"
 )
 
 _NULL_TARGETS = {"/dev/null", "/dev/stdout", "/dev/stderr", "-"}
@@ -130,22 +133,19 @@ def _is_artifact_download(line: str) -> bool:
     # `curl -O- … | sh` as a mere stdout write).
     if _PIPE_TO_SHELL.search(line) or _EXEC_SUBST.search(line):
         return True
+    # A shell redirect into a real file saves the bytes regardless of any
+    # stdout-sink output flag (`wget -qO- url > tool` writes `tool`), so it is
+    # checked before the stdout early-return below.
     rm = _REDIRECT.search(line)
-    redirect_to_file = rm is not None and rm.group("rt") not in _NULL_TARGETS
+    if rm and rm.group("rt") not in _NULL_TARGETS:
+        return True
     m = _OUTPUT_FLAG.search(line)
     if m:
-        # The written target is whichever value was captured — glued into the flag
-        # cluster (`-qO-`) or `=`/space-separated. `-O`/`--remote-name` capture no
-        # value (they derive the name from the URL) — a real artifact.
-        target = m.group("glued") or m.group("target")
-        if target is None or target not in _NULL_TARGETS:
-            return True  # explicit output file
-        # The flag itself saves nothing (a `-`/`/dev/null` sink). Stdout (`-`) can
-        # still be captured to disk by a `> file` redirect (`wget -qO- url > f`);
-        # `/dev/null` discards, so it never becomes an artifact.
-        return target == "-" and redirect_to_file
-    if redirect_to_file:
-        return True
+        if m.group("stdout"):  # `-O-` writes to stdout, not an artifact
+            return False
+        # A captured target may be a null sink; `-O`/`--remote-name` capture none
+        # (they derive the name from the URL) and so are always a real artifact.
+        return m.group("target") not in _NULL_TARGETS
     return bool(_WGET.search(line))
 
 
@@ -158,34 +158,41 @@ def _is_download(line: str) -> bool:
 def violations(text: str) -> list[int]:
     """1-based line numbers of artifact downloads with no nearby verification.
 
-    Download and verification detection run over a COMMENT-STRIPPED view of the
-    text (bash `comment` nodes blanked), so a verification token that lives only in
-    a comment — ``# TODO: verify with sha256sum`` — no longer satisfies the gate;
-    the token must sit in executed code. The raw lines are kept for the
-    ``# pin-exempt:`` opt-out, which by definition lives in a comment."""
-    lines = text.splitlines()
-    code = strip_comments(text).splitlines()
+    Download and verification detection run over LOGICAL lines (continuations
+    joined) of a COMMENT-STRIPPED view of the text (bash `comment` nodes
+    blanked), so a `curl … \\`-wrapped download is analyzed as one command AND a
+    verification token that lives only in a comment — ``# TODO: verify with
+    sha256sum`` — cannot satisfy the gate; the token must sit in executed code.
+    The raw physical lines are kept for the ``# pin-exempt:`` opt-out, which by
+    definition lives in a comment (accepted on any physical line of the flagged
+    command, or the line directly above it)."""
+    raw = text.splitlines()
+    logicals = logical_lines(strip_comments(text))
+    starts = [s for s, _ in logicals]
+    code = [line for _, line in logicals]
     hits = []
-    for i, line in enumerate(lines):
+    for i, (start, line) in enumerate(logicals):
         stripped = line.strip()
-        if not stripped or stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
+        if not stripped or MESSAGE_PREFIX.match(stripped):
             continue
-        if not _is_download(code[i]):
+        if not _is_download(line):
             continue
-        if comment_opt_out(line, "pin-exempt") or (
-            i > 0 and comment_opt_out(lines[i - 1], "pin-exempt")
+        span_end = starts[i + 1] - 1 if i + 1 < len(starts) else len(raw)
+        span = raw[start - 1 : span_end]
+        if any(annotated(pl, "pin-exempt") for pl in span) or (
+            start >= 2 and annotated(raw[start - 2], "pin-exempt")
         ):
             continue
         if not _verified_within_window(code, i):
-            hits.append(i + 1)
+            hits.append(start)
     return hits
 
 
 def _verified_within_window(code: list[str], start: int) -> bool:
-    """Scan [start, start+_WINDOW] of the comment-stripped CODE lines for a
-    verification token, stopping at the next download so each fetch must carry its
-    own check. Because the lines are comment-stripped, a ``sha256sum`` mentioned in
-    a comment cannot count as verification."""
+    """Scan [start, start+_WINDOW] of the comment-stripped logical CODE lines for
+    a verification token, stopping at the next download so each fetch must carry
+    its own check. Because the lines are comment-stripped, a ``sha256sum``
+    mentioned in a comment cannot count as verification."""
     for j in range(start, min(len(code), start + _WINDOW + 1)):
         if j > start and _is_download(code[j]):
             return False

@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # A reference to a global stream (bare ``sys.stdout`` or attribute-qualified
@@ -43,7 +44,7 @@ def violations(text: str) -> list[int]:
     hits = []
     for lineno, line in enumerate(text.splitlines(), 1):
         stripped = line.lstrip()
-        if stripped.startswith("#") or "allow-stdio-swap" in line:
+        if stripped.startswith("#") or annotated(line, "allow-stdio-swap"):
             continue
         if _REDIRECT.search(line):
             hits.append(lineno)

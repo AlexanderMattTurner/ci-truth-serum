@@ -42,6 +42,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     group_is_per_ref,
+    opted_out,
     required_check_contexts,
 )
 
@@ -62,9 +63,7 @@ def _opted_out(text: str) -> bool:
     """True only when the opt-out token appears inside an actual `#` comment, not
     anywhere in the byte stream — a `group: "<token>"` string value must not
     silently disable the lint (that would be a fail-open)."""
-    return any(
-        OPT_OUT in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
-    )
+    return opted_out(text, OPT_OUT)
 
 
 def _is_cancellable(value: object) -> bool:

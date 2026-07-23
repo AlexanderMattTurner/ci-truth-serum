@@ -44,6 +44,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
@@ -53,6 +54,7 @@ ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 # Opt out of a legitimately-externalized marker with this comment on the invoking
 # `run:` step or inside the referenced script.
 OPT_OUT = "allow-externalized-marker"
+_OPTOUT_RE = annotation_re(OPT_OUT)
 
 # The default policy marker set: git commands that rewrite history. A job running
 # any of these must check out with `fetch-depth: 0`; a guard enforcing that by
@@ -166,7 +168,9 @@ def _analyze_unit(
     found: list[tuple[int | None, str]] = []
     for step_line, run, uses in parsed:
         sources = _step_external(run, uses, reader)
-        if OPT_OUT in run or any(OPT_OUT in text for _label, text in sources):
+        if _OPTOUT_RE.search(run) or any(
+            _OPTOUT_RE.search(text) for _label, text in sources
+        ):
             continue
         blind: set[str] = set()
         blind_labels: list[str] = []

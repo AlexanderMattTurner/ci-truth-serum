@@ -1,7 +1,7 @@
 """Tests for .github/scripts/mutation_shards.py — the cosmic-ray shard expander.
 
 Drives the pure functions directly (no cosmic-ray) and pins the SSOT contract:
-the shards cover exactly the mutated ``hooks/*.py`` (per cosmic-ray.toml) minus
+the shards cover exactly the mutated ``ci_truth_serum/*.py`` (per cosmic-ray.toml) minus
 its exclusions, a large module splits into a complete indexed mutant-partition,
 and every shard's generated config is valid TOML that mutates one module and
 scopes the suite to that module.
@@ -28,7 +28,7 @@ _COSMIC = tomllib.loads((REPO_ROOT / "cosmic-ray.toml").read_text())["cosmic-ray
 
 
 def _mutated_modules() -> set[str]:
-    """The `hooks/*.py` cosmic-ray.toml mutates: the package minus its exclusions.
+    """The `ci_truth_serum/*.py` cosmic-ray.toml mutates: the package minus its exclusions.
     Computed independently of the code under test so the contract is a real check."""
     package = _COSMIC["module-path"]
     excluded = set(_COSMIC["excluded-modules"])
@@ -106,16 +106,16 @@ def test_test_file_convention(stem: str, expected: str) -> None:
 
 # ── fail-loud on a hostile / incomplete tree ───────────────────────────────
 def _write_min_repo(root: Path, *, modules: list[str], tests: list[str]) -> None:
-    (root / "hooks").mkdir()
+    (root / "ci_truth_serum").mkdir()
     (root / "tests" / "cts").mkdir(parents=True)
     for m in modules:
-        (root / "hooks" / m).write_text("x = 1\n")
+        (root / "ci_truth_serum" / m).write_text("x = 1\n")
     for t in tests:
         (root / "tests" / "cts" / t).write_text("def test_x(): pass\n")
     (root / "cosmic-ray.toml").write_text(
         "[cosmic-ray]\n"
-        'module-path = "hooks"\n'
-        'excluded-modules = ["hooks/__init__.py"]\n'
+        'module-path = "ci_truth_serum"\n'
+        'excluded-modules = ["ci_truth_serum/__init__.py"]\n'
         "timeout = 60.0\n"
         'test-command = "python -m pytest -x -q -p no:cacheprovider tests/cts"\n'
         '\n[cosmic-ray.distributor]\nname = "local"\n'
@@ -143,14 +143,14 @@ def test_large_module_splits_into_line_capped_sub_shards(tmp_path: Path) -> None
     # A module just over 2x the line cap must split into 3 sub-shards indexed 0..2.
     lines = mod.SPLIT_EVERY_LINES * 2 + 1
     _write_min_repo(tmp_path, modules=["__init__.py", "check_big.py"], tests=[])
-    (tmp_path / "hooks" / "check_big.py").write_text("x = 1\n" * lines)
+    (tmp_path / "ci_truth_serum" / "check_big.py").write_text("x = 1\n" * lines)
     (tmp_path / "tests" / "cts" / "test_check_big.py").write_text("def test(): pass\n")
     shards = mod.expand_shards(tmp_path)
     assert [s["id"] for s in shards] == ["check_big-1", "check_big-2", "check_big-3"]
     assert all(s["total"] == 3 for s in shards)
     assert [s["index"] for s in shards] == [0, 1, 2]
     # a module at exactly the cap stays a single bare-stem shard
-    (tmp_path / "hooks" / "check_small.py").write_text(
+    (tmp_path / "ci_truth_serum" / "check_small.py").write_text(
         "x = 1\n" * mod.SPLIT_EVERY_LINES
     )
     (tmp_path / "tests" / "cts" / "test_check_small.py").write_text(
@@ -162,7 +162,7 @@ def test_large_module_splits_into_line_capped_sub_shards(tmp_path: Path) -> None
     assert small == [
         {
             "id": "check_small",
-            "module": "hooks/check_small.py",
+            "module": "ci_truth_serum/check_small.py",
             "tests": "tests/cts/test_check_small.py",
             "index": 0,
             "total": 1,
@@ -234,7 +234,10 @@ def test_cli_write_config_writes_parseable_toml(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     written = (tmp_path / "cosmic-ray.shard.toml").read_text()
-    assert tomllib.loads(written)["cosmic-ray"]["module-path"] == "hooks/check_a.py"
+    assert (
+        tomllib.loads(written)["cosmic-ray"]["module-path"]
+        == "ci_truth_serum/check_a.py"
+    )
 
 
 def test_cli_write_config_unknown_id_fails() -> None:

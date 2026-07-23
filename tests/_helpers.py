@@ -35,7 +35,7 @@ def dogfood_extras_exclude() -> "re.Pattern[str]":
 def load_hook(filename: str, modname: str) -> ModuleType:
     """Load a ci-truth-serum hook script by path and drive its functions directly.
 
-    The hooks live in ``hooks/`` outside any importable package layout the tests
+    The hooks live in ``ci_truth_serum/`` outside any importable package layout the tests
     share, so each is loaded from its file. ``modname`` is the (arbitrary) module
     name to register the loaded module under.
     """

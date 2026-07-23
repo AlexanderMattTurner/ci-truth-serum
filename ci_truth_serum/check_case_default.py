@@ -13,6 +13,11 @@ though a multi-pattern arm containing a bare `*` alternative (`x|*)`) does
 count. The default may reject the value (`*) die "unknown: $1" ;;`) — the
 point is that SOMETHING runs.
 
+The block is found with tree-sitter-bash (the shared ``_bash_ast`` grammar),
+so a single-line ``case … esac``, a block wrapped in continuations, and a
+nested ``case`` are all analyzed exactly as bash parses them, and a ``case``
+quoted inside a string or comment is data, never a block.
+
 Opt out with `# case-default-ok: <reason>` trailing the `case` line (or on
 the line immediately above) when falling through really is the intent.
 
@@ -24,50 +29,53 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated,
+    run_line_checks,
+)
 
 OPT_OUT = "case-default-ok"
 
+# Tokens in a case_item before the `)` that are not pattern alternatives.
+_LABEL_NOISE = frozenset({"(", "|"})
 
-def _arm_is_default(case_item) -> bool:
-    """True when a `case_item`'s pattern list contains a bare `*` alternative —
-    the catch-all default.
 
-    The grammar yields each alternative before the `)` as a `word` /
-    `extglob_pattern` node (separated by `|`, optionally paren-wrapped), so a bare
-    `*` is exactly a pattern node whose text is `*`. A subset glob (`*.txt`, `--*`)
-    has other text and is not a default; a quoted `"*"` is a `string` node (a
-    literal asterisk), so it is correctly NOT a default. A multi-pattern arm with a
-    bare `*` alternative (`x|*)`) does count."""
+def _item_has_bare_star(case_item) -> bool:
+    """True when one of the arm's `|`-separated label alternatives is a bare `*`."""
     for child in case_item.children:
         if child.type == ")":
-            break
-        if child.type in ("word", "extglob_pattern") and child.text.decode() == "*":
+            return False
+        if child.type in _LABEL_NOISE:
+            continue
+        if child.text.decode("utf-8", "replace").strip() == "*":
             return True
     return False
 
 
-def violations(text: str) -> list[int]:
-    """1-based line numbers of `case … esac` statements with no bare `*)` default
-    arm (and without an opt-out annotation).
+def _has_default_arm(case_node) -> bool:
+    """True when the case statement carries an arm whose label includes a bare `*`."""
+    return any(
+        _item_has_bare_star(child)
+        for child in case_node.children
+        if child.type == "case_item"
+    )
 
-    Driven off the bash AST's `case_statement` nodes, so a single-line
-    `case … esac`, a compact `a) x ;; *) y ;;`, a nested case, comments, and quoted
-    patterns are all parsed by the grammar rather than a hand-rolled line scanner.
-    The finding is anchored on the `case` keyword's line; the opt-out is read from
-    that line or the one immediately above."""
+
+def violations(text: str) -> list[int]:
+    """1-based line numbers of `case` statements with no bare `*)` default arm
+    (and without an opt-out annotation)."""
     physical = text.splitlines()
     hits: list[int] = []
     for case_node in iter_nodes(parse(text), "case_statement"):
-        arms = [c for c in case_node.children if c.type == "case_item"]
-        if any(_arm_is_default(arm) for arm in arms):
+        if _has_default_arm(case_node):
             continue
-        line = case_node.start_point[0] + 1
-        raw = physical[line - 1] if 0 <= line - 1 < len(physical) else ""
-        prev = physical[line - 2] if line - 2 >= 0 else ""
-        if OPT_OUT in raw or OPT_OUT in prev:
+        lineno = case_node.start_point[0] + 1
+        raw = physical[lineno - 1] if lineno - 1 < len(physical) else ""
+        if annotated(raw, OPT_OUT) or (
+            lineno >= 2 and annotated(physical[lineno - 2], OPT_OUT)
+        ):
             continue
-        hits.append(line)
+        hits.append(lineno)
     return sorted(hits)
 
 

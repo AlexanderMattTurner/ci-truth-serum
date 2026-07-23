@@ -7,6 +7,8 @@ invariants live in ``test_fuzz_bash_ast.py``; this suite is the per-module oracl
 the mutation gate runs, so every assertion is exact.
 """
 
+import pytest
+
 from tests._helpers import load_hook
 
 bash_ast = load_hook("_bash_ast.py", "check_bash_ast")
@@ -27,46 +29,6 @@ def test_parse_is_reusable_across_calls() -> None:
     # The cached parser must keep working on a second, different input.
     assert bash_ast.parse("a | b").type == "program"
     assert bash_ast.parse("case $x in a) ;; esac").type == "program"
-
-
-# ── crash-safety: sanitize adversarial bytes before the native parser ────────
-def test_safe_byte_table_maps_non_ascii_and_control_to_x_length_preserving() -> None:
-    tbl = bash_ast._SAFE_BYTE_TABLE
-    assert len(tbl) == 256
-    # Printable ASCII plus tab/newline/CR are kept verbatim (real shell syntax).
-    for b in [*range(0x20, 0x7F), 0x09, 0x0A, 0x0D]:
-        assert tbl[b] == b, hex(b)
-    # Every other byte — C0 controls (except \t\n\r), DEL, and all high bytes that
-    # carry non-ASCII UTF-8 — maps to 'x' (0x78), the crash-trigger classes removed.
-    for b in [*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), *range(0x7F, 0x100)]:
-        assert tbl[b] == 0x78, hex(b)
-
-
-def test_parse_replaces_non_ascii_but_preserves_offsets() -> None:
-    # A non-ASCII char inside a string is rewritten to 'x' in the bytes tree-sitter
-    # sees, yet byte length is preserved so every node offset/row still lines up
-    # with the original source (what strip_comments / start_point rely on).
-    script = 'x="café"\n'
-    root = bash_ast.parse(script)
-    assert root.type == "program"
-    assert root.end_byte == len(script.encode("utf-8"))
-    assert "é" not in root.text.decode()  # the non-ASCII byte class is gone
-    # ASCII structure is untouched: the assignment is still parsed as one.
-    assert [n.text.decode() for n in bash_ast.iter_nodes(root, "variable_name")] == [
-        "x"
-    ]
-
-
-def test_parse_survives_adversarial_unicode() -> None:
-    # The byte classes that segfault tree-sitter-bash 0.25.1's native parser:
-    # high-plane codepoints, stacked combining marks, zero-width / BOM / paragraph
-    # separator, and C0 controls, spliced into shell-ish fragments. Sanitization
-    # must let parse() complete and return a real tree instead of crashing.
-    adversarial = (
-        'done < <(jq -r " ​﻿\U000c0981́́\x0c\x92\U000da6dd\U000ab905 \U000ab905) # c\n'
-    ) * 40
-    root = bash_ast.parse(adversarial)
-    assert root.type == "program"
 
 
 def test_iter_nodes_filters_to_requested_type() -> None:
@@ -100,6 +62,60 @@ def test_iter_nodes_finds_nested_nodes() -> None:
 
 def test_string_and_comment_pipes_are_not_pipelines() -> None:
     assert _types('echo "a | b"  # c | d', "pipeline") == []
+
+
+# ── pathological-input refusal ────────────────────────────────────────────
+def test_parse_refuses_quadratic_pipe_chains_loudly() -> None:
+    """tree-sitter-bash allocates quadratically on chained pipeline stages
+    (~3.3 GB at 20k `cmd |` stages, measured), failing as a C-level segfault
+    rather than a Python error. `parse` refuses such input with a LOUD
+    PathologicalInputError — never a silent no-findings pass."""
+    with pytest.raises(bash_ast.PathologicalInputError):
+        bash_ast.parse("x | " * (bash_ast._MAX_PIPE_BYTES + 1))
+    # Just under the cap parses normally.
+    assert bash_ast.parse("x | x").type == "program"
+
+
+# ── supplementary-plane (non-BMP) neutralization ──────────────────────────
+# tree-sitter-bash 0.25's C scanner corrupts the heap on an astral codepoint
+# (≥ U+10000) next to a word-opening token like `{`, segfaulting the process
+# non-deterministically. `parse` folds every non-BMP char to U+FFFD first.
+_ASTRAL_CRASHERS = (0x10FFFF, 0xC6E8E, 0x10000, 0x1F600, 0x20000)
+
+
+def test_neutralize_supplementary_folds_only_non_bmp() -> None:
+    # Non-BMP → U+FFFD; BMP (incl. U+FFFF and multibyte U+00FF/U+0800) untouched;
+    # character count and every line boundary preserved for caller alignment.
+    src = "a{\U0010ffff\n\u00ff\uffff\U0001f600b"
+    out = bash_ast._neutralize_supplementary(src)
+    assert out == "a{\ufffd\n\u00ff\uffff\ufffdb"
+    assert len(out) == len(src)
+    # Line boundaries survive the fold, so line count and offsets stay aligned.
+    assert len(out.splitlines()) == len(src.splitlines())
+    # Pure-BMP input is returned unchanged (fast path) and the fold is idempotent.
+    assert bash_ast._neutralize_supplementary("echo hi") == "echo hi"
+    assert bash_ast._neutralize_supplementary(out) == out
+
+
+def test_parse_survives_astral_next_to_brace() -> None:
+    """Behavior oracle for the crash: on the unfixed parser these inputs
+    segfaulted the whole process (the xdist worker died, "node down"); the fold
+    makes every one parse to a normal program root instead."""
+    for cp in _ASTRAL_CRASHERS:
+        for tail in ("", "}", " x"):
+            for _ in range(200):
+                assert bash_ast.parse("{" + chr(cp) + tail).type == "program"
+
+
+def test_strip_comments_stays_aligned_with_astral_char() -> None:
+    # An astral char sits in code before a trailing comment: the comment is
+    # blanked, the astral char and layout are preserved, and length is unchanged
+    # (the byte-offset map is built against the neutralized string).
+    src = "run \U0001f600  # note\nx\n"
+    out = bash_ast.strip_comments(src)
+    assert out == "run \U0001f600" + " " * 8 + "\nx\n"
+    assert len(out) == len(src)
+    assert out.splitlines() == ["run \U0001f600" + " " * 8, "x"]
 
 
 def test_strip_comments_blanks_comment_keeps_layout() -> None:

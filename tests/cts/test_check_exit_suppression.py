@@ -241,7 +241,7 @@ def test_own_shell_tree_is_clean() -> None:
     there turns this red, proving the check is wired to real sources, not just unit
     cases. Scoped to hooks/ (the package's own scripts)."""
     tracked = subprocess.check_output(
-        ["git", "ls-files", "hooks/"], text=True, cwd=REPO_ROOT
+        ["git", "ls-files", "ci_truth_serum/"], text=True, cwd=REPO_ROOT
     ).split()
     offenders = []
     for rel in tracked:

@@ -25,6 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -65,7 +66,9 @@ def violations(text: str) -> list[int]:
             continue
         if not (_TOKEN_KEY.match(line) and _FALLBACK.search(line)):
             continue
-        if OPT_OUT in line or (idx >= 1 and OPT_OUT in lines[idx - 1]):
+        if annotated(line, OPT_OUT) or (
+            idx >= 1 and annotated(lines[idx - 1], OPT_OUT)
+        ):
             continue
         hits.append(idx + 1)
     return hits

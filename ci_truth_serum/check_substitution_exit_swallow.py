@@ -34,7 +34,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import MESSAGE_PREFIX, run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    MESSAGE_PREFIX,
+    annotation_re,
+    logical_lines,
+    run_line_checks,
+)
 
 # The curated producer set (see module docstring for why these two and not grep/cat).
 _PRODUCERS = ("jq", "yq")
@@ -56,7 +61,7 @@ _PIPE_WHILE = re.compile(
 )
 
 # The annotation only suppresses when it carries a non-empty reason after the colon.
-_ALLOW_WITH_REASON = re.compile(r"allow-substitution-exit:\s*\S")
+_ALLOW_WITH_REASON = annotation_re("allow-substitution-exit")
 
 
 def _annotation_suppresses(physical: list[str], lineno: int) -> bool:
@@ -69,16 +74,18 @@ def _annotation_suppresses(physical: list[str], lineno: int) -> bool:
 
 def violations(text: str) -> list[int]:
     """1-based line numbers in TEXT where a structured-data producer feeds a loop
-    through an exit-swallowing construct without a reason-bearing annotation."""
+    through an exit-swallowing construct without a reason-bearing annotation.
+    Scanned per LOGICAL line (continuations joined), so a wrapped
+    `jq … \\\n  | while read` cannot evade the scan."""
     physical = text.splitlines()
     hits: list[int] = []
-    for lineno, raw in enumerate(physical, 1):
+    for lineno, raw in logical_lines(text):
         stripped = raw.lstrip()
         if stripped.startswith("#") or MESSAGE_PREFIX.match(stripped):
             continue  # whole-line comment or a printed example, not real code
         if not (_PROC_SUB.search(raw) or _PIPE_WHILE.search(raw)):
             continue
-        if _annotation_suppresses(physical, lineno):
+        if _ALLOW_WITH_REASON.search(raw) or _annotation_suppresses(physical, lineno):
             continue
         hits.append(lineno)
     return hits

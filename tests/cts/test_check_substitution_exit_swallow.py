@@ -179,7 +179,7 @@ def _is_shell(path: Path) -> bool:
 def test_own_shell_tree_is_clean() -> None:
     """ci-truth-serum's own shell hooks must pass the lint. Scoped to hooks/."""
     tracked = subprocess.check_output(
-        ["git", "ls-files", "hooks/"], text=True, cwd=REPO_ROOT
+        ["git", "ls-files", "ci_truth_serum/"], text=True, cwd=REPO_ROOT
     ).split()
     offenders = []
     for rel in tracked:
@@ -189,3 +189,11 @@ def test_own_shell_tree_is_clean() -> None:
         hits = mod.violations(path.read_text(encoding="utf-8", errors="replace"))
         offenders += [f"{rel}:{n}" for n in hits]
     assert offenders == [], f"unannotated jq/yq exit-swallowing construct: {offenders}"
+
+
+# ── regression: continuation-wrapped pipe-to-while is one logical line ────
+def test_wrapped_jq_pipe_while_is_flagged() -> None:
+    """A `jq … \\<newline> | while read` split across physical lines is the
+    same exit-swallowing pipeline (red on the pre-joiner implementation)."""
+    src = 'jq -r ".x[]" f \\\n  | while read -r d; do :; done\n'
+    assert mod.violations(src) == [1]

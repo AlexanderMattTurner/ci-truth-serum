@@ -24,6 +24,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
 OPT_OUT = "toolchain-skip-ok"
 
 _CALL = re.compile(r"\bpytest\.(?:mark\.skipif|importorskip)\s*\(")
@@ -91,7 +94,7 @@ def violations(text: str) -> list[int]:
         lineno = text.count("\n", 0, m.start()) + 1
         first_line = lines[lineno - 1] if lineno <= len(lines) else ""
         above = lines[lineno - 2] if lineno >= 2 else ""
-        if OPT_OUT in first_line or OPT_OUT in above:
+        if annotated(first_line, OPT_OUT) or annotated(above, OPT_OUT):
             continue
         hits.append(lineno)
     return hits

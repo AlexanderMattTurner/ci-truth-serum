@@ -33,7 +33,11 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    LineLoader,
+    annotated,
+    logical_lines,
+)
 
 OPT_OUT = "stderr-merge-ok"
 
@@ -54,11 +58,6 @@ _ARITH = re.compile(r"\(\((?P<body>.*?)\)\)")
 
 _WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 
-# Line-joining: a line ending in `\`, `|`, or `&&`, or one with an unclosed
-# substitution, continues on the next (same contract as check_exit_suppression).
-_CONTINUES = re.compile(r"(?:\\|\||&&)\s*$")
-_SUBST_TOKEN = re.compile(r"\\.|\$\(|<\(|`|\)")
-
 MESSAGE_INLINE = (
     "`2>&1` merges stderr into a stream that is then piped into a parser — any "
     'warning on stderr becomes part of "the value" (an npm warning merged this '
@@ -70,43 +69,6 @@ MESSAGE_LATER = (
     "stderr became part of the value. Capture stdout only (keep stderr for "
     f"diagnostics), or annotate `# {OPT_OUT}: <reason>`."
 )
-
-
-def _inside_substitution(prefix: str) -> bool:
-    """True if PREFIX has an unclosed ``$(`` / ``<(`` / backtick."""
-    depth = 0
-    backtick = False
-    for token in _SUBST_TOKEN.finditer(prefix):
-        tok = token.group()
-        if tok[0] == "\\":
-            continue
-        if tok in ("$(", "<("):
-            depth += 1
-        elif tok == ")" and depth:
-            depth -= 1
-        elif tok == "`":
-            backtick = not backtick
-    return depth > 0 or backtick
-
-
-def _logical_lines(text: str) -> list[tuple[int, str]]:
-    """Join continued lines into one logical line, tagged with the 1-based
-    physical line number where it starts."""
-    out: list[tuple[int, str]] = []
-    pending = ""
-    start = 0
-    for lineno, raw in enumerate(text.splitlines(), 1):
-        if not pending:
-            start = lineno
-        joined = raw[:-1] if raw.endswith("\\") else raw
-        if _CONTINUES.search(raw) or _inside_substitution(pending + joined):
-            pending += joined + " "
-            continue
-        out.append((start, pending + raw))
-        pending = ""
-    if pending:
-        out.append((start, pending))
-    return out
 
 
 def _substitution_spans(line: str) -> list[str]:
@@ -159,7 +121,9 @@ def _is_piped_to_parser(logical: str, var: str) -> bool:
 
 def _opted_out(physical: list[str], start: int, logical: str) -> bool:
     """Opt-out marker on the logical line itself or the physical line above it."""
-    return OPT_OUT in logical or (start >= 2 and OPT_OUT in physical[start - 2])
+    return annotated(logical, OPT_OUT) or (
+        start >= 2 and annotated(physical[start - 2], OPT_OUT)
+    )
 
 
 def violations(text: str) -> list[tuple[int, str]]:
@@ -168,7 +132,7 @@ def violations(text: str) -> list[tuple[int, str]]:
     found: list[tuple[int, str]] = []
     # (var, assignment start line, lines remaining) for rule (b) tracking.
     tracked: list[tuple[str, int]] = []
-    for start, logical in _logical_lines(text):
+    for start, logical in logical_lines(text):
         stripped = logical.lstrip()
         if stripped.startswith("#"):
             continue
