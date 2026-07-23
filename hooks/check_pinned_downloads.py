@@ -56,13 +56,16 @@ _DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")
 _ADD_URL = re.compile(r"^\s*ADD\s+(?:--\S+\s+)*\S*https?://", re.IGNORECASE)
 
 # An output flag that makes the fetch write a file. `-o`/`--output` and wget's
-# `-O` take a target (captured so a /dev/null/stdout/- sink can be excused);
-# curl's `-O` and `--remote-name` derive the name from the URL and take none. The
-# target may be space-separated (`-o f`) or `=`-joined (`--output=f`); the `-O-`
-# shorthand (write to stdout, no space) is captured by the `stdout` alternative.
+# `-O` take a target (captured so a /dev/null/stdout/- sink can be excused); curl's
+# `-O` and `--remote-name` derive the name from the URL and take none. The `[oO]`
+# flag may be CLUSTERED with other short flags (`wget -qO- url`, `curl -fsSLo f`),
+# so the short form matches `-[A-Za-z]*[oO]` — the value is then either GLUED to the
+# flag (`-qO-` → `-`, `-Ofile` → `file`) or the next `=`/space-separated token. A
+# `-` value (write to stdout) is captured either way so the sink is excused.
 _OUTPUT_FLAG = re.compile(
-    r"(?:^|\s)(?:-o|-O|--output|--remote-name(?:-all)?)\b"
-    r"(?:[=\s]+(?P<target>\S+)|(?P<stdout>-)(?=\s|$))?"
+    r"(?:^|\s)"
+    r"(?:--output|--remote-name(?:-all)?|-[A-Za-z]*[oO])"
+    r"(?:(?P<glued>-(?=\s|$)|[^\s=-]\S*)|[=\s]+(?P<target>\S+))?"
 )
 
 _NULL_TARGETS = {"/dev/null", "/dev/stdout", "/dev/stderr", "-"}
@@ -127,15 +130,21 @@ def _is_artifact_download(line: str) -> bool:
     # `curl -O- … | sh` as a mere stdout write).
     if _PIPE_TO_SHELL.search(line) or _EXEC_SUBST.search(line):
         return True
+    rm = _REDIRECT.search(line)
+    redirect_to_file = rm is not None and rm.group("rt") not in _NULL_TARGETS
     m = _OUTPUT_FLAG.search(line)
     if m:
-        if m.group("stdout"):  # `-O-` writes to stdout, not an artifact
-            return False
-        # A captured target may be a null sink; `-O`/`--remote-name` capture none
-        # (they derive the name from the URL) and so are always a real artifact.
-        return m.group("target") not in _NULL_TARGETS
-    rm = _REDIRECT.search(line)
-    if rm and rm.group("rt") not in _NULL_TARGETS:
+        # The written target is whichever value was captured — glued into the flag
+        # cluster (`-qO-`) or `=`/space-separated. `-O`/`--remote-name` capture no
+        # value (they derive the name from the URL) — a real artifact.
+        target = m.group("glued") or m.group("target")
+        if target is None or target not in _NULL_TARGETS:
+            return True  # explicit output file
+        # The flag itself saves nothing (a `-`/`/dev/null` sink). Stdout (`-`) can
+        # still be captured to disk by a `> file` redirect (`wget -qO- url > f`);
+        # `/dev/null` discards, so it never becomes an artifact.
+        return target == "-" and redirect_to_file
+    if redirect_to_file:
         return True
     return bool(_WGET.search(line))
 

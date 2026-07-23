@@ -59,6 +59,20 @@ def test_curl_redirect_to_null_or_pipe_is_not_an_artifact() -> None:
     assert _flags("curl -sL https://x | tar xz -C /tmp\n") == []
 
 
+def test_clustered_stdout_flag_to_data_reader_is_not_an_artifact() -> None:
+    # C6: a CLUSTERED short output flag `-qO-` (wget: quiet + output-to-stdout) piped
+    # to a data reader writes nothing to disk — a false positive before the fix,
+    # which only recognized a space-separated `-O`. `-o-`/`-O-` spellings too.
+    assert _flags("wget -qO- https://x/api | jq .\n") == []
+    assert _flags("curl -sSo- https://x/api | jq .\n") == []
+    assert _flags("wget -qO - https://x/api | jq .\n") == []
+    # But a real clustered output to a FILE is still an artifact (green control).
+    assert _flags("wget -qO tool https://x\nrun tool\n") == [1]
+    assert _flags("curl -fsSLo tool https://x\nrun tool\n") == [1]
+    # And a clustered stdout captured by a redirect reaches disk — flagged.
+    assert _flags("wget -qO- https://x > tool\nrun tool\n") == [1]
+
+
 def test_pipe_to_shell_installer_is_flagged() -> None:
     # `curl … | sh` / `… | sudo bash` streams unverified bytes straight into a shell
     # that executes them — the marquee one-line installer. curl defaults to stdout
