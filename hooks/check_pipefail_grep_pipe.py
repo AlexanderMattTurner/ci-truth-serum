@@ -22,8 +22,9 @@ option (``-q`` in any short-flag cluster, or ``--quiet``/``--silent``). A here-s
 (``grep -q … <<<"$var"``) has no pipe and is NOT flagged — it is the remediation.
 
 Heuristic, line-oriented (matching the sibling ``check_*`` shell lints): pipefail is treated
-file-wide (it is a shell-global option once set), and only the pipe stage on grep's own line
-is inspected. A producer that is a bounded shell builtin — ``echo``/``printf``/``:`` emitting
+file-wide (it is a shell-global option once set), and each LOGICAL line (shell-continued
+physical lines joined) is inspected — so a wrapped ``producer |`` / ``grep -q`` pipeline is
+caught. A producer that is a bounded shell builtin — ``echo``/``printf``/``:`` emitting
 an already-materialized string — is exempt: its single bounded write practically never
 outruns the pipe buffer, and flagging every ``echo "$x" | grep -q`` would drown the real
 signal (streaming external commands, functions, ``git``/``find``/``docker``). A
@@ -38,7 +39,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import comment_opt_out, run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    comment_opt_out,
+    logical_lines,
+    run_line_checks,
+)
 
 # Lines whose first word only prints text — a `producer | grep -q` quoted inside them is an
 # example or hint, not executed code. Extends the shared MESSAGE_PREFIX (_linecheck) with
@@ -154,21 +159,26 @@ def _pipefail_scoped(physical: list[str]) -> bool:
 
 def violations(text: str) -> list[int]:
     """1-based line numbers that pipe a producer into ``grep -q`` in a pipefail-scoped file,
-    without a ``# pipefail-grep-ok:`` annotation. Empty when pipefail is not in effect."""
+    without a ``# pipefail-grep-ok:`` annotation. Empty when pipefail is not in effect.
+
+    Runs over LOGICAL lines (shell-continued physical lines joined) so a wrapped
+    pipeline — ``producer |`` on one line, ``grep -q`` on the next — is analyzed as
+    the single command it is, not two half-pipes that each look benign. The finding
+    is anchored on the physical line where the pipeline STARTS."""
     physical = text.splitlines()
     if not _pipefail_scoped(physical):
         return []
     hits: list[int] = []
-    for lineno, raw in enumerate(physical, 1):
-        stripped = raw.lstrip()
+    for start, logical in logical_lines(text):
+        stripped = logical.lstrip()
         if stripped.startswith("#") or _MESSAGE_PREFIX.match(stripped):
             continue
-        if comment_opt_out(raw, _ALLOW):
+        if comment_opt_out(logical, _ALLOW):
             continue
-        if lineno >= 2 and comment_opt_out(physical[lineno - 2], _ALLOW):
+        if start >= 2 and comment_opt_out(physical[start - 2], _ALLOW):
             continue
-        if _pipes_into_quiet_grep(raw):
-            hits.append(lineno)
+        if _pipes_into_quiet_grep(logical):
+            hits.append(start)
     return hits
 
 

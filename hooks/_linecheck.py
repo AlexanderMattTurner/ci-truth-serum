@@ -72,6 +72,65 @@ MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.(?P<key>[A-Za-z_][\w-]*)\s*\}\}")
 _IF_WRAPPER = re.compile(r"^\$\{\{\s*(?P<inner>.*?)\s*\}\}$")
 
 
+# A line that ends in a backslash, a pipe, or a boolean operator is continued on
+# the next line by the shell — join them so a command (and its `$(…)` / redirects
+# / a `producer |` whose `grep` sits on the next line) spanning lines is analyzed
+# whole, not mis-split mid-pipeline. Shared by the exit-suppression and
+# pipefail-grep lints so both see a wrapped pipeline as one logical command.
+_CONTINUES = re.compile(r"(?:\\|\||&&)\s*$")
+
+# The only tokens that affect substitution nesting: an escaped char (`\x`, inert —
+# so `\`` is a literal backtick and `\$` never opens `$(`), an opening `$(` / `<(`,
+# a closing `)`, or a bare backtick. Walking these instead of indexing characters
+# keeps `inside_substitution` a plain fold with no manual offset bookkeeping.
+_SUBST_TOKEN = re.compile(r"\\.|\$\(|<\(|`|\)")
+
+
+def inside_substitution(prefix: str) -> bool:
+    """True if PREFIX has an unclosed ``$(`` / ``<(`` / backtick — i.e. text after
+    it is still inside a command substitution (a value capture, or a line that
+    continues until the substitution closes)."""
+    depth = 0
+    backtick = False
+    for token in _SUBST_TOKEN.finditer(prefix):
+        tok = token.group()
+        if tok[0] == "\\":
+            continue  # escaped character — inert
+        if tok in ("$(", "<("):
+            depth += 1
+        elif tok == ")" and depth:
+            depth -= 1
+        elif tok == "`":
+            backtick = not backtick
+    return depth > 0 or backtick
+
+
+def logical_lines(text: str) -> list[tuple[int, str]]:
+    """Join shell-continued physical lines into one logical line, tagged with the
+    1-based physical line number where it STARTS.
+
+    A line continues when it ends in ``\\`` / ``|`` / ``&&`` (shell line
+    continuation) OR when a command substitution it opened (``$(`` / ``<(`` /
+    backtick) is still unclosed. So a ``|| true`` on the line that *closes* a
+    multi-line ``$( … )`` capture, and a ``grep`` on the line after a trailing
+    ``producer |``, are both analyzed as part of the one command they belong to."""
+    out: list[tuple[int, str]] = []
+    pending = ""
+    start = 0
+    for lineno, raw in enumerate(text.splitlines(), 1):
+        if not pending:
+            start = lineno
+        joined = raw[:-1] if raw.endswith("\\") else raw
+        if _CONTINUES.search(raw) or inside_substitution(pending + joined):
+            pending += joined + " "
+            continue
+        out.append((start, pending + raw))
+        pending = ""
+    if pending:
+        out.append((start, pending))
+    return out
+
+
 def run_line_checks(
     argv: list[str],
     find_violations: Callable[[str], list[int]],
@@ -176,11 +235,24 @@ PER_REF_CONCURRENCY_KEYS = (
 )
 
 
+# A `${{ … }}` GitHub-expression span. A per-ref key is only meaningful inside such
+# a span — evaluated context, not literal text — so the key search is scoped to the
+# expression bodies. A bare `github.ref` substring in a static group name (e.g.
+# `group: deploy-github.ref-thing`) is literal text GitHub never evaluates, so it
+# must NOT read as per-ref (that would be a fail-open: a static group wrongly cleared).
+_EXPR_SPAN = re.compile(r"\$\{\{(?P<body>.*?)\}\}", re.DOTALL)
+
+
 def group_is_per_ref(group: str) -> bool:
     """True if a concurrency `group:` expression carries a per-ref/per-PR/per-run
     key — meaning a superseding run is always the same ref's newer run, which
-    re-reports, so the group cannot strand a required check."""
-    return any(key in group for key in PER_REF_CONCURRENCY_KEYS)
+    re-reports, so the group cannot strand a required check.
+
+    The key must appear inside a `${{ … }}` expression span (the only text GitHub
+    evaluates); a literal `github.ref` substring elsewhere in the group name does
+    not count."""
+    expressions = "".join(m.group("body") for m in _EXPR_SPAN.finditer(group))
+    return any(key in expressions for key in PER_REF_CONCURRENCY_KEYS)
 
 
 def opted_out(text: str, token: str) -> bool:

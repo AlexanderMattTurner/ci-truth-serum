@@ -468,3 +468,36 @@ def test_concurrency_line(text: str, expected: int) -> None:
 )
 def test_job_concurrency_line(block, expected: int) -> None:
     assert lc.job_concurrency_line(block, 99) == expected
+
+
+# ── group_is_per_ref: key must live inside a ${{ … }} span (C12) ─────────
+@pytest.mark.parametrize(
+    ("group", "expected"),
+    [
+        ("${{ github.workflow }}-${{ github.ref }}", True),
+        ("${{ github.head_ref }}", True),
+        ("g-${{ github.run_id }}", True),
+        # A literal `github.ref` substring in a STATIC group name is text GitHub
+        # never evaluates — it must NOT read as per-ref (the C12 fail-open).
+        ("deploy-github.ref-thing", False),
+        ("github.head_ref", False),
+        ("build", False),
+        # A per-ref key present, but only outside the expression span.
+        ("github.ref-${{ github.workflow }}", False),
+    ],
+)
+def test_group_is_per_ref_requires_expression_span(group: str, expected: bool) -> None:
+    assert lc.group_is_per_ref(group) is expected
+
+
+# ── logical_lines: shared shell-continuation joiner (C2) ─────────────────
+def test_logical_lines_joins_pipe_and_operator_continuations() -> None:
+    # A trailing `|`, `&&`, or `\` continues onto the next physical line; the
+    # logical line is tagged with the physical line where it STARTS.
+    assert lc.logical_lines("a |\n  b\nc\n") == [(1, "a |   b"), (3, "c")]
+    assert lc.logical_lines("a &&\n  b\n") == [(1, "a &&   b")]
+    assert lc.logical_lines("a \\\nb\n") == [(1, "a  b")]
+    # An unclosed `$( … )` also continues until it closes.
+    assert lc.logical_lines("x=$(\n  y\n)\nz\n") == [(1, "x=$(   y )"), (4, "z")]
+    # A plain line stands alone.
+    assert lc.logical_lines("solo\n") == [(1, "solo")]

@@ -178,6 +178,20 @@ def test_reasoned_allow_still_suppresses() -> None:
     assert _flag("# pipefail-grep-ok: bounded output\nproducer | grep -qF x\n") == []
 
 
+def test_wrapped_pipeline_is_caught() -> None:
+    # C2: a pipeline wrapped across lines — `producer |` then `grep -q` on the next
+    # line — is one logical command; the shared continuation-joiner sees the whole
+    # pipe, so it is flagged (anchored on the producer's line). The per-physical-line
+    # scan missed it (the `|` never shared grep's line).
+    assert _flag("big_producer |\n  grep -q pattern\n") == [2]
+    # Joined from the `&&` line, so the finding anchors on that start line.
+    assert _flag("cmd &&\n  producer |\n  grep -qF x\n") == [2]
+    # A bounded builtin producer wrapped the same way is still exempt (green).
+    assert _flag("echo x |\n  grep -q p\n") == []
+    # A reasoned opt-out inside the wrapped pipeline still suppresses.
+    assert _flag("producer |\n  grep -qF x  # pipefail-grep-ok: bounded\n") == []
+
+
 def test_main_wires_violations_and_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
