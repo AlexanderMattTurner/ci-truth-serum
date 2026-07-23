@@ -9,14 +9,12 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  # Path gate: runs unconditionally so the zizmor-passed reporter always reports,
-  # then opens only when .github/ (workflows, actions, scripts) changes on a PR.
   decide:
     permissions:
       contents: read
@@ -37,24 +35,27 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
-        with:
-          # Pin uv exactly: an exact version skips setup-uv's raw.githubusercontent
-          # version-manifest fetch (an un-retried single point of failure), so a
-          # transient GitHub-CDN blip can't fail the job before any work runs.
-          version: "0.11.31"
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Run zizmor
         run: uvx zizmor==1.25.2 .github/
 
-  # Stable Required check: runs even when `zizmor` is cancelled/skipped, so a
-  # protected branch never gets stuck on a check that never reports.
   zizmor-passed: # required-check: true
     if: always()
     needs: [decide, zizmor]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fail if any required job did not pass
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          sparse-checkout: |
+            .github/actions/report-job-result
+            .github/scripts
+          persist-credentials: false
+
+      - name: Report result
+        uses: ./.github/actions/report-job-result
+        with:
+          run: ${{ needs.decide.outputs.run }}
+          decide-result: ${{ needs.decide.result }}
+          result: ${{ needs.zizmor.result }}

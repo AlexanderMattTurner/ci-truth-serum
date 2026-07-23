@@ -1,5 +1,9 @@
 name: Node tests
 
+# No paths filter: node-tests-passed is a required status check, so the workflow
+# must always fire and report — a path-gated required check hangs at
+# "Expected — Waiting" forever when a PR doesn't touch the filtered paths. The
+# test job no-ops when no test script is configured, so it stays cheap.
 on:
   push:
     branches: ["main"]
@@ -7,36 +11,13 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  # Path gate: runs unconditionally so the node-tests-passed reporter always
-  # reports, then opens only when JS/TS sources (or this workflow) change on a PR.
-  decide:
-    permissions:
-      contents: read
-      pull-requests: read
-    uses: ./.github/workflows/decide-reusable.yaml
-    with:
-      filters: |
-        run:
-          - '**/*.ts'
-          - '**/*.tsx'
-          - '**/*.js'
-          - '**/*.jsx'
-          - '**/*.mjs'
-          - 'package.json'
-          - '.github/actions/setup-base-env/**'
-          - '.github/scripts/script-configured.sh'
-          - '.github/workflows/node-tests.yaml'
-          - '.github/workflows/decide-reusable.yaml'
-
   test:
-    needs: decide
-    if: needs.decide.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -49,13 +30,7 @@ jobs:
 
       - name: Check if test script is configured
         id: check
-        run: |
-          if bash .github/scripts/script-configured.sh test; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Test script not configured, skipping tests"
-          fi
+        run: bash .github/scripts/script-configured-output.sh test configured
 
       - name: Run tests
         if: steps.check.outputs.configured == 'true'
@@ -65,10 +40,20 @@ jobs:
   # protected branch never gets stuck on a check that never reports.
   node-tests-passed: # required-check: true
     if: always()
-    needs: [decide, test]
+    needs: [test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fail if any required job did not pass
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          sparse-checkout: |
+            .github/actions/report-job-result
+            .github/scripts
+          persist-credentials: false
+
+      - name: Report result
+        uses: ./.github/actions/report-job-result
+        with:
+          run: "true"
+          decide-result: "success"
+          result: ${{ needs.test.result }}

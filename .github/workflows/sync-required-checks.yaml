@@ -1,14 +1,12 @@
 name: Sync required status checks
 
-# Apply half of the check-required-reporter pair this repo ships (and
-# dogfoods): the pre-commit hook forces every always() reporter to carry a
-# `# required-check: true|false` annotation; ci_truth_serum/sync_required_checks reads
-# those annotations (the SSOT), expands each required job's name across its
-# own matrix, and rewrites the branch-protection ruleset's
-# required_status_checks to exactly that set — so a reporter's classification
-# and the gate that actually blocks merges can never silently drift apart.
-# Unlike consumers, this repo runs the tool straight from its own checkout, so
-# the sync always uses the parser version that linted the annotations.
+# Apply half of the check-required-reporter pair. The pre-commit hook forces
+# every always() reporter to carry a `# required-check: true|false` annotation;
+# the apply tool (hosted in ci-truth-serum) reads those annotations (the SSOT),
+# expands each required job's name across its own matrix, and rewrites the
+# branch-protection ruleset's required_status_checks to exactly that set — so a
+# reporter's classification and the gate that actually blocks merges can never
+# silently drift apart.
 #
 # Runs only post-merge on main (and on demand). It mutates branch protection, so
 # it needs a token with `administration: write`; the stock GITHUB_TOKEN cannot
@@ -19,7 +17,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/**
-      - ci_truth_serum/**
+      - .pre-commit-config.yaml
   workflow_dispatch:
     inputs:
       check-only:
@@ -48,8 +46,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install the apply tool from this checkout
-        run: python3 -m pip install --user .
+      - name: Install the apply tool (ci-truth-serum)
+        # Pin to the same ci-truth-serum commit the pre-commit hook uses so the
+        # lint and the apply step share one parser version.
+        run: python3 -m pip install --user "ci-truth-serum @ git+https://github.com/alexander-turner/ci-truth-serum@a5c3991e7b1eea7c8a65d9cd9573f3f65f520ee8"
 
       - name: Sync required status checks
         env:
