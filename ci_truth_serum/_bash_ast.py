@@ -76,3 +76,40 @@ def iter_nodes(node: Node, *types: str):
             yield current
         # Reverse so children are popped left-to-right → pre-order, source order.
         stack.extend(reversed(current.children))
+
+
+# Every character `str.splitlines()` treats as a line boundary. A comment blanked
+# for a line-oriented lint must keep these intact, or `strip_comments(text)` would
+# have a different line count than `text` and desync a caller's line indexing (a
+# bash comment ends only at `\n`, so it can legitimately contain a bare `\r`, `\v`,
+# or a Unicode LS/PS that Python still splits on).
+_LINE_BOUNDARIES = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+
+
+def strip_comments(script: str) -> str:
+    """SCRIPT with every bash ``comment`` node blanked to spaces, leaving every
+    line-boundary character in place so ``strip_comments(script).splitlines()`` is
+    index-aligned with ``script.splitlines()`` (same count, same line numbers).
+
+    This lets a line-oriented lint match a token only in executed code, never in a
+    ``#`` comment — and, because the grammar (not a naive ``#`` split) decides what
+    a comment is, a ``#`` inside a quoted string or word (``curl -o "a#b" url``) is
+    correctly left as code."""
+    spans = [(n.start_byte, n.end_byte) for n in iter_nodes(parse(script), "comment")]
+    if not spans:
+        return script
+    # tree-sitter reports byte offsets; map them to character indices so blanking
+    # respects multibyte Unicode boundaries.
+    char_at_byte: dict[int, int] = {}
+    byte = 0
+    for index, char in enumerate(script):
+        char_at_byte[byte] = index
+        byte += len(char.encode("utf-8"))
+    char_at_byte[byte] = len(script)
+
+    out = list(script)
+    for start_byte, end_byte in spans:
+        for index in range(char_at_byte[start_byte], char_at_byte[end_byte]):
+            if out[index] not in _LINE_BOUNDARIES:
+                out[index] = " "
+    return "".join(out)

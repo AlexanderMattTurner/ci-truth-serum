@@ -74,3 +74,29 @@ def test_parse_refuses_quadratic_pipe_chains_loudly() -> None:
         bash_ast.parse("x | " * (bash_ast._MAX_PIPE_BYTES + 1))
     # Just under the cap parses normally.
     assert bash_ast.parse("x | x").type == "program"
+
+
+def test_strip_comments_blanks_comment_keeps_layout() -> None:
+    # A trailing comment is blanked to spaces; the code before it, the newline, and
+    # every column offset are preserved so line-oriented lints stay aligned.
+    src = "curl -o f url  # sha256sum later\nrun f\n"
+    out = bash_ast.strip_comments(src)
+    assert out == "curl -o f url                   \nrun f\n"
+    assert out.splitlines() == ["curl -o f url                   ", "run f"]
+    assert len(out) == len(src)
+
+
+def test_strip_comments_blanks_full_line_comment() -> None:
+    src = "a\n# TODO: verify with sha256sum\nb\n"
+    assert bash_ast.strip_comments(src).splitlines() == [
+        "a",
+        " " * len("# TODO: verify with sha256sum"),
+        "b",
+    ]
+
+
+def test_strip_comments_leaves_hash_inside_quotes_and_words() -> None:
+    # The grammar, not a naive `#` split, decides what a comment is: a `#` inside a
+    # quoted string or a word is code and is left untouched.
+    assert bash_ast.strip_comments('curl -o "a#b" url\n') == 'curl -o "a#b" url\n'
+    assert bash_ast.strip_comments("echo x#y\n") == "echo x#y\n"
