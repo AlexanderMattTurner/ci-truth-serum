@@ -1,4 +1,4 @@
-"""Tests for hooks/check_failure_notifier_coverage.py — the freshness check
+"""Tests for ci_truth_serum/check_failure_notifier_coverage.py — the freshness check
 keeping ci-failure-notify.yaml's `on.workflow_run.workflows` list (a derived
 copy, since workflow_run has no wildcard) in sync with the tree's set of
 push/schedule-triggered workflow names.

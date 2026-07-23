@@ -1,4 +1,4 @@
-"""Tests for hooks/check_token_fallback.py — the lint that bans
+"""Tests for ci_truth_serum/check_token_fallback.py — the lint that bans
 `${{ secrets.A || secrets.B }}` in token positions (a `token:` input or a
 `GITHUB_TOKEN`/`GH_TOKEN` env var), where the fallback silently switches the
 workflow's push identity the day the first secret is set.

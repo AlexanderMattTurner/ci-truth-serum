@@ -1,4 +1,4 @@
-"""Tests for hooks/check_frozen_head_sha.py — the lint that flags
+"""Tests for ci_truth_serum/check_frozen_head_sha.py — the lint that flags
 `github.event.pull_request.head.sha` in a step's run:/with: value. The event
 payload is frozen at trigger time, so a force-push / autofix-amend moves the real
 head and a range scoped to that SHA mis-scopes to the whole branch history."""

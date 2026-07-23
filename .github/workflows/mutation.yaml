@@ -48,7 +48,7 @@ jobs:
     with:
       filters: |
         run:
-          - 'hooks/**'
+          - 'ci_truth_serum/**'
           - 'tests/**'
           - 'cosmic-ray.toml'
           - 'pyproject.toml'

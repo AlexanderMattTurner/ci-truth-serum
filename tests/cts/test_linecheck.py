@@ -1,4 +1,4 @@
-"""Tests for hooks/_linecheck.py — the machinery shared by the line-oriented
+"""Tests for ci_truth_serum/_linecheck.py — the machinery shared by the line-oriented
 pre-commit lints (the read-each-path loop, the skip-on-unreadable, the
 ``<path>:<lineno>: <message>`` print loop and exit code) and the workflow-file
 discovery glob shared by the YAML lints.
@@ -408,10 +408,10 @@ def test_opted_out(text: str, expected: bool) -> None:
     assert lc.opted_out(text, "my-token") is expected
 
 
-# ── comment_opt_out ──────────────────────────────────────────────────────
-# Reasoned, comment-scoped opt-out shared by the pinning and pipefail lints. A
-# bare substring (URL path, quoted arg) must never opt out — that is the exact
-# fail-open the pinned-downloads / pipefail-grep bypasses exploited.
+# ── annotated: reasoned comment-scoped opt-out ───────────────────────────
+# Shared by the pinning and pipefail lints (among others). A bare substring
+# (URL path, quoted arg) must never opt out — that is the exact fail-open the
+# pinned-downloads / pipefail-grep bypasses exploited.
 
 
 @pytest.mark.parametrize(
@@ -432,8 +432,8 @@ def test_opted_out(text: str, expected: bool) -> None:
         ("# xpin-exempt: nope", False),
     ],
 )
-def test_comment_opt_out(line: str, expected: bool) -> None:
-    assert lc.comment_opt_out(line, "pin-exempt") is expected
+def test_annotated_reasoned_comment_opt_out(line: str, expected: bool) -> None:
+    assert lc.annotated(line, "pin-exempt") is expected
 
 
 @pytest.mark.parametrize(
@@ -468,3 +468,21 @@ def test_concurrency_line(text: str, expected: int) -> None:
 )
 def test_job_concurrency_line(block, expected: int) -> None:
     assert lc.job_concurrency_line(block, 99) == expected
+
+
+# ── group_is_per_ref: the key must sit inside a ${{ }} expression span ────
+@pytest.mark.parametrize(
+    "group,per_ref",
+    [
+        ("ci-${{ github.ref }}", True),
+        ("${{ github.workflow }}-${{ github.head_ref || github.run_id }}", True),
+        ("pr-${{ github.event.number }}", True),
+        # literal mention outside any expression span: one static string for
+        # every ref — treating it as per-ref would fail open
+        ("github.ref-shared", False),
+        ("docs about ${{ github.workflow }} and github.head_ref", False),
+        ("static-lock", False),
+    ],
+)
+def test_group_is_per_ref_requires_expression_span(group: str, per_ref: bool) -> None:
+    assert lc.group_is_per_ref(group) is per_ref

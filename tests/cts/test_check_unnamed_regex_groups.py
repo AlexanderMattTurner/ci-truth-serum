@@ -1,4 +1,4 @@
-"""Tests for hooks/check_unnamed_regex_groups.py — the pre-commit lint that bans
+"""Tests for ci_truth_serum/check_unnamed_regex_groups.py — the pre-commit lint that bans
 unnamed capture groups in regex literals passed to re.* calls.
 
 Drives the module's functions directly so every branch (literal detection, the

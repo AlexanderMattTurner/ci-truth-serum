@@ -97,7 +97,7 @@ the only prerequisite.
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v0.1.0 # pin to a tag
+    rev: v0.2.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       # ── Tier 1 · Honesty (default-on) ──
       - id: check-workflow-pipefail
@@ -162,7 +162,7 @@ are picked up with **no change to your config**:
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v0.1.0 # pin to a tag
+    rev: v0.2.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       - id: check-tier1 # all honesty + identity checks (the safe default-on set)
       # - id: check-tier2   # all opinionated checks: assumes the decide-gate + reporter architecture
@@ -186,7 +186,7 @@ standalone hook with normal pre-commit `files:`/`exclude:` filters:
 
 ```yaml
 - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-  rev: v0.1.0
+  rev: v0.2.0
   hooks:
     - id: check-tier1
       args: [--skip, check_exit_suppression] # drop from aggregate...
@@ -198,7 +198,7 @@ standalone hook with normal pre-commit `files:`/`exclude:` filters:
 `--skip` is repeatable: pass one `--skip <name>` pair per check to drop.
 **An unknown name is a hard error** (to catch typos that would silently
 re-include the check). Module names use underscores and match the TIERS
-registry in `hooks/run_tier.py` (e.g., `check_exit_suppression`, not
+registry in `ci_truth_serum/run_tier.py` (e.g., `check_exit_suppression`, not
 `check-exit-suppression`).
 
 The key property is preserved: any new check added to the tier upstream still

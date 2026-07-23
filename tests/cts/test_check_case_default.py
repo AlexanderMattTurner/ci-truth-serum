@@ -1,4 +1,4 @@
-"""Tests for hooks/check_case_default.py — the lint that requires every shell
+"""Tests for ci_truth_serum/check_case_default.py — the lint that requires every shell
 `case … esac` block to carry a bare `*)` default arm, so an unexpected value
 runs SOMETHING instead of silently falling through.
 
@@ -67,18 +67,31 @@ def test_nested_case_blocks_tracked_independently() -> None:
     assert mod.violations(src) == [3]
 
 
-# ── fail-open: shapes the scanner cannot parse confidently ───────────────
+# ── quoted/commented shapes are data, not case blocks ────────────────────
 @pytest.mark.parametrize(
     "src",
     [
-        'case "$1" in a) : ;; esac\n',  # one-liner: opener+esac on one line
         'echo "case x in"\n',  # case quoted in a string
         "# case $x in a) ;; esac\n",  # commented out
         'echo "esac"\n',
+        'echo "case $x in a) : ;; esac"\n',  # a whole quoted block is data
     ],
 )
-def test_unparseable_or_quoted_shapes_pass(src: str) -> None:
+def test_quoted_shapes_pass(src: str) -> None:
     assert mod.violations(src) == []
+
+
+# ── regression: single-line case … esac is a real block and is checked ───
+def test_single_line_case_without_default_is_flagged() -> None:
+    """A one-line `case … esac` is the same block bash runs — the pre-AST
+    stack scanner pushed a frame on the `case` opener and `continue`d before
+    ever seeing the same-line `esac`, leaking the frame and never checking
+    the block."""
+    assert mod.violations('case "$1" in a) : ;; esac\n') == [1]
+
+
+def test_single_line_case_with_default_passes() -> None:
+    assert mod.violations('case "$1" in a) : ;; *) die x ;; esac\n') == []
 
 
 # ── opt-out ──────────────────────────────────────────────────────────────

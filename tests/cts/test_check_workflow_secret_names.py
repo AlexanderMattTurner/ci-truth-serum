@@ -1,4 +1,4 @@
-"""Tests for hooks/check_workflow_secret_names.py — the round-trip contract
+"""Tests for ci_truth_serum/check_workflow_secret_names.py — the round-trip contract
 between the `secrets.*` / `vars.*` names workflows reference and the checked-in
 `.github/workflow-secrets.txt` allowlist.
 

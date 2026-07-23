@@ -1,4 +1,4 @@
-"""Tests for hooks/check_static_concurrency.py — the (opinionated) pre-commit
+"""Tests for ci_truth_serum/check_static_concurrency.py — the (opinionated) pre-commit
 lint that forbids a static workflow-level concurrency lock (a group with no
 per-ref/PR key) on a workflow that backs a required check (decide gate +
 always() reporter), which can strand the check at 'Expected — Waiting' when a

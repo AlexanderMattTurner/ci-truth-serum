@@ -1,4 +1,4 @@
-"""Tests for hooks/check_exit_suppression.py — the pre-commit lint that bans
+"""Tests for ci_truth_serum/check_exit_suppression.py — the pre-commit lint that bans
 unjustified exit-status suppression (`|| true` / `|| :`).
 
 Drives `violations()` directly so each rule is asserted in isolation.
@@ -241,7 +241,7 @@ def test_own_shell_tree_is_clean() -> None:
     there turns this red, proving the check is wired to real sources, not just unit
     cases. Scoped to hooks/ (the package's own scripts)."""
     tracked = subprocess.check_output(
-        ["git", "ls-files", "hooks/"], text=True, cwd=REPO_ROOT
+        ["git", "ls-files", "ci_truth_serum/"], text=True, cwd=REPO_ROOT
     ).split()
     offenders = []
     for rel in tracked:

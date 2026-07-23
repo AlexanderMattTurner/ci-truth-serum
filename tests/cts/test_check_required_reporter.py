@@ -1,4 +1,4 @@
-"""Tests for hooks/check_required_reporter.py — the (opinionated) pre-commit
+"""Tests for ci_truth_serum/check_required_reporter.py — the (opinionated) pre-commit
 lint that makes every always() reporter on a gated workflow declare, in a
 classification comment, whether it is a required status check.
 

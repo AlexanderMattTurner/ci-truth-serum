@@ -1,4 +1,4 @@
-"""Tests for hooks/check_flag_arity.py — the pre-commit lint that flags a
+"""Tests for ci_truth_serum/check_flag_arity.py — the pre-commit lint that flags a
 value-taking CLI flag arm which consumes ``$2`` / ``shift 2`` without proving
 the value exists.
 
@@ -90,8 +90,8 @@ def test_unguarded_value_flag_arms_are_flagged(body: str, line: int) -> None:
             '  --a)\n    if [[ $# -le 1 ]]; then die x; fi\n    A="$2"\n    shift 2\n    ;;',
         ),
         ("self-guard ${2:?…}", '  --b) B="${2:?--b needs a value}"; shift 2 ;;'),
-        ("default ${2:-x}", '  --c) C="${2:-x}"; shift 2 ;;'),
-        ("assign-default ${2:=x}", '  --c) C="${2:=x}"; shift 2 ;;'),
+        ("default then plain shift", '  --c) C="${2:-x}"; shift ;;'),
+        ("assign-default then plain shift", '  --c) C="${2:=x}"; shift ;;'),
         (
             "need_val helper",
             '  --d)\n    need_val "$@"\n    D="$2"\n    shift 2\n    ;;',
@@ -104,6 +104,74 @@ def test_unguarded_value_flag_arms_are_flagged(body: str, line: int) -> None:
 )
 def test_guarded_arm_passes(name: str, body: str) -> None:
     assert _flagged_lines(_parser(body)) == [], name
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '  --c) C="${2:-x}"; shift 2 ;;',
+        '  --c) C="${2:=x}"; shift 2 ;;',
+    ],
+)
+def test_defaulting_read_does_not_excuse_a_shift_2(body: str) -> None:
+    """`${2:-x}` is safe for ITSELF but proves nothing about $# — the
+    `shift 2` that follows still fails when the flag is passed last (bash:
+    "shift count out of range", aborting under set -e). Only `${2:?}` — which
+    dies when $2 is missing — raises the proven bound."""
+    assert _flagged_lines(_parser(body)) != []
+
+
+def test_ge2_guard_does_not_cover_a_dollar3_read() -> None:
+    """A `[[ $# -ge 2 ]] || die` guard proves TWO args; an arm that goes on to
+    read `$3` (or `shift 3`) is still unguarded — the proven bound is tracked
+    as a number, not a boolean."""
+    body = (
+        "  --pair)\n"
+        '    [[ $# -ge 2 ]] || die "--pair needs values"\n'
+        '    A="$2"; B="$3"; shift 3 ;;'
+    )
+    assert _flagged_lines(_parser(body)) != []
+    guarded = (
+        "  --pair)\n"
+        '    [[ $# -ge 3 ]] || die "--pair needs two values"\n'
+        '    A="$2"; B="$3"; shift 3 ;;'
+    )
+    assert _flagged_lines(_parser(guarded)) == []
+
+
+def test_locally_defined_nonexiting_helper_is_no_guard() -> None:
+    """A function named like an abort helper but DEFINED in the file without
+    exiting (`fail() { echo oops; }`) must not satisfy the guard — the name is
+    resolved against the actual body."""
+    src = (
+        'fail() { echo "oops"; }\n'
+        'case "$1" in\n'
+        "  --branch)\n"
+        "    [[ $# -ge 2 ]] || fail\n"
+        '    BRANCH="$2"; shift 2 ;;\n'
+        "esac\n"
+    )
+    assert [line for line, _ in mod.violations(src)] != []
+    # The same shape with a helper that genuinely exits stays clean.
+    exiting = src.replace(
+        'fail() { echo "oops"; }', 'fail() { echo "oops" >&2; exit 1; }'
+    )
+    assert mod.violations(exiting) == []
+
+
+def test_transitively_exiting_local_helper_counts() -> None:
+    """A local helper that aborts through ANOTHER local helper resolves to
+    exiting via the fixed point."""
+    src = (
+        "boom() { exit 1; }\n"
+        "fail() { boom; }\n"
+        'case "$1" in\n'
+        "  --branch)\n"
+        "    [[ $# -ge 2 ]] || fail\n"
+        '    BRANCH="$2"; shift 2 ;;\n'
+        "esac\n"
+    )
+    assert mod.violations(src) == []
 
 
 # Value reads outside a flag-labelled arm are never the target.
@@ -247,7 +315,7 @@ def test_main_ignores_a_nonexistent_path(tmp_path: Path) -> None:
 def test_live_contract_all_over_the_repo_is_clean() -> None:
     # Dogfood: the pack's own tracked shell surface must pass flag-arity.
     proc = subprocess.run(
-        [sys.executable, "-m", "hooks.check_flag_arity", "--all"],
+        [sys.executable, "-m", "ci_truth_serum.check_flag_arity", "--all"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,

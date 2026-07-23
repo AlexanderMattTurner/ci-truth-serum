@@ -1,4 +1,4 @@
-"""Tests for hooks/check_pinned_downloads.py — the pre-commit lint that demands a
+"""Tests for ci_truth_serum/check_pinned_downloads.py — the pre-commit lint that demands a
 checksum/signature check on every downloaded artifact.
 
 Drives `violations()` directly so each rule is asserted in isolation.
@@ -187,7 +187,7 @@ def test_pin_exempt_on_first_line_download_ignores_wraparound() -> None:
     assert _flags(text) == [1]
 
 
-# The scan window is 25 lines (hooks.check_pinned_downloads._WINDOW). The boundary
+# The scan window is 25 lines (ci_truth_serum.check_pinned_downloads._WINDOW). The boundary
 # is hardcoded here ON PURPOSE: parametrising on `mod._WINDOW` would let a mutant
 # that changes the constant shift the test input in lockstep, so the test could
 # never observe the change. Pinning the literal makes the off-by-one mutants
@@ -387,7 +387,7 @@ def test_own_shell_tree_is_clean() -> None:
     useful if the tree it ships is green. Scoped to hooks/ (the package's own
     scripts); template/session shell outside the product is out of scope."""
     tracked = subprocess.check_output(
-        ["git", "ls-files", "hooks/"], text=True, cwd=REPO_ROOT
+        ["git", "ls-files", "ci_truth_serum/"], text=True, cwd=REPO_ROOT
     ).split()
     offenders = {}
     for rel in tracked:
@@ -398,3 +398,29 @@ def test_own_shell_tree_is_clean() -> None:
         if v:
             offenders[rel] = v
     assert not offenders, f"unverified downloads: {offenders}"
+
+
+# ── regression: continuation-wrapped downloads are one logical line ───────
+def test_wrapped_curl_pipe_to_shell_is_flagged() -> None:
+    """`curl … \\<newline> | sh` is the marquee one-line installer split over
+    two physical lines; the per-physical-line scan saw a stdout-only curl and a
+    detached `| sh` (red on the pre-joiner implementation)."""
+    assert mod.violations("curl -fsSL https://x.io/i.sh \\\n  | sh\n") == [1]
+
+
+# ── regression: an output flag inside a short-flag cluster is recognized ──
+def test_wget_qO_dash_cluster_is_a_stdout_read_not_an_artifact() -> None:
+    """`wget -qO- url | jq` reads to stdout: the `-q` is wget's quiet mode and
+    the cluster-final `O-` is the stdout sink. The flag-at-token-start-only
+    regex missed the cluster, fell through to the bare-wget rule, and flagged
+    every quiet piped API read."""
+    assert _flags('wget -qO- "$url" | jq .version\n') == []
+    assert _flags('ver=$(wget -qO- "$url")\n') == []
+    # ...but the same cluster piped into a SHELL still executes the bytes,
+    # and a cluster writing a real file is still an artifact.
+    assert _flags('wget -qO- "$url" | sh\n') == [1]
+    assert _flags('wget -qO tool.bin "$url"\nrun tool.bin\n') == [1]
+
+
+def test_curl_cluster_final_O_derives_a_saved_name() -> None:
+    assert _flags('curl -fsSLO "$url"\n') == [1]

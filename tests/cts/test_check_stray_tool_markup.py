@@ -1,4 +1,4 @@
-"""Tests for hooks/check_stray_tool_markup.py — the lint that bans stray agent
+"""Tests for ci_truth_serum/check_stray_tool_markup.py — the lint that bans stray agent
 tool-call markup (a leaked closing/opening tool-call tag on its own line)
 committed into a file.
 

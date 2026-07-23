@@ -1,4 +1,4 @@
-"""Tests for hooks/check_job_timeout.py — the (opinionated) pre-commit lint that
+"""Tests for ci_truth_serum/check_job_timeout.py — the (opinionated) pre-commit lint that
 requires every GitHub Actions job to declare timeout-minutes, so no job silently
 inherits GitHub's 360-minute default.
 
