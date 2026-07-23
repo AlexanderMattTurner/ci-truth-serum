@@ -48,11 +48,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-import tree_sitter_bash
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Node
 
-_LANGUAGE = Language(tree_sitter_bash.language())
-_PARSER = Parser(_LANGUAGE)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bash_ast import parse as _parse_bash  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # Helpers that themselves assert `[[ $# -ge 2 ]]` before returning — calling one
 # at the top of an arm is an accepted guard. A small named allowlist, not a
@@ -469,8 +468,7 @@ def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for every value-taking flag arm in TEXT that reads a
     positional past $1 without a guard proving that many args remain. One report
     per arm."""
-    tree = _PARSER.parse(text.encode("utf-8"))
-    root = tree.root_node
+    root = _parse_bash(text)
     trusted = _trusted_aborts(root)
     lines = text.split("\n")
     found: list[tuple[int, str]] = []

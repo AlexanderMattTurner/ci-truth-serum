@@ -1,4 +1,4 @@
-"""Tests for hooks/check_workflow_pipefail.py — the pre-commit lint that bans an
+"""Tests for ci_truth_serum/check_workflow_pipefail.py — the pre-commit lint that bans an
 exit-code-masking pipe in a GitHub Actions step whose shell lacks pipefail
 (`runCmd:`, `shell: sh`, a custom non-pipefail `bash …`, or a `defaults.run`
 override). A `cmd | tee log` there exits with tee's status, so a failing `cmd`

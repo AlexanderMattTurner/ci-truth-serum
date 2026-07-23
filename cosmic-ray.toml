@@ -2,12 +2,12 @@
 #
 # Why cosmic-ray (not mutmut): the test harness loads each hook by FILE PATH
 # (tests/_helpers.load_hook -> importlib.spec_from_file_location), not via
-# `import hooks.x`. mutmut 3.x instruments through an import trampoline that
+# `import ci_truth_serum.x`. mutmut 3.x instruments through an import trampoline that
 # file-path loading bypasses, so its mutants are never reached. cosmic-ray
 # rewrites the file on disk and reruns the suite, so it is agnostic to how tests
 # import the code under test.
 #
-# Scope: the whole `hooks/` package is mutated. The orchestrators/IO-only modules
+# Scope: the whole `ci_truth_serum/` package is mutated. The orchestrators/IO-only modules
 # (run_tier, sync_required_checks, the __main__/network plumbing) have no offline
 # test oracle, so their mutants survive by design and are excluded below.
 #
@@ -24,7 +24,7 @@
 #   uv run --extra mutation cr-report                            cr-session.sqlite
 
 [cosmic-ray]
-module-path = "hooks"
+module-path = "ci_truth_serum"
 # Skip the two modules with no offline test oracle, so their always-surviving
 # mutants don't drown the real survivors in the report:
 #   - sync_required_checks: GitHub REST plumbing (network),
@@ -34,9 +34,9 @@ module-path = "hooks"
 # suites, so they belong in the score (only its live registry resolver lacks an
 # offline oracle, and those few survivors are expected).
 excluded-modules = [
-    "hooks/sync_required_checks.py",
-    "hooks/run_tier.py",
-    "hooks/__init__.py",
+    "ci_truth_serum/sync_required_checks.py",
+    "ci_truth_serum/run_tier.py",
+    "ci_truth_serum/__init__.py",
 ]
 timeout = 60.0
 # The offline test suite is the oracle. -p no:cacheprovider keeps each worker

@@ -1,4 +1,4 @@
-"""Tests for hooks/check_graceful_handwave.py — the lint that flags
+"""Tests for ci_truth_serum/check_graceful_handwave.py — the lint that flags
 "graceful"/"gracefully" in prose and code comments as a stand-in for an unstated
 requirement.
 

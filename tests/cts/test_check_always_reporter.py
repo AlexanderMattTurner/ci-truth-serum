@@ -1,4 +1,4 @@
-"""Tests for hooks/check_always_reporter.py — the (opinionated) pre-commit lint
+"""Tests for ci_truth_serum/check_always_reporter.py — the (opinionated) pre-commit lint
 that requires an always() reporter job on gated workflows so they can be
 registered as required status checks without hanging at "Expected — Waiting".
 

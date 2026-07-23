@@ -1,4 +1,4 @@
-"""Tests for hooks/check_symlinks.sh — the ci-truth-serum copy of the
+"""Tests for ci_truth_serum/check_symlinks.sh — the ci-truth-serum copy of the
 absolute-target symlink guard (the template ships an identical script under
 .github/scripts/; this pins the packaged hook itself)."""
 

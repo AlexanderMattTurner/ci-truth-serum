@@ -1,4 +1,4 @@
-"""Tests for hooks/check_concurrency.py — the (opinionated) pre-commit lint that
+"""Tests for ci_truth_serum/check_concurrency.py — the (opinionated) pre-commit lint that
 requires every workflow with a concurrency: block to set cancel-in-progress:
 explicitly (any value), preventing the silent false default."""
 

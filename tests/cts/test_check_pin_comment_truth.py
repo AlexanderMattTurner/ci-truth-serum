@@ -1,4 +1,4 @@
-"""Tests for hooks/check_pin_comment_truth.py — the lint that keeps `# vX.Y`
+"""Tests for ci_truth_serum/check_pin_comment_truth.py — the lint that keeps `# vX.Y`
 comments on SHA-pinned `uses:` lines present, wellformed, and consistent for a
 given `owner/repo@sha` across the whole repo.
 

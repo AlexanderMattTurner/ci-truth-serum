@@ -1,4 +1,4 @@
-"""Tests for hooks/check_lockstep_pins.py — the config-driven lint that
+"""Tests for ci_truth_serum/check_lockstep_pins.py — the config-driven lint that
 extracts one pinned value from each of two files and fails unless they agree
 (the enforced version of a "keep these in lockstep" comment).
 

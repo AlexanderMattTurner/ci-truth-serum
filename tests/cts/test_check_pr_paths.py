@@ -1,4 +1,4 @@
-"""Tests for hooks/check_pr_paths.py — the pre-commit lint that bans a
+"""Tests for ci_truth_serum/check_pr_paths.py — the pre-commit lint that bans a
 workflow-level ``paths:``/``branches:`` filter on
 ``pull_request``/``pull_request_target`` triggers (which silently strands a
 required check at "Expected — Waiting").

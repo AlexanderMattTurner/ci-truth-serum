@@ -22,6 +22,23 @@ from tree_sitter import Language, Node, Parser
 # Building the Language once is cheap; reuse it across every parse in a run.
 _PARSER: Parser | None = None
 
+# tree-sitter-bash 0.25.1 has a native heap-corruption bug: on certain adversarial
+# byte sequences — a fuzz-generated mix of high-plane codepoints, combining marks,
+# zero-width / BOM / paragraph-separator, and C0 control bytes — its C parser
+# corrupts memory and SEGFAULTs the interpreter, a crash no Python `try` can catch
+# (confirmed against tree-sitter core 0.24–0.26 alike, so it is the grammar's bug,
+# not a version skew, and 0.25.1 is the latest release). Shell SYNTAX is ASCII;
+# non-ASCII bytes only ever occur INSIDE string/comment/heredoc bodies, which every
+# lint here treats as opaque. So before parsing we map every byte that is not
+# printable ASCII (or tab/newline/CR) to a benign 'x' — a fixed 256-entry table, so
+# it is one C-level `bytes.translate`. This is LENGTH-PRESERVING: each byte keeps
+# its position, so node byte-offsets and row numbers are identical to the original
+# and callers that map offsets back into the source string stay correct; it only
+# rewrites bytes the parser must never crash on, changing no structural finding.
+_SAFE_BYTE_TABLE = bytes(
+    b if (0x20 <= b <= 0x7E or b in (0x09, 0x0A, 0x0D)) else 0x78 for b in range(256)
+)
+
 
 def _parser() -> Parser:
     global _PARSER
@@ -35,8 +52,12 @@ def parse(script: str) -> Node:
 
     tree-sitter NEVER raises on malformed input — a syntax error surfaces as
     ``ERROR`` nodes in the tree, so callers fail OPEN (treat unparseable spans as
-    benign) instead of crashing a pre-commit hook on an unrelated commit."""
-    return _parser().parse(script.encode("utf-8")).root_node
+    benign) instead of crashing a pre-commit hook on an unrelated commit. The bytes
+    are first passed through ``_SAFE_BYTE_TABLE`` (a length-preserving map of every
+    non-ASCII / control byte to ``x``) so an adversarial-unicode input can't trip
+    tree-sitter-bash's native heap-corruption segfault — see the table's comment."""
+    safe = script.encode("utf-8").translate(_SAFE_BYTE_TABLE)
+    return _parser().parse(safe).root_node
 
 
 def iter_nodes(node: Node, *types: str):

@@ -1,4 +1,4 @@
-"""Tests for hooks/check_pinned_base_images.py — the pre-commit lint that demands
+"""Tests for ci_truth_serum/check_pinned_base_images.py — the pre-commit lint that demands
 Docker base images be pinned to an immutable @sha256 digest.
 """
 

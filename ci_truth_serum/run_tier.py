@@ -144,7 +144,7 @@ def run_member(module: str, kind: str, files: list[str]) -> int:
         if not argv:
             return 0
     return subprocess.run(
-        [sys.executable, "-m", f"hooks.{module}", *argv], check=False
+        [sys.executable, "-m", f"ci_truth_serum.{module}", *argv], check=False
     ).returncode
 
 

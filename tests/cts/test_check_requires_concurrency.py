@@ -1,4 +1,4 @@
-"""Tests for hooks/check_requires_concurrency.py — the (opinionated) pre-commit
+"""Tests for ci_truth_serum/check_requires_concurrency.py — the (opinionated) pre-commit
 lint that requires a concurrency block on every pull_request(_target)-triggered
 workflow, so a new push cancels the superseded run instead of stacking a second
 full run on a capped runner pool. Sibling to check_concurrency, which only

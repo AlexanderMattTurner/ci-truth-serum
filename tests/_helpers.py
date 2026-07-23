@@ -15,7 +15,7 @@ from types import ModuleType
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HOOKS_DIR = REPO_ROOT / "hooks"
+HOOKS_DIR = REPO_ROOT / "ci_truth_serum"
 
 
 def dogfood_extras_exclude() -> "re.Pattern[str]":
@@ -96,7 +96,7 @@ def commit_all(repo: Path, message: str = "fixture") -> str:
 
 
 _SCRIPT_DIRS = [
-    REPO_ROOT / "hooks",
+    REPO_ROOT / "ci_truth_serum",
     REPO_ROOT / ".github" / "scripts",
     REPO_ROOT / ".claude" / "hooks",
     REPO_ROOT / ".hooks",

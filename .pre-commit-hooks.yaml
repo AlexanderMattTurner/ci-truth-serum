@@ -8,7 +8,7 @@
 # `language: python` builds an isolated env and installs this package (which
 # pulls in PyYAML); the YAML lints additionally pin PyYAML under
 # `additional_dependencies` so the intent is explicit. Each entry runs the lint
-# as `python -m hooks.<module>` from the consumer's repo root.
+# as `python -m ci_truth_serum.<module>` from the consumer's repo root.
 #
 # Prefer one whole tier? Enable a single `check-tier1` / `check-tier2` /
 # `check-extras` aggregate (bottom of this file) instead of listing each id; a
@@ -18,7 +18,7 @@
 - id: check-workflow-pipefail
   name: "honesty: enforce pipefail on piped run/runCmd steps"
   description: A pipe in a non-pipefail shell masks a failing left-hand command.
-  entry: python -m hooks.check_workflow_pipefail
+  entry: python -m ci_truth_serum.check_workflow_pipefail
   language: python
   additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
   pass_filenames: false
@@ -28,28 +28,28 @@
 - id: check-exit-suppression
   name: "honesty: ban unjustified exit-status suppression (|| true / || :)"
   description: "`cmd || true` drops a real failure while keeping its output."
-  entry: python -m hooks.check_exit_suppression
+  entry: python -m ci_truth_serum.check_exit_suppression
   language: python
   types: [shell]
 
 - id: check-stderr-suppression
   name: "honesty: ban stderr suppression on container launch/build commands"
   description: 2>/dev/null on a launch hides the only diagnostic a bare non-zero leaves.
-  entry: python -m hooks.check_stderr_suppression
+  entry: python -m ci_truth_serum.check_stderr_suppression
   language: python
   types: [shell]
 
 - id: check-substitution-exit-swallow
   name: "honesty: ban jq/yq feeding a shell loop through an exit-swallowing construct"
   description: "`done < <(jq …)` / `jq … | while` discards jq/yq's exit, so a query/data error no-ops the loop yet reports success."
-  entry: python -m hooks.check_substitution_exit_swallow
+  entry: python -m ci_truth_serum.check_substitution_exit_swallow
   language: python
   types: [shell]
 
 - id: check-pr-paths
   name: "honesty: ban paths/branches filters on pull_request triggers"
   description: A paths or branches filter strands a required check at "Expected — Waiting" forever.
-  entry: python -m hooks.check_pr_paths
+  entry: python -m ci_truth_serum.check_pr_paths
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -59,7 +59,7 @@
 - id: check-frozen-head-sha
   name: "honesty: ban github.event.pull_request.head.sha in run:/with: range/checkout steps"
   description: The event head SHA is frozen at trigger time; a force-push/autofix-amend mis-scopes a diff range or checks out a stale commit. Derive the head from the checkout.
-  entry: python -m hooks.check_frozen_head_sha
+  entry: python -m ci_truth_serum.check_frozen_head_sha
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -69,7 +69,7 @@
 - id: check-pipefail-grep-pipe
   name: "honesty: ban `producer | grep -q` under set -o pipefail (SIGPIPE false-negative)"
   description: grep -q's early exit SIGPIPEs the producer; pipefail surfaces 141, so a match reads as no-match.
-  entry: python -m hooks.check_pipefail_grep_pipe
+  entry: python -m ci_truth_serum.check_pipefail_grep_pipe
   language: python
   types: [shell]
 
@@ -77,21 +77,21 @@
 - id: check-pinned-base-images
   name: "identity: enforce digest-pinned Docker base images"
   description: A mutable tag (stronger than hadolint's tag-only rule) lets the bytes drift.
-  entry: python -m hooks.check_pinned_base_images
+  entry: python -m ci_truth_serum.check_pinned_base_images
   language: python
   files: '(^|/)Dockerfile(\.[\w-]+)?$'
 
 - id: check-pinned-downloads
   name: "identity: enforce checksum/signature on downloaded artifacts"
   description: An unverified curl/wget that you then run is a supply-chain entry point.
-  entry: python -m hooks.check_pinned_downloads
+  entry: python -m ci_truth_serum.check_pinned_downloads
   language: python
   files: '\.(sh|bash)$|(^|/)Dockerfile(\.[\w-]+)?$'
 
 - id: check-provenance-repo-url
   name: "identity: package repository URLs must name the repo that publishes"
   description: A repository.url naming another owner/repo (a fork's stale upstream URL) kills the release at npm's provenance validation (E422).
-  entry: python -m hooks.check_provenance_repo_url
+  entry: python -m ci_truth_serum.check_provenance_repo_url
   language: python
   pass_filenames: false
   # The compared value (the origin remote) can change with no file edit, and
@@ -102,7 +102,7 @@
 - id: check-trusted-base
   name: "security: forbid privileged pull_request-head checkout (pwn-request)"
   description: A pull_request(_target) job that checks out the PR head AND holds write perms or a secret runs untrusted PR code with the base repo's privileges.
-  entry: python -m hooks.check_trusted_base
+  entry: python -m ci_truth_serum.check_trusted_base
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -114,7 +114,7 @@
 - id: check-always-reporter
   name: "opinionated: require an always() reporter on gated workflows"
   description: Assumes the decide-job + reporter pattern; a skipped gate strands a required check.
-  entry: python -m hooks.check_always_reporter
+  entry: python -m ci_truth_serum.check_always_reporter
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -124,7 +124,7 @@
 - id: check-required-reporter
   name: "opinionated: classify every always() reporter as required or advisory"
   description: An unclassified always() reporter silently escapes the required-status-check set; mark it required-check true|false.
-  entry: python -m hooks.check_required_reporter
+  entry: python -m ci_truth_serum.check_required_reporter
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -134,7 +134,7 @@
 - id: check-inline-run-length
   name: "opinionated: enforce externalizing oversized inline run blocks"
   description: Long inline run shell is invisible to shellcheck/shfmt/shellharden.
-  entry: python -m hooks.check_inline_run_length
+  entry: python -m ci_truth_serum.check_inline_run_length
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -144,7 +144,7 @@
 - id: check-job-timeout
   name: "opinionated: require timeout-minutes on every job"
   description: A job without timeout-minutes inherits GitHub's 360-minute (6h) default, so one wedged step pins a runner slot for six hours and starves the pool.
-  entry: python -m hooks.check_job_timeout
+  entry: python -m ci_truth_serum.check_job_timeout
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -154,7 +154,7 @@
 - id: check-concurrency
   name: "opinionated: require explicit cancel-in-progress on concurrency groups"
   description: Missing cancel-in-progress silently defaults to false (queue-don't-cancel).
-  entry: python -m hooks.check_concurrency
+  entry: python -m ci_truth_serum.check_concurrency
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -164,7 +164,7 @@
 - id: check-static-concurrency
   name: "opinionated: no static workflow-level concurrency lock on required checks"
   description: A static concurrency group (no per-ref key) on a decide+always() workflow can hang the required check at "Expected — Waiting".
-  entry: python -m hooks.check_static_concurrency
+  entry: python -m ci_truth_serum.check_static_concurrency
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -174,7 +174,7 @@
 - id: check-pending-cancel-concurrency
   name: "opinionated: no ref-keyed concurrency group where PR types storm one SHA"
   description: With pull_request types beyond opened/synchronize/reopened, multiple runs queue on ONE head SHA; a per-ref/per-PR group then cancels a current-SHA sibling and its always() reporter reddens the required check with no real failure.
-  entry: python -m hooks.check_pending_cancel_concurrency
+  entry: python -m ci_truth_serum.check_pending_cancel_concurrency
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -184,7 +184,7 @@
 - id: check-requires-concurrency
   name: "opinionated: require a concurrency block on pull_request workflows"
   description: A PR workflow with no concurrency block stacks a fresh run per push instead of cancelling the superseded one, starving a capped runner pool.
-  entry: python -m hooks.check_requires_concurrency
+  entry: python -m ci_truth_serum.check_requires_concurrency
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -194,7 +194,7 @@
 - id: check-path-gate-deps
   name: "opinionated: require decide filters to cover every gated-job dependency"
   description: A decide filter omitting a gated job's composite/script dependency fails open exactly when that dependency changes.
-  entry: python -m hooks.check_path_gate_deps
+  entry: python -m ci_truth_serum.check_path_gate_deps
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -206,7 +206,7 @@
 - id: check-failure-notifier-coverage
   name: "opinionated: keep ci-failure-notify's workflow_run list in sync with the tree"
   description: workflow_run has no wildcard, so the notifier's workflows list is a derived copy; a stale copy silently drops failure notifications.
-  entry: python -m hooks.check_failure_notifier_coverage
+  entry: python -m ci_truth_serum.check_failure_notifier_coverage
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -216,7 +216,7 @@
 - id: check-cancellable-required-check
   name: "opinionated: no static cancellable workflow-level concurrency lock on required checks"
   description: "A static cancellable concurrency group on a `# required-check: true` workflow lets a sibling ref cancel the run and its workflow-level always() reporter wholesale, hanging the check at 'Expected — Waiting'."
-  entry: python -m hooks.check_cancellable_required_check
+  entry: python -m ci_truth_serum.check_cancellable_required_check
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -226,7 +226,7 @@
 - id: check-externalized-markers
   name: "opinionated: flag policy markers reachable only through script/composite indirection"
   description: A history-rewrite (etc.) command in .github/scripts/*.sh is invisible to an inline-run guard, which then passes vacuously.
-  entry: python -m hooks.check_externalized_markers
+  entry: python -m ci_truth_serum.check_externalized_markers
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -236,7 +236,7 @@
 - id: check-token-fallback
   name: "opinionated: ban `secrets.A || secrets.B` fallbacks in token positions"
   description: The fallback silently switches push identity the day the first secret is set.
-  entry: python -m hooks.check_token_fallback
+  entry: python -m ci_truth_serum.check_token_fallback
   language: python
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
@@ -245,7 +245,7 @@
 - id: check-workflow-secret-names
   name: "opinionated: round-trip referenced secrets/vars against .github/workflow-secrets.txt"
   description: A misspelled secret evaluates to empty and the workflow silently degrades; the allowlist makes every name a reviewed choice. Prints the corrected file on mismatch.
-  entry: python -m hooks.check_workflow_secret_names
+  entry: python -m ci_truth_serum.check_workflow_secret_names
   language: python
   pass_filenames: false
   files: ^\.github/(workflows|actions|workflow-secrets\.txt)
@@ -254,7 +254,7 @@
 - id: check-pin-comment-truth
   name: "opinionated: keep `# vX.Y` comments on SHA-pinned uses: present and consistent"
   description: The version comment is the only human-readable part of a SHA pin; the same SHA annotated `# v6` here and `# v7.0.0` there means at most one is true.
-  entry: python -m hooks.check_pin_comment_truth
+  entry: python -m ci_truth_serum.check_pin_comment_truth
   language: python
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
@@ -263,7 +263,7 @@
 - id: check-stderr-merge-parse
   name: "opinionated: ban parsing a 2>&1-merged stream (stderr noise becomes data)"
   description: '`v=$(cmd 2>&1 | tail -1)` makes any stderr warning part of "the value"; diagnostic captures (`out=$(cmd 2>&1)` + echo) are never flagged.'
-  entry: python -m hooks.check_stderr_merge_parse
+  entry: python -m ci_truth_serum.check_stderr_merge_parse
   language: python
   additional_dependencies: [PyYAML]
   types_or: [shell, yaml]
@@ -271,14 +271,14 @@
 - id: check-echo-fallback
   name: "opinionated: ban `|| echo` fallbacks that convert a failure into a parseable string"
   description: '`$(cmd || echo "error")` hands the caller a benign-looking value where a failure happened.'
-  entry: python -m hooks.check_echo_fallback
+  entry: python -m ci_truth_serum.check_echo_fallback
   language: python
   types: [shell]
 
 - id: check-lockstep-pins
   name: "opinionated: verify configured twin pins agree (the enforced 'keep in lockstep' comment)"
   description: Each --pair extracts one value from each of two files and fails unless they are equal; zero or multiple matches is a hard error. Config-driven, so it is NOT in the check-tier2 aggregate — enable it standalone with args.
-  entry: python -m hooks.check_lockstep_pins
+  entry: python -m ci_truth_serum.check_lockstep_pins
   language: python
   pass_filenames: false
   always_run: true
@@ -288,28 +288,28 @@
 - id: check-symlinks
   name: "extra: reject tracked symlinks with absolute targets"
   description: An absolute-target symlink breaks on every machine but the author's.
-  entry: hooks/check_symlinks.sh
+  entry: ci_truth_serum/check_symlinks.sh
   language: script
   pass_filenames: false
 
 - id: check-unnamed-regex-groups
   name: "extra: require named groups in Python re.* literals"
   description: Unnamed capture groups make match handling positional and brittle.
-  entry: python -m hooks.check_unnamed_regex_groups
+  entry: python -m ci_truth_serum.check_unnamed_regex_groups
   language: python
   types: [python]
 
 - id: check-global-stdio-swap
   name: "extra: ban reassigning sys.stdin/stdout/stderr in source Python"
   description: Swapping process-global streams is not thread-safe under concurrency.
-  entry: python -m hooks.check_global_stdio_swap
+  entry: python -m ci_truth_serum.check_global_stdio_swap
   language: python
   types: [python]
 
 - id: check-claude-model
   name: "extra: require an explicit model on claude-code-action steps"
   description: A claude-code-action step without --model silently runs on the action's default (Opus) tier.
-  entry: python -m hooks.check_claude_model
+  entry: python -m ci_truth_serum.check_claude_model
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -319,7 +319,7 @@
 - id: check-drift-guards
   name: "extra: require a justification on drift-guard (copies-agree) tests"
   description: A test asserting two copies agree hides a missing SSOT; mark it @pytest.mark.drift_guard("<why>") so the reason is reviewed.
-  entry: python -m hooks.check_drift_guards
+  entry: python -m ci_truth_serum.check_drift_guards
   language: python
   # Python tests use @pytest.mark.drift_guard; JS/TS/shell suites carry copies-agree
   # tests too, caught by a phrase pass and excused with `drift-guard-ok: <reason>`.
@@ -328,28 +328,28 @@
 - id: check-graceful-handwave
   name: "extra: ban graceful-degradation hand-waves in prose and comments"
   description: The word claims a guarantee while specifying nothing; state the concrete behaviour or annotate allow-graceful.
-  entry: python -m hooks.check_graceful_handwave
+  entry: python -m ci_truth_serum.check_graceful_handwave
   language: python
   types_or: [shell, python, javascript, ts, markdown, rst]
 
 - id: check-historical-comments
   name: "extra: ban historical narration in code comments"
   description: A comment narrating how the code changed is unverifiable and rots; describe the current code, or annotate allow-history.
-  entry: python -m hooks.check_historical_comments
+  entry: python -m ci_truth_serum.check_historical_comments
   language: python
   types_or: [shell, python, javascript, ts]
 
 - id: check-doc-line-refs
   name: "extra: ban exact line-number citations in Markdown docs"
   description: A doc citing source by line number rots the moment code moves; cite a symbol/section instead.
-  entry: python -m hooks.check_doc_line_refs
+  entry: python -m ci_truth_serum.check_doc_line_refs
   language: python
   types: [markdown]
 
 - id: check-flag-arity
   name: "extra: require an arity guard on value-taking CLI flag arms"
   description: A `--flag) x=$2; shift 2` arm relying only on the loop's `$# -gt 0` dies with a raw unbound-variable error when the flag is passed last; guard `$2` before reading it.
-  entry: python -m hooks.check_flag_arity
+  entry: python -m ci_truth_serum.check_flag_arity
   language: python
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
@@ -357,28 +357,28 @@
 - id: check-secret-file-perms
   name: "extra: flag a secret file created world-readable then chmod'd private after"
   description: A credential file created with the default umask and only tightened to 0600 on a later line is world-readable in the window between; create it private from the start.
-  entry: python -m hooks.check_secret_file_perms
+  entry: python -m ci_truth_serum.check_secret_file_perms
   language: python
   types: [shell]
 
 - id: check-stray-tool-markup
   name: "extra: ban stray agent tool-call markup committed into a file"
   description: A leaked closing/opening tool-call tag (</invoke>, <parameter …>, </content>) on its own line renders as literal garbage; only whole-line bare tags are flagged, fenced examples are skipped.
-  entry: python -m hooks.check_stray_tool_markup
+  entry: python -m ci_truth_serum.check_stray_tool_markup
   language: python
   types_or: [shell, python, javascript, ts, markdown, rst]
 
 - id: check-case-default
   name: "extra: require a bare `*)` default arm on every shell case block"
   description: A case with no default silently no-ops on an unexpected value and leaves its variables unset.
-  entry: python -m hooks.check_case_default
+  entry: python -m ci_truth_serum.check_case_default
   language: python
   types: [shell]
 
 - id: check-cron-comment
   name: "extra: fail a schedule comment that contradicts its cron expression"
   description: '"# daily" above a weekly cron misleads every reviewer; ambiguous shapes always pass.'
-  entry: python -m hooks.check_cron_comment
+  entry: python -m ci_truth_serum.check_cron_comment
   language: python
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
@@ -387,14 +387,14 @@
 - id: check-toolchain-skips
   name: "extra: pytest skips gated on binary discovery must fail (not skip) in CI"
   description: A which()-gated skipif silently zeroes the guarded coverage on a runner missing the tool; demand a CI env guard in the condition.
-  entry: python -m hooks.check_toolchain_skips
+  entry: python -m ci_truth_serum.check_toolchain_skips
   language: python
   types: [python]
 
 - id: check-env-symmetry
   name: "extra: enforce write/read symmetry for prefixed env vars"
   description: A prefixed env var written but never read (or read but never written) is a half-finished rename that silently reads unset; requires --prefix and scans the whole tracked tree.
-  entry: python -m hooks.check_env_symmetry
+  entry: python -m ci_truth_serum.check_env_symmetry
   language: python
   # Whole-tree scan (a write and its read live in different files) — self-
   # discovers via `git ls-files`, so the passed file list is ignored. Supply the
@@ -413,20 +413,20 @@
 - id: check-tier1
   name: "aggregate: every Tier 1 (honesty + identity) check"
   description: Runs the default-on honesty + identity lints under one id.
-  entry: python -m hooks.run_tier 1
+  entry: python -m ci_truth_serum.run_tier 1
   language: python
   additional_dependencies: [PyYAML, identify, tree-sitter, tree-sitter-bash]
 
 - id: check-tier2
   name: "aggregate: every Tier 2 (opinionated) check"
   description: Runs the opinionated required-check-shape lints under one id; assumes that architecture.
-  entry: python -m hooks.run_tier 2
+  entry: python -m ci_truth_serum.run_tier 2
   language: python
   additional_dependencies: [PyYAML, identify]
 
 - id: check-extras
   name: "aggregate: every Extras (off-theme bonus) Python check"
   description: Runs the Python extras under one id (check-symlinks, a shell hook, is enabled separately).
-  entry: python -m hooks.run_tier extras
+  entry: python -m ci_truth_serum.run_tier extras
   language: python
   additional_dependencies: [PyYAML, identify, tree-sitter, tree-sitter-bash]

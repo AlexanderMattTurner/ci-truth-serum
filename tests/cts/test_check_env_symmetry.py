@@ -1,4 +1,4 @@
-"""Tests for hooks/check_env_symmetry.py — the (extra) whole-tree scan that flags
+"""Tests for ci_truth_serum/check_env_symmetry.py — the (extra) whole-tree scan that flags
 a prefixed env var written but never read, or read but never written (the
 half-finished-rename signature).
 

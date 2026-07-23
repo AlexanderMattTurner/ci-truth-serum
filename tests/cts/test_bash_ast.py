@@ -1,4 +1,4 @@
-"""Example-based tests (mutation oracle) for hooks/_bash_ast.py — the shared
+"""Example-based tests (mutation oracle) for ci_truth_serum/_bash_ast.py — the shared
 tree-sitter-bash wrapper the two shell lints parse through.
 
 Pins the exact contract of ``parse`` and ``iter_nodes``: a real bash tree, node
@@ -27,6 +27,46 @@ def test_parse_is_reusable_across_calls() -> None:
     # The cached parser must keep working on a second, different input.
     assert bash_ast.parse("a | b").type == "program"
     assert bash_ast.parse("case $x in a) ;; esac").type == "program"
+
+
+# ── crash-safety: sanitize adversarial bytes before the native parser ────────
+def test_safe_byte_table_maps_non_ascii_and_control_to_x_length_preserving() -> None:
+    tbl = bash_ast._SAFE_BYTE_TABLE
+    assert len(tbl) == 256
+    # Printable ASCII plus tab/newline/CR are kept verbatim (real shell syntax).
+    for b in [*range(0x20, 0x7F), 0x09, 0x0A, 0x0D]:
+        assert tbl[b] == b, hex(b)
+    # Every other byte — C0 controls (except \t\n\r), DEL, and all high bytes that
+    # carry non-ASCII UTF-8 — maps to 'x' (0x78), the crash-trigger classes removed.
+    for b in [*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), *range(0x7F, 0x100)]:
+        assert tbl[b] == 0x78, hex(b)
+
+
+def test_parse_replaces_non_ascii_but_preserves_offsets() -> None:
+    # A non-ASCII char inside a string is rewritten to 'x' in the bytes tree-sitter
+    # sees, yet byte length is preserved so every node offset/row still lines up
+    # with the original source (what strip_comments / start_point rely on).
+    script = 'x="café"\n'
+    root = bash_ast.parse(script)
+    assert root.type == "program"
+    assert root.end_byte == len(script.encode("utf-8"))
+    assert "é" not in root.text.decode()  # the non-ASCII byte class is gone
+    # ASCII structure is untouched: the assignment is still parsed as one.
+    assert [n.text.decode() for n in bash_ast.iter_nodes(root, "variable_name")] == [
+        "x"
+    ]
+
+
+def test_parse_survives_adversarial_unicode() -> None:
+    # The byte classes that segfault tree-sitter-bash 0.25.1's native parser:
+    # high-plane codepoints, stacked combining marks, zero-width / BOM / paragraph
+    # separator, and C0 controls, spliced into shell-ish fragments. Sanitization
+    # must let parse() complete and return a real tree instead of crashing.
+    adversarial = (
+        'done < <(jq -r " ​﻿\U000c0981́́\x0c\x92\U000da6dd\U000ab905 \U000ab905) # c\n'
+    ) * 40
+    root = bash_ast.parse(adversarial)
+    assert root.type == "program"
 
 
 def test_iter_nodes_filters_to_requested_type() -> None:

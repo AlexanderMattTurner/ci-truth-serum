@@ -175,7 +175,7 @@ def test_shard_config_is_valid_single_module_toml() -> None:
     shard = next(
         s
         for s in mod.expand_shards(REPO_ROOT)
-        if s["module"] == "hooks/check_pipefail_grep_pipe.py"
+        if s["module"] == "ci_truth_serum/check_pipefail_grep_pipe.py"
     )
     parsed = tomllib.loads(mod.shard_config_toml(REPO_ROOT, shard))["cosmic-ray"]
     # the config mutates the WHOLE module (the sub-shard slices mutants at runtime)

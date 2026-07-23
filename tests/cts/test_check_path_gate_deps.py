@@ -1,4 +1,4 @@
-"""Tests for hooks/check_path_gate_deps.py — the lint requiring a decide job's
+"""Tests for ci_truth_serum/check_path_gate_deps.py — the lint requiring a decide job's
 path filters to cover every file its gated jobs actually depend on (a filter
 that omits a real dependency fails open exactly when that dependency changes).
 

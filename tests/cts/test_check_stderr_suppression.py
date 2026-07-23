@@ -1,4 +1,4 @@
-"""Tests for hooks/check_stderr_suppression.py — the pre-commit lint that bans
+"""Tests for ci_truth_serum/check_stderr_suppression.py — the pre-commit lint that bans
 stderr suppression on container launch/build commands.
 
 Drives `violations()` directly so each rule is asserted in isolation.

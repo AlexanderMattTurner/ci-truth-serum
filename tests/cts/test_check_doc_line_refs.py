@@ -1,4 +1,4 @@
-"""Tests for hooks/check_doc_line_refs.py — the lint that bans exact
+"""Tests for ci_truth_serum/check_doc_line_refs.py — the lint that bans exact
 line-number citations of source files in Markdown docs.
 
 Drives `violations()` directly (each flagged form member-by-member, the

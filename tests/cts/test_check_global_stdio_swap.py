@@ -1,4 +1,4 @@
-"""Tests for hooks/check_global_stdio_swap.py — the pre-commit lint that bans
+"""Tests for ci_truth_serum/check_global_stdio_swap.py — the pre-commit lint that bans
 swapping the process-global stdin/stdout/stderr in source Python.
 
 Drives `violations()` directly so each rule is asserted in isolation.

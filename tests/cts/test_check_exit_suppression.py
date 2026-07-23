@@ -1,4 +1,4 @@
-"""Tests for hooks/check_exit_suppression.py — the pre-commit lint that bans
+"""Tests for ci_truth_serum/check_exit_suppression.py — the pre-commit lint that bans
 unjustified exit-status suppression (`|| true` / `|| :`).
 
 Drives `violations()` directly so each rule is asserted in isolation.

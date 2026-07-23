@@ -49,7 +49,7 @@ for f in .hooks/* .claude/hooks/*; do
   rc=0
   IFS= read -r first_line <"${f}" || rc=$?
   [[ "${rc:-0}" -le 1 ]] || error "Failed to read ${f} (exit ${rc})"
-  case "${first_line}" in '#!'*) has_shebang=1 ;; esac
+  case "${first_line}" in '#!'*) has_shebang=1 ;; *) : ;; esac
   if [[ "${has_shebang}" = "1" ]] && [[ ! -x "${f}" ]]; then
     error "${f} has a shebang but is not executable"
   fi

@@ -1,4 +1,4 @@
-"""Tests for hooks/check_substitution_exit_swallow.py — the pre-commit lint that
+"""Tests for ci_truth_serum/check_substitution_exit_swallow.py — the pre-commit lint that
 bans a structured-data producer (jq/yq) feeding a shell loop through a construct
 that discards the producer's exit status (`done < <(jq …)` / `jq … | while`).
 

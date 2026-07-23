@@ -1,4 +1,4 @@
-"""Tests for hooks/check_trusted_base.py — the (security) pre-commit lint that
+"""Tests for ci_truth_serum/check_trusted_base.py — the (security) pre-commit lint that
 flags the pwn-request shape: a pull_request(_target) job that checks out the PR
 head ref AND runs privileged (write permissions or a secret in env).
 

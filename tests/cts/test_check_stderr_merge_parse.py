@@ -1,4 +1,4 @@
-"""Tests for hooks/check_stderr_merge_parse.py — the lint that flags `2>&1`-
+"""Tests for ci_truth_serum/check_stderr_merge_parse.py — the lint that flags `2>&1`-
 merged output being PARSED (piped into head/tail/grep/… inside a substitution,
 or a merged capture later piped/compared), while leaving diagnostic captures
 (`out=$(cmd 2>&1)` + echo) alone.

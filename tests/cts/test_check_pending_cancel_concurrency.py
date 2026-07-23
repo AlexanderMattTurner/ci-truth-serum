@@ -1,4 +1,4 @@
-"""Tests for hooks/check_pending_cancel_concurrency.py — the (opinionated) lint
+"""Tests for ci_truth_serum/check_pending_cancel_concurrency.py — the (opinionated) lint
 that forbids a per-ref/per-PR concurrency group (workflow-level OR job-level) on
 a required-check workflow whose `on.pull_request.types` includes an activity
 type outside {opened, synchronize, reopened}. Those types fire extra runs on the

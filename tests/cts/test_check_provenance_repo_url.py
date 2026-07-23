@@ -1,4 +1,4 @@
-"""Tests for hooks/check_provenance_repo_url.py — the identity lint that pins
+"""Tests for ci_truth_serum/check_provenance_repo_url.py — the identity lint that pins
 package.json / pyproject.toml repository URLs to the repo the origin remote
 actually names (npm provenance rejects a mismatched repository.url with E422).
 

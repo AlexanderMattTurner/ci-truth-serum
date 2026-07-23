@@ -1,4 +1,4 @@
-"""Tests for hooks/check_pipefail_grep_pipe.py — the pre-commit lint that bans
+"""Tests for ci_truth_serum/check_pipefail_grep_pipe.py — the pre-commit lint that bans
 `producer | grep -q` under `set -o pipefail`. `grep -q` exits at the first match
 and closes the pipe; a still-writing producer dies with SIGPIPE (141), and pipefail
 surfaces 141 as the pipeline status, so a MATCH reads as NO-MATCH.
@@ -205,7 +205,7 @@ def test_main_wires_violations_and_message(
 
 def _run_module(*paths: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "hooks.check_pipefail_grep_pipe", *paths],
+        [sys.executable, "-m", "ci_truth_serum.check_pipefail_grep_pipe", *paths],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,

@@ -1,4 +1,4 @@
-"""Tests for hooks/check_pinned_downloads.py — the pre-commit lint that demands a
+"""Tests for ci_truth_serum/check_pinned_downloads.py — the pre-commit lint that demands a
 checksum/signature check on every downloaded artifact.
 
 Drives `violations()` directly so each rule is asserted in isolation.
@@ -201,7 +201,7 @@ def test_pin_exempt_on_first_line_download_ignores_wraparound() -> None:
     assert _flags(text) == [1]
 
 
-# The scan window is 25 lines (hooks.check_pinned_downloads._WINDOW). The boundary
+# The scan window is 25 lines (ci_truth_serum.check_pinned_downloads._WINDOW). The boundary
 # is hardcoded here ON PURPOSE: parametrising on `mod._WINDOW` would let a mutant
 # that changes the constant shift the test input in lockstep, so the test could
 # never observe the change. Pinning the literal makes the off-by-one mutants

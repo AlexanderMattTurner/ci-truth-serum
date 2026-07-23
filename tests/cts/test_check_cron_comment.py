@@ -1,4 +1,4 @@
-"""Tests for hooks/check_cron_comment.py — the lint that fails a workflow whose
+"""Tests for ci_truth_serum/check_cron_comment.py — the lint that fails a workflow whose
 schedule comment (hourly/daily/weekly/monthly/every N …) contradicts the cron
 expression it annotates. Ambiguity always passes: only a clean claim against a
 clean shape can contradict.

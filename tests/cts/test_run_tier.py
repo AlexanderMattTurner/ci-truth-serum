@@ -1,4 +1,4 @@
-"""Tests for hooks/run_tier.py — the per-tier aggregate runner that lets a
+"""Tests for ci_truth_serum/run_tier.py — the per-tier aggregate runner that lets a
 consumer enable a whole tier (check-tier1/2/extras) with one id.
 
 Two layers:
@@ -42,8 +42,8 @@ def _python_member_hooks() -> list[dict]:
     return [
         h
         for h in MANIFEST
-        if h["entry"].startswith("python -m hooks.")
-        and not h["entry"].startswith("python -m hooks.run_tier")
+        if h["entry"].startswith("python -m ci_truth_serum.")
+        and not h["entry"].startswith("python -m ci_truth_serum.run_tier")
     ]
 
 
@@ -55,7 +55,7 @@ def test_registry_covers_every_python_hook_in_its_declared_tier():
         if hook["id"] in UNAGGREGATED:
             continue
         prefix = hook["name"].split(":", 1)[0]
-        module = hook["entry"].split()[-1].removeprefix("hooks.")
+        module = hook["entry"].split()[-1].removeprefix("ci_truth_serum.")
         expected.add((PREFIX_TIER[prefix], module))
     assert registry == expected
 
@@ -67,10 +67,12 @@ def test_unaggregated_hooks_exist_and_appear_in_no_tier():
     symlinks = next(h for h in MANIFEST if h["id"] == "check-symlinks")
     assert symlinks["entry"].endswith(".sh") and symlinks["language"] == "script"
     lockstep = next(h for h in MANIFEST if h["id"] == "check-lockstep-pins")
-    assert lockstep["entry"] == "python -m hooks.check_lockstep_pins"
+    assert lockstep["entry"] == "python -m ci_truth_serum.check_lockstep_pins"
     assert lockstep["pass_filenames"] is False and lockstep["always_run"] is True
     env_symmetry = next(h for h in MANIFEST if h["id"] == "check-env-symmetry")
-    assert env_symmetry["entry"].startswith("python -m hooks.check_env_symmetry")
+    assert env_symmetry["entry"].startswith(
+        "python -m ci_truth_serum.check_env_symmetry"
+    )
     all_modules = {mod for members in rt.TIERS.values() for mod, _ in members}
     assert "check_symlinks" not in all_modules
     assert "check_lockstep_pins" not in all_modules
@@ -81,7 +83,7 @@ def test_every_aggregate_id_has_a_tier():
     aggregate_tiers = {
         h["entry"].split()[-1]
         for h in MANIFEST
-        if h["entry"].startswith("python -m hooks.run_tier")
+        if h["entry"].startswith("python -m ci_truth_serum.run_tier")
     }
     assert aggregate_tiers == set(rt.TIERS)
 
@@ -204,8 +206,8 @@ def test_run_member_workflow_ignores_files_and_runs(monkeypatch):
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
     assert rt.run_member("check_pr_paths", rt.WORKFLOW, ["ignored.py"]) == 0
-    # WORKFLOW members get no file args appended — just `-m hooks.<module>`.
-    assert captured["cmd"][1:] == ["-m", "hooks.check_pr_paths"]
+    # WORKFLOW members get no file args appended — just `-m ci_truth_serum.<module>`.
+    assert captured["cmd"][1:] == ["-m", "ci_truth_serum.check_pr_paths"]
 
 
 # ── main ──────────────────────────────────────────────────────────────────
@@ -231,8 +233,8 @@ def test_skip_removes_named_member(tmp_path, monkeypatch):
         returncode = 0
 
     def _fake(cmd, check):
-        # cmd = [sys.executable, "-m", "hooks.<module>", ...]
-        called.append(cmd[2].removeprefix("hooks."))
+        # cmd = [sys.executable, "-m", "ci_truth_serum.<module>", ...]
+        called.append(cmd[2].removeprefix("ci_truth_serum."))
         return _Done()
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)

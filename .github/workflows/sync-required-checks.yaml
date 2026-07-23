@@ -2,7 +2,7 @@ name: Sync required status checks
 
 # Apply half of the check-required-reporter pair this repo ships (and
 # dogfoods): the pre-commit hook forces every always() reporter to carry a
-# `# required-check: true|false` annotation; hooks/sync_required_checks reads
+# `# required-check: true|false` annotation; ci_truth_serum/sync_required_checks reads
 # those annotations (the SSOT), expands each required job's name across its
 # own matrix, and rewrites the branch-protection ruleset's
 # required_status_checks to exactly that set — so a reporter's classification
@@ -19,7 +19,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/**
-      - hooks/**
+      - ci_truth_serum/**
   workflow_dispatch:
     inputs:
       check-only:
@@ -61,4 +61,4 @@ jobs:
           if [[ "$CHECK_ONLY" == "true" ]]; then
             args+=(--check)
           fi
-          python3 -m hooks.sync_required_checks "${args[@]}"
+          python3 -m ci_truth_serum.sync_required_checks "${args[@]}"

@@ -1,4 +1,4 @@
-"""Tests for hooks/check_case_default.py — the lint that requires every shell
+"""Tests for ci_truth_serum/check_case_default.py — the lint that requires every shell
 `case … esac` block to carry a bare `*)` default arm, so an unexpected value
 runs SOMETHING instead of silently falling through.
 

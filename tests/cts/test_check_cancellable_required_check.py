@@ -1,4 +1,4 @@
-"""Tests for hooks/check_cancellable_required_check.py — the (opinionated)
+"""Tests for ci_truth_serum/check_cancellable_required_check.py — the (opinionated)
 pre-commit lint that forbids a static *cancellable* workflow-level concurrency
 group on a workflow that declares a required check (via a `# required-check: true`
 marker), which can strand the check at 'Expected — Waiting' when a sibling ref

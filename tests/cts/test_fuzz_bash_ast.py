@@ -1,4 +1,4 @@
-"""Property/fuzz test for hooks/_bash_ast — the shared tree-sitter-bash wrapper
+"""Property/fuzz test for ci_truth_serum/_bash_ast — the shared tree-sitter-bash wrapper
 both shell lints parse through.
 
 The whole point of swapping the hand-rolled tokenizers for a real grammar is
