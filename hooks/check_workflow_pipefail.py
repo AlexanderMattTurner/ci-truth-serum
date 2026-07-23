@@ -18,7 +18,9 @@ guards is the contexts that bypass that wrapper:
 
 A script is SAFE when its effective shell already enables pipefail OR its executable
 code runs `set -o pipefail` (an actual command — a mention in a comment or heredoc
-body does not count). Quoted spans, comments, and heredoc bodies are ignored when
+body does not count) BEFORE the first pipe. A `set -o pipefail` that sits after the
+pipe, or in a never-reached tail, does not protect the pipe and is not treated as a
+clear. Quoted spans, comments, and heredoc bodies are ignored when
 scanning for pipes: a `|` there is data, not a pipeline. Non-shell steps
 (`shell: python`/`pwsh`/`node`/…) are skipped — their `|` is not a pipeline. Opt out
 a deliberate step with a `# allow-no-pipefail: <reason>` comment in the script body.
@@ -103,28 +105,27 @@ def _allow_optout(script: str) -> bool:
     )
 
 
-def _sets_pipefail(script: str) -> bool:
-    """True if SCRIPT runs `set -o pipefail` as an actual command. Matched only on
-    `command` nodes, so a `pipefail` mention in a comment or heredoc body (data, not
-    a command) does not count, and `set +o pipefail` (which DISABLES it) is rejected
-    by the regex requiring a `-`-flag bundle."""
-    return any(
-        _SET_PIPEFAIL.search(node.text.decode())
-        for node in iter_nodes(parse(script), "command")
-    )
+def _first_pipefail_byte(root) -> int | None:
+    """The start byte of the FIRST `set -o pipefail` command in SCRIPT's AST, or
+    None if none runs it. Matched only on `command` nodes, so a `pipefail` mention
+    in a comment or heredoc body (data, not a command) does not count, and
+    `set +o pipefail` (which DISABLES it) is rejected by the regex requiring a
+    `-`-flag bundle."""
+    bytes_ = [
+        node.start_byte
+        for node in iter_nodes(root, "command")
+        if _SET_PIPEFAIL.search(node.text.decode())
+    ]
+    return min(bytes_) if bytes_ else None
 
 
-def _pipelines(script: str) -> list[str]:
-    """The first source line of every real pipeline (`a | b`, `a |& b`, an FD-glued
-    `a 2>&1| b`) in SCRIPT, in source order. A `|` inside a string, comment, heredoc
-    body, `||`, or a `>|` clobber redirect is not a pipeline node, so it never
-    appears here; a pipe inside `$(…)`/backticks is a real nested pipeline and does.
-    Each entry is the SOURCE line where its pipeline begins (not the node text,
-    whose span can interleave a heredoc body), stripped. Ordered by source position
-    so the caller reports the FIRST offending pipe."""
-    lines = script.split("\n")
-    nodes = sorted(iter_nodes(parse(script), "pipeline"), key=lambda n: n.start_byte)
-    return [lines[node.start_point[0]].strip() for node in nodes]
+def _pipeline_nodes(root) -> list:
+    """Every real pipeline node (`a | b`, `a |& b`, an FD-glued `a 2>&1| b`) in
+    SCRIPT's AST, ordered by source position. A `|` inside a string, comment,
+    heredoc body, `||`, or a `>|` clobber redirect is not a pipeline node, so it
+    never appears; a pipe inside `$(…)`/backticks is a real nested pipeline and
+    does."""
+    return sorted(iter_nodes(root, "pipeline"), key=lambda n: n.start_byte)
 
 
 def _default_shell(*scopes: object) -> str | None:
@@ -143,17 +144,25 @@ def _default_shell(*scopes: object) -> str | None:
 
 def _check_script(script: str, shell: str | None, location: str) -> list[str]:
     """Return a one-element message list when SCRIPT pipes under a shell that lacks
-    pipefail and neither opts out nor sets pipefail itself; else empty."""
+    pipefail and neither opts out nor sets pipefail BEFORE the pipe; else empty."""
     if not isinstance(script, str) or not _is_posix_shell(shell):
         return []
     if _shell_has_pipefail(shell) or _allow_optout(script):
         return []
-    if _sets_pipefail(script):
-        return []
-    pipes = _pipelines(script)
+    root = parse(script)
+    pipes = _pipeline_nodes(root)
     if not pipes:
         return []
-    shown = pipes[0]
+    # `set -o pipefail` only protects pipes that RUN AFTER it. A `set -o pipefail`
+    # that sits after the pipe (or in a never-reached tail) does not — comparing
+    # byte offsets is what distinguishes "protected" from "the option is spelled
+    # somewhere in the file", the false clear this guards.
+    pipefail_byte = _first_pipefail_byte(root)
+    first_pipe = pipes[0]
+    if pipefail_byte is not None and pipefail_byte < first_pipe.start_byte:
+        return []
+    lines = script.split("\n")
+    shown = lines[first_pipe.start_point[0]].strip()
     return [
         f"{location}: pipes (`{shown}`) under a shell without pipefail, so a failure "
         "on the left of the pipe is masked by the last stage's exit status. Add "

@@ -88,37 +88,46 @@ def test_shell_has_pipefail_string_below_bash_is_not_pipefail():
     assert cwp._shell_has_pipefail("aaa") is False
 
 
-# ── _pipelines (AST-based pipe detection) ────────────────────────────────
+# ── _pipeline_nodes (AST-based pipe detection) ───────────────────────────
+def _pipe_lines(script: str) -> list[str]:
+    """The source line where each detected pipeline begins — the observable the
+    message quotes, reconstructed from the pipeline nodes."""
+    lines = script.split("\n")
+    return [
+        lines[n.start_point[0]].strip() for n in cwp._pipeline_nodes(cwp.parse(script))
+    ]
+
+
 def test_pipelines_detects_real_pipe_only():
     # Only a genuine pipeline is a pipe: `||` (logical or) and a plain command are
     # not, and their source lines never appear.
-    assert cwp._pipelines("cat x | tee y\nfoo || bar\nbaz\n") == ["cat x | tee y"]
+    assert _pipe_lines("cat x | tee y\nfoo || bar\nbaz\n") == ["cat x | tee y"]
 
 
 def test_pipelines_ignores_clobber_redirect_and_logical_or():
-    assert cwp._pipelines("echo hi >| file") == []
-    assert cwp._pipelines("foo || bar") == []
+    assert _pipe_lines("echo hi >| file") == []
+    assert _pipe_lines("foo || bar") == []
 
 
 def test_pipelines_detects_fd_glued_and_pipe_amp():
     # `2>&1| tee` (FD redirect glued to the pipe) and `|&` are real masking pipes.
-    assert cwp._pipelines("cmd 2>&1| tee y") == ["cmd 2>&1| tee y"]
-    assert cwp._pipelines("cmd |& tee y") == ["cmd |& tee y"]
+    assert _pipe_lines("cmd 2>&1| tee y") == ["cmd 2>&1| tee y"]
+    assert _pipe_lines("cmd |& tee y") == ["cmd |& tee y"]
 
 
 def test_pipelines_ignores_pipe_in_string_comment_and_heredoc():
     # A `|` inside a string, a `#` comment, or a heredoc body (quoted or not) is
     # data, not a pipeline — the grammar never yields a pipeline node for it.
-    assert cwp._pipelines('echo "a | b"') == []
-    assert cwp._pipelines("echo a  # b | c") == []
-    assert cwp._pipelines("cat <<EOF\na | b\nEOF\n") == []
-    assert cwp._pipelines("cat <<'EOF'\na | b\nEOF\n") == []
+    assert _pipe_lines('echo "a | b"') == []
+    assert _pipe_lines("echo a  # b | c") == []
+    assert _pipe_lines("cat <<EOF\na | b\nEOF\n") == []
+    assert _pipe_lines("cat <<'EOF'\na | b\nEOF\n") == []
 
 
 def test_pipelines_keeps_intro_pipe_and_drops_body_pipe():
     # A pipe on the heredoc INTRO line applies to the command and is reported by its
     # source line; the body's own `|` is dropped; a pipe after the body is real.
-    assert cwp._pipelines("cat <<EOF | tee\nbody | x\nEOF\nreal | tee\n") == [
+    assert _pipe_lines("cat <<EOF | tee\nbody | x\nEOF\nreal | tee\n") == [
         "cat <<EOF | tee",
         "real | tee",
     ]
@@ -127,24 +136,38 @@ def test_pipelines_keeps_intro_pipe_and_drops_body_pipe():
 def test_pipelines_reports_source_order():
     # Two pipes on distinct lines are returned first-to-last, so `_check_script`
     # quotes the FIRST — pins the order the message depends on.
-    assert cwp._pipelines("alpha | tee a\nbeta | tee b") == [
+    assert _pipe_lines("alpha | tee a\nbeta | tee b") == [
         "alpha | tee a",
         "beta | tee b",
     ]
 
 
-# ── _sets_pipefail (AST-based `set -o pipefail` detection) ────────────────
-def test_sets_pipefail_true_only_for_a_real_set_command():
-    assert cwp._sets_pipefail("set -o pipefail\na | b") is True
-    assert cwp._sets_pipefail("set -euo pipefail\na | b") is True  # flag bundle
+# ── _first_pipefail_byte (AST-based `set -o pipefail` detection + order) ──
+def test_first_pipefail_byte_set_for_a_real_set_command():
+    assert cwp._first_pipefail_byte(cwp.parse("set -o pipefail\na | b")) == 0
+    assert (
+        cwp._first_pipefail_byte(cwp.parse("set -euo pipefail\na | b")) == 0
+    )  # bundle
 
 
-def test_sets_pipefail_false_for_disable_comment_and_heredoc_body():
+def test_first_pipefail_byte_none_for_disable_comment_and_heredoc_body():
     # `set +o pipefail` DISABLES it; a comment mention and a heredoc-body mention
     # are not commands — none must read as enabling pipefail.
-    assert cwp._sets_pipefail("set +o pipefail\na | b") is False
-    assert cwp._sets_pipefail("# set -o pipefail\na | b") is False
-    assert cwp._sets_pipefail("cat <<EOF\nset -o pipefail\nEOF") is False
+    assert cwp._first_pipefail_byte(cwp.parse("set +o pipefail\na | b")) is None
+    assert cwp._first_pipefail_byte(cwp.parse("# set -o pipefail\na | b")) is None
+    assert (
+        cwp._first_pipefail_byte(cwp.parse("cat <<EOF\nset -o pipefail\nEOF")) is None
+    )
+
+
+def test_pipefail_after_the_pipe_does_not_clear():
+    # A `set -o pipefail` that runs AFTER the masking pipe protects nothing — the
+    # step is still flagged (byte offset of the set command is > the pipe's).
+    assert cwp._check_script("foo | tee log\nset -o pipefail", "sh", "job x (run)")
+    # And a `set -o pipefail` BEFORE the pipe does clear it.
+    assert (
+        cwp._check_script("set -o pipefail\nfoo | tee log", "sh", "job x (run)") == []
+    )
 
 
 # ── _allow_optout (AST-based comment detection) ──────────────────────────
