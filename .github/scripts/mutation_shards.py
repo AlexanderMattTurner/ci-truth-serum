@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Expand the cosmic-ray mutation run into one parallel shard per hook module.
 
-A single cosmic-ray pass over the whole ``hooks/`` package reruns the offline
+A single cosmic-ray pass over the whole ``ci_truth_serum/`` package reruns the offline
 suite once per mutant, serially — minutes of wall-clock. This slices that work
 the way ``agent-input-sanitizer`` slices its Stryker run: derive the shard set
 from the tree at CI time (no hand-maintained tiling that can drift), fan the
