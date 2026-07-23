@@ -78,10 +78,6 @@ _CONVENTIONAL_EXITS = frozenset(
     {"die", "usage", "fatal", "abort", "bail", "fail", "error", "err"}
 )
 
-# `${2:?…}` / `${2:-…}` / `${2:=…}` / `${2:+…}`: a self-guarding read. tree-sitter
-# names the operator token by its literal text.
-_SELF_GUARD_OPS = frozenset({":?", ":-", ":=", ":+"})
-
 # `$#`-vs-number comparison operators, `[[ ]]` (`-ge`) and `(( ))` (`>=`) spellings.
 _ARITY_OPS = frozenset({"-ge", "-gt", "-eq", "-lt", "-le", ">=", ">", "==", "<", "<="})
 _FLIP = {

@@ -159,6 +159,17 @@ def source_text(draw: st.DrawFn) -> str:
     text = sep.join(lines)
     if draw(st.booleans()):
         text += draw(st.sampled_from(_NEWLINES))
+    # Bound the pipe density: tree-sitter-bash allocates quadratically on
+    # chained pipeline stages (~330 MB at 5k stages, measured), so a maximally
+    # pipe-dense example costs hundreds of MB per xdist worker and the bursts
+    # stack into allocation failures INSIDE the C parser (a segfault, not a
+    # Python error). 600 stages keeps the property adversarial (well past any
+    # real script) at single-digit-MB parse cost.
+    if text.count("|") > 600:
+        head, _, tail = text.partition("|")
+        while tail.count("|") >= 600:
+            tail = tail.replace("|", " ", tail.count("|") - 599)
+        text = head + "|" + tail
     return text
 
 
@@ -230,7 +241,7 @@ def test_line_detectors_are_deterministic(text: str) -> None:
 def test_line_detectors_idempotent_under_repeat(text: str) -> None:
     # Doubling the file (with a separating newline) can only re-flag lines, never
     # crash or invent out-of-range numbers.
-    doubled = text + "\n" + text
+    doubled = (text + "\n" + text).replace("\r", "\n")
     for detect in LINE_DETECTORS.values():
         _assert_valid_linenos(doubled, detect(doubled))
 

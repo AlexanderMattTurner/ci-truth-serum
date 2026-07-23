@@ -12,6 +12,7 @@ can go stale only by skipping the version bump — which this test then reddens.
 
 import re
 
+import pytest
 import tomllib
 
 from tests._helpers import REPO_ROOT
@@ -26,6 +27,11 @@ def _packaged_version() -> str:
     return pyproject["project"]["version"]
 
 
+@pytest.mark.drift_guard(
+    "the README's yaml examples are prose a consumer copy-pastes — they cannot "
+    "read pyproject.toml at render time, so the doc copy is pinned against the "
+    "one packaged version here instead"
+)
 def test_readme_rev_pins_name_the_packaged_release_tag() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     revs = _REV.findall(readme)

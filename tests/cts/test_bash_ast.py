@@ -7,6 +7,8 @@ invariants live in ``test_fuzz_bash_ast.py``; this suite is the per-module oracl
 the mutation gate runs, so every assertion is exact.
 """
 
+import pytest
+
 from tests._helpers import load_hook
 
 bash_ast = load_hook("_bash_ast.py", "check_bash_ast")
@@ -60,3 +62,15 @@ def test_iter_nodes_finds_nested_nodes() -> None:
 
 def test_string_and_comment_pipes_are_not_pipelines() -> None:
     assert _types('echo "a | b"  # c | d', "pipeline") == []
+
+
+# ── pathological-input refusal ────────────────────────────────────────────
+def test_parse_refuses_quadratic_pipe_chains_loudly() -> None:
+    """tree-sitter-bash allocates quadratically on chained pipeline stages
+    (~3.3 GB at 20k `cmd |` stages, measured), failing as a C-level segfault
+    rather than a Python error. `parse` refuses such input with a LOUD
+    PathologicalInputError — never a silent no-findings pass."""
+    with pytest.raises(bash_ast.PathologicalInputError):
+        bash_ast.parse("x | " * (bash_ast._MAX_PIPE_BYTES + 1))
+    # Just under the cap parses normally.
+    assert bash_ast.parse("x | x").type == "program"
