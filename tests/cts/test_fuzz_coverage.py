@@ -82,6 +82,7 @@ FUZZ_REQUIRED = {
     "check_lockstep_pins": "check_pair",
     "check_cron_comment": "violations",
     "check_cron_alert_coverage": "violations",
+    "check_cron_staleness_optout": "violations",
     "check_toolchain_skips": "violations",
     "release_canary": "changelog_top_version",
     "check_job_timeout": "check_file",
