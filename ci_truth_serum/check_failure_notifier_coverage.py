@@ -30,7 +30,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import WORKFLOW_GLOBS  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import WORKFLOW_GLOBS, has_trigger, workflow_triggers  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -41,22 +41,10 @@ NOTIFIER = "ci-failure-notify.yaml"
 MONITORED_TRIGGERS = ("push", "schedule")
 
 
-def _triggers(doc: dict) -> object:
-    # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
-    return doc.get("on", doc.get(True))
-
-
 def has_monitored_trigger(doc: dict) -> bool:
     """True when the workflow fires on push or schedule (the events the notifier
     must observe), whatever shape the `on:` value takes."""
-    triggers = _triggers(doc)
-    if isinstance(triggers, str):
-        return triggers in MONITORED_TRIGGERS
-    if isinstance(triggers, list):
-        return any(t in MONITORED_TRIGGERS for t in triggers)
-    if isinstance(triggers, dict):
-        return any(t in triggers for t in MONITORED_TRIGGERS)
-    return False
+    return has_trigger(doc, *MONITORED_TRIGGERS)
 
 
 def expected_names(paths: list[Path]) -> tuple[set[str], list[str]]:
@@ -98,9 +86,7 @@ def expected_names(paths: list[Path]) -> tuple[set[str], list[str]]:
 def notifier_list(doc: object) -> list[str] | None:
     """The notifier's `on.workflow_run.workflows` list, or None when the
     document doesn't carry one (a malformed notifier is a finding)."""
-    if not isinstance(doc, dict):
-        return None
-    triggers = _triggers(doc)
+    triggers = workflow_triggers(doc)
     workflow_run = triggers.get("workflow_run") if isinstance(triggers, dict) else None
     workflows = (
         workflow_run.get("workflows") if isinstance(workflow_run, dict) else None
