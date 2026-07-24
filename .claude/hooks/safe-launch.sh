@@ -28,21 +28,21 @@ target="${1:-}"
 # unexpected shift failure (CLAUDE.md: branch on the condition instead).
 [[ $# -gt 0 ]] && shift
 
-if [[ -z "${target}" ]] || [[ ! -f "${target}" ]]; then
-  echo "safe-launch: missing target hook: ${target}" >&2
+if [[ -z "$target" ]] || [[ ! -f "$target" ]]; then
+  echo "safe-launch: missing target hook: $target" >&2
   exit 1
 fi
 
 # Fast path: target parses — run it as-is. The PreToolUse stdin payload is
 # inherited automatically because we exec into the target.
-if bash -n "${target}" 2>/dev/null; then
-  exec "${target}" "$@"
+if bash -n "$target" 2>/dev/null; then
+  exec "$target" "$@"
 fi
 
 # Degraded path. Read the PreToolUse payload before we touch stdin again.
-parse_error=$(bash -n "${target}" 2>&1)
-echo "safe-launch: target hook failed to parse — degrading open: ${target}" >&2
-[[ -n "${parse_error}" ]] && echo "${parse_error}" >&2
+parse_error=$(bash -n "$target" 2>&1)
+echo "safe-launch: target hook failed to parse — degrading open: $target" >&2
+[[ -n "$parse_error" ]] && echo "$parse_error" >&2
 
 # Cap the read at 10 MiB so a pathological payload can't OOM the degraded path.
 # (No timeout: stdin is the in-flight PreToolUse payload, already fully buffered
@@ -53,10 +53,10 @@ project_dir="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 tool_name=""
 tool_path=""
 parser="$(dirname "$0")/safe-launch-parse.py"
-if command -v python3 &>/dev/null && [[ -f "${parser}" ]]; then
-  parsed=$(printf '%s' "${payload}" | python3 "${parser}" "${project_dir}" 2>/dev/null)
-  tool_name=$(printf '%s\n' "${parsed}" | sed -n '1p')
-  tool_path=$(printf '%s\n' "${parsed}" | sed -n '2p')
+if command -v python3 &>/dev/null && [[ -f "$parser" ]]; then
+  parsed=$(printf '%s' "$payload" | python3 "$parser" "$project_dir" 2>/dev/null)
+  tool_name=$(printf '%s\n' "$parsed" | sed -n '1p')
+  tool_path=$(printf '%s\n' "$parsed" | sed -n '2p')
 fi
 
 # Lexical + symlink-resolving containment check. Fails closed: any error
@@ -64,29 +64,37 @@ fi
 # caller falls through to the "ask" default.
 is_under() {
   local candidate="$1" parent="$2" parent_dir resolved
-  [[ -n "${candidate}" ]] && [[ -n "${parent}" ]] || return 1
-  case "${candidate}" in *..*) return 1 ;; esac
-  parent_dir=$(cd "$(dirname "${candidate}")" 2>/dev/null && pwd -P) || return 1
-  [[ -n "${parent_dir}" ]] || return 1
-  resolved="${parent_dir}/$(basename "${candidate}")"
-  case "${resolved}" in
-  "${parent}"/*) return 0 ;;
+  [[ -n "$candidate" ]] && [[ -n "$parent" ]] || return 1
+  # Filter — a candidate with no ".." segment correctly falls through to the
+  # containment check below; only a traversal-shaped path short-circuits here.
+  # case-default-ok: no-match is the intended no-op, not a missed case.
+  case "$candidate" in *..*) return 1 ;; esac
+  parent_dir=$(cd "$(dirname "$candidate")" 2>/dev/null && pwd -P) || return 1
+  [[ -n "$parent_dir" ]] || return 1
+  resolved="$parent_dir/$(basename "$candidate")"
+  # A symlink at the final component could point outside the resolved parent
+  # even though its own path lives under it. Fail closed rather than follow it.
+  [[ -L "$resolved" ]] && return 1
+  case "$resolved" in
+  "$parent"/*) return 0 ;;
   *) return 1 ;;
   esac
 }
 
-case "${tool_name}" in
+# Filter — only edit-shaped tools get the self-repair containment check;
+# every other tool name correctly falls through to the "ask" default below.
+# case-default-ok: no-match is the intended fall-through, not a missed case.
+case "$tool_name" in
 Edit | Write | MultiEdit | NotebookEdit)
-  for safe in "${project_dir}/.claude/hooks" "${project_dir}/.hooks"; do
-    [[ -d "${safe}" ]] || continue
-    safe_resolved=$(cd "${safe}" && pwd -P)
-    if is_under "${tool_path}" "${safe_resolved}"; then
-      echo "safe-launch: allowing self-repair edit under ${safe#"${project_dir}/"}" >&2
+  for safe in "$project_dir/.claude/hooks" "$project_dir/.hooks"; do
+    [[ -d "$safe" ]] || continue
+    safe_resolved=$(cd "$safe" && pwd -P)
+    if is_under "$tool_path" "$safe_resolved"; then
+      echo "safe-launch: allowing self-repair edit under ${safe#"$project_dir/"}" >&2
       exit 0
     fi
   done
   ;;
-*) : ;; # non-edit tools get the "ask" default emitted below
 esac
 
 # Default: surface the failure as an "ask" decision so the user can choose.

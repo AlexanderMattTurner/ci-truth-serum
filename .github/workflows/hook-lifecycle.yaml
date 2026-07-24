@@ -10,14 +10,12 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  # Path gate: runs unconditionally so the hook-lifecycle-passed reporter always
-  # reports, then opens only when hook/setup/dependency sources change on a PR.
   decide:
     permissions:
       contents: read
@@ -26,8 +24,8 @@ jobs:
     with:
       filters: |
         run:
-          - '.claude/ci_truth_serum/**'
-          - '.ci_truth_serum/**'
+          - '.claude/hooks/**'
+          - '.hooks/**'
           - 'setup.sh'
           - 'package.json'
           - 'pnpm-lock.yaml'
@@ -35,9 +33,9 @@ jobs:
           - 'uv.lock'
           - '.pre-commit-config.yaml'
           - '.github/scripts/run-hook-lifecycle.sh'
+          - '.github/scripts/check-symlinks.sh'
           - '.github/actions/setup-base-env/**'
           - '.github/workflows/hook-lifecycle.yaml'
-          - '.github/workflows/decide-reusable.yaml'
 
   hook-lifecycle:
     needs: decide
@@ -57,14 +55,22 @@ jobs:
       - name: Run hook lifecycle
         run: bash .github/scripts/run-hook-lifecycle.sh
 
-  # Stable Required check: runs even when `hook-lifecycle` is cancelled/skipped,
-  # so a protected branch never gets stuck on a check that never reports.
   hook-lifecycle-passed: # required-check: true
     if: always()
     needs: [decide, hook-lifecycle]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fail if any required job did not pass
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          sparse-checkout: |
+            .github/actions/report-job-result
+            .github/scripts
+          persist-credentials: false
+
+      - name: Report result
+        uses: ./.github/actions/report-job-result
+        with:
+          run: ${{ needs.decide.outputs.run }}
+          decide-result: ${{ needs.decide.result }}
+          result: ${{ needs.hook-lifecycle.result }}

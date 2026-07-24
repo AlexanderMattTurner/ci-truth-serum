@@ -1,4 +1,7 @@
 name: Validate config
+# No paths filter: validate-config-passed is a required status check, so the
+# workflow must always fire and report — a path-gated required check hangs at
+# "Expected — Waiting" forever when a PR doesn't touch the filtered paths.
 on:
   push:
     branches: ["main"]
@@ -6,34 +9,13 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  # Path gate: runs unconditionally so the validate-config-passed reporter always
-  # reports, then opens only when config/hook/test sources change on a PR.
-  decide:
-    permissions:
-      contents: read
-      pull-requests: read
-    uses: ./.github/workflows/decide-reusable.yaml
-    with:
-      filters: |
-        run:
-          - '.claude/**'
-          - '.ci_truth_serum/**'
-          - '.github/actions/setup-base-env/**'
-          - '.github/scripts/validate-config.sh'
-          - '.github/workflows/**'
-          - 'tests/**'
-          - 'pyproject.toml'
-          - 'uv.lock'
-
   validate:
-    needs: decide
-    if: needs.decide.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -56,10 +38,20 @@ jobs:
   # protected branch never gets stuck on a check that never reports.
   validate-config-passed: # required-check: true
     if: always()
-    needs: [decide, validate]
+    needs: [validate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fail if any required job did not pass
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          sparse-checkout: |
+            .github/actions/report-job-result
+            .github/scripts
+          persist-credentials: false
+
+      - name: Report result
+        uses: ./.github/actions/report-job-result
+        with:
+          run: "true"
+          decide-result: "success"
+          result: ${{ needs.validate.result }}
