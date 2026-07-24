@@ -385,6 +385,16 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-cron-alert-coverage
+  name: "extra: a scheduled workflow's failures must reach a human"
+  description: A cron has no PR surface, so its red is visible only in the Actions tab; a notifier behind a success-only gate reads as coverage and fires never.
+  entry: python -m ci_truth_serum.check_cron_alert_coverage
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
 - id: check-toolchain-skips
   name: "extra: pytest skips gated on binary discovery must fail (not skip) in CI"
   description: A which()-gated skipif silently zeroes the guarded coverage on a runner missing the tool; demand a CI env guard in the condition.

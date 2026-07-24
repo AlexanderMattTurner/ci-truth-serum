@@ -69,7 +69,16 @@ MATRIX_REF = re.compile(r"\$\{\{\s*matrix\.(?P<key>[A-Za-z_][\w-]*)\s*\}\}")
 # see through the wrapper. Only a wrapper spanning the ENTIRE value is stripped — a
 # compound like `always() && cond` (wrapped or not) is left intact so it stays a
 # non-reporter (it does not unconditionally run).
-_IF_WRAPPER = re.compile(r"^\$\{\{\s*(?P<inner>.*?)\s*\}\}$")
+_IF_WRAPPER = re.compile(r"^\$\{\{\s*(?P<inner>.*?)\s*\}\}$", re.DOTALL)
+
+
+def unwrap_expression(value: object) -> str:
+    """A workflow `if:` value as the bare expression GitHub evaluates: a whole-
+    value `${{ … }}` wrapper is stripped (the two forms are identical to GitHub),
+    a partial one is left intact so a compound stays compound."""
+    text = str(value if value is not None else "").strip()
+    wrapped = _IF_WRAPPER.match(text)
+    return wrapped.group("inner").strip() if wrapped else text
 
 
 # A comment introducer: `#` (shell/YAML/Python), `<!--` (Markdown/HTML), or `//`
@@ -208,6 +217,138 @@ def workflow_files(workflows_dir: Path, actions_dir: Path) -> list[Path]:
     return sorted(files)
 
 
+def workflow_triggers(doc: object) -> object:
+    """A workflow's `on:` value, whatever key spelling reached the parser.
+
+    PyYAML resolves the bareword key `on:` to the boolean True (YAML 1.1), so a
+    lint reading `doc["on"]` alone silently sees no triggers on most real
+    workflows. One SSOT for every lint that dispatches on trigger type.
+    """
+    if not isinstance(doc, dict):
+        return None
+    return doc.get("on", doc.get(True))
+
+
+def has_trigger(doc: object, *names: str) -> bool:
+    """True when the workflow fires on any of NAMES, for any shape `on:` takes:
+    a scalar (`on: push`), a list (`on: [push, schedule]`), or the usual mapping.
+    """
+    triggers = workflow_triggers(doc)
+    if isinstance(triggers, str):
+        return triggers in names
+    if isinstance(triggers, list):
+        return any(t in names for t in triggers)
+    if isinstance(triggers, dict):
+        return any(t in triggers for t in names)
+    return False
+
+
+def key_block_lines(text: str, key: str) -> list[str]:
+    """The source lines a per-key marker comment may live on: every `KEY:` line
+    at any indent, plus that key's DIRECT-child lines (those at the block's
+    shallowest child indent, which is where both a `- item` and a standalone
+    comment beside it sit).
+
+    Scoping a marker this way is what stops the token from being read out of an
+    unrelated part of the file — the same rule `_classification_text` applies to
+    `# required-check:` on a job. A bespoke line scanner is used rather than the
+    YAML parser for the usual reason: PyYAML discards comments.
+    """
+    lines = text.splitlines()
+    key_re = re.compile(rf"^(?P<indent>[ \t]*)(?P<k>{re.escape(key)})\s*:")
+    eligible: list[str] = []
+    for index, line in enumerate(lines):
+        match = key_re.match(line)
+        if not match:
+            continue
+        indent = len(match.group("indent"))
+        block: list[str] = []
+        for follow in lines[index + 1 :]:
+            if not follow.strip():
+                continue
+            if len(follow) - len(follow.lstrip()) <= indent:
+                break
+            block.append(follow)
+        child_indent = min(
+            (len(b) - len(b.lstrip()) for b in block), default=None
+        )  # the block's shallowest line — its direct children
+        eligible.append(line)
+        eligible += [b for b in block if len(b) - len(b.lstrip()) == child_indent]
+    return eligible
+
+
+# A reason that states nothing. Normalized (lowercased, non-alphanumerics folded
+# to single spaces) before lookup, so "N/A", "n/a.", and "-- none --" all land
+# here. An opt-out marker exists to record WHY the default obligation does not
+# apply; a placeholder records only that someone wanted the check to stop.
+MARKER_PLACEHOLDERS = frozenset(
+    {
+        "",
+        "n a",
+        "na",
+        "nil",
+        "no",
+        "none",
+        "nope",
+        "none needed",
+        "no reason",
+        "not needed",
+        "not applicable",
+        "not required",
+        "nothing",
+        "nothing to do",
+        "obvious",
+        "see above",
+        "self explanatory",
+        "tbd",
+        "todo",
+        "unnecessary",
+        "x",
+    }
+)
+
+
+def is_placeholder_reason(reason: str) -> bool:
+    """True when REASON is a negative placeholder rather than a stated reason."""
+    normalized = re.sub(r"[^a-z0-9]+", " ", reason.lower()).strip()
+    return normalized in MARKER_PLACEHOLDERS
+
+
+def parse_optout_marker(lines: list[str], token: str) -> tuple[str | None, str | None]:
+    """Read a `# TOKEN: false  # <reason>` opt-out from LINES.
+
+    Returns `(reason, error)`: `(None, None)` when no marker is present,
+    `(None, message)` when one is present but does not state a reason (or names
+    an unrecognized value), and `(reason, None)` when it is well formed. The
+    reason's `#` introducer is optional — the substance, not the punctuation, is
+    what this enforces.
+    """
+    pattern = re.compile(
+        rf"#\s*{re.escape(token)}\s*:\s*(?P<value>\S+)(?P<rest>.*)$", re.IGNORECASE
+    )
+    for line in lines:
+        match = pattern.search(line)
+        if not match:
+            continue
+        value = match.group("value").strip(",;\"'").lower()
+        if value != "false":
+            return None, (
+                f"`# {token}: {match.group('value')}` names an unrecognized value — "
+                f"the only opt-out this marker accepts is `# {token}: false  "
+                "# <reason>`."
+            )
+        reason = match.group("rest").strip().lstrip("#").strip()
+        if is_placeholder_reason(reason):
+            detail = f"states only {reason!r}" if reason else "carries no reason"
+            return None, (
+                f"`# {token}: false` {detail}. The reason IS the marker — write "
+                f"`# {token}: false  # <why this workflow does not need it>` so a "
+                "reviewer can check the argument instead of the annotation."
+            )
+        return reason, None
+    return None, None
+
+
 def has_decide_gate(jobs: dict) -> bool:
     """True if any job uses decide-reusable.yaml or conditions on needs.decide.outputs.*"""
     for job_cfg in jobs.values():
@@ -227,11 +368,7 @@ def is_always_reporter(if_value: object) -> bool:
     wrapper (any inner spacing). A compound condition such as `always() && cond`
     is intentionally rejected: it does not always run, so it is no reporter.
     """
-    text = str(if_value).strip()
-    wrapped = _IF_WRAPPER.match(text)
-    if wrapped:
-        text = wrapped.group("inner").strip()
-    return text == "always()"
+    return unwrap_expression(if_value) == "always()"
 
 
 def has_always_reporter(jobs: dict) -> bool:
