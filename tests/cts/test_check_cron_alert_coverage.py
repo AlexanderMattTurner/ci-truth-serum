@@ -12,6 +12,7 @@ flips from clean to flagged when only its gate regresses to `== 'success'`.
 
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -305,6 +306,79 @@ def test_custom_pattern_extends_rather_than_replaces_the_defaults():
     assert cac.violations(custom, MATCHER, False) == []
     # The built-ins still fire under the extended matcher.
     assert len(cac.violations(_workflow(step_gate="success()"), house, False)) == 1
+
+
+# ── issue-management sinks: the verb prefix is the whole boundary ────────
+def _issue_sink_workflow(step_name: str, run: str = "") -> str:
+    """A scheduled workflow whose ONLY candidate sink is one `if: failure()`
+    step — so `--require-alert` is clean exactly when that step is recognized."""
+    run_line = f"        run: {run}\n" if run else ""
+    return (
+        "name: Nightly\n"
+        "on:\n"
+        "  schedule:\n"
+        "    - cron: '0 3 * * *'\n"
+        "jobs:\n"
+        "  work:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: make check\n"
+        f"      - name: {step_name}\n"
+        "        if: failure()\n"
+        f"{run_line}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("step_name", "run"),
+    [
+        # The real repo shape: a house script wrapping the tracker call, whose
+        # name never carries the literal `gh issue create`.
+        (
+            "Open a tracking issue",
+            "bash .github/scripts/manage-release-failure-issue.sh open",
+        ),
+        ("Open a tracking issue if the release run failed", ""),
+        # The member the narrower `create[-_]issue` already matched: broadening
+        # the verb set must not have dropped it.
+        ("alarm", "./bin/create-issue --title broke"),
+        ("alarm", "./bin/report_issue --failure"),
+        ("File an issue for the failed nightly", ""),
+    ],
+)
+def test_issue_management_sinks_are_recognized(step_name, run):
+    text = _issue_sink_workflow(step_name, run)
+    assert _find(text, require_alert=True) == [], "issue sink not recognized"
+    assert _find(text) == []
+
+
+@pytest.mark.parametrize(
+    ("step_name", "run"),
+    [
+        ("Close the milestone", ""),
+        # `open` trails the noun here, so no verb precedes `issue`.
+        ("triage", "gh issue list --state open"),
+        ("Known issues summary", ""),
+    ],
+)
+def test_mentioning_issues_without_a_verb_is_not_a_sink(step_name, run):
+    # The verb prefix is what keeps the broadened pattern from crediting every
+    # step that merely says "issue"; without it the workflow is still uncovered.
+    found = _find(_issue_sink_workflow(step_name, run), require_alert=True)
+    assert len(found) == 1
+    assert "routes its failures nowhere" in found[0][1]
+
+
+def test_issue_pattern_does_not_backtrack_on_a_long_near_match():
+    # The pattern's gap is a bounded lazy run of one token class; a long run of
+    # exactly those characters with no trailing `issue` is its worst input.
+    adversarial = "open" + "a_b." * 300
+    matcher = cac.notifier_matcher([])
+    start = time.perf_counter()
+    result = matcher.search(adversarial)
+    elapsed = time.perf_counter() - start
+    assert result is None
+    assert elapsed < 1.0, f"notifier matcher took {elapsed:.3f}s on a near-match"
 
 
 def test_unrelated_step_is_not_mistaken_for_a_notifier():

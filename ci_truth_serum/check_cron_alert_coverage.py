@@ -25,12 +25,14 @@ either: GitHub abandons a job at its first failed step, so a notify step with no
 `if:` never runs on the failure it is meant to report.
 
 What counts as a notification is configurable, never hardcoded to one vendor.
-The default patterns (matched case-insensitively against a step's `uses:`,
-`name:`, and `run:`) recognize the common human-routing sinks:
+The default patterns live in `_linecheck.NOTIFIER_PATTERNS` — shared with
+check_failure_notifier_coverage, which uses the same list to recognize the
+notifier workflow itself — and match case-insensitively against a step's
+`uses:`, `name:`, and `run:`. They cover the common human-routing sinks:
 
     notif  ntfy  slack  pagerduty  opsgenie  victorops  discord  telegram
     mattermost  webhook  sms  smtp  send[-_]?e?mail  sendmail
-    gh issue create  create[-_]issue  issue_write
+    gh issue create  <verb>-<...>-issue  issue_write
 
 Add your own with `--notifier-pattern REGEX` (repeatable); the flag EXTENDS the
 defaults rather than replacing them, so naming a house sink can never silently
@@ -65,7 +67,9 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     LineLoader,
     has_trigger,
     key_block_lines,
+    notifier_matcher,
     parse_optout_marker,
+    step_text,
     unwrap_expression,
     WORKFLOW_GLOBS,
 )
@@ -77,26 +81,6 @@ REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 MARKER = "cron-alert"
-
-DEFAULT_NOTIFIER_PATTERNS = (
-    r"notif",
-    r"ntfy",
-    r"slack",
-    r"pagerduty",
-    r"opsgenie",
-    r"victorops",
-    r"discord",
-    r"telegram",
-    r"mattermost",
-    r"webhook",
-    r"\bsms\b",
-    r"smtp",
-    r"send[-_]?e?mail",
-    r"sendmail",
-    r"gh\s+issue\s+create",
-    r"create[-_]issue",
-    r"issue_write",
-)
 
 # The status functions that put an expression on the failure path (`always()`
 # runs the step whatever happened, so it covers failure too) and the one that
@@ -144,20 +128,6 @@ def gate_direction(gate: object) -> str:
     return NEUTRAL
 
 
-def notifier_matcher(extra_patterns: list[str]) -> "re.Pattern[str]":
-    """The compiled alternation recognizing a notification step. EXTRA_PATTERNS
-    are added to (never substituted for) the defaults."""
-    return re.compile(
-        "|".join(f"(?:{p})" for p in (*DEFAULT_NOTIFIER_PATTERNS, *extra_patterns)),
-        re.IGNORECASE,
-    )
-
-
-def _step_text(step: dict) -> str:
-    """The fields of a step that can name a notification sink."""
-    return " ".join(str(step.get(key, "")) for key in ("uses", "name", "run"))
-
-
 def notifier_steps(doc: dict, matcher: "re.Pattern[str]") -> list[dict]:
     """Every notification step in the workflow, each as
     `{"line", "job", "name", "step_gate", "job_gate"}`.
@@ -190,7 +160,7 @@ def notifier_steps(doc: dict, matcher: "re.Pattern[str]") -> list[dict]:
         if not isinstance(steps, list):
             continue
         for step in steps:
-            if not isinstance(step, dict) or not matcher.search(_step_text(step)):
+            if not isinstance(step, dict) or not matcher.search(step_text(step)):
                 continue
             found.append(
                 {

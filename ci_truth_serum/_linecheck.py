@@ -22,7 +22,7 @@ before importing this module; the tests load each script by path.
 import itertools
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import yaml
@@ -227,6 +227,55 @@ def workflow_triggers(doc: object) -> object:
     if not isinstance(doc, dict):
         return None
     return doc.get("on", doc.get(True))
+
+
+# What counts as routing a failure to a human. One SSOT because two lints ask the
+# same question from opposite ends: check_cron_alert_coverage asks "does this
+# scheduled workflow contain a sink?", check_failure_notifier_coverage asks "is
+# this workflow_run workflow the failure notifier?". A sink taught to one is a
+# sink to the other, so separate lists would let a repo's house sink be
+# recognized on one side and invisible on the other.
+NOTIFIER_PATTERNS = (
+    r"notif",
+    r"ntfy",
+    r"slack",
+    r"pagerduty",
+    r"opsgenie",
+    r"victorops",
+    r"discord",
+    r"telegram",
+    r"mattermost",
+    r"webhook",
+    r"\bsms\b",
+    r"smtp",
+    r"send[-_]?e?mail",
+    r"sendmail",
+    r"gh\s+issue\s+create",
+    # Any issue-management verb, not `create` alone: a tracker issue opened,
+    # filed, or reopened on failure routes to a human exactly the same way, and
+    # repos wrap the call in a house script whose name never carries the literal
+    # `gh issue create` (`manage-release-failure-issue.sh open`). The leading verb
+    # is what keeps this from matching every step that merely mentions an issue;
+    # the gap is a bounded lazy run of one token class (no nested quantifier), so
+    # a long non-matching identifier cannot backtrack exponentially.
+    r"(?:create|open|file|manage|report)[\w.\- ]{0,40}?issues?\b",
+    r"issue_write",
+)
+
+
+def notifier_matcher(extra_patterns: Iterable[str] = ()) -> "re.Pattern[str]":
+    """The compiled alternation recognizing a notification sink. EXTRA_PATTERNS
+    are added to (never substituted for) the defaults, so naming a house sink can
+    never silently un-recognize the sinks already matched."""
+    return re.compile(
+        "|".join(f"(?:{p})" for p in (*NOTIFIER_PATTERNS, *extra_patterns)),
+        re.IGNORECASE,
+    )
+
+
+def step_text(step: dict) -> str:
+    """The fields of a workflow step that can name a notification sink."""
+    return " ".join(str(step.get(key, "")) for key in ("uses", "name", "run"))
 
 
 def has_trigger(doc: object, *names: str) -> bool:
