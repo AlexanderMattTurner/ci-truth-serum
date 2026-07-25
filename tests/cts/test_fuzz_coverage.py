@@ -91,6 +91,7 @@ FUZZ_REQUIRED = {
     "check_untrusted_exec": "check_file",
     "check_env_symmetry": "analyze",
     "check_stray_tool_markup": "violations",
+    "check_test_predicate_shadow": "pure_predicates",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the

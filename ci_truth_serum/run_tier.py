@@ -104,6 +104,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_cron_staleness_optout", WORKFLOW),
         ("check_toolchain_skips", PYTHON),
         ("check_stray_tool_markup", PROSE_OR_COMMENTED_CODE),
+        ("check_test_predicate_shadow", SHELL),
     ],
 }
 

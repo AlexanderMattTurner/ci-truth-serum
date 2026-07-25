@@ -21,6 +21,7 @@ before importing this module; the tests load each script by path.
 
 import itertools
 import re
+import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -209,6 +210,58 @@ def run_line_checks(
             print(f"{path}:{lineno}: {message}", file=sys.stderr)
             status = 1
     return status
+
+
+# A path that names a test file: a tests/ (or __tests__/, spec/) directory
+# component, a `test_*` module, or a `*.test.*` / `*.spec.*` suite. One
+# definition, so a lint that scopes itself to (or away from) tests classifies a
+# path the same way as every other.
+_TEST_PATH = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|spec)/"
+    r"|(?:^|/)test_[^/]*$"
+    r"|[._-](?:test|spec)s?\.[^./]+$"
+)
+# A tracked file whose NAME says it is shell. An extensionless file is shell only
+# if its shebang says so, which needs a read — hence the two-step in
+# `tracked_shell_files`.
+_SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
+_SHELL_SHEBANG = re.compile(r"^#!.*\b(?:bash|sh)\b")
+
+
+def is_test_path(path: str) -> bool:
+    """True when PATH names a test file (a tests/ directory, a test_* module,
+    or a *.test.* / *.spec.* suite)."""
+    return bool(_TEST_PATH.search(path.replace("\\", "/")))
+
+
+def tracked_shell_files() -> list[str]:
+    """Every tracked `*.sh` / `*.bash` path, plus every tracked extensionless file
+    whose shebang names bash/sh (git hooks under `.hooks/`, `bin/` scripts).
+
+    Used by the shell lints that must reason about the WHOLE tracked surface
+    rather than only the files pre-commit passes them. An unreadable path is
+    skipped: `git ls-files` reports the index, so a path can be missing (a
+    rename/delete race) or be binary despite a shell-ish name.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], capture_output=True, text=True, check=True
+    ).stdout.split("\0")
+    out: list[str] = []
+    for path in tracked:
+        if not path:
+            continue
+        if _SHELL_SUFFIX.search(path):
+            out.append(path)
+            continue
+        if "." in path.rsplit("/", 1)[-1]:
+            continue
+        try:
+            first = Path(path).read_text(encoding="utf-8").split("\n", 1)[0]
+        except (OSError, UnicodeDecodeError):
+            continue
+        if _SHELL_SHEBANG.match(first):
+            out.append(path)
+    return out
 
 
 def workflow_files(workflows_dir: Path, actions_dir: Path) -> list[Path]:

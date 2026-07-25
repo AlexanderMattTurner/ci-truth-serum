@@ -44,7 +44,6 @@ the whole tracked shell surface. Exits non-zero on any violation.
 """
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 
@@ -52,6 +51,9 @@ from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    tracked_shell_files,
+)
 
 # Helpers that themselves assert `[[ $# -ge 2 ]]` before returning — calling one
 # at the top of an arm is an accepted guard. A small named allowlist, not a
@@ -450,38 +452,10 @@ def violations(text: str) -> list[tuple[int, str]]:
     return found
 
 
-def _shell_files() -> list[str]:
-    """Tracked *.sh / *.bash files, plus tracked extensionless files whose
-    shebang names bash/sh (git hooks under .hooks/, bin scripts)."""
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split("\0")
-    out: list[str] = []
-    for f in tracked:
-        if not f:
-            continue
-        if re.search(r"\.(?:sh|bash)$", f):
-            out.append(f)
-            continue
-        base = f.rsplit("/", 1)[-1]
-        if "." in base:
-            continue
-        try:
-            first = Path(f).read_text(encoding="utf-8").split("\n", 1)[0]
-        except (OSError, UnicodeDecodeError):
-            continue
-        if re.match(r"^#!.*\b(?:bash|sh)\b", first):
-            out.append(f)
-    return out
-
-
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     files = (
-        _shell_files()
+        tracked_shell_files()
         if "--all" in argv
         else [a for a in argv if not a.startswith("--")]
     )
