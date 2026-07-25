@@ -9,7 +9,23 @@ hook's contract demands it, requires a ``: <reason>``); every hook that
 recognizes a per-line annotation must build its predicate there.
 
 ``opted_out`` (the concurrency lints' whole-file comment scan) is the one other
-sanctioned matcher — it already comment-scopes by splitting on ``#``.
+sanctioned matcher — it delegates to ``annotation_re``.
+
+A SECOND population is banned here for a different reason. A hand-rolled
+``re.compile(r"#\\s*<token>:\\s*\\S")`` is not fail-open on its face — the literal
+``#`` and ``:`` supply both edges — so it survived the first ban. It is banned
+anyway because it is behaviour-EQUIVALENT to ``annotation_re(token)``, i.e. it is
+a copy of a contract that has since moved twice, and both divergences were live
+bugs: every hand-spelled copy wrote the reason gap as ``\\s*``, which crosses a
+NEWLINE where the builder's same-line class cannot (so a bare ``# <token>:``
+ending a line borrowed the next line's first character as its "reason"), and none
+of them carried the stand-alone-token edges the builder now guarantees.
+
+Deliberately NOT banned: a matcher that PARSES A VALUE out of the annotation (a
+named capture group) rather than merely testing for one — ``# gate-deps: <paths>``,
+``# env-symmetry-ok: <NAME>``, ``# required-check: true|false``. Those are
+annotation *readers* with their own grammar, not boolean opt-out predicates, and
+``annotation_re`` does not model them.
 """
 
 import re
@@ -26,6 +42,14 @@ _BARE_TOKEN_LITERAL = re.compile(
 )
 _BARE_TOKEN_CONSTANT = re.compile(r"\b(?:_ALLOW|ALLOW|OPT_OUT)\s+in\s+")
 
+# An open-coded equivalent of `annotation_re(token)`: a compiled pattern that is
+# comment-scoped (`#`) and asserts a reason is PRESENT (`:\s*\S` — a bare
+# presence tail, no value extracted). The absence of a named group is what
+# separates this from the sanctioned annotation READERS; `_COMPILED_PATTERN`
+# pulls the pattern text out first so the two tests can be applied to it.
+_COMPILED_PATTERN = re.compile(r"""re\.compile\(\s*r?f?(?P<q>["'])(?P<pat>.*?)(?P=q)""")
+_COMMENT_SCOPED_REASON_TAIL = re.compile(r"#.*:\\s\*(?:\\S|\[\^\\s\])")
+
 
 def _hook_sources() -> dict[str, str]:
     return {
@@ -41,6 +65,55 @@ def test_no_hook_uses_a_bare_substring_annotation_predicate() -> None:
             if _BARE_TOKEN_LITERAL.search(line) or _BARE_TOKEN_CONSTANT.search(line):
                 offenders.append(f"{name}:{lineno}")
     assert offenders == [], f"bare-substring annotation predicates: {offenders}"
+
+
+def _handrolled_annotation_matchers(src: str) -> list[int]:
+    """1-based line numbers of compiled patterns in SRC that reimplement
+    `annotation_re(token)`: comment-scoped, reason-presence-asserting, and
+    extracting nothing (no named group)."""
+    hits = []
+    for lineno, line in enumerate(src.splitlines(), 1):
+        for match in _COMPILED_PATTERN.finditer(line):
+            pat = match.group("pat")
+            if _COMMENT_SCOPED_REASON_TAIL.search(pat) and "(?P<" not in pat:
+                hits.append(lineno)
+    return hits
+
+
+def test_no_hook_hand_rolls_the_shared_annotation_matcher() -> None:
+    offenders = {
+        name: lines
+        for name, src in _hook_sources().items()
+        if (lines := _handrolled_annotation_matchers(src))
+    }
+    assert offenders == {}, (
+        "these compiled patterns reimplement annotation_re(token) — build the "
+        f"matcher with _linecheck.annotation_re instead: {offenders}"
+    )
+
+
+def test_handrolled_matcher_detector_actually_matches() -> None:
+    """Non-vacuity: the detector recognizes the real spellings this repo shipped
+    (both were live, and one was a live newline-crossing fail-open), and stays
+    silent on the annotation READERS that legitimately parse a value."""
+    assert _handrolled_annotation_matchers(
+        '_ALLOW_RE = re.compile(rf"#\\s*{ALLOW}\\s*:\\s*\\S")'
+    ) == [1]
+    assert _handrolled_annotation_matchers(
+        '_ALLOW_WITH_REASON = re.compile(r"#\\s*allow-no-timeout:\\s*\\S")'
+    ) == [1]
+    assert _handrolled_annotation_matchers(
+        "_A = re.compile(r\"#\\s*tok:\\s*[^\\s]\")"
+    ) == [1]
+    # Sanctioned: extracts a value, so it is a reader with its own grammar.
+    assert (
+        _handrolled_annotation_matchers(
+            '_GATE_DEPS = re.compile(r"#\\s*gate-deps:\\s*(?P<paths>\\S.*?)\\s*$")'
+        )
+        == []
+    )
+    # Sanctioned: the shared builder itself.
+    assert _handrolled_annotation_matchers("_RE = annotation_re(ALLOW)") == []
 
 
 def test_banned_idiom_detectors_actually_match() -> None:

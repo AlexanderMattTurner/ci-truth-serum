@@ -24,7 +24,6 @@ This lint is opinionated (Tier 2): it prescribes that every job declare its own
 ceiling rather than inherit the six-hour default.
 """
 
-import re
 import sys
 from pathlib import Path
 
@@ -32,12 +31,11 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import _job_blocks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
-
-# The annotation only suppresses when it carries a non-empty reason after the colon.
-_ALLOW_WITH_REASON = re.compile(r"#\s*allow-no-timeout:\s*\S")
+ALLOW = "allow-no-timeout"
 
 _MESSAGE = (
     "job '{name}' has no timeout-minutes — it inherits GitHub's 360-minute (6h) "
@@ -50,12 +48,12 @@ _MESSAGE = (
 
 def _block_opted_out(block_text: str) -> bool:
     """True if a reason-bearing `# allow-no-timeout:` appears in a `#` comment
-    inside the job's source block (key line or body) — never in a string value."""
-    return any(
-        _ALLOW_WITH_REASON.search("#" + line.split("#", 1)[1])
-        for line in block_text.splitlines()
-        if "#" in line
-    )
+    inside the job's source block (key line or body) — never in a string value.
+
+    Line by line, because the shared matcher's reason tail deliberately cannot
+    cross a newline: run over the whole block at once, a bare `# allow-no-timeout:`
+    ending a line would borrow the next line's first character as its reason."""
+    return any(annotated(line, ALLOW) for line in block_text.splitlines())
 
 
 def check_file(path: Path) -> list[tuple[int | None, str]]:

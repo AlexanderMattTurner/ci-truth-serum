@@ -96,18 +96,40 @@ _COMMENT_INTRO = r"(?:#|<!--|//)"
 _LINE_BOUNDARY_CLASS = r"\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
+# The characters an annotation token may not be glued to on either side. `\b`
+# will not do: nearly every token in this package is hyphenated, and `\b` matches
+# at a word/`-` transition, so a `\b` HEAD is satisfied by any longer slug that
+# merely ENDS with the token (`# really-allow-unbounded:` suppressing
+# `allow-unbounded`) and a `\b` TAIL by any longer slug that merely STARTS with
+# it (`# pin-comment-ok-ish` suppressing `pin-comment-ok`). Either way one hook's
+# opt-out silently disarms another's — a fail-open. The guarantee is stated on
+# BOTH ends so it is symmetric: only the characters a token is spelled from
+# (`[\w-]`) disqualify a neighbour, so `# nope.allow-x:` — where the `.` cannot
+# be part of any token — still reads as the annotation it looks like.
+_TOKEN_EDGE = r"[\w-]"
+
+
 def annotation_re(token: str, require_reason: bool = True) -> "re.Pattern[str]":
     """The compiled matcher for an opt-out/annotation TOKEN on one line.
 
     Comment-scoped: the token must follow a comment introducer. With
     REQUIRE_REASON (the default), the token must also carry `: <non-empty
     reason>` ON THE SAME LINE — a bare marker states nothing and does not
-    suppress. Every hook that recognizes a per-line annotation builds its
-    matcher here; the meta-test in tests/cts/test_annotation_predicates.py bans
-    the bare `token in line` substring predicate this replaces."""
+    suppress. Either way the token must stand ALONE: a longer slug that merely
+    contains it, at either end, is a DIFFERENT annotation and never satisfies
+    this one. Every hook that recognizes a per-line annotation builds its matcher
+    here; the meta-test in tests/cts/test_annotation_predicates.py bans the bare
+    `token in line` substring predicate this replaces."""
     same_line = f"[^{_LINE_BOUNDARY_CLASS}]"
-    tail = rf":{same_line}*?[^\s]" if require_reason else r"\b"
-    return re.compile(rf"{_COMMENT_INTRO}{same_line}*\b{re.escape(token)}{tail}")
+    # With a reason required, the literal `:` already supplies the right edge (it
+    # is not a `[\w-]` character); without one, a lookahead has to supply it.
+    tail = rf":{same_line}*?[^\s]" if require_reason else rf"(?!{_TOKEN_EDGE})"
+    # The left edge, spelled as an alternation rather than a lookbehind, because
+    # `<!--` and `//` END in characters a lookbehind would reject: the token may
+    # either follow the comment introducer directly (`<!--allow-x:`) or follow
+    # same-line text whose last character is not part of a token.
+    lead = rf"(?:{same_line}*[^{_LINE_BOUNDARY_CLASS}\w-])?"
+    return re.compile(rf"{_COMMENT_INTRO}{lead}{re.escape(token)}{tail}")
 
 
 def annotated(line: str, token: str, require_reason: bool = True) -> bool:
@@ -530,13 +552,19 @@ def strip_yaml_comments(text: str) -> str:
 
 
 def opted_out(text: str, token: str) -> bool:
-    """True only when the opt-out TOKEN appears inside an actual `#` comment, not
-    anywhere in the byte stream — a `group: "<token>"` string value must not
-    silently disable a lint (that would be a fail-open). Shared by the
-    concurrency lints, each of which passes its own token."""
-    return any(
-        token in line.split("#", 1)[1] for line in text.splitlines() if "#" in line
-    )
+    """True only when the opt-out TOKEN appears inside an actual comment on some
+    line of TEXT, not anywhere in the byte stream — a `group: "<token>"` string
+    value must not silently disable a lint (that would be a fail-open). Shared by
+    the concurrency lints, each of which passes its own token.
+
+    Delegates to ``annotation_re`` rather than testing containment: a bare
+    substring is open at BOTH ends, so `# no-<token>-here` — or a neighbouring
+    lint's longer slug that happens to contain this one — would suppress. These
+    tokens carry no reason by contract, hence ``require_reason=False``; the
+    stand-alone-token guarantee is the same one every other annotation gets.
+    """
+    marker = annotation_re(token, require_reason=False)
+    return any(marker.search(line) for line in text.splitlines())
 
 
 def concurrency_line(text: str) -> int:

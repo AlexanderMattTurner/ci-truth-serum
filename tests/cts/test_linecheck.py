@@ -402,6 +402,12 @@ def test_required_check_contexts_falls_back_to_job_key_when_name_absent() -> Non
         ("group: my-token # unrelated\n", False),
         # No comment characters at all.
         ("concurrency:\n  group: x\n", False),
+        # A longer slug CONTAINING the token is a different annotation. The old
+        # bare-containment test accepted all three of these — open at both ends,
+        # so even prose merely mentioning the token suppressed the lint.
+        ("# no-my-token-here\nconcurrency:\n  group: x\n", False),
+        ("concurrency:  # my-token-ish\n  group: x\n", False),
+        ("concurrency:  # xx-my-token\n  group: x\n", False),
     ],
 )
 def test_opted_out(text: str, expected: bool) -> None:
@@ -434,6 +440,62 @@ def test_opted_out(text: str, expected: bool) -> None:
 )
 def test_annotated_reasoned_comment_opt_out(line: str, expected: bool) -> None:
     assert lc.annotated(line, "pin-exempt") is expected
+
+
+# ── annotated: a LONGER slug is a different annotation ───────────────────
+# Nearly every token in this package is hyphenated, and `\b` matches at a
+# word/`-` transition — so a `\b`-delimited matcher accepts any longer slug that
+# merely ends with (or, for the bare form, starts with) the token asked for. One
+# hook's opt-out then silently disarms another's: a fail-open. These cases pin
+# both edges closed, and every one of them PASSES under `\b`.
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Suffix: the requested token sits at the end of a longer slug.
+        "sleep 1  # really-allow-unbounded: nope",
+        "sleep 1  # x-allow-unbounded: nope",
+        "sleep 1  # allow_unbounded_allow-unbounded: nope",
+    ],
+)
+def test_reasoned_annotation_not_satisfied_by_a_longer_slug(line: str) -> None:
+    assert lc.annotated(line, "allow-unbounded") is False
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Prefix: `# <token>-<more>` is a different annotation, not this one.
+        "sleep 1  # allow-unbounded-wait: nope",
+        # Suffix, in the bare (reason-free) form — `\b` accepted this too.
+        "jobs:  # xx-allow-unbounded",
+        "jobs:  # really-allow-unbounded",
+    ],
+)
+def test_bare_annotation_not_satisfied_by_a_longer_slug(line: str) -> None:
+    assert lc.annotated(line, "allow-unbounded", require_reason=False) is False
+
+
+def test_the_stand_alone_token_still_matches_in_both_forms() -> None:
+    """Non-vacuity for the two tests above: the guarantee is 'a longer slug is a
+    different annotation', not 'nothing matches any more'."""
+    assert lc.annotated(
+        "sleep 1  # allow-unbounded: bounded upstream", "allow-unbounded"
+    )
+    assert lc.annotated(
+        "jobs:  # allow-unbounded", "allow-unbounded", require_reason=False
+    )
+    # The reason-required form's right edge is the literal `:`, so a token
+    # followed directly by its colon is unaffected by the tail lookahead.
+    assert lc.annotated("jobs:  # allow-unbounded:x", "allow-unbounded")
+    # The left edge is an alternation, not a lookbehind, because `<!--` and `//`
+    # end in characters a lookbehind would reject — a token abutting its own
+    # introducer must still match.
+    for intro in ("#", "<!--", "//"):
+        assert lc.annotated(f"{intro}allow-unbounded: reason", "allow-unbounded"), intro
+    # A separator that cannot appear in a token still reads as a real annotation.
+    assert lc.annotated("# see notes.allow-unbounded: reason", "allow-unbounded")
 
 
 @pytest.mark.parametrize(

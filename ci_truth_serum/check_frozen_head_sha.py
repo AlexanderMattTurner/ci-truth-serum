@@ -39,6 +39,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
@@ -50,7 +51,11 @@ ALLOW = "frozen-head-ok"
 # matching a hypothetical `head.sha_short`; `base.sha` and `head.ref` never match.
 FROZEN = re.compile(r"github\.event\.pull_request\.head\.sha\b")
 # The opt-out: `# frozen-head-ok: <reason>` with a non-empty reason after the colon.
-_ALLOW_RE = re.compile(rf"#\s*{ALLOW}\s*:\s*\S")
+# Built by the shared matcher, not hand-rolled: this searches a whole multi-line
+# job block, and a hand-spelled `\s*` reason gap crosses a NEWLINE — so a bare
+# `# frozen-head-ok:` at end of line adopted the next line's first character as
+# its "reason" and suppressed the lint with an empty claim.
+_ALLOW_RE = annotation_re(ALLOW)
 
 _MESSAGE = (
     "step uses github.event.pull_request.head.sha in run:/with: — the event "
