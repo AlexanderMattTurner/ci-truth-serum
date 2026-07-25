@@ -36,6 +36,7 @@ on:
         type: boolean
   schedule:
     # Run weekly, Monday at 9am UTC
+    # cron-alert: false  # alerted repo-wide by build-publish-notify.yaml's workflow_run notifier, which check-failure-notifier-coverage holds exhaustive over every push/schedule workflow — this workflow has no in-workflow sink for this lint to credit
     - cron: "0 9 * * 1"
 
 env:
