@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """One SSOT for the question "is this workflow's failure routed to a human?".
 
 Two lints act on the answer from opposite ends — check_cron_alert_coverage asks

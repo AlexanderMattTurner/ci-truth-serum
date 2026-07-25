@@ -183,7 +183,10 @@ bump_from_fragments() {
       printf 'minor\n'
       return 0
       ;;
-    esac # case-default-ok: every other category (fixed, security, and any malformed name) takes the patch floor printed below
+    # fixed, security, and any malformed name leave the surface alone, so they
+    # add nothing here and fall through to the patch floor after the loop.
+    *) ;;
+    esac
   done
   printf 'patch\n'
 }
