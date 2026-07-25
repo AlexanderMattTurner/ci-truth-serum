@@ -12,19 +12,27 @@
 # labels a hand-made PR); the shared `release` label means an already-open release
 # PR — human or auto — makes this path stand down so the two never collide, and
 # because this path's own PR carries that label, the next scheduled run also stands
-# down while it is open.
+# down while it is open. The verdict comes from a model call over a ladder of
+# credentials; when every rung is missing or rejected the run does not die — it
+# derives the bump from the pending fragment categories and says loudly, in the
+# log, the job summary and the PR body, that no model judged it.
 set -euo pipefail
 # Repo content (package.json, CHANGELOG, changelog.d, the assembler) is read from
 # the checked-out working tree — the job runs from the repo root.
 ROOT="$(git rev-parse --show-toplevel)"
 # shellcheck source=../../bin/lib/retry.bash disable=SC1091
 source "$ROOT/bin/lib/retry.bash"
+# shellcheck source=../../bin/lib/release-model-call.bash disable=SC1091
+source "$ROOT/bin/lib/release-model-call.bash"
 
 # Fail fast when a credential the run needs is unset — a dropped workflow env var
 # must abort loudly here, before any real work, not surface as a misparse deep in
-# the run. ANTHROPIC_API_KEY is the readiness model call; GH_TOKEN (github.token)
-# is the concurrent-release probe, label + branch push, and PR creation.
-: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is not set. Configure it as a repository secret.}"
+# the run. GH_TOKEN (github.token) is the concurrent-release probe, label + branch
+# push, and PR creation, so without it the run cannot do its job at all. The model
+# credentials are deliberately NOT guarded here: anthropic_call walks a ladder of
+# them and the run still completes on the deterministic floor when every rung is
+# missing or rejected, so demanding any one of them up front would abort a run
+# that a later rung — or no credential at all — could have finished.
 : "${GH_TOKEN:?GH_TOKEN is not set. The workflow must pass github.token.}"
 
 ASSEMBLE_CHANGELOG="${ASSEMBLE_CHANGELOG:-$ROOT/scripts/assemble-changelog.mjs}"
@@ -151,72 +159,35 @@ REQUEST_BODY=$(jq -n --arg prompt "$PROMPT" --arg system "$CLAUDE_CODE_SYSTEM" \
     messages: [{role: "user", content: $prompt}]
   }')
 
-# Anthropic API keys (sk-ant-api…) authenticate via x-api-key; Claude subscription
-# OAuth tokens (sk-ant-oat…) via Bearer + the oauth beta header. Accept either.
-AUTH_HEADERS=(-H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01")
-AUTH_MODE="x-api-key (sk-ant-api)"
-if [[ "$ANTHROPIC_API_KEY" == sk-ant-oat* ]]; then
-  AUTH_HEADERS=(-H "authorization: Bearer $ANTHROPIC_API_KEY" -H "anthropic-beta: oauth-2025-04-20" -H "anthropic-version: 2023-06-01")
-  AUTH_MODE="Bearer + oauth beta (sk-ant-oat)"
-fi
-
 RESPONSE_FILE="$(mktemp)"
 trap 'rm -f "$RESPONSE_FILE"' EXIT
 
-# Surface the reason for a non-200 (auth mode + the API's own error message, or
-# the raw body when it isn't Anthropic-shaped) so the failure is diagnosable from
-# the log. The key/token never appears in the response.
-# shellcheck disable=SC2329  # invoked from _call_claude_api (reached via retry_cmd)
-_report_api_failure() {
-  local code="$1" msg
-  echo "Claude API call failed (HTTP $code) using auth mode: $AUTH_MODE" >&2
-  msg=$(jq -r '.error.message // empty' "$RESPONSE_FILE" 2>/dev/null || true) # allow-double-swallow: best-effort parse of an API error body; a non-JSON body falls through to the raw dump below
-  if [[ -n "$msg" ]]; then
-    echo "API error: $msg" >&2
-  else
-    echo "API response body:" >&2
-    head -c 2000 "$RESPONSE_FILE" >&2
-    echo >&2
-  fi
-}
-
-# shellcheck disable=SC2329  # invoked via retry_cmd's "$@" dispatch
-_call_claude_api() {
-  local code
-  # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted
-  code=$(curl -s -o "$RESPONSE_FILE" -w "%{http_code}" \
-    --max-time 30 https://api.anthropic.com/v1/messages \
-    -H "Content-Type: application/json" \
-    "${AUTH_HEADERS[@]}" \
-    -d "$REQUEST_BODY" || echo "000") # echo-fallback-ok: a curl transport error maps to the sentinel 000, a non-200 that the retry logic below treats as retryable — not a value fed to a decision
-  [[ "$code" == "200" ]] && return 0
-  _report_api_failure "$code"
-  # A 400/401/403 fails identically on every retry — a malformed request, a
-  # bad/revoked key, or an account over its usage cap — so stop now with the real
-  # reason instead of burning the backoff budget on a "Claude API unreachable"
-  # red herring. Only a transport failure (code 000) or a transient HTTP status
-  # (408/429/5xx) is worth retrying. Mirrors monitorlib/api.py's
-  # _is_retryable_status; the run still fails (this check is advisory, so a red
-  # scheduled run is the intended signal that it could not evaluate).
-  if [[ "$code" == "400" || "$code" == "401" || "$code" == "403" ]]; then
-    echo "Error: Claude API rejected the request (HTTP $code); not retrying — see the reason above." >&2
+# DEGRADED marks a verdict that came from the deterministic floor rather than the
+# model, so every downstream surface (log, job summary, PR body) can say so.
+DEGRADED=""
+if anthropic_call "$REQUEST_BODY" "$RESPONSE_FILE"; then
+  INPUT=$(jq -c '.content[] | select(.type == "tool_use") | .input' "$RESPONSE_FILE")
+  SHOULD_RELEASE=$(printf '%s' "$INPUT" | jq -r '.should_release')
+  BUMP=$(printf '%s' "$INPUT" | jq -r '.recommended_bump')
+  RATIONALE=$(printf '%s' "$INPUT" | jq -r '.rationale')
+  # A 200 whose body does not carry a well-formed verdict is an unexpected state,
+  # not a credential outage — the floor below is not the right answer for it.
+  if [[ "$SHOULD_RELEASE" != "true" && "$SHOULD_RELEASE" != "false" ]] || [[ "$BUMP" != "minor" && "$BUMP" != "patch" ]]; then
+    echo "Error: unexpected decision from Claude (should_release=$SHOULD_RELEASE bump=$BUMP)" >&2
+    echo "Response stop_reason: $(jq -r '.stop_reason // "unknown"' "$RESPONSE_FILE")" >&2
     exit 1
   fi
-  return 1
-}
-if ! retry_cmd 3 2 _call_claude_api; then
-  echo "Error: Claude API unreachable after 3 transient-failure attempts; see the reasons above." >&2
-  exit 1
-fi
-
-INPUT=$(jq -c '.content[] | select(.type == "tool_use") | .input' "$RESPONSE_FILE")
-SHOULD_RELEASE=$(printf '%s' "$INPUT" | jq -r '.should_release')
-BUMP=$(printf '%s' "$INPUT" | jq -r '.recommended_bump')
-RATIONALE=$(printf '%s' "$INPUT" | jq -r '.rationale')
-if [[ "$SHOULD_RELEASE" != "true" && "$SHOULD_RELEASE" != "false" ]] || [[ "$BUMP" != "minor" && "$BUMP" != "patch" ]]; then
-  echo "Error: unexpected decision from Claude (should_release=$SHOULD_RELEASE bump=$BUMP)" >&2
-  echo "Response stop_reason: $(jq -r '.stop_reason // "unknown"' "$RESPONSE_FILE")" >&2
-  exit 1
+else
+  # Every credential rung is missing or rejected. Killing the run here is what
+  # stalled the release pipeline: this check only OPENS a PR, so the safe answer
+  # is the mechanical one a human then reviews. Say so at maximum volume — an
+  # unannounced degradation is a green run reporting a judgment nobody made.
+  DEGRADED="1"
+  SHOULD_RELEASE="true"
+  BUMP=$(bump_from_fragments "$ROOT/changelog.d")
+  RATIONALE="DEGRADED: no model verdict. Every configured credential rung was missing or rejected (see the per-rung reasons in the run log), so this \`$BUMP\` bump was derived mechanically from the pending changelog.d/ fragment categories, NOT from a model's judgment of whether a release is warranted. Review the bump and the contents before merging."
+  echo "::warning title=Release readiness degraded::No model credential answered; the bump was derived from changelog.d/ fragment categories instead."
+  echo "WARNING: degraded to the deterministic bump floor (bump_from_fragments) — bump=$BUMP" >&2
 fi
 
 IFS='.' read -r MAJOR MINOR PATCH_NUM <<<"$CURRENT_VERSION"
@@ -323,6 +294,13 @@ fi
 {
   echo "## Release readiness"
   echo
+  if [[ -n "$DEGRADED" ]]; then
+    echo "> [!WARNING]"
+    echo "> **No model verdict — degraded to the deterministic bump floor.** Every configured"
+    echo "> credential rung was missing or rejected, so the bump below comes from the pending"
+    echo "> changelog.d/ fragment categories alone. A human reviews it on the PR before it ships."
+    echo
+  fi
   echo "$VERDICT"
   echo
   echo "- Current release: \`v$CURRENT_VERSION\`"

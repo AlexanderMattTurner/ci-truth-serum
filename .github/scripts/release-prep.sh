@@ -20,8 +20,14 @@ set -euo pipefail
 # back to the in-tree path only to bootstrap the very PR that first adds it.
 # shellcheck source=../../bin/lib/retry.bash disable=SC1091
 source "${RETRY_LIB:-$(git rev-parse --show-toplevel)/bin/lib/retry.bash}"
+# shellcheck source=../../bin/lib/release-model-call.bash disable=SC1091
+source "${MODEL_CALL_LIB:-$(git rev-parse --show-toplevel)/bin/lib/release-model-call.bash}"
 
-: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is not set. Configure it as a repository secret.}"
+# The model credentials are deliberately unguarded: anthropic_call walks a ladder
+# of them, so demanding any one up front would abort a run a later rung could
+# have finished. Exhausting the whole ladder still fails this script loudly —
+# unlike release-readiness.sh it pushes a commit rather than opening a PR for
+# review, so a mechanically-derived bump here would land unreviewed.
 : "${BASE_REF:?BASE_REF (the PR base branch) is not set.}"
 : "${HEAD_REF:?HEAD_REF (the PR head branch) is not set.}"
 
@@ -126,33 +132,9 @@ REQUEST_BODY=$(jq -n \
     messages: [{role: "user", content: $prompt}]
   }')
 
-# Anthropic API keys (sk-ant-api…) authenticate via x-api-key; Claude subscription
-# OAuth tokens (sk-ant-oat…) via Bearer + the oauth beta header. Accept either so
-# the secret can hold whichever credential the repo has.
-AUTH_HEADERS=(-H "x-api-key: $ANTHROPIC_API_KEY" -H "anthropic-version: 2023-06-01")
-if [[ "$ANTHROPIC_API_KEY" == sk-ant-oat* ]]; then
-  AUTH_HEADERS=(-H "authorization: Bearer $ANTHROPIC_API_KEY" -H "anthropic-beta: oauth-2025-04-20" -H "anthropic-version: 2023-06-01")
-fi
-
-# Retry the Claude API call on transient failures (timeout, 5xx, network blips).
 CLAUDE_RESPONSE_FILE="$TMP_DIR/claude-response.json"
-_call_claude_api() {
-  # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted
-  if ! HTTP_CODE=$(curl -s -o "$CLAUDE_RESPONSE_FILE" -w "%{http_code}" \
-    --max-time 30 https://api.anthropic.com/v1/messages \
-    -H "Content-Type: application/json" \
-    "${AUTH_HEADERS[@]}" \
-    -d "$REQUEST_BODY"); then
-    echo "Claude API call failed (curl transport error)" >&2
-    return 1
-  fi
-  if [[ "$HTTP_CODE" != "200" ]]; then
-    echo "Claude API call failed (HTTP $HTTP_CODE)" >&2
-    return 1
-  fi
-}
-if ! retry_cmd 3 2 _call_claude_api; then
-  echo "Error: Claude API unreachable after 3 attempts" >&2
+if ! anthropic_call "$REQUEST_BODY" "$CLAUDE_RESPONSE_FILE"; then
+  echo "Error: no configured credential could classify the bump; see the per-rung reasons above." >&2
   exit 1
 fi
 RESPONSE=$(cat "$CLAUDE_RESPONSE_FILE")
