@@ -595,13 +595,20 @@ def test_is_test_path_covers_the_shortest_member_of_every_class(
     assert lc.is_test_path(path) is is_test
 
 
-def test_only_linecheck_defines_the_predicate() -> None:
-    """The consumers must IMPORT it, not re-derive it. Three hand-rolled peers is
-    how the recall hole above survived in two of them; a fourth would do it
-    again."""
-    definers = [
-        path.name
+def test_exactly_one_definition_of_the_predicate_exists() -> None:
+    """The consumers must IMPORT it, not re-derive it. Two hand-rolled peers is how
+    the recall hole above survived in both; a third would do it again.
+
+    Counts occurrences rather than listing files, because the failure this caught
+    for real was two definitions in the SAME module: a git merge of two branches
+    that independently consolidated the predicate auto-merged both blocks in, and
+    the second silently won at import time. A per-file existence check passes on
+    that; a count does not.
+    """
+    definitions = {
+        path.name: path.read_text(encoding="utf-8").count("def is_test_path(")
         for path in sorted(HOOKS_DIR.glob("*.py"))
-        if "def is_test_path(" in path.read_text(encoding="utf-8")
-    ]
-    assert definers == ["_linecheck.py"], definers
+    }
+    assert {k: v for k, v in definitions.items() if v} == {"_linecheck.py": 1}, (
+        f"is_test_path must be defined exactly once, in _linecheck: {definitions}"
+    )

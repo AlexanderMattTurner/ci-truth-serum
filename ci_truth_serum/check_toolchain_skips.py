@@ -25,8 +25,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import is_test_path  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated,
+    is_test_path,
+)
 
 OPT_OUT = "toolchain-skip-ok"
 

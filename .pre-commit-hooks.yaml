@@ -399,6 +399,17 @@
   language: python
   types: [shell]
 
+- id: check-test-predicate-shadow
+  name: "extra: ban a test redefining a production pure predicate"
+  description: Stubbing a dependency is fine; redefining a side-effect-free predicate substitutes the test's own (usually weaker) copy of the logic, so a regression in the shipped one cannot fail the test.
+  entry: python -m ci_truth_serum.check_test_predicate_shadow
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  # Only test-side files can violate, but which names ARE pure predicates is a
+  # property of the whole shipped tree, so the production side self-discovers
+  # via `git ls-files` regardless of what pre-commit passes.
+  types: [shell]
+
 - id: check-stray-tool-markup
   name: "extra: ban stray agent tool-call markup committed into a file"
   description: A leaked closing/opening tool-call tag (</invoke>, <parameter …>, </content>) on its own line renders as literal garbage; only whole-line bare tags are flagged, fenced examples are skipped.

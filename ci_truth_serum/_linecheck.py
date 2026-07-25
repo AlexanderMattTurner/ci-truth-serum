@@ -21,6 +21,7 @@ before importing this module; the tests load each script by path.
 
 import itertools
 import re
+import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -107,30 +108,6 @@ _LINE_BOUNDARY_CLASS = r"\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 # (`[\w-]`) disqualify a neighbour, so `# nope.allow-x:` — where the `.` cannot
 # be part of any token — still reads as the annotation it looks like.
 _TOKEN_EDGE = r"[\w-]"
-
-
-# A test file, by path. One SSOT because two lints ask the same question for
-# different reasons — check_drift_guards scopes its phrase pass to tests, and
-# check_toolchain_skips scopes its skipif scan to what pytest collects — and two
-# hand-rolled peers had already diverged: both were silently DEAD for the
-# shortest members of the set (a bare `test.py`, `x/test.py`, `conftest.py`), so
-# a guard living there escaped the lint entirely. A scope filter's recall bug is
-# invisible: it produces a green vacuous pass, never an error.
-#
-# Each alternative keeps a mandatory left boundary (start of path, a directory
-# separator, or one of `._-`) so `latest.py`, `protest.mjs` and `spectrum.ts`
-# stay out.
-_TEST_PATH = re.compile(
-    r"(?:^|/)(?:tests?|__tests__|specs?)/"
-    r"|(?:^|/)test_[^/]*$"
-    r"|(?:^|[/._-])(?:conftest|test|spec)s?\.[^./]+$"
-)
-
-
-def is_test_path(path: str) -> bool:
-    """True when PATH names a test file: a tests/ or spec/ directory component, a
-    test_* or conftest module, or a test.* / spec.* / *.test.* / *.spec.* suite."""
-    return bool(_TEST_PATH.search(path.replace("\\", "/")))
 
 
 def annotation_re(token: str, require_reason: bool = True) -> "re.Pattern[str]":
@@ -255,6 +232,67 @@ def run_line_checks(
             print(f"{path}:{lineno}: {message}", file=sys.stderr)
             status = 1
     return status
+
+
+# A path that names a test file: a tests/ (or __tests__/, specs/) directory
+# component, a `test_*` or `conftest` module, or a `test.*` / `spec.*` /
+# `*.test.*` / `*.spec.*` suite. One definition, so a lint that scopes itself to
+# (or away from) tests classifies a path the same way as every other.
+#
+# Each alternative must accept the SHORTEST member of its class, not just the
+# long ones. The two hand-rolled peers this replaced both demanded a separator
+# after `test`, so `test.py`, `x/test.py` and `conftest.py` were all False — and
+# a `skipif` hiding in `conftest.py`, where collection-time skips most naturally
+# live, escaped check_toolchain_skips entirely. A scope filter's recall bug is
+# invisible: it yields a green vacuous pass, never an error. Hence the basename
+# alternative takes `^` or any of `/._-` as its left boundary; that boundary
+# stays mandatory, so `latest.py`, `protest.mjs` and `spectrum.ts` stay out.
+_TEST_PATH = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|specs?)/"
+    r"|(?:^|/)test_[^/]*$"
+    r"|(?:^|[/._-])(?:conftest|test|spec)s?\.[^./]+$"
+)
+# A tracked file whose NAME says it is shell. An extensionless file is shell only
+# if its shebang says so, which needs a read — hence the two-step in
+# `tracked_shell_files`.
+_SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
+_SHELL_SHEBANG = re.compile(r"^#!.*\b(?:bash|sh)\b")
+
+
+def is_test_path(path: str) -> bool:
+    """True when PATH names a test file: a tests/ or spec/ directory component, a
+    test_* or conftest module, or a test.* / spec.* / *.test.* / *.spec.* suite."""
+    return bool(_TEST_PATH.search(path.replace("\\", "/")))
+
+
+def tracked_shell_files() -> list[str]:
+    """Every tracked `*.sh` / `*.bash` path, plus every tracked extensionless file
+    whose shebang names bash/sh (git hooks under `.hooks/`, `bin/` scripts).
+
+    Used by the shell lints that must reason about the WHOLE tracked surface
+    rather than only the files pre-commit passes them. An unreadable path is
+    skipped: `git ls-files` reports the index, so a path can be missing (a
+    rename/delete race) or be binary despite a shell-ish name.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], capture_output=True, text=True, check=True
+    ).stdout.split("\0")
+    out: list[str] = []
+    for path in tracked:
+        if not path:
+            continue
+        if _SHELL_SUFFIX.search(path):
+            out.append(path)
+            continue
+        if "." in path.rsplit("/", 1)[-1]:
+            continue
+        try:
+            first = Path(path).read_text(encoding="utf-8").split("\n", 1)[0]
+        except (OSError, UnicodeDecodeError):
+            continue
+        if _SHELL_SHEBANG.match(first):
+            out.append(path)
+    return out
 
 
 def workflow_files(workflows_dir: Path, actions_dir: Path) -> list[Path]:
