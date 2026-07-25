@@ -22,13 +22,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        uses: ./.github/actions/setup-uv
         with:
-          # Pin uv exactly: an exact version skips setup-uv's raw.githubusercontent
-          # version-manifest fetch (an un-retried single point of failure), so a
-          # transient GitHub-CDN blip can't fail the job before any work runs.
-          version: "0.11.31"
-          python-version: "3.11"
+          install-python: "true"
       - name: Lint (ruff)
         run: uv run --extra dev ruff check ci_truth_serum tests/cts
       - name: Format check (ruff)

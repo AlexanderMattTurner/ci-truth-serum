@@ -6,13 +6,11 @@ inputs:
     required: false
     default: "22"
   setup-python:
-    description: "Whether to set up Python with uv"
+    description: >-
+      Whether to set up uv and the interpreter named by .python-version, then
+      `uv sync --frozen`.
     required: false
     default: "false"
-  python-version:
-    description: "Python version to use (if setup-python is true)"
-    required: false
-    default: "3.11"
 
 runs:
   using: "composite"
@@ -51,19 +49,11 @@ runs:
       run: pnpm install ${{ hashFiles('pnpm-lock.yaml') != '' && '--frozen-lockfile' || '' }}
       shell: bash
 
-    - name: Set up uv
+    - name: Set up uv and Python
       if: inputs.setup-python == 'true'
-      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      uses: ./.github/actions/setup-uv
       with:
-        enable-cache: true
-        cache-dependency-glob: "uv.lock"
-
-    - name: Set up Python
-      if: inputs.setup-python == 'true'
-      run: uv python install "$PYTHON_VERSION"
-      shell: bash
-      env:
-        PYTHON_VERSION: ${{ inputs.python-version }}
+        install-python: "true"
 
     - name: Install Python Dependencies
       if: inputs.setup-python == 'true'

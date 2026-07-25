@@ -25,6 +25,7 @@ jobs:
           - '.claude/**'
           - '.ci_truth_serum/**'
           - '.github/actions/setup-base-env/**'
+          - '.github/actions/setup-uv/**'
           - '.github/scripts/validate-config.sh'
           - '.github/workflows/**'
           - 'tests/**'
