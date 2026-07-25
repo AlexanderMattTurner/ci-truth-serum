@@ -137,6 +137,16 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-unscoped-tool-grant
+  name: "security: ban an unscoped or inert file-tool rule in a Claude Code tool grant"
+  description: A file tool named with no path is a whole-tool grant that OVERRIDES the working-directory check, so --add-dir beside it suppresses a prompt rather than building a jail; and a path rule spelled under any name but Read or Edit is never consulted, so it denies the access it appears to grant.
+  entry: python -m ci_truth_serum.check_unscoped_tool_grant
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 # ───────────────────────── Tier 2 · Opinionated (opt-in) ─────────────────────
 # These prescribe a specific architecture. Enable only if you follow it.
 - id: check-always-reporter
