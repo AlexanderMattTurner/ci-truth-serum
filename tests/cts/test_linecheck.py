@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._helpers import load_hook
+from tests._helpers import HOOKS_DIR, load_hook
 
 lc = load_hook("_linecheck.py", "_linecheck")
 
@@ -548,3 +548,60 @@ def test_job_concurrency_line(block, expected: int) -> None:
 )
 def test_group_is_per_ref_requires_expression_span(group: str, per_ref: bool) -> None:
     assert lc.group_is_per_ref(group) is per_ref
+
+
+# ── is_test_path: one predicate, two consumers ───────────────────────────
+# check_drift_guards scopes its phrase pass to tests; check_toolchain_skips
+# scopes its skipif scan to what pytest collects. Two hand-rolled peers had
+# already diverged, and BOTH were dead for the shortest members of the set — a
+# scope filter's recall bug produces a green vacuous pass, never an error, so it
+# is enumerated member by member here.
+
+
+@pytest.mark.parametrize(
+    "path,is_test",
+    [
+        # The shortest members of each class — every one of these was False under
+        # at least one of the two hand-rolled predicates this replaced.
+        ("test.py", True),
+        ("x/test.py", True),
+        ("conftest.py", True),
+        ("spec.rb", True),
+        ("x/spec.js", True),
+        ("test/x.py", True),
+        ("specs/thing.sh", True),
+        # …and the long members that already worked.
+        ("tests/x.py", True),
+        ("x_test.py", True),
+        ("x.test.js", True),
+        ("tests/cts/test_x.sh", True),
+        ("src/__tests__/bar.mjs", True),
+        ("scripts/widget.spec.ts", True),
+        # The left boundary stays mandatory, so a word merely ENDING in the stem
+        # is not a test file.
+        ("latest.py", False),
+        ("src/protest.mjs", False),
+        ("greatest.sh", False),
+        ("spectrum.ts", False),
+        ("testing.py", False),
+        ("scripts/release.sh", False),
+        # Windows separators normalize before matching.
+        ("x\\tests\\y.py", True),
+    ],
+)
+def test_is_test_path_covers_the_shortest_member_of_every_class(
+    path: str, is_test: bool
+) -> None:
+    assert lc.is_test_path(path) is is_test
+
+
+def test_only_linecheck_defines_the_predicate() -> None:
+    """The consumers must IMPORT it, not re-derive it. Three hand-rolled peers is
+    how the recall hole above survived in two of them; a fourth would do it
+    again."""
+    definers = [
+        path.name
+        for path in sorted(HOOKS_DIR.glob("*.py"))
+        if "def is_test_path(" in path.read_text(encoding="utf-8")
+    ]
+    assert definers == ["_linecheck.py"], definers

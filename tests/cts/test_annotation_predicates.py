@@ -103,7 +103,7 @@ def test_handrolled_matcher_detector_actually_matches() -> None:
         '_ALLOW_WITH_REASON = re.compile(r"#\\s*allow-no-timeout:\\s*\\S")'
     ) == [1]
     assert _handrolled_annotation_matchers(
-        "_A = re.compile(r\"#\\s*tok:\\s*[^\\s]\")"
+        '_A = re.compile(r"#\\s*tok:\\s*[^\\s]")'
     ) == [1]
     # Sanctioned: extracts a value, so it is a reader with its own grammar.
     assert (

@@ -109,6 +109,30 @@ _LINE_BOUNDARY_CLASS = r"\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 _TOKEN_EDGE = r"[\w-]"
 
 
+# A test file, by path. One SSOT because two lints ask the same question for
+# different reasons — check_drift_guards scopes its phrase pass to tests, and
+# check_toolchain_skips scopes its skipif scan to what pytest collects — and two
+# hand-rolled peers had already diverged: both were silently DEAD for the
+# shortest members of the set (a bare `test.py`, `x/test.py`, `conftest.py`), so
+# a guard living there escaped the lint entirely. A scope filter's recall bug is
+# invisible: it produces a green vacuous pass, never an error.
+#
+# Each alternative keeps a mandatory left boundary (start of path, a directory
+# separator, or one of `._-`) so `latest.py`, `protest.mjs` and `spectrum.ts`
+# stay out.
+_TEST_PATH = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|specs?)/"
+    r"|(?:^|/)test_[^/]*$"
+    r"|(?:^|[/._-])(?:conftest|test|spec)s?\.[^./]+$"
+)
+
+
+def is_test_path(path: str) -> bool:
+    """True when PATH names a test file: a tests/ or spec/ directory component, a
+    test_* or conftest module, or a test.* / spec.* / *.test.* / *.spec.* suite."""
+    return bool(_TEST_PATH.search(path.replace("\\", "/")))
+
+
 def annotation_re(token: str, require_reason: bool = True) -> "re.Pattern[str]":
     """The compiled matcher for an opt-out/annotation TOKEN on one line.
 

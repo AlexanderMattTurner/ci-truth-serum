@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import is_test_path  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "toolchain-skip-ok"
 
@@ -40,19 +41,6 @@ MESSAGE = (
     'and not os.environ.get("CI")`, or annotate '
     f"`# {OPT_OUT}: <reason>`."
 )
-
-
-def is_test_path(path: str) -> bool:
-    """True for the Python files pytest collects as tests (name convention or a
-    tests/ directory component)."""
-    p = Path(path)
-    name = p.name
-    return (
-        name.startswith("test_")
-        and name.endswith(".py")
-        or name.endswith("_test.py")
-        or "tests" in p.parts
-    )
 
 
 def _call_span(text: str, open_paren: int) -> str:
