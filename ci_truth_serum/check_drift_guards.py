@@ -58,7 +58,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotation_re,
+    is_test_path,
+)
 
 # Phrases that express guard INTENT — the author is asserting two sources can't
 # diverge — rather than merely mentioning the word "drift" (which a test of
@@ -285,24 +288,6 @@ def text_violations(text: str) -> list[tuple[int, str]]:
     return hits
 
 
-# The non-Python phrase pass runs only on TEST files: a drift guard is a TEST
-# asserting two copies agree, so a guard-intent phrase in production shell/JS is
-# prose about behaviour (a sync script's own comments legitimately say "keeps X
-# in sync") — scanning it there was pure false-positive surface. Python needs no
-# path filter: its AST pass already scopes to `test_*` functions.
-_TEST_PATH = re.compile(
-    r"(?:^|/)(?:tests?|__tests__|spec)/"
-    r"|(?:^|/)test_[^/]*$"
-    r"|[._-](?:test|spec)s?\.[^./]+$"
-)
-
-
-def is_test_path(path: str) -> bool:
-    """True when PATH names a test file (a tests/ directory, a test_* module,
-    or a *.test.* / *.spec.* suite)."""
-    return bool(_TEST_PATH.search(path.replace("\\", "/")))
-
-
 def main(argv: list[str]) -> int:
     status = 0
     for path in argv:
@@ -322,6 +307,12 @@ def main(argv: list[str]) -> int:
                 )
                 status = 1
             continue
+        # The non-Python phrase pass runs only on TEST files: a drift guard is a
+        # TEST asserting two copies agree, so a guard-intent phrase in production
+        # shell/JS is prose about behaviour (a sync script's own comments
+        # legitimately say "keeps X in sync") — scanning it there is pure
+        # false-positive surface. Python needs no path filter: its AST pass above
+        # already scopes to `test_*` functions.
         if not is_test_path(path):
             continue
         for lineno, phrase in text_violations(source):
