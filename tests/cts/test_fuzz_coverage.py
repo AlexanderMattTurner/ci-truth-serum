@@ -47,6 +47,8 @@ FUZZ_REQUIRED = {
     "check_exit_suppression": "violations",
     "check_stderr_suppression": "violations",
     "check_pipefail_grep_pipe": "violations",
+    "check_folded_scalar_comment": "violations",
+    "check_gh_slurp_jq": "violations",
     "check_substitution_exit_swallow": "violations",
     "check_pinned_downloads": "violations",
     "check_pinned_base_images": "violations",
