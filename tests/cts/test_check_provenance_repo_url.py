@@ -107,6 +107,35 @@ def test_no_publish_workflow_tolerates_missing_repository_url(tmp_path) -> None:
     assert mod.check_repo(repo) == []
 
 
+def test_publish_only_mentioned_in_a_comment_is_not_a_publish(tmp_path) -> None:
+    # Demanding a repository.url off a comment that says the opposite is the
+    # same class as the secret-name false positive: the remedy is a config edit
+    # the repo has no use for.
+    repo = _repo(tmp_path)
+    _pkg(repo, None)
+    wf = repo / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "release.yaml").write_text(
+        "jobs:\n  r:\n    steps:\n"
+        "      # releases are manual; we never run npm publish here\n"
+        "      - run: echo done\n"
+    )
+    assert mod.check_repo(repo) == []
+
+
+def test_publish_after_a_quoted_hash_is_still_seen(tmp_path) -> None:
+    # False-negative guard: a `#` inside a quoted scalar is content, so a real
+    # publish later on the same line must still register.
+    repo = _repo(tmp_path)
+    _pkg(repo, None)
+    wf = repo / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "release.yaml").write_text(
+        'jobs:\n  r:\n    steps:\n      - run: "release #42 && npm publish"\n'
+    )
+    assert len(mod.check_repo(repo)) == 1
+
+
 def test_no_package_json_is_not_a_publish_violation(tmp_path) -> None:
     repo = _repo(tmp_path)
     _publish_workflow(repo)
