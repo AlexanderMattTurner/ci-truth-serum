@@ -43,6 +43,7 @@ FUZZ_DIR = REPO_ROOT / "tests" / "cts"
 FUZZ_REQUIRED = {
     "_bash_ast": "parse",
     "_linecheck": "required_check_contexts",
+    "_failure_routing": "routing",
     "check_exit_suppression": "violations",
     "check_stderr_suppression": "violations",
     "check_pipefail_grep_pipe": "violations",
@@ -94,7 +95,10 @@ FUZZ_REQUIRED = {
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the
 # required set. Listed so the "exactly covers the live hooks" check below can
 # subtract them and prove the required set is exhaustive over real parsers.
-_NON_PARSER_HOOKS = {"run_tier", "sync_required_checks", "__init__"}
+# ``_version`` is not a hook at all: it hands the build backend this repo's own
+# package.json version, and a malformed first-party manifest must crash the build
+# rather than be tolerated, so it has no untrusted-input surface to fuzz.
+_NON_PARSER_HOOKS = {"run_tier", "sync_required_checks", "__init__", "_version"}
 
 
 def _strip_comments(source: str) -> str:

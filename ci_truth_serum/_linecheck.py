@@ -22,7 +22,7 @@ before importing this module; the tests load each script by path.
 import itertools
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import yaml
@@ -229,6 +229,55 @@ def workflow_triggers(doc: object) -> object:
     return doc.get("on", doc.get(True))
 
 
+# What counts as routing a failure to a human. One SSOT because two lints ask the
+# same question from opposite ends: check_cron_alert_coverage asks "does this
+# scheduled workflow contain a sink?", check_failure_notifier_coverage asks "is
+# this workflow_run workflow the failure notifier?". A sink taught to one is a
+# sink to the other, so separate lists would let a repo's house sink be
+# recognized on one side and invisible on the other.
+NOTIFIER_PATTERNS = (
+    r"notif",
+    r"ntfy",
+    r"slack",
+    r"pagerduty",
+    r"opsgenie",
+    r"victorops",
+    r"discord",
+    r"telegram",
+    r"mattermost",
+    r"webhook",
+    r"\bsms\b",
+    r"smtp",
+    r"send[-_]?e?mail",
+    r"sendmail",
+    r"gh\s+issue\s+create",
+    # Any issue-management verb, not `create` alone: a tracker issue opened,
+    # filed, or reopened on failure routes to a human exactly the same way, and
+    # repos wrap the call in a house script whose name never carries the literal
+    # `gh issue create` (`manage-release-failure-issue.sh open`). The leading verb
+    # is what keeps this from matching every step that merely mentions an issue;
+    # the gap is a bounded lazy run of one token class (no nested quantifier), so
+    # a long non-matching identifier cannot backtrack exponentially.
+    r"(?:create|open|file|manage|report)[\w.\- ]{0,40}?issues?\b",
+    r"issue_write",
+)
+
+
+def notifier_matcher(extra_patterns: Iterable[str] = ()) -> "re.Pattern[str]":
+    """The compiled alternation recognizing a notification sink. EXTRA_PATTERNS
+    are added to (never substituted for) the defaults, so naming a house sink can
+    never silently un-recognize the sinks already matched."""
+    return re.compile(
+        "|".join(f"(?:{p})" for p in (*NOTIFIER_PATTERNS, *extra_patterns)),
+        re.IGNORECASE,
+    )
+
+
+def step_text(step: dict) -> str:
+    """The fields of a workflow step that can name a notification sink."""
+    return " ".join(str(step.get(key, "")) for key in ("uses", "name", "run"))
+
+
 def has_trigger(doc: object, *names: str) -> bool:
     """True when the workflow fires on any of NAMES, for any shape `on:` takes:
     a scalar (`on: push`), a list (`on: [push, schedule]`), or the usual mapping.
@@ -414,6 +463,62 @@ def group_is_per_ref(group: str) -> bool:
         for span in _EXPR_SPAN.finditer(group)
         for key in PER_REF_CONCURRENCY_KEYS
     )
+
+
+def strip_yaml_comments(text: str) -> str:
+    """TEXT with every YAML `#` comment blanked to spaces, line and column
+    offsets preserved so a caller can still report `line=` annotations.
+
+    A lint that hunts for a pattern in workflow *content* must not see the
+    pattern when it is only being TALKED ABOUT in a comment: a step comment
+    reading ``# not a `secrets.A || secrets.B` expression`` made the secret-name
+    round-trip demand that A and B be added to the allowlist, and the natural
+    way to silence that is to pad the allowlist with names no workflow uses —
+    eroding the very guard that catches a misspelled secret.
+
+    Comment detection is delegated to PyYAML's own scanner rather than a
+    hand-rolled `split("#")`, because the naive cut is a FALSE NEGATIVE
+    machine: a `#` inside a quoted scalar (`title: "#general"`) or inside a
+    block scalar (a shell comment under `run: |`) is content, and cutting there
+    would stop checking a real `secrets.TYPO` later on the same line. Every
+    span PyYAML reports as a scalar token is protected; a `#` outside one, at
+    line start or after whitespace, opens a comment that runs to end of line —
+    which is exactly YAML's own rule, so what this keeps is exactly what GitHub
+    parses.
+
+    A file PyYAML cannot even tokenize is returned unchanged: nothing is known
+    about where its scalars end, and blanking on a guess could hide a real
+    finding.
+    """
+    try:
+        spans = [
+            (token.start_mark.index, token.end_mark.index)
+            for token in yaml.scan(text, Loader=yaml.SafeLoader)
+            if isinstance(token, yaml.tokens.ScalarToken)
+        ]
+    except yaml.YAMLError:
+        return text
+
+    protected = bytearray(len(text))
+    for start, end in spans:
+        protected[start:end] = b"\x01" * (end - start)
+
+    out: list[str] = []
+    in_comment = False
+    for index, char in enumerate(text):
+        if char == "\n":
+            in_comment = False
+        elif in_comment:
+            char = " "
+        elif (
+            char == "#"
+            and not protected[index]
+            and (index == 0 or text[index - 1] in " \t\n")
+        ):
+            in_comment = True
+            char = " "
+        out.append(char)
+    return "".join(out)
 
 
 def opted_out(text: str, token: str) -> bool:

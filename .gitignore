@@ -50,6 +50,7 @@ __pycache__/
 .eggs/
 .pytest_cache/
 .ruff_cache/
+.hypothesis/
 
 # Mutation testing artifacts
 cr-session.sqlite

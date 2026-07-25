@@ -1,17 +1,19 @@
 """Tests for ci_truth_serum/check_cron_alert_coverage.py — the guard that a
 scheduled workflow's failures reach a human, since a cron has no PR surface.
 
-Everything is driven through the real ``violations()`` / ``gate_direction()``
-code on synthetic workflow YAML, and through ``main()`` against fixture trees in
-tmp dirs (discovery redirected at the module's dir constants, so the real repo's
-workflows never leak into a case). The load-bearing property is REACHABILITY:
-the parametrized gate tables below walk every accepted and every rejected gate
-shape member by member, and the non-vacuity pair asserts the same workflow
-flips from clean to flagged when only its gate regresses to `== 'success'`.
+Everything is driven through the real ``violations()`` code on synthetic
+workflow YAML, and through ``main()`` against fixture trees in tmp dirs
+(discovery redirected at the module's dir constants, so the real repo's
+workflows never leak into a case). The non-vacuity pairs assert the same
+workflow flips from clean to flagged when only its gate regresses to
+`== 'success'`, and from flagged to clean when only the tree's notifier starts
+listing it. The gate grammar and the four routes to a human belong to
+``_failure_routing`` and are pinned in ``test_failure_routing.py``.
 """
 
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -53,74 +55,6 @@ def _workflow(
 
 def _find(text: str, require_alert: bool = False) -> list[tuple[int, str]]:
     return cac.violations(text, MATCHER, require_alert)
-
-
-# ── gate_direction: every accepted shape ─────────────────────────────────
-@pytest.mark.parametrize(
-    "gate",
-    [
-        "failure()",
-        "${{ failure() }}",
-        "always()",
-        "${{ always() }}",
-        "cancelled()",
-        "failure() && github.event_name == 'schedule'",
-        "always() && github.event_name == 'schedule'",
-        "needs.build.result != 'success'",
-        "needs.build.result == 'failure'",
-        "needs.build.result == 'cancelled'",
-        "needs.build.result == 'timed_out'",
-        'needs.build.result == "failure"',
-        "steps.probe.outcome != 'success'",
-        "needs.build.conclusion == 'failure'",
-        "always() && needs.analyze.result == 'failure'",
-        "${{ needs.build.result != 'success' }}",
-    ],
-)
-def test_gate_direction_reachable(gate):
-    assert cac.gate_direction(gate) == cac.REACHABLE
-
-
-# ── gate_direction: every rejected shape ─────────────────────────────────
-@pytest.mark.parametrize(
-    "gate",
-    [
-        "success()",
-        "${{ success() }}",
-        "needs.build.result == 'success'",
-        'needs.build.result == "success"',
-        "needs.build.result != 'failure'",
-        "steps.probe.outcome == 'success'",
-        "needs.build.conclusion == 'success'",
-        "needs.a.result == 'success' && needs.b.result == 'success'",
-        "success() && github.event_name == 'schedule'",
-    ],
-)
-def test_gate_direction_blocked(gate):
-    assert cac.gate_direction(gate) == cac.BLOCKED
-
-
-# ── gate_direction: says nothing about status ────────────────────────────
-@pytest.mark.parametrize(
-    "gate",
-    [
-        "",
-        None,
-        "github.event_name == 'schedule'",
-        "steps.check.outputs.drift == 'true'",
-        "needs.decide.outputs.run == 'true'",
-        "inputs.suite == 'nightly'",
-    ],
-)
-def test_gate_direction_neutral(gate):
-    assert cac.gate_direction(gate) == cac.NEUTRAL
-
-
-def test_direction_is_read_from_the_comparison_not_the_mere_mention():
-    # Both gates name `needs.build.result`; only the direction differs, and the
-    # direction is the whole finding.
-    assert cac.gate_direction("needs.build.result != 'success'") == cac.REACHABLE
-    assert cac.gate_direction("needs.build.result == 'success'") == cac.BLOCKED
 
 
 # ── non-vacuity: the same workflow, clean then regressed ─────────────────
@@ -274,6 +208,34 @@ def test_marker_on_the_schedule_key_line_counts():
     assert _find(text, require_alert=True) == []
 
 
+def test_marker_on_the_push_key_counts_for_a_schedule_workflow():
+    # One marker means one thing to both coverage lints: this workflow's
+    # failures are deliberately routed nowhere. Which monitored trigger key
+    # carries it is not a second doctrine.
+    text = (
+        "name: N\non:\n  push:  # cron-alert: false  # cosmetic badge refresh only\n"
+        "    branches: [main]\n  schedule:\n    - cron: '0 3 * * *'\n"
+        "jobs:\n  work:\n    steps:\n      - run: make\n"
+    )
+    assert _find(text, require_alert=True) == []
+
+
+# ── route 2: the tree's notifier already pages for this workflow ─────────
+BARE_CRON = "name: Nightly\non:\n  schedule:\n    - cron: '0 3 * * *'\njobs: {}\n"
+
+
+def test_a_workflow_the_notifier_watches_needs_no_notifier_of_its_own():
+    # Non-vacuity: the only difference between the two calls is whether the
+    # tree's notifier lists this workflow's display name.
+    assert len(cac.violations(BARE_CRON, MATCHER, True, frozenset())) == 1
+    assert cac.violations(BARE_CRON, MATCHER, True, frozenset({"Nightly"})) == []
+
+
+def test_watched_membership_is_judged_on_the_display_name():
+    # A name the notifier does not carry is not coverage, however close it looks.
+    assert len(cac.violations(BARE_CRON, MATCHER, True, frozenset({"nightly"}))) == 1
+
+
 # ── notifier recognition is configurable, additive ───────────────────────
 @pytest.mark.parametrize(
     "step",
@@ -305,6 +267,79 @@ def test_custom_pattern_extends_rather_than_replaces_the_defaults():
     assert cac.violations(custom, MATCHER, False) == []
     # The built-ins still fire under the extended matcher.
     assert len(cac.violations(_workflow(step_gate="success()"), house, False)) == 1
+
+
+# ── issue-management sinks: the verb prefix is the whole boundary ────────
+def _issue_sink_workflow(step_name: str, run: str = "") -> str:
+    """A scheduled workflow whose ONLY candidate sink is one `if: failure()`
+    step — so `--require-alert` is clean exactly when that step is recognized."""
+    run_line = f"        run: {run}\n" if run else ""
+    return (
+        "name: Nightly\n"
+        "on:\n"
+        "  schedule:\n"
+        "    - cron: '0 3 * * *'\n"
+        "jobs:\n"
+        "  work:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: make check\n"
+        f"      - name: {step_name}\n"
+        "        if: failure()\n"
+        f"{run_line}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("step_name", "run"),
+    [
+        # The real repo shape: a house script wrapping the tracker call, whose
+        # name never carries the literal `gh issue create`.
+        (
+            "Open a tracking issue",
+            "bash .github/scripts/manage-release-failure-issue.sh open",
+        ),
+        ("Open a tracking issue if the release run failed", ""),
+        # The member the narrower `create[-_]issue` already matched: broadening
+        # the verb set must not have dropped it.
+        ("alarm", "./bin/create-issue --title broke"),
+        ("alarm", "./bin/report_issue --failure"),
+        ("File an issue for the failed nightly", ""),
+    ],
+)
+def test_issue_management_sinks_are_recognized(step_name, run):
+    text = _issue_sink_workflow(step_name, run)
+    assert _find(text, require_alert=True) == [], "issue sink not recognized"
+    assert _find(text) == []
+
+
+@pytest.mark.parametrize(
+    ("step_name", "run"),
+    [
+        ("Close the milestone", ""),
+        # `open` trails the noun here, so no verb precedes `issue`.
+        ("triage", "gh issue list --state open"),
+        ("Known issues summary", ""),
+    ],
+)
+def test_mentioning_issues_without_a_verb_is_not_a_sink(step_name, run):
+    # The verb prefix is what keeps the broadened pattern from crediting every
+    # step that merely says "issue"; without it the workflow is still uncovered.
+    found = _find(_issue_sink_workflow(step_name, run), require_alert=True)
+    assert len(found) == 1
+    assert "routes its failures nowhere" in found[0][1]
+
+
+def test_issue_pattern_does_not_backtrack_on_a_long_near_match():
+    # The pattern's gap is a bounded lazy run of one token class; a long run of
+    # exactly those characters with no trailing `issue` is its worst input.
+    adversarial = "open" + "a_b." * 300
+    matcher = cac.notifier_matcher([])
+    start = time.perf_counter()
+    result = matcher.search(adversarial)
+    elapsed = time.perf_counter() - start
+    assert result is None
+    assert elapsed < 1.0, f"notifier matcher took {elapsed:.3f}s on a near-match"
 
 
 def test_unrelated_step_is_not_mistaken_for_a_notifier():
@@ -384,6 +419,55 @@ def test_main_argv_defaults_to_sys_argv(tmp_path, monkeypatch):
     _tree(tmp_path, monkeypatch, {"a.yaml": _workflow(step_gate="success()")})
     monkeypatch.setattr(sys, "argv", ["check_cron_alert_coverage"])
     assert cac.main() == 1
+
+
+def _notifier_over(*names: str) -> str:
+    listed = "".join(f'      - "{name}"\n' for name in names)
+    return (
+        "name: CI failure notify\non:\n  workflow_run:\n    workflows:\n"
+        f"{listed}    types: [completed]\njobs: {{}}\n"
+    )
+
+
+def test_main_credits_a_workflow_the_discovered_notifier_lists(
+    tmp_path, monkeypatch, capsys
+):
+    # Through the real tree walk: main must discover the notifier and read its
+    # list, or a repo whose crons are covered centrally is told to add a step
+    # that would page it twice.
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {"a.yaml": BARE_CRON, "notify.yaml": _notifier_over("Nightly")},
+    )
+    assert cac.main(["--require-alert"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_still_flags_a_workflow_the_notifier_does_not_list(
+    tmp_path, monkeypatch, capsys
+):
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {"a.yaml": BARE_CRON, "notify.yaml": _notifier_over("Something else")},
+    )
+    assert cac.main(["--require-alert"]) == 1
+    assert "routes its failures nowhere" in capsys.readouterr().out
+
+
+def test_main_does_not_credit_a_list_on_a_workflow_that_is_not_a_notifier(
+    tmp_path, monkeypatch, capsys
+):
+    # A workflow_run consumer with no notification sink (an artifact collector)
+    # observes the run but tells nobody, so its list is not coverage.
+    collector = (
+        "name: Collect artifacts\non:\n  workflow_run:\n    workflows:\n"
+        '      - "Nightly"\n    types: [completed]\njobs: {}\n'
+    )
+    _tree(tmp_path, monkeypatch, {"a.yaml": BARE_CRON, "collect.yaml": collector})
+    assert cac.main(["--require-alert"]) == 1
+    assert "routes its failures nowhere" in capsys.readouterr().out
 
 
 # ── crash resistance ─────────────────────────────────────────────────────

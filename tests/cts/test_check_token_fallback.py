@@ -90,6 +90,69 @@ def test_main_passes_clean_repo_and_scans_actions(tmp_path, monkeypatch) -> None
     assert mod.main() == 0
 
 
+# ── comments are not uses of the idiom ───────────────────────────────────
+def _run_main(tmp_path, monkeypatch, workflow_text: str) -> int:
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "w.yaml").write_text(workflow_text)
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf)
+    monkeypatch.setattr(mod, "ACTIONS_DIR", tmp_path / ".github" / "actions")
+    return mod.main()
+
+
+def test_main_trailing_comment_discussing_the_idiom_is_not_a_use(
+    tmp_path, monkeypatch
+) -> None:
+    text = (
+        "jobs:\n  j:\n    steps:\n      - env:\n"
+        "          token: ${{ secrets.PINNED }}"
+        "  # Deliberately not a `secrets.A || secrets.B` expression\n"
+    )
+    assert _run_main(tmp_path, monkeypatch, text) == 0
+
+
+def test_main_real_fallback_is_still_flagged(tmp_path, monkeypatch) -> None:
+    text = f"jobs:\n  j:\n    env:\n      token: {FALLBACK}\n"
+    assert _run_main(tmp_path, monkeypatch, text) == 1
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_fallback_after_a_quoted_hash_is_still_flagged(quote: str) -> None:
+    # The false-negative guard: a `#` inside a quoted scalar is content, so the
+    # fallback after it on the same line must still be seen. A naive cut at the
+    # first `#` would blind the lint to exactly this line.
+    line = f"      token: {quote}#42 ${{{{ secrets.A || secrets.B }}}}{quote}"
+    assert mod.violations(f"jobs:\n  j:\n    env:\n{line}\n") == [4]
+
+
+def test_fallback_after_a_hash_comment_line_in_a_run_block_is_still_flagged() -> None:
+    # `#` inside a block scalar opens no YAML comment, so the block's later
+    # lines are still scanned rather than swallowed to end of file.
+    text = (
+        "jobs:\n  j:\n    steps:\n      - run: |\n"
+        "          # writing the config\n"
+        f"          token: {FALLBACK}\n"
+    )
+    assert mod.violations(text) == [6]
+
+
+def test_hash_led_comment_line_inside_a_run_block_is_not_a_token_position() -> None:
+    text = (
+        "jobs:\n  j:\n    steps:\n      - run: |\n"
+        f"          # token: {FALLBACK}\n"
+        "          echo done\n"
+    )
+    assert mod.violations(text) == []
+
+
+def test_unparseable_workflow_is_still_scanned(tmp_path, monkeypatch) -> None:
+    # A file PyYAML cannot tokenize is scanned unstripped rather than skipped —
+    # a broken workflow must not become a hole in the lint.
+    text = f"a: 'unterminated\njobs:\n  j:\n    env:\n      token: {FALLBACK}\n"
+    assert _run_main(tmp_path, monkeypatch, text) == 1
+
+
 def test_main_flags_composite_action_files(tmp_path, monkeypatch, capsys) -> None:
     act = tmp_path / ".github" / "actions" / "a"
     (tmp_path / ".github" / "workflows").mkdir(parents=True)

@@ -26,6 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import strip_yaml_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -58,13 +59,22 @@ MESSAGE = (
 
 def violations(text: str) -> list[int]:
     """1-based line numbers carrying a secrets-to-secrets fallback in a token
-    position, minus opted-out lines."""
+    position, minus opted-out lines.
+
+    The fallback is matched against comment-stripped source (a comment saying
+    the idiom is *not* used is not a use of it), while the opt-out is read from
+    the raw line — the annotation lives in a comment by construction.
+    """
     lines = text.splitlines()
+    code = strip_yaml_comments(text).splitlines()
     hits: list[int] = []
-    for idx, line in enumerate(lines):
+    for idx, (line, bare) in enumerate(zip(lines, code, strict=True)):
+        # A `#`-led line is a token position in no dialect: not a YAML key, and
+        # not one in shell either when it is a comment inside a `run:` block
+        # scalar (whose content comment-stripping deliberately preserves).
         if line.lstrip().startswith("#"):
             continue
-        if not (_TOKEN_KEY.match(line) and _FALLBACK.search(line)):
+        if not (_TOKEN_KEY.match(bare) and _FALLBACK.search(bare)):
             continue
         if annotated(line, OPT_OUT) or (
             idx >= 1 and annotated(lines[idx - 1], OPT_OUT)

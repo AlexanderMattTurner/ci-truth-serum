@@ -33,6 +33,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import strip_yaml_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -126,9 +127,14 @@ def pyproject_repo_urls(repo_root: Path) -> list[tuple[str, str]]:
 
 
 def has_npm_publish(repo_root: Path) -> bool:
-    """True when any workflow/composite action runs `npm publish`/`pnpm publish`."""
+    """True when any workflow/composite action runs `npm publish`/`pnpm publish`.
+
+    Comments are stripped first: `# releases are manual — we never npm publish`
+    describes a workflow that publishes nothing, and reading it as a publish
+    step demands a `repository.url` this repo has no use for.
+    """
     return any(
-        _PUBLISH.search(path.read_text(encoding="utf-8"))
+        _PUBLISH.search(strip_yaml_comments(path.read_text(encoding="utf-8")))
         for path in _workflow_files(
             repo_root / ".github" / "workflows", repo_root / ".github" / "actions"
         )

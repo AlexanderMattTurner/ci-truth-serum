@@ -113,3 +113,79 @@ def test_main_scans_composite_actions_too(tmp_path, monkeypatch) -> None:
 def test_main_github_token_alone_needs_no_allowlist(tmp_path, monkeypatch) -> None:
     _repo(tmp_path, monkeypatch, "t: ${{ secrets.GITHUB_TOKEN }}\n", None)
     assert mod.main() == 0
+
+
+# ── comments are not references ──────────────────────────────────────────
+# The round-trip is bidirectional, so `main() == 0` against an allowlist naming
+# exactly the expected names asserts the extracted set EQUALS that set: a name
+# wrongly harvested from a comment shows up as "referenced but not listed", and
+# a real name wrongly dropped shows up as "stale". Nothing here reads the
+# checker's source.
+def test_main_name_only_mentioned_in_a_comment_is_not_demanded(
+    tmp_path, monkeypatch
+) -> None:
+    _repo(
+        tmp_path,
+        monkeypatch,
+        "jobs:\n"
+        "  j:\n"
+        "    steps:\n"
+        "      # Deliberately not a `secrets.A || secrets.B` expression\n"
+        "      - env:\n"
+        "          T: ${{ secrets.REAL }}  # unlike secrets.TRAILING_MENTION\n",
+        "REAL\n",
+    )
+    assert mod.main() == 0
+
+
+def test_main_real_reference_is_still_demanded(tmp_path, monkeypatch) -> None:
+    _repo(tmp_path, monkeypatch, "t: ${{ secrets.REAL }}\n", "# nothing listed\n")
+    assert mod.main() == 1
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        # A `#` inside a quoted scalar is content, not a comment start: a
+        # reference AFTER it on the same line must still be demanded. Cutting at
+        # the first `#` would silently stop checking these names — a false
+        # negative, strictly worse than the false positive being fixed.
+        ('"issue #42 handled by ${{ secrets.DQ_AFTER_HASH }}"', "DQ_AFTER_HASH"),
+        ("'issue #42 handled by ${{ secrets.SQ_AFTER_HASH }}'", "SQ_AFTER_HASH"),
+        ('"#general"  # ${{ secrets.NOT_A_REF }}', None),
+    ],
+)
+def test_main_hash_inside_quotes_does_not_truncate_the_line(
+    tmp_path, monkeypatch, value: str, expected: str | None
+) -> None:
+    _repo(tmp_path, monkeypatch, f"msg: {value}\n", f"{expected}\n" if expected else "")
+    assert mod.main() == 0
+
+
+def test_main_hash_in_a_run_block_scalar_does_not_truncate_the_block(
+    tmp_path, monkeypatch
+) -> None:
+    # Block-scalar content is literal text, so `#` never opens a YAML comment
+    # there and every `${{ … }}` in it is interpolated by GitHub — including
+    # inside a shell comment. Both names below are real references.
+    _repo(
+        tmp_path,
+        monkeypatch,
+        "jobs:\n"
+        "  j:\n"
+        "    steps:\n"
+        "      - run: |\n"
+        "          # shell note about ${{ secrets.IN_BLOCK_COMMENT }}\n"
+        "          echo ${{ secrets.IN_BLOCK }}\n",
+        "IN_BLOCK\nIN_BLOCK_COMMENT\n",
+    )
+    assert mod.main() == 0
+
+
+def test_main_unparseable_workflow_keeps_scanning_raw_text(
+    tmp_path, monkeypatch
+) -> None:
+    # Nothing is known about where the scalars of a file PyYAML cannot tokenize
+    # end, so it is scanned unstripped rather than blanked on a guess.
+    _repo(tmp_path, monkeypatch, "a: 'unterminated ${{ secrets.RAW }}\n", "RAW\n")
+    assert mod.main() == 0

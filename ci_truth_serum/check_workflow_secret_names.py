@@ -11,7 +11,8 @@ plain commit list for a week; three renames of a release token each surfaced
 only at runtime.
 
 The contract: every `secrets.<NAME>` / `vars.<NAME>` referenced anywhere under
-`.github/workflows/` and `.github/actions/` must appear in
+`.github/workflows/` and `.github/actions/` — in workflow content, not in a
+`#` comment merely discussing one — must appear in
 `.github/workflow-secrets.txt` (one name per line, `#` comments allowed,
 sorted; a trailing comment may note repo/org scope), and every listed name
 must still be referenced — both directions, so the allowlist is a reviewed
@@ -27,6 +28,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import strip_yaml_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -49,8 +51,15 @@ _REF = re.compile(r"\b(?:secrets|vars)\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 
 
 def referenced_names(text: str) -> set[str]:
-    """Every secret/var name TEXT references, minus the implicit set."""
-    return {m.group("name") for m in _REF.finditer(text)} - IMPLICIT
+    """Every secret/var name TEXT actually references, minus the implicit set.
+
+    Comments are stripped first: a name only *mentioned* in a comment is not a
+    reference, and demanding it be allowlisted would push a fake name into the
+    allowlist — blunting the round-trip that catches a misspelled secret.
+    """
+    return {
+        m.group("name") for m in _REF.finditer(strip_yaml_comments(text))
+    } - IMPLICIT
 
 
 def parse_allowlist(text: str) -> set[str]:
