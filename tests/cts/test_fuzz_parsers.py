@@ -40,6 +40,7 @@ workflow_pipefail = load_hook("check_workflow_pipefail.py", "fuzz_workflow_pipef
 inline_run_length = load_hook("check_inline_run_length.py", "fuzz_inline_run_length")
 linecheck = load_hook("_linecheck.py", "fuzz_linecheck")
 env_symmetry = load_hook("check_env_symmetry.py", "fuzz_env_symmetry")
+gh_slurp_jq = load_hook("check_gh_slurp_jq.py", "fuzz_gh_slurp_jq")
 
 # `violations(text) -> list[int]` line-oriented detectors. Each maps text to the
 # 1-based physical line numbers it flags.
@@ -52,6 +53,7 @@ LINE_DETECTORS = {
     "check_pinned_base_images": pinned_base_images.violations,
     "check_global_stdio_swap": global_stdio_swap.violations,
     "check_secret_file_perms": secret_file_perms.violations,
+    "check_gh_slurp_jq": gh_slurp_jq.violations,
 }
 
 
@@ -99,6 +101,14 @@ _INTERESTING_TOKENS = [
     "# allow-stdio-swap: x",
     "# allow-no-pipefail: x",
     "# allow-substitution-exit: x",
+    "gh api --slurp --jq . repos/x/y",
+    "gh api --paginate --slurp repos/x/y",
+    "gh api repos/x/y --slurp \\",
+    "  --jq '.[][]'",
+    "gh api --slurp -q .a repos/x/y",
+    "gh api --slurp -iq repos/x/y",
+    'gh api "$(build_url)" --slurp --jq .',
+    "# allow-gh-slurp-jq: x",
     "done < <(jq -r .a f)",
     "mapfile -t v < <(yq .a f)",
     "jq .a f | while read -r x; do :; done",

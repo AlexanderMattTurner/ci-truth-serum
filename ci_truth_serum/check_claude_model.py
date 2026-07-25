@@ -34,11 +34,13 @@ REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 
-# A source line whose YAML key is `uses:` referencing the action exactly. Anchored
-# after optional block-sequence `- ` and leading indent, so a commented-out or
-# example `# uses: …` line never matches (the `#` is not consumed). Splitting on
-# `@` excludes the longer `claude-code-base-action`, whose model handling differs.
-USES_LINE = re.compile(rf"^-?\s*uses:\s*{re.escape(ACTION)}(?:@|\s|$)")
+# A source line whose YAML key is `uses:` referencing the action exactly. Matched
+# against the RAW line: leading indent comes first, then the optional
+# block-sequence `-`, so a real `  - uses: …` step matches without the caller
+# having to pre-strip. A commented-out or example `# uses: …` line still never
+# matches — nothing in the prefix consumes a `#`. Splitting on `@` excludes the
+# longer `claude-code-base-action`, whose model handling differs.
+USES_LINE = re.compile(rf"^\s*-?\s*uses:\s*{re.escape(ACTION)}(?:@|\s|$)")
 
 MESSAGE = (
     f"{ACTION} step has no explicit model; the action defaults to Opus (~5x the "
@@ -83,7 +85,7 @@ def _uses_line(source_lines: list[str], start: int) -> int:
     every `uses:` in the file) is what fixes the misalignment: a commented/example
     `uses:` line elsewhere can no longer shift which step a violation is pinned to."""
     for i in range(start - 1, len(source_lines)):
-        if USES_LINE.match(source_lines[i].lstrip()):
+        if USES_LINE.match(source_lines[i]):
             return i + 1
     return start
 

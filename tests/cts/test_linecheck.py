@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._helpers import load_hook
+from tests._helpers import HOOKS_DIR, load_hook
 
 lc = load_hook("_linecheck.py", "_linecheck")
 
@@ -402,6 +402,12 @@ def test_required_check_contexts_falls_back_to_job_key_when_name_absent() -> Non
         ("group: my-token # unrelated\n", False),
         # No comment characters at all.
         ("concurrency:\n  group: x\n", False),
+        # A longer slug CONTAINING the token is a different annotation. The old
+        # bare-containment test accepted all three of these — open at both ends,
+        # so even prose merely mentioning the token suppressed the lint.
+        ("# no-my-token-here\nconcurrency:\n  group: x\n", False),
+        ("concurrency:  # my-token-ish\n  group: x\n", False),
+        ("concurrency:  # xx-my-token\n  group: x\n", False),
     ],
 )
 def test_opted_out(text: str, expected: bool) -> None:
@@ -434,6 +440,62 @@ def test_opted_out(text: str, expected: bool) -> None:
 )
 def test_annotated_reasoned_comment_opt_out(line: str, expected: bool) -> None:
     assert lc.annotated(line, "pin-exempt") is expected
+
+
+# ── annotated: a LONGER slug is a different annotation ───────────────────
+# Nearly every token in this package is hyphenated, and `\b` matches at a
+# word/`-` transition — so a `\b`-delimited matcher accepts any longer slug that
+# merely ends with (or, for the bare form, starts with) the token asked for. One
+# hook's opt-out then silently disarms another's: a fail-open. These cases pin
+# both edges closed, and every one of them PASSES under `\b`.
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Suffix: the requested token sits at the end of a longer slug.
+        "sleep 1  # really-allow-unbounded: nope",
+        "sleep 1  # x-allow-unbounded: nope",
+        "sleep 1  # allow_unbounded_allow-unbounded: nope",
+    ],
+)
+def test_reasoned_annotation_not_satisfied_by_a_longer_slug(line: str) -> None:
+    assert lc.annotated(line, "allow-unbounded") is False
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Prefix: `# <token>-<more>` is a different annotation, not this one.
+        "sleep 1  # allow-unbounded-wait: nope",
+        # Suffix, in the bare (reason-free) form — `\b` accepted this too.
+        "jobs:  # xx-allow-unbounded",
+        "jobs:  # really-allow-unbounded",
+    ],
+)
+def test_bare_annotation_not_satisfied_by_a_longer_slug(line: str) -> None:
+    assert lc.annotated(line, "allow-unbounded", require_reason=False) is False
+
+
+def test_the_stand_alone_token_still_matches_in_both_forms() -> None:
+    """Non-vacuity for the two tests above: the guarantee is 'a longer slug is a
+    different annotation', not 'nothing matches any more'."""
+    assert lc.annotated(
+        "sleep 1  # allow-unbounded: bounded upstream", "allow-unbounded"
+    )
+    assert lc.annotated(
+        "jobs:  # allow-unbounded", "allow-unbounded", require_reason=False
+    )
+    # The reason-required form's right edge is the literal `:`, so a token
+    # followed directly by its colon is unaffected by the tail lookahead.
+    assert lc.annotated("jobs:  # allow-unbounded:x", "allow-unbounded")
+    # The left edge is an alternation, not a lookbehind, because `<!--` and `//`
+    # end in characters a lookbehind would reject — a token abutting its own
+    # introducer must still match.
+    for intro in ("#", "<!--", "//"):
+        assert lc.annotated(f"{intro}allow-unbounded: reason", "allow-unbounded"), intro
+    # A separator that cannot appear in a token still reads as a real annotation.
+    assert lc.annotated("# see notes.allow-unbounded: reason", "allow-unbounded")
 
 
 @pytest.mark.parametrize(
@@ -486,3 +548,67 @@ def test_job_concurrency_line(block, expected: int) -> None:
 )
 def test_group_is_per_ref_requires_expression_span(group: str, per_ref: bool) -> None:
     assert lc.group_is_per_ref(group) is per_ref
+
+
+# ── is_test_path: one predicate, two consumers ───────────────────────────
+# check_drift_guards scopes its phrase pass to tests; check_toolchain_skips
+# scopes its skipif scan to what pytest collects. Two hand-rolled peers had
+# already diverged, and BOTH were dead for the shortest members of the set — a
+# scope filter's recall bug produces a green vacuous pass, never an error, so it
+# is enumerated member by member here.
+
+
+@pytest.mark.parametrize(
+    "path,is_test",
+    [
+        # The shortest members of each class — every one of these was False under
+        # at least one of the two hand-rolled predicates this replaced.
+        ("test.py", True),
+        ("x/test.py", True),
+        ("conftest.py", True),
+        ("spec.rb", True),
+        ("x/spec.js", True),
+        ("test/x.py", True),
+        ("specs/thing.sh", True),
+        # …and the long members that already worked.
+        ("tests/x.py", True),
+        ("x_test.py", True),
+        ("x.test.js", True),
+        ("tests/cts/test_x.sh", True),
+        ("src/__tests__/bar.mjs", True),
+        ("scripts/widget.spec.ts", True),
+        # The left boundary stays mandatory, so a word merely ENDING in the stem
+        # is not a test file.
+        ("latest.py", False),
+        ("src/protest.mjs", False),
+        ("greatest.sh", False),
+        ("spectrum.ts", False),
+        ("testing.py", False),
+        ("scripts/release.sh", False),
+        # Windows separators normalize before matching.
+        ("x\\tests\\y.py", True),
+    ],
+)
+def test_is_test_path_covers_the_shortest_member_of_every_class(
+    path: str, is_test: bool
+) -> None:
+    assert lc.is_test_path(path) is is_test
+
+
+def test_exactly_one_definition_of_the_predicate_exists() -> None:
+    """The consumers must IMPORT it, not re-derive it. Two hand-rolled peers is how
+    the recall hole above survived in both; a third would do it again.
+
+    Counts occurrences rather than listing files, because the failure this caught
+    for real was two definitions in the SAME module: a git merge of two branches
+    that independently consolidated the predicate auto-merged both blocks in, and
+    the second silently won at import time. A per-file existence check passes on
+    that; a count does not.
+    """
+    definitions = {
+        path.name: path.read_text(encoding="utf-8").count("def is_test_path(")
+        for path in sorted(HOOKS_DIR.glob("*.py"))
+    }
+    assert {k: v for k, v in definitions.items() if v} == {"_linecheck.py": 1}, (
+        f"is_test_path must be defined exactly once, in _linecheck: {definitions}"
+    )

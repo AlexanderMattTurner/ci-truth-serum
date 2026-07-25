@@ -9,6 +9,8 @@ the actions/-dir glob, and main()'s exit code) is asserted in isolation.
 
 from pathlib import Path
 
+import pytest
+
 from tests._helpers import load_hook
 
 ccm = load_hook("check_claude_model.py", "check_claude_model")
@@ -36,6 +38,52 @@ UNPINNED = _wf(
     '        with:\n          claude_args: "--allowedTools Bash Read"\n',
 )
 NO_WITH = _wf("uses: anthropics/claude-code-action@abc123")
+
+
+# ── USES_LINE, matched against RAW source lines ──────────────────────────
+# The pattern must be correct standalone, not correct-because-of-its-caller: the
+# optional block-sequence `-` used to sit BEFORE the indent run (`^-?\s*`), so the
+# ordinary `  - uses: …` step form did not match at all and the lint only worked
+# because `_uses_line` pre-stripped the line. Every prefix form is listed
+# separately so a re-broken prefix reds by the form it lost, and the documented
+# property — a commented-out or example `# uses: …` line NEVER matches, because
+# nothing in the prefix consumes a `#` — is asserted member by member too.
+@pytest.mark.parametrize(
+    "line, matches",
+    [
+        # real step forms
+        ("  - uses: anthropics/claude-code-action@v1", True),  # indent + dash
+        ("      - uses: anthropics/claude-code-action@abc123", True),
+        ("- uses: anthropics/claude-code-action@v1", True),  # dash, no indent
+        ("        uses: anthropics/claude-code-action@v1", True),  # indent, no dash
+        ("uses: anthropics/claude-code-action@v1", True),  # bare, with ref
+        ("uses: anthropics/claude-code-action", True),  # bare, no ref
+        ("  uses: anthropics/claude-code-action  # a trailing note", True),
+        ("  -   uses:   anthropics/claude-code-action@v1", True),  # loose spacing
+        # commented-out / example lines: the `#` is never consumed
+        ("# uses: anthropics/claude-code-action", False),
+        ("      # uses: anthropics/claude-code-action@example  (do not use)", False),
+        ("  #- uses: anthropics/claude-code-action", False),
+        ("  - # uses: anthropics/claude-code-action", False),
+        # other actions never match; the longer base-action is excluded by the
+        # `@`/space/EOL terminator.
+        ("  - uses: anthropics/claude-code-base-action@v1", False),
+        ("  - uses: actions/checkout@v4", False),
+        # `uses:` not at the start of the key position
+        ("  - name: uses: anthropics/claude-code-action", False),
+        ("        claude_args: uses: anthropics/claude-code-action", False),
+    ],
+)
+def test_uses_line_matches_raw_source_lines(line: str, matches: bool):
+    assert bool(ccm.USES_LINE.match(line)) is matches
+
+
+def test_uses_line_lookup_reads_unstripped_lines():
+    """`_uses_line` scans the raw source, so the indented `- uses:` form must be
+    found without any caller-side stripping."""
+    lines = NO_WITH.splitlines()
+    assert lines[5].startswith("      - uses:")  # the form under test
+    assert ccm._uses_line(lines, 6) == 6
 
 
 # ── uses_action ──────────────────────────────────────────────────────────

@@ -74,6 +74,23 @@
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
 
+- id: check-gh-slurp-jq
+  name: "honesty: ban the `gh api --slurp` flag combinations gh refuses to run"
+  description: "`--slurp` with `--jq`/`--template`, or `--slurp` without `--paginate`, is rejected at argument validation — the call has never worked, and a site that swallows it reads as a permanent green."
+  entry: python -m ci_truth_serum.check_gh_slurp_jq
+  language: python
+  types_or: [shell, yaml]
+
+- id: check-folded-scalar-comment
+  name: "honesty: ban a `#` comment line inside a folded YAML block scalar"
+  description: A folded scalar has no comment syntax, so the line joins the value — and shell word-splitting then discards every argument after the `#`.
+  entry: python -m ci_truth_serum.check_folded_scalar_comment
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 # ───────────────────────── Tier 1 · Identity (default-on) ────────────────────
 - id: check-pinned-base-images
   name: "identity: enforce digest-pinned Docker base images"
@@ -101,8 +118,8 @@
 
 # ───────────────────────── Tier 1 · Security (default-on) ────────────────────
 - id: check-trusted-base
-  name: "security: forbid privileged pull_request-head checkout (pwn-request)"
-  description: A pull_request(_target) job that checks out the PR head AND holds write perms or a secret runs untrusted PR code with the base repo's privileges.
+  name: "security: forbid privileged checkout of an author-chosen ref (pwn-request)"
+  description: A pull_request(_target) job that checks out an author-chosen ref — the PR head, or the PR's own BASE branch — AND holds write perms or a secret runs untrusted PR code with the base repo's privileges.
   entry: python -m ci_truth_serum.check_trusted_base
   language: python
   additional_dependencies: [PyYAML]
@@ -116,6 +133,16 @@
   entry: python -m ci_truth_serum.check_untrusted_exec
   language: python
   additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-unscoped-tool-grant
+  name: "security: ban an unscoped or inert file-tool rule in a Claude Code tool grant"
+  description: A file tool named with no path is a whole-tool grant that OVERRIDES the working-directory check, so --add-dir beside it suppresses a prompt rather than building a jail; and a path rule spelled under any name but Read or Edit is never consulted, so it denies the access it appears to grant.
+  entry: python -m ci_truth_serum.check_unscoped_tool_grant
+  language: python
+  additional_dependencies: [PyYAML]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
   types: [yaml]

@@ -61,6 +61,8 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_stderr_suppression", SHELL),
         ("check_substitution_exit_swallow", SHELL),
         ("check_pipefail_grep_pipe", SHELL),
+        ("check_folded_scalar_comment", WORKFLOW),
+        ("check_gh_slurp_jq", SHELL_OR_WORKFLOW_YAML),
         ("check_pr_paths", WORKFLOW),
         ("check_pinned_base_images", DOCKERFILE),
         ("check_pinned_downloads", SHELL_OR_DOCKERFILE),
@@ -68,6 +70,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_provenance_repo_url", WORKFLOW),
         ("check_trusted_base", WORKFLOW),
         ("check_untrusted_exec", WORKFLOW),
+        ("check_unscoped_tool_grant", WORKFLOW),
     ],
     "2": [
         ("check_job_timeout", WORKFLOW),

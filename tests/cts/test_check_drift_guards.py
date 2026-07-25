@@ -371,6 +371,79 @@ def test_is_test_path(path: str, is_test: bool) -> None:
     assert mod.is_test_path(path) is is_test
 
 
+# Every member of the test-path set, listed ONE PER CASE — including the SHORTEST
+# name of each class, which the filter used to miss: the `test_` alternative
+# required an underscore after `test` and there was no bare `spec.<ext>`
+# alternative, so a drift guard in `test.py`, `x/test.py`, `conftest.py`,
+# `spec.rb` or `x/spec.js` was never scanned. A scope filter that silently drops
+# files is a false NEGATIVE in a guard, so each member is named separately and the
+# next dropped one reds by its own path.
+@pytest.mark.parametrize(
+    "path",
+    [
+        # directory forms
+        "tests/x.py",
+        "tests/test.py",
+        "test/x.py",
+        "src/__tests__/bar.mjs",
+        "spec/thing.sh",
+        "specs/thing.sh",
+        # separator-prefixed basename forms
+        "x_test.py",
+        "x.test.js",
+        "x-spec.ts",
+        "scripts/widget.spec.ts",
+        # `test_`-prefixed module form
+        "test_x.py",
+        "tests/cts/test_x.sh",
+        # BARE basename forms — the class that used to escape entirely
+        "test.py",
+        "x/test.py",
+        "tests.py",
+        "conftest.py",
+        "pkg/conftest.py",
+        "spec.rb",
+        "x/spec.js",
+        "specs.sh",
+    ],
+)
+def test_is_test_path_matches_every_member(path: str) -> None:
+    assert mod.is_test_path(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # `test`/`spec` as a bare substring with no `/._-` boundary before it: the
+        # widened bare-basename alternative must not swallow these.
+        "latest.py",
+        "src/protest.mjs",
+        "greatest.sh",
+        "spectrum.ts",
+        "testing.py",
+        # ordinary production paths
+        "bin/sync-required-checks.sh",
+        "scripts/release.sh",
+        "src/index.mjs",
+    ],
+)
+def test_is_test_path_rejects_non_test_paths(path: str) -> None:
+    assert mod.is_test_path(path) is False
+
+
+@pytest.mark.parametrize("name", ["test.sh", "spec.js", "conftest.sh"])
+def test_phrase_pass_reaches_a_bare_test_filename(
+    tmp_path: Path, name: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Behaviour, not just the pattern: a guard-intent phrase in a bare-named suite
+    is actually flagged by the real entry point, so the scope filter's reach is
+    asserted through the code path that uses it."""
+    suite = tmp_path / name
+    suite.write_text("// the two configs must stay in sync\n", encoding="utf-8")
+    assert mod.main([str(suite)]) == 1
+    assert f"{suite}:1: drift-guard intent" in capsys.readouterr().err
+
+
 def test_phrase_pass_skips_production_shell(tmp_path) -> None:
     """A production script's own comments legitimately narrate sync behaviour
     ("keeps the ruleset in sync"); only TEST files carry copies-agree tests, so
