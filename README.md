@@ -99,7 +99,7 @@ the only prerequisite.
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v0.2.0 # the release tag; matches the package version (vX.Y.Z)
+    rev: v1.0.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       # ── Tier 1 · Honesty (default-on) ──
       - id: check-workflow-pipefail
@@ -166,7 +166,7 @@ are picked up with **no change to your config**:
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v0.2.0 # the release tag; matches the package version (vX.Y.Z)
+    rev: v1.0.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       - id: check-tier1 # all honesty + identity checks (the safe default-on set)
       # - id: check-tier2   # all opinionated checks: assumes the decide-gate + reporter architecture
@@ -190,7 +190,7 @@ standalone hook with normal pre-commit `files:`/`exclude:` filters:
 
 ```yaml
 - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-  rev: v0.2.0
+  rev: v1.0.0
   hooks:
     - id: check-tier1
       args: [--skip, check_exit_suppression] # drop from aggregate...
