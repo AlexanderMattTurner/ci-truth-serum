@@ -43,6 +43,7 @@ FUZZ_DIR = REPO_ROOT / "tests" / "cts"
 FUZZ_REQUIRED = {
     "_bash_ast": "parse",
     "_linecheck": "required_check_contexts",
+    "_failure_routing": "routing",
     "check_exit_suppression": "violations",
     "check_stderr_suppression": "violations",
     "check_pipefail_grep_pipe": "violations",

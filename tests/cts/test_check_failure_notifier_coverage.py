@@ -17,6 +17,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
 import yaml
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
@@ -31,6 +32,33 @@ cfnc = load_hook(
 PUSH_WF = "name: {name}\non:\n  push:\n    branches: [main]\njobs: {{}}\n"
 SCHEDULE_WF = "name: {name}\non:\n  schedule:\n    - cron: '0 0 * * 0'\njobs: {{}}\n"
 PR_ONLY_WF = "name: {name}\non:\n  pull_request:\njobs: {{}}\n"
+
+# ── one fixture per route to a human the residual predicate accepts ──────
+# Route 3: a failure lands as a check run on the PR that caused it.
+PUSH_AND_PR_WF = (
+    "name: {name}\non:\n  push:\n    branches: [main]\n  pull_request:\njobs: {{}}\n"
+)
+# Route 4: the sanctioned opt-out, on the schedule key and on the push key.
+MARKED_SCHEDULE_WF = (
+    "name: {name}\non:\n  schedule:\n"
+    "    # cron-alert: false  # {reason}\n    - cron: '0 0 * * 0'\njobs: {{}}\n"
+)
+MARKED_PUSH_WF = (
+    "name: {name}\non:\n  push:  # cron-alert: false  # {reason}\n"
+    "    branches: [main]\njobs: {{}}\n"
+)
+
+
+def _self_notifying(name: str, gate: str = "failure()") -> str:
+    """Route 1: a scheduled workflow carrying its own notification step, GATE
+    deciding whether a failure can actually reach it."""
+    return (
+        f"name: {name}\non:\n  schedule:\n    - cron: '0 0 * * 0'\n"
+        "jobs:\n  work:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - run: make check\n      - name: Notify\n"
+        f"        if: {gate}\n        uses: ./.github/actions/notify-ntfy\n"
+    )
+
 
 # ── job bodies, one per place discovery is allowed to find a sink ─────────
 NO_SINK_JOBS = textwrap.dedent(
@@ -253,18 +281,124 @@ def test_exact_list_passes(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
-def test_pull_request_only_workflows_are_excluded(tmp_path, monkeypatch):
-    # A PR-only workflow in the list is stale: it never fires on push/schedule.
+def test_watching_more_than_the_residual_is_not_stale(tmp_path, monkeypatch, capsys):
+    # Staleness means "names no workflow in the tree", never "sits outside the
+    # required set". A repo is allowed to watch a workflow it does not have to:
+    # a PR-only one, and one that already alerts on its own.
     _tree(
         tmp_path,
         monkeypatch,
         {
             "a.yaml": PUSH_WF.format(name="Alpha"),
             "pr.yaml": PR_ONLY_WF.format(name="PR only"),
-            "ci-failure-notify.yaml": _notifier(["Alpha", "PR only"]),
+            "self.yaml": _self_notifying("Self notifier"),
+            "ci-failure-notify.yaml": _notifier(["Alpha", "PR only", "Self notifier"]),
+        },
+    )
+    assert _main(monkeypatch) == 0
+    assert capsys.readouterr().out == ""
+
+
+# ── the residual: only workflows nothing else routes must be listed ──────
+def _residual_tree(tmp_path, monkeypatch, body: str) -> None:
+    """A tree holding one candidate workflow and an empty notifier, so the only
+    thing `main` can report is whether the candidate is in the residual."""
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {"cand.yaml": body, "ci-failure-notify.yaml": _notifier([])},
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _self_notifying("Cand"),
+        PUSH_AND_PR_WF.format(name="Cand"),
+        MARKED_SCHEDULE_WF.format(name="Cand", reason="opens a PR only; retries daily"),
+        MARKED_PUSH_WF.format(name="Cand", reason="advisory badge refresh only"),
+    ],
+    ids=["self-notify", "pr-surface", "marker-on-schedule", "marker-on-push"],
+)
+def test_a_workflow_routed_to_a_human_is_not_demanded(
+    tmp_path, monkeypatch, capsys, body
+):
+    # One case per route in _failure_routing. Each already reaches a human, so
+    # the notifier is not required to watch it as well.
+    _residual_tree(tmp_path, monkeypatch, body)
+    assert _main(monkeypatch) == 0
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        SCHEDULE_WF.format(name="Cand"),
+        PUSH_WF.format(name="Cand"),
+        _self_notifying("Cand", gate="success()"),
+        MARKED_SCHEDULE_WF.format(name="Cand", reason=""),
+        MARKED_SCHEDULE_WF.format(name="Cand", reason="n/a"),
+    ],
+    ids=[
+        "bare-schedule",
+        "bare-push",
+        "notify-behind-a-success-gate",
+        "reasonless-marker",
+        "placeholder-marker",
+    ],
+)
+def test_a_workflow_routing_its_failure_nowhere_is_demanded(
+    tmp_path, monkeypatch, capsys, body
+):
+    # Non-vacuity for the cases above: strip the route (or make it unreachable,
+    # or state no reason for the opt-out) and the same predicate goes red naming
+    # the workflow. A notify step behind `if: success()` reads as coverage in
+    # review and fires never on the path it exists for.
+    _residual_tree(tmp_path, monkeypatch, body)
+    assert _main(monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "missing (fails silently): ['Cand']" in out
+
+
+def test_an_opted_out_workflow_the_notifier_also_watches_is_clean(
+    tmp_path, monkeypatch, capsys
+):
+    # The redundant-but-not-contradictory case: a workflow both listed and
+    # marked. The marker keeps it out of the residual, and the listing is not
+    # stale — it names a workflow that really exists.
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "sync.yaml": MARKED_SCHEDULE_WF.format(
+                name="Sync from Template", reason="opens a PR; tomorrow's fire retries"
+            ),
+            "ci-failure-notify.yaml": _notifier(["Sync from Template"]),
+        },
+    )
+    assert _main(monkeypatch) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_the_suggested_block_keeps_the_extras_the_repo_already_watches(
+    tmp_path, monkeypatch, capsys
+):
+    # The corrected block is not the residual: it is what the list should hold —
+    # every real name already watched, plus the unrouted one that is missing.
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "pr.yaml": PUSH_AND_PR_WF.format(name="Lint checks"),
+            "cron.yaml": SCHEDULE_WF.format(name="Nightly"),
+            "ci-failure-notify.yaml": _notifier(["Lint checks", "Ghost"]),
         },
     )
     assert _main(monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "missing (fails silently): ['Nightly']" in out
+    assert "stale (matches nothing): ['Ghost']" in out
+    assert '    workflows:\n      - "Lint checks"\n      - "Nightly"' in out
 
 
 # ── stale list fails with a copy-paste corrected block ───────────────────

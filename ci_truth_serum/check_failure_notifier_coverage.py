@@ -1,34 +1,41 @@
 #!/usr/bin/env python3
-"""Keep the failure notifier's workflow_run list in sync with the tree.
+"""Keep a failure notifier's workflow_run list covering what nothing else covers.
 
 A failure-notifier workflow listens via `on.workflow_run.workflows:` — a list of
 workflow display NAMES (`name:` values). `workflow_run` has no wildcard, so that
-list is necessarily a generated copy of the tree; this lint is the round-trip
-freshness check that makes it a sanctioned derived cache rather than
-hand-maintained duplication. The invariant: the listed names cover exactly the
-set of `name:` values of every workflow in `.github/workflows/` with a `push:` or
-`schedule:` trigger, the notifiers themselves excluded. A workflow the list omits
-fails silently forever; a stale name notifies on nothing.
+list is necessarily a generated copy of part of the tree; this lint is the
+round-trip freshness check that makes it a sanctioned derived cache rather than
+hand-maintained duplication. Two halves, each with its own invariant:
+
+  * FRESHNESS — every listed name must name a workflow that exists. A name no
+    workflow in the tree carries notifies on nothing, wherever it sits.
+  * EXHAUSTIVENESS — every workflow whose failure reaches a human by no other
+    route must be listed. That residual is `_failure_routing.needs_tree_notifier`
+    over the push/schedule workflows: the ones that neither notify themselves,
+    nor surface on a pull request, nor carry a reasoned `# cron-alert: false`.
+
+The residual is the point. Demanding EVERY push/schedule workflow instead would
+undo the sibling lint's sanctioned opt-out marker, double-page a workflow that
+already alerts on its own, and page on failures a reviewer is already looking at
+on the PR — and a repo whose every failure pages has trained its owner to swipe
+the notifications away. Being listed is deliberately not itself a route (see
+`needs_tree_notifier`): this is the check that decides what the list must hold.
+
+Freshness and exhaustiveness are asymmetric on purpose, and the asymmetry is
+load-bearing: a repo may watch MORE than the residual. Listing a workflow that
+also surfaces on a PR, or one that already self-notifies, is a repo's call to
+make — so a listed name is stale only when it matches no workflow at all, never
+merely because it sits outside the required set.
 
 The notifier is found by SHAPE, not by filename. A repo calls the file whatever
 it likes (`ci-failure-notify.yaml` in the shared template, but also
 `build-publish-notify.yaml`, `alerts.yaml`), and a check that recognizes only one
 spelling reports success while checking nothing in every repo that chose
-another — the exact failure mode this package exists to catch. A workflow is the
-notifier when BOTH hold:
-
-  * it is triggered `on.workflow_run` — the only trigger that can observe another
-    workflow's conclusion; and
-  * it names a notification sink (`_linecheck.NOTIFIER_PATTERNS`, shared with
-    check_cron_alert_coverage) in its own `name:`, a job `name:`/`uses:`, or a
-    step's `uses:`/`name:`/`run:`.
-
-Both halves are load-bearing. Without the trigger test, an ordinary CI workflow
-with a Slack step would be mistaken for the notifier; without the sink test, an
-unrelated `workflow_run` consumer (a post-run artifact collector, a coverage
-uploader) would be held to the notifier's exhaustiveness invariant. Teach it a
-house sink with `--notifier-pattern REGEX` (repeatable); the flag EXTENDS the
-built-in patterns rather than replacing them.
+another — the exact failure mode this package exists to catch. Discovery is
+`_failure_routing.is_notifier`: a `workflow_run` trigger plus a named
+notification sink, both halves required. Teach it a house sink with
+`--notifier-pattern REGEX` (repeatable); the flag EXTENDS the built-in patterns
+rather than replacing them.
 
 More than one notifier is allowed: coverage is the UNION of their lists (two
 notifiers may legitimately split the tree), while staleness and duplication are
@@ -54,11 +61,12 @@ inputs (`tags:`) are deliberately not required: priority is what drives phone
 behaviour, and demanding every optional input would make this noise instead of a
 severity discipline.
 
-A monitored workflow without a `name:` field is flagged: GitHub falls back to the
+A residual workflow without a `name:` field is flagged: GitHub falls back to the
 workflow's file path as its display name, which is what the notifier list would
 then have to carry — add an explicit `name:` instead. On any mismatch the
-corrected `workflows:` YAML block is printed so the fix is copy-paste. Globs
-every workflow like the other workflow lints; the passed file list is ignored.
+corrected `workflows:` YAML block is printed so the fix is copy-paste; it keeps
+the names the repo already watches and adds the ones it must. Globs every
+workflow like the other workflow lints; the passed file list is ignored.
 """
 
 import argparse
@@ -74,9 +82,14 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     has_trigger,
     LineLoader,
     notifier_matcher,
-    step_text,
-    workflow_triggers,
     WORKFLOW_GLOBS,
+)
+from _failure_routing import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    is_notifier,
+    MONITORED_TRIGGERS,
+    needs_tree_notifier,
+    notifier_list,
+    routing,
 )
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -84,8 +97,6 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
-
-MONITORED_TRIGGERS = ("push", "schedule")
 
 # The filename the shared automation template gives its notifier. It is the
 # EXPECTATION this check falls back to when shape discovery finds nothing — the
@@ -107,79 +118,47 @@ def has_monitored_trigger(doc: dict) -> bool:
     return has_trigger(doc, *MONITORED_TRIGGERS)
 
 
-def names_a_sink(doc: dict, matcher: "re.Pattern[str]") -> bool:
-    """True when any text in the workflow that can name a notification sink does.
-
-    Scans the workflow's own `name:`, then each job's `name:`/`uses:` and each of
-    its steps — the same fields check_cron_alert_coverage reads, so the two lints
-    agree on what a sink looks like.
-    """
-    if matcher.search(str(doc.get("name", ""))):
-        return True
-    jobs = doc.get("jobs")
-    if not isinstance(jobs, dict):
-        return False
-    for job in jobs.values():
-        if not isinstance(job, dict):
-            continue
-        if matcher.search(step_text(job)):
-            return True
-        steps = job.get("steps")
-        if not isinstance(steps, list):
-            continue
-        if any(
-            isinstance(step, dict) and matcher.search(step_text(step)) for step in steps
-        ):
-            return True
-    return False
+def display_name(path: Path, doc: dict) -> tuple[str, bool]:
+    """(the name GitHub shows for this workflow, whether it is an explicit
+    `name:`). Without one GitHub falls back to the file's repo-relative path,
+    which is then what a notifier list has to carry verbatim."""
+    name = doc.get("name")
+    if isinstance(name, str) and name:
+        return name, True
+    return str(path.relative_to(REPO_ROOT)), False
 
 
-def is_notifier(doc: object, matcher: "re.Pattern[str]") -> bool:
-    """True when DOC is a failure-notifier workflow: it observes other workflows
-    (`on.workflow_run`) AND names a notification sink. Both halves are required —
-    see the module docstring for what each one alone would misclassify."""
-    if not isinstance(doc, dict) or not has_trigger(doc, "workflow_run"):
-        return False
-    return names_a_sink(doc, matcher)
+def residual_names(
+    docs: list[tuple[Path, dict, str]], matcher: "re.Pattern[str]"
+) -> tuple[set[str], list[str]]:
+    """(display names the notifier must list, unnamed-workflow warnings) over the
+    monitored workflows in DOCS (the notifiers excluded by the caller).
 
-
-def expected_names(docs: list[tuple[Path, dict]]) -> tuple[set[str], list[str]]:
-    """(display names the notifier must list, unnamed-workflow warnings) over
-    every monitored workflow in DOCS (the notifiers excluded by the caller).
-
-    A workflow without `name:` contributes GitHub's fallback display name — the
-    workflow file's repo-relative path — and earns a warning to add `name:`.
+    The residual is every push/schedule workflow whose failure reaches nobody by
+    any other route — `_failure_routing.needs_tree_notifier`. A workflow that
+    self-notifies, surfaces on a pull request, or carries a reasoned
+    `# cron-alert: false` is somebody else's responsibility already, and adding
+    it here would double-page or silently overrule the opt-out. A marker that
+    states no reason is no opt-out, so such a workflow stays in the residual;
+    check_cron_alert_coverage reports the malformed marker itself.
     """
     names: set[str] = set()
     warnings: list[str] = []
-    for path, doc in docs:
+    for path, doc, text in docs:
         if not has_monitored_trigger(doc):
             continue
-        name = doc.get("name")
-        if isinstance(name, str) and name:
-            names.add(name)
+        if not needs_tree_notifier(routing(doc, text, matcher)):
             continue
-        fallback = str(path.relative_to(REPO_ROOT))
-        names.add(fallback)
-        warnings.append(
-            f"{fallback}: has a push/schedule trigger but no `name:` — GitHub "
-            "falls back to the file path as its display name, which the "
-            "notifier list must then carry verbatim. Add an explicit `name:`."
-        )
+        name, explicit = display_name(path, doc)
+        names.add(name)
+        if not explicit:
+            warnings.append(
+                f"{name}: has a push/schedule trigger, routes its failures "
+                "nowhere else, and has no `name:` — GitHub falls back to the file "
+                "path as its display name, which the notifier list must then "
+                "carry verbatim. Add an explicit `name:`."
+            )
     return names, warnings
-
-
-def notifier_list(doc: object) -> list[str] | None:
-    """The notifier's `on.workflow_run.workflows` list, or None when the
-    document doesn't carry one (a malformed notifier is a finding)."""
-    triggers = workflow_triggers(doc)
-    workflow_run = triggers.get("workflow_run") if isinstance(triggers, dict) else None
-    workflows = (
-        workflow_run.get("workflows") if isinstance(workflow_run, dict) else None
-    )
-    if isinstance(workflows, list) and all(isinstance(w, str) for w in workflows):
-        return workflows
-    return None
 
 
 def corrected_block(names: set[str]) -> str:
@@ -193,20 +172,24 @@ def workflow_files() -> list[Path]:
     return sorted(p for glob in WORKFLOW_GLOBS for p in WORKFLOWS_DIR.glob(glob))
 
 
-def load_workflows() -> tuple[list[tuple[Path, dict]], list[str]]:
-    """(path, parsed mapping) for every readable workflow, plus one message per
-    file the parser rejected.
+def load_workflows() -> tuple[list[tuple[Path, dict, str]], list[str]]:
+    """(path, parsed mapping, source text) for every readable workflow, plus one
+    message per file the parser rejected.
+
+    The source text rides along because an opt-out marker is a COMMENT: the
+    parser drops it, and the routing predicate has to read it back off the lines.
 
     An unparseable workflow is reported rather than raised: it may be the
     notifier or a workflow the notifier must list, and either way coverage can no
     longer be verified — which is a finding, not a crash.
     """
-    docs: list[tuple[Path, dict]] = []
+    docs: list[tuple[Path, dict, str]] = []
     errors: list[str] = []
     for path in workflow_files():
         rel = path.relative_to(REPO_ROOT)
+        text = path.read_text()
         try:
-            doc = yaml.load(path.read_text(), Loader=LineLoader)
+            doc = yaml.load(text, Loader=LineLoader)
         except yaml.YAMLError as err:
             first_line = str(err).partition("\n")[0]
             errors.append(
@@ -216,7 +199,7 @@ def load_workflows() -> tuple[list[tuple[Path, dict]], list[str]]:
             )
             continue
         if isinstance(doc, dict):
-            docs.append((path, doc))
+            docs.append((path, doc, text))
     return docs, errors
 
 
@@ -303,7 +286,7 @@ def check_repo(
     docs, found = load_workflows()
 
     if require_alert_priority:
-        for path, doc in docs:
+        for path, doc, _ in docs:
             rel = path.relative_to(REPO_ROOT)
             found += [
                 f"::error file={rel},line={line}::step {label!r} calls an alert "
@@ -314,7 +297,7 @@ def check_repo(
                 for line, label in unprioritized_alert_steps(doc)
             ]
 
-    notifiers = [(path, doc) for path, doc in docs if is_notifier(doc, matcher)]
+    notifiers = [(path, doc) for path, doc, _ in docs if is_notifier(doc, matcher)]
     if not notifiers:
         # Fail CLOSED: this is the refusal that stops the check reporting a green
         # it did not earn. It verified nothing here, because the thing it verifies
@@ -340,12 +323,18 @@ def check_repo(
         return found
 
     notifier_paths = {path for path, _ in notifiers}
-    expected, warnings = expected_names(
-        [(path, doc) for path, doc in docs if path not in notifier_paths]
+    required, warnings = residual_names(
+        [(path, doc, text) for path, doc, text in docs if path not in notifier_paths],
+        matcher,
     )
     found += [f"::error::{w}" for w in warnings]
+    # Staleness is judged against EVERY workflow in the tree, notifiers included,
+    # not against the residual: a repo may deliberately watch more than the
+    # minimum, so a listed name is dead only when it names no workflow at all.
+    real = {display_name(path, doc)[0] for path, doc, _ in docs}
 
     covered: set[str] = set()
+    stale_by_file: list[tuple[Path, list[str], bool]] = []
     for path, doc in notifiers:
         rel = path.relative_to(REPO_ROOT)
         listed = notifier_list(doc)
@@ -356,10 +345,18 @@ def check_repo(
             )
             continue
         covered |= set(listed)
-        stale = sorted(set(listed) - expected)
+        stale = sorted(set(listed) - real)
         duplicated = len(listed) != len(set(listed))
-        if not stale and not duplicated:
-            continue
+        if stale or duplicated:
+            stale_by_file.append((path, stale, duplicated))
+
+    missing = sorted(required - covered)
+    # What the list should hold: everything it already watches that really
+    # exists, plus whatever the residual says is still unwatched. Dropping the
+    # extras a repo chose to watch is not this check's call to make.
+    suggested = (covered & real) | required
+
+    for path, stale, duplicated in stale_by_file:
         detail = "; ".join(
             part
             for part in (
@@ -369,18 +366,21 @@ def check_repo(
             if part
         )
         found.append(
-            f"::error file={rel}::`on.workflow_run.workflows` is out of sync with "
-            f"the tree — {detail}. Replace the list with:\n"
-            f"{corrected_block(expected)}"
+            f"::error file={path.relative_to(REPO_ROOT)}::"
+            f"`on.workflow_run.workflows` is out of date — {detail}. Replace the "
+            f"list with:\n{corrected_block(suggested)}"
         )
 
-    missing = sorted(expected - covered)
     if missing:
         rel = notifiers[0][0].relative_to(REPO_ROOT)
         found.append(
             f"::error file={rel}::`on.workflow_run.workflows` does not cover the "
-            f"tree — missing (fails silently): {missing}. Replace the list with:\n"
-            f"{corrected_block(expected)}"
+            "workflows whose failures reach nobody else — missing (fails "
+            f"silently): {missing}. Each one has a push/schedule trigger, no "
+            "reachable notification of its own, no pull-request surface, and no "
+            "reasoned `# cron-alert: false`, so its red is seen only by whoever "
+            f"opens the Actions tab. Replace the list with:\n"
+            f"{corrected_block(suggested)}"
         )
     return found
 
