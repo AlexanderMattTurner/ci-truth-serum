@@ -209,10 +209,26 @@ def test_main_all_scans_every_tracked_test_file(tmp_path, monkeypatch) -> None:
     assert mod.main(["--all"]) == 1
 
 
-def test_main_ignores_a_production_file_passed_as_argv(tmp_path, monkeypatch) -> None:
-    """Only a TEST file can shadow; the production definition itself is the
-    thing being protected, so passing it is a no-op."""
+def test_a_production_only_commit_still_sees_an_untouched_test(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The pair can be created from the PRODUCTION side: a commit that makes a
+    shipped function a pure predicate whose name a long-untouched test already
+    defines. pre-commit passes only the production file, so narrowing the scan to
+    the passed files would report clean on exactly the commit that lands the
+    shadow."""
     _tree(tmp_path, SHIPPED_PORT, COPIED_PORT)
+    monkeypatch.chdir(tmp_path)
+    assert mod.main(["lib/ip.bash"]) == 1
+    assert "tests/drive.bash:1:" in capsys.readouterr().err
+
+
+def test_a_production_only_commit_on_a_clean_tree_is_green(
+    tmp_path, monkeypatch
+) -> None:
+    """Widening on a production file is not the same as always failing: the
+    widened scan still has to find a real shadow."""
+    _tree(tmp_path, SHIPPED_PORT, "source lib/ip.bash\n")
     monkeypatch.chdir(tmp_path)
     assert mod.main(["lib/ip.bash"]) == 0
 
@@ -228,10 +244,51 @@ def test_main_ignores_an_untracked_production_file(tmp_path, monkeypatch) -> Non
     assert mod.main(["tests/drive.bash"]) == 0
 
 
-def test_main_with_no_test_files_returns_zero(tmp_path, monkeypatch) -> None:
+def test_main_with_no_files_returns_zero(tmp_path, monkeypatch) -> None:
     _tree(tmp_path, SHIPPED_PORT, COPIED_PORT)
     monkeypatch.chdir(tmp_path)
     assert mod.main([]) == 0
+
+
+# ── scan_targets: what the passed file list may and may not narrow ───────
+def _targets(tmp_path, monkeypatch, argv: list[str]) -> tuple[list[str], list[str]]:
+    _tree(tmp_path, SHIPPED_PORT, COPIED_PORT)
+    _write(tmp_path, "tests/other.bash", "log() { :; }\n")
+    _write(tmp_path, "lib/other.bash", "helper() { echo hi; }\n")
+    commit_all(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    return mod.scan_targets(argv)
+
+
+def test_production_side_is_the_whole_tree_regardless_of_argv(
+    tmp_path, monkeypatch
+) -> None:
+    _, production = _targets(tmp_path, monkeypatch, ["tests/drive.bash"])
+    assert sorted(production) == ["lib/ip.bash", "lib/other.bash"]
+
+
+def test_a_test_only_file_list_narrows_the_test_side(tmp_path, monkeypatch) -> None:
+    tests, _ = _targets(tmp_path, monkeypatch, ["tests/drive.bash"])
+    assert tests == ["tests/drive.bash"]
+
+
+def test_a_production_file_widens_the_test_side_to_the_whole_tree(
+    tmp_path, monkeypatch
+) -> None:
+    tests, _ = _targets(tmp_path, monkeypatch, ["lib/ip.bash"])
+    assert sorted(tests) == ["tests/drive.bash", "tests/other.bash"]
+
+
+def test_all_widens_the_test_side(tmp_path, monkeypatch) -> None:
+    tests, _ = _targets(tmp_path, monkeypatch, ["--all"])
+    assert sorted(tests) == ["tests/drive.bash", "tests/other.bash"]
+
+
+def test_an_empty_file_list_scans_no_test_files(tmp_path, monkeypatch) -> None:
+    """Nothing passed and no `--all` is not an implicit whole-tree run — the
+    aggregate skips a lint with no file of its kind, and this keeps that cheap."""
+    tests, _ = _targets(tmp_path, monkeypatch, [])
+    assert tests == []
 
 
 # ── properties ───────────────────────────────────────────────────────────

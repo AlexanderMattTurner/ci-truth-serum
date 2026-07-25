@@ -378,9 +378,11 @@
   entry: python -m ci_truth_serum.check_test_predicate_shadow
   language: python
   additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
-  # Only test-side files can violate, but which names ARE pure predicates is a
-  # property of the whole shipped tree, so the production side self-discovers
-  # via `git ls-files` regardless of what pre-commit passes.
+  # A violation is a PAIR (a test-side definition, a production-side predicate),
+  # so the passed file list can only narrow the scan: the production side always
+  # self-discovers via `git ls-files`, and a passed production file widens the
+  # test side to the whole tree — that commit can create the pair from the side
+  # pre-commit is not passing.
   types: [shell]
 
 - id: check-stray-tool-markup

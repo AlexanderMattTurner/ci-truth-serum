@@ -37,10 +37,12 @@ recognise as one of the shapes above (an `if`, a `case`, a nested brace group, a
 span tree-sitter parsed as ERROR) reads as IMPURE — the conservative direction,
 which can only lose a hit, never invent one.
 
-Whole-tree on the production side: which names are pure predicates is a property
-of the shipped tree, not of the files being committed, so the production set is
-discovered with `git ls-files` while the test-side files come from argv (`--all`
-scans every tracked test shell file).
+A violation is a PAIR — a test-side definition and a production-side predicate —
+so the scan is only ever narrowed by the passed file list, never defined by it.
+The production set is always the whole tracked tree (`git ls-files`), and the
+test side widens to the whole tree whenever a production file is passed, because
+that commit can create the pair from the side pre-commit is not passing. Only
+when no production file changed does the scan narrow to the passed test files.
 
 Opt out on the redefinition line with `# predicate-shadow-ok: <reason>`.
 """
@@ -231,24 +233,35 @@ def find_shadowed(test_paths: list[str], predicates: dict[str, str]) -> list[Sha
     return sorted(hits)
 
 
+def scan_targets(argv: list[str]) -> tuple[list[str], list[str]]:
+    """(test paths to scan, production paths to read predicates from) for ARGV.
+
+    A violation is a PAIR — a test-side definition and a production-side pure
+    predicate — so which files changed decides only where the scan can be
+    NARROWED, never what the answer depends on. The production side is therefore
+    always the whole tracked tree, and the test side widens to the whole tree
+    whenever a production file is in play: a commit that makes a shipped function
+    a pure predicate (or renames one onto a name a long-untouched test already
+    defines) creates the pair from the side pre-commit is not passing, and
+    scanning only the passed files would report clean on exactly that commit.
+
+    Narrowing to the passed test files is sound in the remaining case: with no
+    production file changed, only a test-side definition can be new.
+    """
+    passed = [arg for arg in argv if not arg.startswith("--")]
+    tracked = tracked_shell_files()
+    production = [path for path in tracked if not is_test_path(path)]
+    every_test = [path for path in tracked if is_test_path(path)]
+    if "--all" in argv or any(not is_test_path(path) for path in passed):
+        return every_test, production
+    return [path for path in passed if is_test_path(path)], production
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    scan_all = "--all" in argv
-    shell_files = tracked_shell_files() if scan_all else []
-    candidates = (
-        shell_files if scan_all else [a for a in argv if not a.startswith("--")]
-    )
-    test_paths = [path for path in candidates if is_test_path(path)]
+    test_paths, production = scan_targets(argv)
     if not test_paths:
-        # Nothing test-side can violate, so the whole-tree production scan (a
-        # `git ls-files` plus a parse of every shell file) is not worth paying for.
-        return 0
-
-    production = [
-        path
-        for path in (shell_files or tracked_shell_files())
-        if not is_test_path(path)
-    ]
+        return 0  # nothing test-side in view can violate
     predicates = production_predicates(production)
     status = 0
     for path, lineno, name, source in find_shadowed(test_paths, predicates):
