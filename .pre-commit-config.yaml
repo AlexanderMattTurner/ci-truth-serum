@@ -67,15 +67,39 @@ repos:
       - id: check-tier2
         name: "dogfood aggregate: every Tier 2 (opinionated) check"
         entry: python -m ci_truth_serum.run_tier 2
+        # check_failure_notifier_coverage is skipped here and re-listed below in
+        # STRICT mode: the aggregate forwards no flags, so inside it the alert
+        # invariants that need one stay off. Shipping a strict mode we do not
+        # enable on ourselves is the same vacuous green the package exists to
+        # catch.
+        args: [--skip, check_failure_notifier_coverage]
         language: python
         additional_dependencies: [PyYAML, identify]
+      - id: check-failure-notifier-coverage-strict
+        name: "dogfood: the notifier must exist and every alert must state its urgency"
+        entry: python -m ci_truth_serum.check_failure_notifier_coverage
+        args: [--require-alert-priority]
+        language: python
+        pass_filenames: false
+        always_run: true
+        additional_dependencies: [PyYAML]
+      - id: check-cron-alert-coverage-strict
+        name: "dogfood: every scheduled workflow's failures must reach a human"
+        entry: python -m ci_truth_serum.check_cron_alert_coverage
+        args: [--require-alert]
+        language: python
+        pass_filenames: false
+        always_run: true
+        additional_dependencies: [PyYAML]
       - id: check-extras
         name: "dogfood aggregate: every Extras Python check"
         entry: python -m ci_truth_serum.run_tier extras
         # check_global_stdio_swap is skipped, per its own docstring's scoping
         # advice: nothing here runs concurrently, and the checker's source plus
         # its test fixtures necessarily quote the banned idiom.
-        args: [--skip, check_global_stdio_swap]
+        # check_cron_alert_coverage is skipped for the same reason as
+        # check_failure_notifier_coverage above: it is re-listed in strict mode.
+        args: [--skip, check_global_stdio_swap, --skip, check_cron_alert_coverage]
         # Excluded files quote the banned idioms by necessity: the prose-honesty
         # checks' test/fuzz fixtures embed un-annotated hits on purpose, the
         # README catalog must name each banned pattern to document its check,
