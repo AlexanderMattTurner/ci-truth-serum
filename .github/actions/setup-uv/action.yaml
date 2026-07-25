@@ -1,0 +1,51 @@
+name: "Set up uv"
+description: >-
+  Install the pinned uv from its checksum-verified release artifact and put it on
+  PATH, restoring uv's package cache. Optionally installs the interpreter named by
+  .python-version. Every job in this repo installs its Python toolchain here, so
+  the pin, the digests and the download's retry policy have exactly one home.
+
+inputs:
+  install-python:
+    description: >-
+      When "true", run `uv python install` for the version in .python-version.
+      Jobs that only need `uv`/`uvx` leave this off and let uv pick an interpreter.
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install uv
+      shell: bash
+      env:
+        UV_DEST: ${{ runner.temp }}/uv-bin
+      # The PATH entry is a fixed runner.temp subdirectory holding the two
+      # binaries this action just checksum-verified, so nothing a workflow or a
+      # pull request controls reaches GITHUB_PATH here.
+      run: | # zizmor: ignore[github-env]
+        bash "${GITHUB_ACTION_PATH}/install-uv.sh"
+        echo "${UV_DEST}" >> "$GITHUB_PATH"
+
+    # uv's package cache, which setup-uv would otherwise manage. Keyed on the
+    # lockfile so a dependency change misses cleanly; the arch is in the key
+    # because wheels are not portable across runner architectures.
+    - name: Cache uv downloads
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.cache/uv
+        key: ${{ runner.os }}-${{ runner.arch }}-uv-${{ hashFiles('uv.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ runner.arch }}-uv-
+
+    # .python-version is the single source of truth for the interpreter, so no
+    # workflow restates it and none can drift from the version pre-commit pins.
+    - name: Install Python
+      if: inputs.install-python == 'true'
+      shell: bash
+      run: |
+        [[ -s .python-version ]] || {
+          echo "Error: .python-version is missing or empty; it is the only source for the interpreter version." >&2
+          exit 1
+        }
+        uv python install "$(cat .python-version)"

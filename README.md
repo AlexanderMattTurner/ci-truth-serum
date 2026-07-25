@@ -36,6 +36,7 @@ lints that catch two kinds of lie a green check can hide:
 | Hook                 | Failure it prevents                                                                                                                                                                                                                                                                                                                                                                                        |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `check-trusted-base` | Catches the “pwn-request” hole, where a `pull_request` or `pull_request_target` job checks out the PR’s own code **and** runs with write permissions or secrets. Example: an outside contributor’s code then runs with your repo’s credentials and can steal your secrets. Read-only checkouts with no secrets (the safe way to lint untrusted code) are fine. Opt out with `# trusted-base-ok: <reason>`. |
+| `check-untrusted-exec` | Catches the same job actually **executing** the checked-out pull-request code while secrets are live — a local composite action (`uses: ./…`, whose manifest GitHub reads from the workspace), a package-manager script (`pnpm build`, `npm run test`, `make release`, `npx …`, whose body comes from the checked-out `package.json`/`Makefile`), or a workspace-relative path (`bash ./scripts/x.sh`). Example: the PR rewrites `package.json`’s `build` script, and your release PAT is in the environment when it runs. Reaches jobs `check-trusted-base` cannot see — a matrix-derived head ref, an unpinned `workflow_run` head — and, deliberately, a job whose `# trusted-base-ok` reason claims it “only runs the trusted base copy” while the _entrypoint itself_ still comes out of the workspace. Staging scripts into `$RUNNER_TEMP` is not a defence: an earlier attacker step in the same job owns `$GITHUB_ENV`/`$GITHUB_PATH` and that directory. Opt out with `# untrusted-exec-ok: <reason>` in the job block. |
 
 ### Opinionated (Tier 2, opt-in)
 
@@ -115,6 +116,7 @@ repos:
       - id: check-provenance-repo-url
       # ── Tier 1 · Security (default-on) ──
       - id: check-trusted-base
+      - id: check-untrusted-exec # no executing the PR's own checkout with secrets live
       # ── Tier 2 · Opinionated (opt-in: uncomment to enable) ──
       # - id: check-job-timeout          # every job must declare timeout-minutes
       # - id: check-always-reporter      # assumes a decide-job + always() reporter

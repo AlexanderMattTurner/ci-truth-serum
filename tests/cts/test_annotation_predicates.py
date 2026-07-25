@@ -84,3 +84,21 @@ def test_shared_matcher_is_comment_scoped_and_reason_bearing() -> None:
     # outside any comment: never a suppression, reason or not
     assert not lc.annotated('group: "example-ok: yes"', token)
     assert not lc.annotated("echo example-ok: reason", token, require_reason=False)
+
+
+def test_the_required_reason_may_not_be_borrowed_from_the_next_line() -> None:
+    """The reason must sit on the annotation's OWN line.
+
+    Several hooks scan a multi-line span (a job block, a whole file) with this
+    matcher rather than one line at a time. A reason tail that could cross a
+    line boundary would let a bare `# <token>:` at end-of-line adopt the next
+    line's first character as its "reason" and suppress the lint with an empty
+    claim — a fail-open. Every boundary below is one Python splits lines on, so
+    a hook indexing by line would report a different line than it matched."""
+    token = "example-ok"
+    for boundary in ("\n", "\r\n", "\v", "\f", "\x1c", "\x85", "\u2028"):
+        block = f"    # {token}:{boundary}    - run: echo hi\n"
+        assert not lc.annotated(block, token), repr(boundary)
+    # Non-vacuity: the same block WITH a same-line reason does suppress, so the
+    # assertions above fail on the borrowed reason, not on the fixture's shape.
+    assert lc.annotated(f"    # {token}: vendored\n    - run: echo hi\n", token)

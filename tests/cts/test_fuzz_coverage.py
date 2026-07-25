@@ -88,6 +88,7 @@ FUZZ_REQUIRED = {
     "release_canary": "changelog_top_version",
     "check_job_timeout": "check_file",
     "check_trusted_base": "check_file",
+    "check_untrusted_exec": "check_file",
     "check_env_symmetry": "analyze",
     "check_stray_tool_markup": "violations",
 }
