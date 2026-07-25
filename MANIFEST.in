@@ -1,0 +1,4 @@
+# package.json carries the version that pyproject.toml resolves dynamically
+# (ci_truth_serum._version), so it must be in the sdist or a build from an
+# unpacked sdist cannot determine its own version.
+include package.json

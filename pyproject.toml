@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ci-truth-serum"
-version = "0.2.0"
+# Computed from package.json — the one file the release pipeline bumps — by
+# ci_truth_serum._version; see [tool.setuptools.dynamic] below.
+dynamic = ["version"]
 description = "Fast, offline pre-commit lints that make a CI pipeline confess what it's hiding."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,6 +37,12 @@ dev = ["pytest>=7", "pytest-xdist", "ruff", "hypothesis>=6"]
 # file-path loading bypasses, so its mutants are never reached. cosmic-ray mutates
 # the file on disk and reruns the suite, so it is agnostic to how tests import.
 mutation = ["pytest>=7", "pytest-xdist", "hypothesis>=6", "cosmic-ray>=8"]
+
+[tool.setuptools.dynamic]
+# The value is computed, not a literal, so setuptools imports this module at
+# build time instead of reading it statically. package.json ships in the sdist
+# (MANIFEST.in), so a build from an unpacked sdist resolves it too.
+version = { attr = "ci_truth_serum._version.__version__" }
 
 [tool.setuptools]
 # The lints are importable/runnable as `ci_truth_serum.check_*`; pre-commit invokes them
