@@ -132,6 +132,33 @@ def _job_is_privileged(cfg: dict, workflow_write: bool, workflow_secret: bool) -
     return False
 
 
+def reported_job_names(doc: object, text: str) -> list[str]:
+    """The names of the jobs this lint reports for a parsed workflow.
+
+    Exported so a sibling lint can tell which holes are already covered here and
+    skip them, without re-deriving (or string-scraping) the verdict. TEXT is the
+    raw source, needed for the comment-scoped opt-out."""
+    if not isinstance(doc, dict):
+        return []
+    # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
+    if not _is_pr_triggered(doc.get("on", doc.get(True))):
+        return []
+    if _opted_out(text):
+        return []
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict):
+        return []
+    workflow_write = _grants_write(doc.get("permissions"))
+    workflow_secret = _env_has_secret(doc.get("env"))
+    return [
+        str(name)
+        for name, cfg in jobs.items()
+        if isinstance(cfg, dict)
+        and _job_checks_out_head(cfg)
+        and _job_is_privileged(cfg, workflow_write, workflow_secret)
+    ]
+
+
 def check_file(path: Path) -> list[tuple[int | None, str]]:
     """Return (line, message) for every pwn-request-shaped job in the workflow.
 
@@ -151,30 +178,9 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
                 "actionlint) and re-check.",
             )
         ]
-    if not isinstance(doc, dict):
-        return []
-    # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
-    triggers = doc.get("on", doc.get(True))
-    if not _is_pr_triggered(triggers):
-        return []
-    if _opted_out(text):
-        return []
-
-    jobs = doc.get("jobs")
-    if not isinstance(jobs, dict):
-        return []
-
-    workflow_write = _grants_write(doc.get("permissions"))
-    workflow_secret = _env_has_secret(doc.get("env"))
     blocks = _job_blocks(text)
     violations: list[tuple[int | None, str]] = []
-    for name, cfg in jobs.items():
-        if not isinstance(cfg, dict):
-            continue
-        if not _job_checks_out_head(cfg):
-            continue
-        if not _job_is_privileged(cfg, workflow_write, workflow_secret):
-            continue
+    for name in reported_job_names(doc, text):
         block = blocks.get(str(name))
         line = block[0] if block else 1
         violations.append(

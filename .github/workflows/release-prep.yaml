@@ -58,10 +58,25 @@ jobs:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         # This job holds secrets and write access, so it must not execute
-        # PR-controlled code: run the base branch's trusted copies of the release
-        # script, the changelog assembler, and the shell libraries it sources —
-        # not the PR's. Fall back to a PR copy only to bootstrap the very PR that
-        # first adds each (base has no copy yet).
+        # PR-controlled code: it runs the base branch's trusted copies of the
+        # release script, the changelog assembler, and the shell libraries it
+        # sources — not the PR's. That staging is what release-prep-bump-version.sh
+        # does, so the bootstrap MUST be staged the same way: invoking it as
+        # `bash .github/scripts/release-prep-bump-version.sh` would read the first
+        # bytes this job executes out of the PR's own checkout, handing the PR
+        # author the PAT and the model credentials above. This block is inline
+        # because a workspace script call is precisely the hole it closes; the
+        # workflow file itself is read from the base ref, so its `run:` is trusted.
         # trusted-base-ok: privileged job runs only the base branch's trusted
         # script copies, never the PR-controlled checkout.
-        run: bash .github/scripts/release-prep-bump-version.sh
+        run: |
+          set -euo pipefail
+          boot=.github/scripts/release-prep-bump-version.sh
+          git fetch --quiet origin "$BASE_REF"
+          # Missing on base only for the PR that first adds it (bootstrap).
+          if git show "FETCH_HEAD:${boot}" >"${RUNNER_TEMP}/bump.sh" 2>/dev/null; then
+            bash "${RUNNER_TEMP}/bump.sh"
+          else
+            echo "::warning::base branch lacks ${boot}; running the PR's copy (bootstrap only)"
+            bash "$boot"
+          fi

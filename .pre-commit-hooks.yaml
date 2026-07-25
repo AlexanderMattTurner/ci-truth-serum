@@ -110,6 +110,16 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-untrusted-exec
+  name: "security: forbid executing an untrusted checkout while secrets are live"
+  description: A job that checks out a PR head and then runs a local composite action, a package-manager script, or a workspace-relative path hands the PR author every secret in that job.
+  entry: python -m ci_truth_serum.check_untrusted_exec
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 # ───────────────────────── Tier 2 · Opinionated (opt-in) ─────────────────────
 # These prescribe a specific architecture. Enable only if you follow it.
 - id: check-always-reporter

@@ -67,6 +67,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_frozen_head_sha", WORKFLOW),
         ("check_provenance_repo_url", WORKFLOW),
         ("check_trusted_base", WORKFLOW),
+        ("check_untrusted_exec", WORKFLOW),
     ],
     "2": [
         ("check_job_timeout", WORKFLOW),

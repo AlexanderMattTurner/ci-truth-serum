@@ -87,6 +87,13 @@ def unwrap_expression(value: object) -> str:
 # message, a URL fragment) can never silently disable a lint — that would be a
 # fail-open. One SSOT for every annotation-matching hook in this package.
 _COMMENT_INTRO = r"(?:#|<!--|//)"
+# Every character Python treats as a line boundary, as a regex class body. The
+# reason-required tail must not cross one: a plain `\s*` there would let the gap
+# after `<token>:` swallow the newline and accept the NEXT line's first character
+# as the "reason", so a bare `# <token>:` at the end of a line would suppress the
+# lint — a fail-open on every hook whose opt-out scan runs over multi-line text
+# (a job block, a whole file) rather than one line at a time.
+_LINE_BOUNDARY_CLASS = r"\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
 
 
 def annotation_re(token: str, require_reason: bool = True) -> "re.Pattern[str]":
@@ -94,12 +101,13 @@ def annotation_re(token: str, require_reason: bool = True) -> "re.Pattern[str]":
 
     Comment-scoped: the token must follow a comment introducer. With
     REQUIRE_REASON (the default), the token must also carry `: <non-empty
-    reason>` — a bare marker states nothing and does not suppress. Every hook
-    that recognizes a per-line annotation builds its matcher here; the
-    meta-test in tests/cts/test_annotation_predicates.py bans the bare
-    `token in line` substring predicate this replaces."""
-    tail = r":\s*\S" if require_reason else r"\b"
-    return re.compile(rf"{_COMMENT_INTRO}[^\n]*\b{re.escape(token)}{tail}")
+    reason>` ON THE SAME LINE — a bare marker states nothing and does not
+    suppress. Every hook that recognizes a per-line annotation builds its
+    matcher here; the meta-test in tests/cts/test_annotation_predicates.py bans
+    the bare `token in line` substring predicate this replaces."""
+    same_line = f"[^{_LINE_BOUNDARY_CLASS}]"
+    tail = rf":{same_line}*?[^\s]" if require_reason else r"\b"
+    return re.compile(rf"{_COMMENT_INTRO}{same_line}*\b{re.escape(token)}{tail}")
 
 
 def annotated(line: str, token: str, require_reason: bool = True) -> bool:
