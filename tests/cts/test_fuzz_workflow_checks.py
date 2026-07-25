@@ -44,6 +44,9 @@ path_gate_deps = load_hook("check_path_gate_deps.py", "fuzz_path_gate_deps")
 job_timeout = load_hook("check_job_timeout.py", "fuzz_job_timeout")
 trusted_base = load_hook("check_trusted_base.py", "fuzz_trusted_base")
 untrusted_exec = load_hook("check_untrusted_exec.py", "fuzz_untrusted_exec")
+unscoped_tool_grant = load_hook(
+    "check_unscoped_tool_grant.py", "fuzz_unscoped_tool_grant"
+)
 
 # Each returns a finding shape; the contract under fuzz is only "no crash, and a
 # well-typed result". `expects_list` distinguishes the list-returning checks from
@@ -64,6 +67,7 @@ WORKFLOW_CHECKS = [
     ("check_job_timeout", job_timeout.check_file, True),
     ("check_trusted_base", trusted_base.check_file, True),
     ("check_untrusted_exec", untrusted_exec.check_file, True),
+    ("check_unscoped_tool_grant", unscoped_tool_grant.check_file, True),
 ]
 
 
@@ -164,6 +168,20 @@ _WORKFLOW_FRAGMENTS = [
         "      - run: $RUNNER_TEMP/stage.sh\n"
         "        env:\n          T: ${{ secrets.C }}\n"
     ),
+    (
+        "jobs:\n  m:\n    steps:\n      - uses: anthropics/claude-code-action@v1\n"
+        '        with:\n          claude_args: "--allowedTools Bash Read Write"\n'
+    ),
+    (
+        "jobs:\n  m:\n    steps:\n      - run: claude -p x\n"
+        '        env:\n          AUTOFIX_ALLOWED_TOOLS: "Read,Edit,Write(//tmp/o.json)"\n'
+    ),
+    (
+        "jobs:\n  m:  # allow-unscoped-write-grant: bare Bash makes scoping moot\n"
+        "    steps:\n      - run: claude --allowed-tools 'Read(./**),Edit(//tmp/o)'\n"
+    ),
+    "jobs:\n  m:\n    steps:\n      - run: claude --disallowedTools Read\n",
+    "jobs:\n  m:\n    steps:\n      - with:\n          allowed_tools: Glob(./**)\n",
     "jobs:\n  exec:\n    steps: 'not-a-list'\n",
     "jobs:\n  exec:\n    steps:\n      - a string step\n      - null\n",
     "jobs:\n  exec:\n    steps:\n      - run: ${{ github.event.pull_request.title }}\n",
