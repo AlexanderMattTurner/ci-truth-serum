@@ -206,7 +206,7 @@
 
 - id: check-failure-notifier-coverage
   name: "opinionated: keep the failure notifier's workflow_run list in sync with the tree"
-  description: workflow_run has no wildcard, so the notifier's workflows list is a derived copy; a stale copy silently drops failure notifications. The notifier is discovered by shape (on.workflow_run plus a notification sink), whatever the file is called.
+  description: workflow_run has no wildcard, so the notifier's workflows list is a derived copy; a stale copy silently drops failure notifications. The notifier is discovered by shape (on.workflow_run plus a notification sink), whatever the file is called, and no discoverable notifier is a failure rather than a green nothing verified.
   entry: python -m ci_truth_serum.check_failure_notifier_coverage
   language: python
   additional_dependencies: [PyYAML]

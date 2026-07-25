@@ -10,11 +10,12 @@ set of `name:` values of every workflow in `.github/workflows/` with a `push:` o
 `schedule:` trigger, the notifiers themselves excluded. A workflow the list omits
 fails silently forever; a stale name notifies on nothing.
 
-The notifier is DISCOVERED, never named. A repo calls the file whatever it likes
-(`build-publish-notify.yaml`, `alerts.yaml`), so matching one hardcoded basename
-made this lint pass VACUOUSLY — reporting success while checking nothing — in
-every repo that spelled it differently, which is the exact failure mode the
-package exists to catch. A workflow is the notifier when BOTH hold:
+The notifier is found by SHAPE, not by filename. A repo calls the file whatever
+it likes (`ci-failure-notify.yaml` in the shared template, but also
+`build-publish-notify.yaml`, `alerts.yaml`), and a check that recognizes only one
+spelling reports success while checking nothing in every repo that chose
+another — the exact failure mode this package exists to catch. A workflow is the
+notifier when BOTH hold:
 
   * it is triggered `on.workflow_run` — the only trigger that can observe another
     workflow's conclusion; and
@@ -33,11 +34,25 @@ More than one notifier is allowed: coverage is the UNION of their lists (two
 notifiers may legitimately split the tree), while staleness and duplication are
 judged per file, since a name no workflow carries is dead wherever it sits.
 
-Two modes. Without flags, a repo with no discoverable notifier passes silently —
-the hook can ship in default hook sets without breaking repos that haven't
-adopted the notifier. With `--require-notifier`, having no notifier at all is
-itself a failure — enable the flag once a repo adopts the pattern so deleting the
-notifier can't silently pass.
+Discovery FAILS CLOSED. When no notifier can be found the check reports a
+failure, never a pass: it verified nothing, and "verified nothing" is exactly how
+a notifier that was deleted, renamed, or never synced from the template goes
+unnoticed. The message names `--notifier FILENAME` (default
+`ci-failure-notify.yaml`, the shared template's spelling) — the expectation to
+state when a repo's notifier is undiscoverable — and distinguishes "that file is
+not there at all" from "that file is there but observes nothing". A repo that
+deliberately routes failures nowhere says so with `--allow-no-notifier`.
+
+`--require-alert-priority` adds a second invariant on the alerts themselves: a
+step invoking a local composite action that DEFAULTS a `priority:` input must
+pass one. Omitting it is not neutral — it inherits whatever urgency the action
+chose, which for an alert action is the maximum, and a repo whose every alert
+arrives at max urgency has trained its owner to swipe them all away. The trigger
+is the invoked action's own declared inputs, never an action name, so a house
+alert composite is covered the day it grows a defaulted `priority`. Cosmetic
+inputs (`tags:`) are deliberately not required: priority is what drives phone
+behaviour, and demanding every optional input would make this noise instead of a
+severity discipline.
 
 A monitored workflow without a `name:` field is flagged: GitHub falls back to the
 workflow's file path as its display name, which is what the notifier list would
@@ -57,6 +72,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     has_trigger,
+    LineLoader,
     notifier_matcher,
     step_text,
     workflow_triggers,
@@ -67,8 +83,22 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 # the hook from the consumer repo root, so cwd is that root; tests override these.
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
+ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 
 MONITORED_TRIGGERS = ("push", "schedule")
+
+# The filename the shared automation template gives its notifier. It is the
+# EXPECTATION this check falls back to when shape discovery finds nothing — the
+# name to put in the error message, not a filter: a repo whose notifier is called
+# something else is still found by shape. Override with `--notifier`.
+DEFAULT_NOTIFIER = "ci-failure-notify.yaml"
+
+# The composite-action input whose silent default is a real cost: ntfy priority
+# drives phone behaviour (5 bypasses Do Not Disturb and repeats), so a call site
+# that omits it inherits max urgency without anyone deciding to. `tags:` is left
+# optional on purpose — it is cosmetic, and requiring every optional input would
+# make the check noise rather than a severity discipline.
+ALERT_PRIORITY_INPUT = "priority"
 
 
 def has_monitored_trigger(doc: dict) -> bool:
@@ -176,7 +206,7 @@ def load_workflows() -> tuple[list[tuple[Path, dict]], list[str]]:
     for path in workflow_files():
         rel = path.relative_to(REPO_ROOT)
         try:
-            doc = yaml.safe_load(path.read_text())
+            doc = yaml.load(path.read_text(), Loader=LineLoader)
         except yaml.YAMLError as err:
             first_line = str(err).partition("\n")[0]
             errors.append(
@@ -190,21 +220,123 @@ def load_workflows() -> tuple[list[tuple[Path, dict]], list[str]]:
     return docs, errors
 
 
-def check_repo(require_notifier: bool, extra_patterns: Iterable[str] = ()) -> list[str]:
+def local_action_dir(uses: object) -> Path | None:
+    """The `.github/actions/<name>` directory a `uses: ./.github/actions/<name>`
+    step points at, or None when the step calls anything else (a published
+    action, a reusable workflow)."""
+    if not isinstance(uses, str):
+        return None
+    prefix = "./.github/actions/"
+    if not uses.startswith(prefix):
+        return None
+    name = uses[len(prefix) :].strip("/")
+    return ACTIONS_DIR / name if name else None
+
+
+def defaults_an_input(action_dir: Path, input_name: str) -> bool:
+    """True when the composite action in ACTION_DIR declares INPUT_NAME as an
+    OPTIONAL input — i.e. a caller that omits it silently inherits a value the
+    action chose. A required input needs no lint: the caller cannot skip it."""
+    for filename in ("action.yaml", "action.yml"):
+        path = action_dir / filename
+        if not path.exists():
+            continue
+        try:
+            doc = yaml.safe_load(path.read_text())
+        except (yaml.YAMLError, OSError):
+            return False
+        inputs = doc.get("inputs") if isinstance(doc, dict) else None
+        spec = inputs.get(input_name) if isinstance(inputs, dict) else None
+        if not isinstance(spec, dict):
+            return False
+        return spec.get("required") is not True
+    return False
+
+
+def unprioritized_alert_steps(doc: dict) -> list[tuple[int, str]]:
+    """(line, step label) for every step invoking a local composite action that
+    DEFAULTS `priority:` without the step stating one.
+
+    Omitting it is not neutral: the call site inherits whatever urgency the
+    action picked, which for an alert action is the maximum. A repo where every
+    alert arrives at max urgency has trained its owner to swipe them all away, so
+    the one that mattered is the one that gets ignored. Discovery is by the
+    action's declared inputs, never by action name, so a house alert composite is
+    covered the day it grows a defaulted `priority`.
+    """
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict):
+        return []
+    found: list[tuple[int, str]] = []
+    for job in jobs.values():
+        steps = job.get("steps") if isinstance(job, dict) else None
+        if not isinstance(steps, list):
+            continue
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            action_dir = local_action_dir(step.get("uses"))
+            if action_dir is None or not defaults_an_input(
+                action_dir, ALERT_PRIORITY_INPUT
+            ):
+                continue
+            with_block = step.get("with")
+            if isinstance(with_block, dict) and ALERT_PRIORITY_INPUT in with_block:
+                continue
+            found.append(
+                (
+                    step.get("__line__", job.get("__line__", 1)),
+                    str(step.get("name") or step["uses"]),
+                )
+            )
+    return found
+
+
+def check_repo(
+    allow_no_notifier: bool = False,
+    extra_patterns: Iterable[str] = (),
+    notifier_name: str = DEFAULT_NOTIFIER,
+    require_alert_priority: bool = False,
+) -> list[str]:
     """Every coverage violation for the repo, as printable messages."""
     matcher = notifier_matcher(extra_patterns)
     docs, found = load_workflows()
 
+    if require_alert_priority:
+        for path, doc in docs:
+            rel = path.relative_to(REPO_ROOT)
+            found += [
+                f"::error file={rel},line={line}::step {label!r} calls an alert "
+                f"action without an explicit `{ALERT_PRIORITY_INPUT}:`, so it "
+                "silently inherits the action's default — the maximum. Every alert "
+                "at max urgency trains the owner to ignore the one that matters. "
+                f"State the `{ALERT_PRIORITY_INPUT}:` you mean."
+                for line, label in unprioritized_alert_steps(doc)
+            ]
+
     notifiers = [(path, doc) for path, doc in docs if is_notifier(doc, matcher)]
     if not notifiers:
-        if require_notifier:
-            found.append(
-                "::error::no failure-notifier workflow found under "
-                ".github/workflows/ but --require-notifier is set. A notifier is a "
-                "workflow triggered `on.workflow_run` that names a notification "
-                "sink (ntfy, Slack, an issue-opening step, …). Add one, teach this "
-                "lint your house sink with --notifier-pattern, or drop the flag."
-            )
+        # Fail CLOSED: this is the refusal that stops the check reporting a green
+        # it did not earn. It verified nothing here, because the thing it verifies
+        # is absent — and "absent" is exactly how a notifier gets deleted, renamed,
+        # or never synced without anyone noticing. `--allow-no-notifier` is the one
+        # way to a pass, and it is a stated decision rather than a silent one.
+        if allow_no_notifier:
+            return found
+        detail = (
+            f"`{notifier_name}` exists but is not a notifier — a notifier must be "
+            "triggered `on.workflow_run` AND name a notification sink (ntfy, "
+            "Slack, an issue-opening step, …); as written it observes nothing."
+            if (WORKFLOWS_DIR / notifier_name).exists()
+            else f"expected `{notifier_name}`, or any workflow triggered "
+            "`on.workflow_run` that names a notification sink."
+        )
+        found.append(
+            "::error::no failure-notifier workflow found under .github/workflows/: "
+            f"{detail} Add one, point this check at yours with --notifier / "
+            "--notifier-pattern, or pass --allow-no-notifier if this repo "
+            "deliberately routes failures nowhere."
+        )
         return found
 
     notifier_paths = {path for path, _ in notifiers}
@@ -265,17 +397,37 @@ def main(argv: list[str] | None = None) -> int:
         "patterns rather than replacing them",
     )
     parser.add_argument(
-        "--require-notifier",
+        "--notifier",
+        default=DEFAULT_NOTIFIER,
+        metavar="FILENAME",
+        help="the filename this repo expects its notifier to carry, named in the "
+        f"fail-closed message when none is discoverable (default: {DEFAULT_NOTIFIER})",
+    )
+    parser.add_argument(
+        "--allow-no-notifier",
         action="store_true",
-        help="also fail when no notifier workflow can be discovered at all "
-        "(default: a repo that has not adopted the notifier passes silently)",
+        help="pass when no notifier workflow can be discovered at all; without it "
+        "an undiscoverable notifier is a failure, because a check that verifies "
+        "nothing must not report success",
+    )
+    parser.add_argument(
+        "--require-alert-priority",
+        action="store_true",
+        help="also fail a step that invokes a local composite action defaulting "
+        "`priority:` without stating one — an omitted priority silently means the "
+        "action's maximum",
     )
     # pre-commit is configured `pass_filenames: false`, but a consumer wiring the
     # module by hand may still hand it paths; discovery globs the tree either way.
     parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
-    violations = check_repo(args.require_notifier, args.notifier_pattern)
+    violations = check_repo(
+        args.allow_no_notifier,
+        args.notifier_pattern,
+        args.notifier,
+        args.require_alert_priority,
+    )
     for message in violations:
         print(message)
     if violations:

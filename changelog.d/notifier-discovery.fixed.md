@@ -1,9 +1,12 @@
-- `check-failure-notifier-coverage` no longer passes VACUOUSLY in every repo
-  whose notifier workflow is not literally named `ci-failure-notify.yaml`. It
-  matched that one hardcoded basename, so a repo calling its notifier anything
-  else (`build-publish-notify.yaml`, `alerts.yaml`) got a green from a check that
-  had found nothing and verified nothing — and `--require-notifier` reported the
-  notifier "missing" while it sat right there. The notifier is now DISCOVERED: a
+- `check-failure-notifier-coverage` no longer goes blind in a repo whose notifier
+  workflow is not literally named `ci-failure-notify.yaml`. It matched that one
+  basename and nothing else, so a repo calling its notifier anything else
+  (`build-publish-notify.yaml`, `alerts.yaml`) got a green from a check that had
+  found nothing and verified nothing, and the old `--require-notifier` reported
+  the notifier "missing" while it sat in the same directory. That filename is
+  still the expected default (it is the shared template's spelling), but it is
+  now only the name the fail-closed message states — never a filter. The notifier
+  is DISCOVERED: a
   workflow qualifies when it is triggered `on.workflow_run` **and** names a
   notification sink (in its own `name:`, a job's `name:`/`uses:`, or a step's
   `uses:`/`name:`/`run:`). Both halves are required — the trigger alone would

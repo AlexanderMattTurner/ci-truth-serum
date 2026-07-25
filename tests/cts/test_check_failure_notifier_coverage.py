@@ -129,6 +129,109 @@ def _tree(tmp_path: Path, monkeypatch, files: dict[str, str]) -> Path:
     return wf_dir
 
 
+def _actions(tmp_path: Path, monkeypatch, actions: dict[str, str]) -> Path:
+    """Write `.github/actions/<name>/action.yaml` for each entry and redirect the
+    module's ACTIONS_DIR at the fixture tree.
+
+    Separate from `_tree` (which only builds `.github/workflows/`) so the
+    workflow-only cases keep resolving local `uses:` against a directory that
+    isn't there — the "action not on disk" path the priority check must survive.
+    """
+    actions_dir = tmp_path / ".github" / "actions"
+    actions_dir.mkdir(parents=True, exist_ok=True)
+    for name, body in actions.items():
+        (actions_dir / name).mkdir(parents=True)
+        (actions_dir / name / "action.yaml").write_text(body)
+    monkeypatch.setattr(cfnc, "ACTIONS_DIR", actions_dir)
+    return actions_dir
+
+
+# ── composite actions, one per shape the priority rule keys on ───────────
+OPTIONAL_PRIORITY_ACTION = textwrap.dedent(
+    """\
+    name: Notify via ntfy
+    inputs:
+      priority:
+        required: false
+        default: "5"
+      tags:
+        required: false
+        default: rotating_light
+    runs:
+      using: composite
+      steps:
+        - run: true
+          shell: bash
+    """
+)
+REQUIRED_PRIORITY_ACTION = textwrap.dedent(
+    """\
+    name: Notify via ntfy
+    inputs:
+      priority:
+        required: true
+        description: urgency
+    runs:
+      using: composite
+      steps:
+        - run: true
+          shell: bash
+    """
+)
+NO_PRIORITY_ACTION = textwrap.dedent(
+    """\
+    name: Upload something
+    inputs:
+      path:
+        required: false
+        default: dist
+    runs:
+      using: composite
+      steps:
+        - run: true
+          shell: bash
+    """
+)
+
+ALERT_STEP_NAME = "Alert on failure"
+
+
+def _alert_wf(
+    uses: str = "./.github/actions/notify-ntfy",
+    with_lines: list[str] | None = None,
+    name: str = "Alpha",
+) -> str:
+    """A push workflow whose second step invokes USES, optionally with a `with:`
+    block (None omits the key entirely). The first step is an unrelated published
+    action so the flagged line is never the first line of the file."""
+    lines = [
+        f"name: {name}",
+        "on:",
+        "  push:",
+        "    branches: [main]",
+        "jobs:",
+        "  build:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - name: Checkout",
+        "        uses: actions/checkout@v4",
+        f"      - name: {ALERT_STEP_NAME}",
+        f"        uses: {uses}",
+    ]
+    if with_lines is not None:
+        lines += ["        with:"] + [f"          {entry}" for entry in with_lines]
+    return "\n".join(lines) + "\n"
+
+
+def _line_of(text: str, needle: str) -> int:
+    """The 1-based line of the first line in TEXT containing NEEDLE — the fixture's
+    own ground truth for what a line-anchored annotation must point at."""
+    for index, line in enumerate(text.splitlines(), start=1):
+        if needle in line:
+            return index
+    raise AssertionError(f"{needle!r} not in fixture")
+
+
 def _main(monkeypatch, *argv: str) -> int:
     monkeypatch.setattr(sys, "argv", ["check_failure_notifier_coverage", *argv])
     return cfnc.main()
@@ -295,11 +398,13 @@ def test_sink_in_job_uses_is_discovered(tmp_path, monkeypatch, capsys):
 
 def test_workflow_run_without_a_sink_is_not_the_notifier(tmp_path, monkeypatch, capsys):
     # An unrelated workflow_run consumer (here a coverage uploader) must not be
-    # held to the exhaustiveness invariant: it lists nothing and stays silent.
+    # held to the exhaustiveness invariant: `Alpha` goes unreported. The tree has
+    # no notifier at all, so `--allow-no-notifier` isolates that invariant from
+    # the fail-closed one the next test covers.
     _discovery_tree(
         tmp_path, monkeypatch, _wf_run("Coverage upload", [], jobs=NO_SINK_JOBS)
     )
-    assert _main(monkeypatch) == 0
+    assert _main(monkeypatch, "--allow-no-notifier") == 0
     assert capsys.readouterr().out == ""
 
 
@@ -309,7 +414,7 @@ def test_workflow_run_without_a_sink_leaves_the_repo_notifierless(
     _discovery_tree(
         tmp_path, monkeypatch, _wf_run("Coverage upload", [], jobs=NO_SINK_JOBS)
     )
-    assert _main(monkeypatch, "--require-notifier") == 1
+    assert _main(monkeypatch) == 1
     assert "no failure-notifier workflow found" in capsys.readouterr().out
 
 
@@ -339,7 +444,7 @@ def test_house_sink_needs_notifier_pattern_to_be_discovered(
     _discovery_tree(
         tmp_path, monkeypatch, _wf_run("Post run", [], jobs=HOUSE_SINK_JOBS)
     )
-    assert _main(monkeypatch, "--require-notifier") == 1
+    assert _main(monkeypatch) == 1
     assert "no failure-notifier workflow found" in capsys.readouterr().out
 
 
@@ -431,20 +536,123 @@ def test_staleness_is_judged_per_notifier_file(tmp_path, monkeypatch, capsys):
     assert "missing (fails silently)" not in out
 
 
-# ── missing notifier: silent without the flag, loud with it ──────────────
-def test_missing_notifier_passes_without_flag(tmp_path, monkeypatch, capsys):
-    _tree(tmp_path, monkeypatch, {"a.yaml": PUSH_WF.format(name="Alpha")})
-    assert _main(monkeypatch) == 0
+# ── missing notifier: FAILS CLOSED by default, opt out to pass ───────────
+# A tree with no discoverable notifier exits 1 by DEFAULT: a green here would be
+# one the check never earned, since the thing it verifies is absent — which is
+# exactly how a notifier gets deleted, renamed, or never synced without anyone
+# noticing. `--allow-no-notifier` is the stated decision that restores the pass.
+def test_missing_notifier_fails_closed_by_default(tmp_path, monkeypatch, capsys):
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "a.yaml": PUSH_WF.format(name="Alpha"),
+            "b.yaml": PUSH_WF.format(name="Beta"),
+        },
+    )
+    assert _main(monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "no failure-notifier workflow found under .github/workflows/" in out
+    # The message must name the filename to create, or it isn't actionable.
+    assert "ci-failure-notify.yaml" in out
+    assert "expected `ci-failure-notify.yaml`" in out
+
+
+def test_allow_no_notifier_restores_the_pass(tmp_path, monkeypatch, capsys):
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "a.yaml": PUSH_WF.format(name="Alpha"),
+            "b.yaml": PUSH_WF.format(name="Beta"),
+        },
+    )
+    assert _main(monkeypatch, "--allow-no-notifier") == 0
     assert capsys.readouterr().out == ""
 
 
-def test_missing_notifier_fails_with_require_flag(tmp_path, monkeypatch, capsys):
-    _tree(tmp_path, monkeypatch, {"a.yaml": PUSH_WF.format(name="Alpha")})
-    assert _main(monkeypatch, "--require-notifier") == 1
-    assert (
-        "no failure-notifier workflow found under .github/workflows/"
-        in capsys.readouterr().out
+def test_notifier_named_file_that_is_not_a_notifier_gets_the_sharper_message(
+    tmp_path, monkeypatch, capsys
+):
+    # The file is there under the expected name but observes nothing (no
+    # workflow_run trigger, no sink), so "expected `…`" would misdirect: the fix
+    # is to make that file a notifier, not to create it.
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "a.yaml": PUSH_WF.format(name="Alpha"),
+            "ci-failure-notify.yaml": PUSH_WF.format(name="Not really a notifier"),
+        },
     )
+    assert _main(monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert "no failure-notifier workflow found under .github/workflows/" in out
+    assert "`ci-failure-notify.yaml` exists but is not a notifier" in out
+    assert "expected `ci-failure-notify.yaml`" not in out
+
+
+def test_notifier_flag_names_the_repo_s_own_expected_filename(
+    tmp_path, monkeypatch, capsys
+):
+    _tree(tmp_path, monkeypatch, {"a.yaml": PUSH_WF.format(name="Alpha")})
+    assert _main(monkeypatch, "--notifier", "my-alerts.yaml") == 1
+    out = capsys.readouterr().out
+    assert "expected `my-alerts.yaml`" in out
+    assert "ci-failure-notify.yaml" not in out
+
+
+def test_notifier_flag_also_drives_the_exists_but_is_not_a_notifier_diagnosis(
+    tmp_path, monkeypatch, capsys
+):
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "a.yaml": PUSH_WF.format(name="Alpha"),
+            "my-alerts.yaml": PUSH_WF.format(name="Not really a notifier"),
+        },
+    )
+    assert _main(monkeypatch, "--notifier", "my-alerts.yaml") == 1
+    assert "`my-alerts.yaml` exists but is not a notifier" in capsys.readouterr().out
+
+
+def test_notifier_flag_is_not_a_filter_on_discovery(tmp_path, monkeypatch, capsys):
+    # `--notifier` states an expectation for the error message only: a notifier
+    # under a different filename is still DISCOVERED by shape, so nothing fires.
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "a.yaml": PUSH_WF.format(name="Alpha"),
+            "build-publish-notify.yaml": _wf_run(
+                "Build, publish and notify", ["Alpha"]
+            ),
+        },
+    )
+    assert _main(monkeypatch, "--notifier", "my-alerts.yaml") == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_fail_closed_is_silent_when_a_notifier_is_present(
+    tmp_path, monkeypatch, capsys
+):
+    # Non-vacuity guard for the four cases above: with a discoverable, correct
+    # notifier in the tree NONE of the fail-closed wording fires, so those
+    # assertions are reporting on the missing notifier and not on any tree.
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "a.yaml": PUSH_WF.format(name="Alpha"),
+            "b.yaml": PUSH_WF.format(name="Beta"),
+            "ci-failure-notify.yaml": _notifier(["Alpha", "Beta"]),
+        },
+    )
+    assert _main(monkeypatch) == 0
+    out = capsys.readouterr().out
+    assert out == ""
+    assert "no failure-notifier workflow found" not in out
 
 
 # ── positional file arguments are ignored; discovery globs the tree ──────
@@ -532,6 +740,144 @@ def test_malformed_notifier_is_reported(tmp_path, monkeypatch, capsys):
     assert "ci-failure-notify.yaml" in out
 
 
+# ── --require-alert-priority: a defaulted priority must be stated ────────
+# The trigger is the INVOKED ACTION's declared inputs, never its name, so every
+# case below builds the composite it calls. `--allow-no-notifier` isolates these
+# trees from the fail-closed invariant: the only violations that can appear are
+# the priority ones being asserted on.
+PRIORITY_ARGS = ("--allow-no-notifier", "--require-alert-priority")
+
+
+def test_omitted_priority_on_a_defaulting_action_is_flagged_with_its_line(
+    tmp_path, monkeypatch, capsys
+):
+    wf = _alert_wf(with_lines=["tags: rotating_light"])
+    _tree(tmp_path, monkeypatch, {"alert.yaml": wf})
+    _actions(tmp_path, monkeypatch, {"notify-ntfy": OPTIONAL_PRIORITY_ACTION})
+    assert _main(monkeypatch, *PRIORITY_ARGS) == 1
+    out = capsys.readouterr().out
+    assert ALERT_STEP_NAME in out
+    assert "without an explicit `priority:`" in out
+    # Line-anchored at the step itself — the fixture's own ground truth, and
+    # emphatically not the file's first line.
+    line = _line_of(wf, f"name: {ALERT_STEP_NAME}")
+    assert line > 1
+    assert f"::error file=.github/workflows/alert.yaml,line={line}::" in out
+
+
+def test_stated_priority_is_clean(tmp_path, monkeypatch, capsys):
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {"alert.yaml": _alert_wf(with_lines=["priority: 3", "tags: warning"])},
+    )
+    _actions(tmp_path, monkeypatch, {"notify-ntfy": OPTIONAL_PRIORITY_ACTION})
+    assert _main(monkeypatch, *PRIORITY_ARGS) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_step_with_no_with_block_at_all_is_flagged(tmp_path, monkeypatch, capsys):
+    _tree(tmp_path, monkeypatch, {"alert.yaml": _alert_wf(with_lines=None)})
+    _actions(tmp_path, monkeypatch, {"notify-ntfy": OPTIONAL_PRIORITY_ACTION})
+    assert _main(monkeypatch, *PRIORITY_ARGS) == 1
+    assert "without an explicit `priority:`" in capsys.readouterr().out
+
+
+def test_priority_is_lenient_without_the_flag(tmp_path, monkeypatch, capsys):
+    # Module precedent: a new invariant ships opt-in so adopting the hook does
+    # not red every consumer's tree on day one.
+    _tree(tmp_path, monkeypatch, {"alert.yaml": _alert_wf(with_lines=None)})
+    _actions(tmp_path, monkeypatch, {"notify-ntfy": OPTIONAL_PRIORITY_ACTION})
+    assert _main(monkeypatch, "--allow-no-notifier") == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_required_priority_input_is_not_flagged(tmp_path, monkeypatch, capsys):
+    # A required input has no silent default to inherit — GitHub itself is the
+    # forcing function, so there is nothing for this lint to add.
+    _tree(tmp_path, monkeypatch, {"alert.yaml": _alert_wf(with_lines=None)})
+    _actions(tmp_path, monkeypatch, {"notify-ntfy": REQUIRED_PRIORITY_ACTION})
+    assert _main(monkeypatch, *PRIORITY_ARGS) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_action_without_a_priority_input_is_not_flagged(tmp_path, monkeypatch, capsys):
+    # Discovery is by declared inputs: an ordinary local composite is untouched.
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {"alert.yaml": _alert_wf(uses="./.github/actions/upload", with_lines=None)},
+    )
+    _actions(tmp_path, monkeypatch, {"upload": NO_PRIORITY_ACTION})
+    assert _main(monkeypatch, *PRIORITY_ARGS) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_published_action_and_reusable_workflow_are_not_flagged(
+    tmp_path, monkeypatch, capsys
+):
+    # Neither is resolvable from the tree, so neither can be shown to default an
+    # input — flagging on the name alone is exactly the guesswork this avoids.
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "published.yaml": _alert_wf(uses="actions/checkout@v4", with_lines=None),
+            "reusable.yaml": _alert_wf(
+                uses="./.github/workflows/reusable-notify.yaml",
+                with_lines=None,
+                name="Beta",
+            ),
+        },
+    )
+    _actions(tmp_path, monkeypatch, {"notify-ntfy": OPTIONAL_PRIORITY_ACTION})
+    assert _main(monkeypatch, *PRIORITY_ARGS) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_local_action_missing_from_disk_is_not_flagged_and_does_not_crash(
+    tmp_path, monkeypatch, capsys
+):
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {"alert.yaml": _alert_wf(uses="./.github/actions/ghost", with_lines=None)},
+    )
+    _actions(tmp_path, monkeypatch, {})  # empty .github/actions/, no `ghost`
+    assert _main(monkeypatch, *PRIORITY_ARGS) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_tags_is_deliberately_not_required(tmp_path, monkeypatch, capsys):
+    # Pinning the decision: `tags:` is cosmetic and also defaulted by the action,
+    # but only `priority:` drives phone behaviour. A step stating priority and
+    # omitting tags is clean — requiring every optional input would make this
+    # noise rather than a severity discipline.
+    _tree(tmp_path, monkeypatch, {"alert.yaml": _alert_wf(with_lines=["priority: 4"])})
+    _actions(tmp_path, monkeypatch, {"notify-ntfy": OPTIONAL_PRIORITY_ACTION})
+    assert _main(monkeypatch, *PRIORITY_ARGS) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_every_offending_step_across_workflows_is_reported(
+    tmp_path, monkeypatch, capsys
+):
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {
+            "alert.yaml": _alert_wf(with_lines=None),
+            "other.yaml": _alert_wf(with_lines=["tags: warning"], name="Beta"),
+        },
+    )
+    _actions(tmp_path, monkeypatch, {"notify-ntfy": OPTIONAL_PRIORITY_ACTION})
+    assert _main(monkeypatch, *PRIORITY_ARGS) == 1
+    out = capsys.readouterr().out
+    assert "file=.github/workflows/alert.yaml,line=" in out
+    assert "file=.github/workflows/other.yaml,line=" in out
+    assert "2 notifier-coverage violation(s) found" in out
+
+
 # ── crash resistance (property fuzz over the check_repo surface) ─────────
 _FRAGMENTS = [
     "name: x\n",
@@ -549,6 +895,10 @@ _FRAGMENTS = [
     "jobs:\n  a:\n    uses: ./.github/workflows/slack.yaml\n",
     "jobs:\n  a:\n    steps:\n      - 'bare string step'\n",
     "jobs:\n  a:\n    steps:\n      - run: gh issue create\n",
+    "jobs:\n  a:\n    steps:\n      - uses: ./.github/actions/notify-ntfy\n",
+    "jobs:\n  a:\n    steps:\n      - uses: ./.github/actions/\n        with: 3\n",
+    "jobs:\n  a:\n    steps:\n      - uses: ./.github/actions/ghost\n        with:\n"
+    "          priority: 3\n",
     "jobs: notamapping\n",
     "[]\n",
     "just a scalar\n",
@@ -571,9 +921,32 @@ def _workflow_text(draw: st.DrawFn) -> str:
     other_text=_workflow_text(),
     flag=st.booleans(),
     extra=st.lists(st.sampled_from(_EXTRA_PATTERNS), max_size=3),
+    notifier_name=st.sampled_from(
+        ["ci-failure-notify.yaml", "other.yaml", "", "nope.yaml", "../escape.yaml"]
+    ),
+    require_priority=st.booleans(),
+    action_text=st.sampled_from(
+        [
+            OPTIONAL_PRIORITY_ACTION,
+            REQUIRED_PRIORITY_ACTION,
+            NO_PRIORITY_ACTION,
+            "inputs: notamapping\n",
+            "priority: 3\n",
+            "[]\n",
+            "on: [push\n",  # unparseable action.yaml
+        ]
+    ),
 )
 def test_check_repo_never_crashes(
-    notifier_text, other_text, flag, extra, tmp_path_factory, monkeypatch
+    notifier_text,
+    other_text,
+    flag,
+    extra,
+    notifier_name,
+    require_priority,
+    action_text,
+    tmp_path_factory,
+    monkeypatch,
 ):
     # check_repo reads and safe_loads each file inline, so (mirroring main()'s
     # behavior and the sibling fuzz harness) a YAMLError is the parser's, not the
@@ -589,7 +962,8 @@ def test_check_repo_never_crashes(
         monkeypatch,
         {"ci-failure-notify.yaml": notifier_text, "other.yaml": other_text},
     )
-    result = cfnc.check_repo(flag, extra)
+    _actions(root, monkeypatch, {"notify-ntfy": action_text})
+    result = cfnc.check_repo(flag, extra, notifier_name, require_priority)
     assert isinstance(result, list)
     assert all(isinstance(msg, str) for msg in result)
 
