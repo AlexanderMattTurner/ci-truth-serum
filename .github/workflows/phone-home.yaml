@@ -10,6 +10,9 @@ on:
 
 env:
   TEMPLATE_REPO: "${{ vars.TEMPLATE_SYNC_ORG || 'alexander-turner' }}/claude-automation-template"
+  # One value for all three consumers: the extract step writes lessons.txt here,
+  # the gitleaks scan reads this directory, the submit step reads the file back.
+  PHONE_HOME_DIR: /tmp/phone-home
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -43,7 +46,7 @@ jobs:
           GITLEAKS_DEST: /usr/local/bin
         run: |
           bash .github/scripts/install-gitleaks.sh
-          gitleaks detect --no-git -s /tmp/phone-home -v
+          gitleaks detect --no-git -s "$PHONE_HOME_DIR" -v
 
       - name: Submit to template repo
         if: steps.extract.outputs.has_lessons == 'true'

@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.skipif(
     shutil.which("node") is None and not os.environ.get("CI"),
@@ -22,9 +23,15 @@ REPO_ROOT = Path(
     ).stdout.strip()
 )
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "phone-home-extract.js"
-# The script hardcodes this output dir, so these tests must run serially
-# (no pytest-xdist); the autouse fixture clears it before/after each test.
-PHONE_HOME_DIR = Path("/tmp/phone-home")
+SUBMIT_SCRIPT = REPO_ROOT / ".github" / "scripts" / "phone-home-submit.js"
+
+
+def phone_home_dir(tmp_path: Path) -> Path:
+    """Per-test output dir handed to the script via $PHONE_HOME_DIR.
+
+    Every test gets its own, so parallel xdist workers cannot collide on the
+    script's shared /tmp/phone-home default."""
+    return tmp_path / "phone-home"
 
 
 def run_extract(
@@ -70,6 +77,7 @@ extract({{ context, core }}).then(() => {{
         "REPO": repo,
         "TEMPLATE_REPO": template_repo,
         "OUT_FILE": str(out_file),
+        "PHONE_HOME_DIR": str(phone_home_dir(tmp_path)),
     }
     result = subprocess.run(
         ["node", str(wrapper)], env=env, capture_output=True, text=True
@@ -85,15 +93,6 @@ extract({{ context, core }}).then(() => {{
     return outputs, result
 
 
-@pytest.fixture(autouse=True)
-def clean_phone_home_dir():
-    """Remove any stale lessons.txt before each test."""
-    lessons = PHONE_HOME_DIR / "lessons.txt"
-    lessons.unlink(missing_ok=True)
-    yield
-    lessons.unlink(missing_ok=True)
-
-
 def test_extracts_lessons_with_double_hash(tmp_path: Path) -> None:
     pr_body = (
         "## Summary\n\nSome changes.\n\n"
@@ -104,7 +103,7 @@ def test_extracts_lessons_with_double_hash(tmp_path: Path) -> None:
     outputs, result = run_extract(tmp_path, pr_body)
     assert result.returncode == 0, result.stderr
     assert outputs.get("has_lessons") == "true"
-    content = (PHONE_HOME_DIR / "lessons.txt").read_text()
+    content = (phone_home_dir(tmp_path) / "lessons.txt").read_text()
     assert "Use jq instead of node for JSON parsing." in content
     assert "Nothing." not in content  # the following ## section must terminate
 
@@ -121,7 +120,7 @@ def test_extracts_lessons_with_triple_hash(tmp_path: Path) -> None:
     outputs, result = run_extract(tmp_path, pr_body)
     assert result.returncode == 0, result.stderr
     assert outputs.get("has_lessons") == "true"
-    content = (PHONE_HOME_DIR / "lessons.txt").read_text()
+    content = (phone_home_dir(tmp_path) / "lessons.txt").read_text()
     assert "Always validate input before processing." in content
     assert "noise-after-section." not in content
 
@@ -134,7 +133,7 @@ def test_lessons_not_cut_short_by_internal_blank_line(tmp_path: Path) -> None:
     outputs, result = run_extract(tmp_path, pr_body)
     assert result.returncode == 0, result.stderr
     assert outputs.get("has_lessons") == "true"
-    content = (PHONE_HOME_DIR / "lessons.txt").read_text()
+    content = (phone_home_dir(tmp_path) / "lessons.txt").read_text()
     assert "First bullet." in content
     assert "Second bullet after blank line." in content
 
@@ -165,7 +164,7 @@ def test_skips_unfilled_skeleton_section(tmp_path: Path) -> None:
     outputs, result = run_extract(tmp_path, pr_body)
     assert result.returncode == 0, result.stderr
     assert "has_lessons" not in outputs
-    assert not (PHONE_HOME_DIR / "lessons.txt").exists()
+    assert not (phone_home_dir(tmp_path) / "lessons.txt").exists()
 
 
 def test_skips_template_repo(tmp_path: Path) -> None:
@@ -186,5 +185,71 @@ def test_filters_session_links(tmp_path: Path) -> None:
     outputs, result = run_extract(tmp_path, pr_body)
     assert result.returncode == 0, result.stderr
     assert outputs.get("has_lessons") == "true"
-    content = (PHONE_HOME_DIR / "lessons.txt").read_text()
+    content = (phone_home_dir(tmp_path) / "lessons.txt").read_text()
     assert "claude.ai" not in content
+
+
+def test_submit_reads_the_dir_extract_wrote(tmp_path: Path) -> None:
+    """The two scripts must agree on $PHONE_HOME_DIR: extract writes lessons.txt
+    there and submit reads it back. Drive both against one non-default dir so a
+    divergence between them fails here instead of at runtime on a merged PR."""
+    pr_body = "## Lessons Learned\n\n- Round-trip lesson body.\n"
+    outputs, result = run_extract(tmp_path, pr_body)
+    assert result.returncode == 0, result.stderr
+    assert outputs.get("has_lessons") == "true"
+
+    wrapper = tmp_path / "run-submit.js"
+    issue_file = tmp_path / "issue.json"
+    wrapper.write_text(
+        f"""
+const fs = require("fs");
+const submit = require({json.dumps(str(SUBMIT_SCRIPT))});
+const github = {{
+  rest: {{
+    issues: {{
+      create: async (p) => {{
+        fs.writeFileSync(process.env.ISSUE_FILE, JSON.stringify(p));
+        return {{ data: {{ html_url: "https://example.invalid/1", number: 1 }} }};
+      }},
+      addLabels: async () => {{}},
+    }},
+  }},
+}};
+submit({{ github }}).catch((err) => {{
+  process.stderr.write(err.message + "\\n");
+  process.exit(1);
+}});
+"""
+    )
+    submit_result = subprocess.run(
+        ["node", str(wrapper)],
+        env={
+            **os.environ,
+            "PHONE_HOME_DIR": str(phone_home_dir(tmp_path)),
+            "ISSUE_FILE": str(issue_file),
+            "PR_TITLE": "Test PR",
+            "PR_URL": "https://github.com/owner/repo/pull/1",
+            "SOURCE_REPO": "owner/repo",
+            "TEMPLATE_REPO": "tmpl/repo",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert submit_result.returncode == 0, submit_result.stderr
+    issue = json.loads(issue_file.read_text())
+    assert "Round-trip lesson body." in issue["body"]
+
+
+def test_workflow_carries_the_path_in_exactly_one_place() -> None:
+    """The workflow declares PHONE_HOME_DIR once and every step reads it from
+    there. A second hardcoded copy (the gitleaks `-s` argument was one) makes
+    the scan silently miss the lessons file the moment the path moves."""
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github" / "workflows" / "phone-home.yaml").read_text()
+    )
+    assert workflow["env"].get("PHONE_HOME_DIR"), "workflow must declare the dir"
+    steps = workflow["jobs"]["phone-home"]["steps"]
+    hardcoded = [s.get("name") for s in steps if "/tmp/" in json.dumps(s)]
+    assert hardcoded == [], (
+        f"steps hardcode a /tmp path instead of $PHONE_HOME_DIR: {hardcoded}"
+    )
