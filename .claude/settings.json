@@ -11,15 +11,18 @@
       "Read(**/.env.*)",
       "Read(**/*.pem)",
       "Read(**/*.key)",
-      "Bash(*rm* /dev/*)",
-      "Bash(*rm* /proc/*)",
-      "Bash(*rm* /sys/*)",
-      "Bash(*unlink* /dev/*)",
-      "Bash(*unlink* /proc/*)",
-      "Bash(*unlink* /sys/*)",
-      "Bash(*shred* /dev/*)",
-      "Bash(*shred* /proc/*)",
-      "Bash(*shred* /sys/*)"
+      "Bash(*rm /dev/*)",
+      "Bash(*rm /proc/*)",
+      "Bash(*rm /sys/*)",
+      "Bash(*rm -f /dev/*)",
+      "Bash(*rm -f /proc/*)",
+      "Bash(*rm -f /sys/*)",
+      "Bash(*unlink /dev/*)",
+      "Bash(*unlink /proc/*)",
+      "Bash(*unlink /sys/*)",
+      "Bash(*shred /dev/*)",
+      "Bash(*shred /proc/*)",
+      "Bash(*shred /sys/*)"
     ]
   },
   "hooks": {
