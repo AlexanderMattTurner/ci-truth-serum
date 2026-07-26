@@ -545,9 +545,10 @@ def has_always_reporter(jobs: dict) -> bool:
 # reporter then posts the check. Without one of these the group is static and a
 # sibling ref's run can cancel this one with no replacement report. Shared by
 # the concurrency lints (check_static_concurrency, which flags a static group on
-# the decide+always() shape, and check_cancellable_required_check, which flags a
-# static *cancellable* group on any required-check-marked workflow) so the
-# per-ref definition is one SSOT, not two copies that could drift.
+# the decide+always() shape, and check_pending_cancel_concurrency's static arm,
+# which flags a static *cancellable* group on any required-check-marked
+# workflow) so the per-ref definition is one SSOT, not two copies that could
+# drift.
 PER_REF_CONCURRENCY_KEYS = (
     "github.ref",
     "github.ref_name",

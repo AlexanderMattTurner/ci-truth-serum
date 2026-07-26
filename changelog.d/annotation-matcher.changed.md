@@ -17,6 +17,6 @@
   the file: a locally defined `fail() { echo oops; }` that does not exit no
   longer counts as a bailing guard (undefined conventional names are still
   trusted).
-- `check-static-concurrency` / `check-cancellable-required-check`: a per-ref
+- `check-static-concurrency` / `check-pending-cancel-concurrency`: a per-ref
   concurrency key counts only INSIDE a `${{ … }}` expression — a group string
   merely containing the literal text `github.ref` is static.

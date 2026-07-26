@@ -1,10 +1,19 @@
 """Tests for ci_truth_serum/check_pending_cancel_concurrency.py — the (opinionated) lint
-that forbids a per-ref/per-PR concurrency group (workflow-level OR job-level) on
-a required-check workflow whose `on.pull_request.types` includes an activity
+covering both concurrency shapes that let GitHub cancel a required check's
+reporter.
+
+Ref-keyed arm: a per-ref/per-PR concurrency group (workflow-level OR job-level)
+on a required-check workflow whose `on.pull_request.types` includes an activity
 type outside {opened, synchronize, reopened}. Those types fire extra runs on the
 SAME head SHA; GitHub's one-running + one-pending slot per group then cancels a
 current-SHA sibling, whose always() reporter resolves 'cancelled' and reddens
-the required check with no real failure."""
+the required check with no real failure.
+
+Static-cancellable arm: a workflow-level group that is static (no per-ref key)
+AND cancellable, on a workflow declaring a required check via the
+`# required-check: true` marker (a shape the decide+always() heuristic misses) —
+a sibling ref's run cancels this run and its reporter wholesale, hanging the
+check at 'Expected — Waiting'."""
 
 from pathlib import Path
 
@@ -227,10 +236,12 @@ def test_decide_gate_without_reporter_is_clean(tmp_path):
     assert pc.check_file(_write(tmp_path, body)) == []
 
 
-def test_static_group_is_not_this_lints_business(tmp_path):
-    """A group with no per-ref key is out of scope: at the workflow level it is
+def test_static_noncancellable_group_is_not_the_storm_arms_business(tmp_path):
+    """A group with no per-ref key is out of the storm arm's scope, and with
+    cancel-in-progress false (and no required-check marker) the static arm is
+    silent too: at the workflow level a plain static group is
     check_static_concurrency's territory; a job-level static group is a
-    documented handoff gap neither lint flags (see the module docstring)."""
+    documented handoff gap no lint flags (see the module docstring)."""
     body = (
         STORM_TRIGGER
         + ("concurrency:\n  group: my-static-lock\n  cancel-in-progress: false\n")
@@ -292,6 +303,137 @@ def test_scalar_static_concurrency_is_clean(tmp_path):
     """A static scalar shorthand has no per-ref key — not this lint's business."""
     body = STORM_TRIGGER + "concurrency: my-lock\n" + REQUIRED_CHECK_JOBS
     assert pc.check_file(_write(tmp_path, body)) == []
+
+
+# ── the static-cancellable arm (absorbed from check-cancellable-required-check) ─
+
+# A workflow body that declares a required check via the mandatory marker, with no
+# decide gate — the shape check_static_concurrency's heuristic misses.
+MARKER_REQUIRED_JOBS = (
+    "jobs:\n"
+    "  work:\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps: []\n"
+    "  report: # required-check: true\n"
+    "    if: always()\n"
+    "    needs: [work]\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps: []\n"
+)
+# Same shape but the reporter is deliberately advisory — declares no required check.
+ADVISORY_JOBS = MARKER_REQUIRED_JOBS.replace(
+    "# required-check: true", "# required-check: false  # advisory only"
+)
+
+STATIC_CANCELLABLE = "  group: my-static-lock\n  cancel-in-progress: true\n"
+STATIC_NONCANCELLABLE = "  group: my-static-lock\n  cancel-in-progress: false\n"
+PER_REF_CANCELLABLE = (
+    "  group: x-${{ github.event.pull_request.number || github.ref }}\n"
+    "  cancel-in-progress: true\n"
+)
+STATIC_EXPR = (
+    "  group: my-static-lock\n"
+    "  cancel-in-progress: ${{ github.event_name == 'pull_request' }}\n"
+)
+
+
+def _marker_wf(
+    concurrency: str, jobs: str = MARKER_REQUIRED_JOBS, header: str = ""
+) -> str:
+    return f"{header}name: x\non:\n  pull_request:\nconcurrency:\n{concurrency}" + jobs
+
+
+def test_static_cancellable_on_required_check_is_an_error(tmp_path):
+    violations = pc.check_file(_write(tmp_path, _marker_wf(STATIC_CANCELLABLE)))
+    assert len(violations) == 1
+    _line, message = violations[0]
+    assert "static" in message
+    assert "Expected — Waiting" in message
+
+
+def test_static_cancellable_expression_is_flagged_conservatively(tmp_path):
+    """An expression cancel-in-progress could evaluate true, so it is treated as
+    cancellable rather than assumed safe."""
+    violations = pc.check_file(_write(tmp_path, _marker_wf(STATIC_EXPR)))
+    assert len(violations) == 1
+    assert "static" in violations[0][1]
+
+
+def test_per_ref_cancellable_is_clean(tmp_path):
+    """The blessed pattern: a per-ref/per-PR group is only superseded by its
+    own ref's newer run, which re-reports."""
+    assert pc.check_file(_write(tmp_path, _marker_wf(PER_REF_CANCELLABLE))) == []
+
+
+def test_static_but_not_cancellable_is_clean(tmp_path):
+    """cancel-in-progress: false queues instead of cancelling, so the reporter is
+    never torn down — check_static_concurrency owns the static-group hazard here."""
+    assert pc.check_file(_write(tmp_path, _marker_wf(STATIC_NONCANCELLABLE))) == []
+
+
+def test_static_cancellable_on_non_required_workflow_is_clean(tmp_path):
+    """No `# required-check: true` marker → nothing to strand → not our concern."""
+    assert (
+        pc.check_file(_write(tmp_path, _marker_wf(STATIC_CANCELLABLE, ADVISORY_JOBS)))
+        == []
+    )
+
+
+def test_absent_cancel_in_progress_is_clean(tmp_path):
+    """Omitted cancel-in-progress defaults to false (not cancel-on-supersede)."""
+    assert pc.check_file(_write(tmp_path, _marker_wf("  group: my-static-lock\n"))) == []
+
+
+def test_static_opt_out_comment_suppresses_the_error(tmp_path):
+    body = _marker_wf(STATIC_CANCELLABLE, header=f"# {pc.STATIC_OPT_OUT}\n")
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_static_opt_out_token_in_string_value_does_not_suppress(tmp_path):
+    """The opt-out counts only inside a real `#` comment, never a string value —
+    matching it anywhere in the byte stream would be a fail-open."""
+    body = _marker_wf(
+        f'  group: "{pc.STATIC_OPT_OUT}"\n  cancel-in-progress: true\n'
+    )
+    violations = pc.check_file(_write(tmp_path, body))
+    assert len(violations) == 1
+    assert "static" in violations[0][1]
+
+
+def test_each_opt_out_clears_only_its_own_arm(tmp_path):
+    """pending-cancel-ok must not silence the static-cancellable finding, and
+    cancellable-required-check-ok must not silence the storm finding."""
+    static_body = _marker_wf(STATIC_CANCELLABLE, header=f"# {pc.OPT_OUT}\n")
+    assert len(pc.check_file(_write(tmp_path, static_body))) == 1
+
+    storm_body = (
+        f"# {pc.STATIC_OPT_OUT}\n"
+        + STORM_TRIGGER
+        + REF_GROUP
+        + REQUIRED_CHECK_JOBS
+    )
+    assert len(pc.check_file(_write(tmp_path, storm_body))) == 1
+
+
+def test_groupless_concurrency_is_clean(tmp_path):
+    assert pc.check_file(_write(tmp_path, _marker_wf("  cancel-in-progress: true\n"))) == []
+
+
+def test_static_scalar_concurrency_shorthand_is_clean_for_the_static_arm(tmp_path):
+    """`concurrency: <expr>` shorthand implies cancel-in-progress: false, so the
+    static-cancellable arm has nothing to flag on a marker-declared workflow."""
+    body = "name: x\non:\n  pull_request:\nconcurrency: my-lock\n" + MARKER_REQUIRED_JOBS
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_is_cancellable_truth_table():
+    assert pc._is_cancellable(True) is True
+    assert pc._is_cancellable(False) is False
+    assert pc._is_cancellable(None) is False
+    assert pc._is_cancellable("${{ github.event_name == 'pull_request' }}") is True
+    assert pc._is_cancellable("false") is False
+    assert pc._is_cancellable("FALSE") is False
+    assert pc._is_cancellable("true") is True
 
 
 # ── main ──────────────────────────────────────────────────────────────────────

@@ -83,7 +83,6 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_externalized_markers", WORKFLOW),
         ("check_path_gate_deps", WORKFLOW),
         ("check_failure_notifier_coverage", WORKFLOW),
-        ("check_cancellable_required_check", WORKFLOW),
         ("check_token_fallback", WORKFLOW),
         ("check_pin_comment_truth", WORKFLOW),
         ("check_stderr_merge_parse", SHELL_OR_WORKFLOW_YAML),

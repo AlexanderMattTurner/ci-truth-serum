@@ -1,36 +1,52 @@
 #!/usr/bin/env python3
 """
-Forbid a ref-keyed concurrency group on a required-check workflow that can fire
-more than one run per commit.
+Forbid a concurrency configuration that lets GitHub cancel a required check's
+reporter — either polarity of the group key.
 
-`check_static_concurrency` treats `github.ref` / `github.head_ref` keys as safe
-on the assumption that a ref-keyed run is only ever superseded by a *newer run
-of the same ref*, whose own reporter re-posts the check. That assumption breaks
-when `on.pull_request.types` includes an activity type outside the default
+A required-check workflow's `always()` reporter must post a status for every
+head SHA, and a `concurrency:` group is the one mechanism that can tear a run
+(and its reporter) down wholesale. Both key polarities have a failure mode,
+and this lint covers each:
+
+REF-KEYED groups under a same-SHA type storm. `check_static_concurrency`
+treats `github.ref` / `github.head_ref` keys as safe on the assumption that a
+ref-keyed run is only ever superseded by a *newer run of the same ref*, whose
+own reporter re-posts the check. That assumption breaks when
+`on.pull_request.types` includes an activity type outside the default
 {opened, synchronize, reopened}: types like `labeled` or `closed` fire a new
 run WITHOUT a new head SHA, so several runs queue on ONE commit (a Dependabot
 PR is born with labels — `opened` + one `labeled` per label land near-
 simultaneously). GitHub keeps at most one running + one pending run per group;
 the third same-SHA run cancels a sibling that is *current*, not superseded. Its
 `always()` reporter resolves `cancelled` → the required check goes RED on the
-live head with no real failure.
+live head with no real failure. `cancel-in-progress` cannot save a ref-keyed
+group here: `true` cancels the in-progress run (current SHA → red), `false`
+cancels the pending one (also current SHA → red). The safe fixes are to drop
+the group or key it on `github.run_id` (a group of one cannot cancel a
+sibling). A workflow "backs a required check" for this arm when it has both a
+decide gate and an `always()` reporter (the decide-job + reporter
+architecture) — and BOTH the workflow-level `concurrency:` block and every
+job-level one are checked, since the incident groups were per-job.
 
-`cancel-in-progress` cannot save a ref-keyed group here: `true` cancels the
-in-progress run (current SHA → red), `false` cancels the pending one (also
-current SHA → red). The safe fixes are to drop the group or key it on
-`github.run_id` (a group of one cannot cancel a sibling).
+STATIC *cancellable* workflow-level groups on a marker-declared required
+check. A workflow can declare a required check purely by marking a job
+`# required-check: true` (the SSOT marker check-required-reporter enforces and
+sync-required-checks reads) with no decide gate at all — invisible to the
+decide+always() heuristic `check_static_concurrency` keys on. When such a
+workflow carries a workflow-level group that is BOTH static (no per-ref key)
+AND cancellable (`cancel-in-progress` truthy), a sibling ref's run shares the
+one static slot and cancels this run wholesale — including the `always()`
+reporter, which does NOT survive a run-level cancel — so no status posts for
+this ref's head and the required check hangs at "Expected — Waiting" forever.
+A per-ref group, a job-level `concurrency:` block, or
+`cancel-in-progress: false` each avoids it.
 
-A workflow "backs a required check" when it has both a decide gate and an
-`always()` reporter (the decide-job + reporter architecture) — and BOTH the
-workflow-level `concurrency:` block and every job-level one are checked, since
-the incident groups were per-job. This lint is deliberately scoped to per-ref/
-per-PR groups (the key polarity check_static_concurrency calls safe); a STATIC
-group under the same type storm shares the failure mode but stays that lint's
-territory at the workflow level — a job-level static group is a known handoff
-gap neither lint flags today.
-
-Opt out with "# pending-cancel-ok" for a deliberately-serialized workflow that
-is genuinely never a required check.
+Two opt-out tokens are recognized, one per arm, because both shipped as
+separate hooks and consumers carry both annotations in the wild:
+"# pending-cancel-ok" clears the ref-keyed/type-storm arm (a deliberately-
+serialized workflow that is genuinely never a required check);
+"# cancellable-required-check-ok" clears the static-cancellable arm (a static
+cancellable group that is deliberate and known-safe).
 """
 
 import sys
@@ -42,14 +58,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _job_blocks,
     concurrency_line,
+    group_is_per_ref,
     has_always_reporter,
     has_decide_gate,
     job_concurrency_line,
     opted_out,
+    required_check_contexts,
     workflow_files,
 )
 
 OPT_OUT = "pending-cancel-ok"
+STATIC_OPT_OUT = "cancellable-required-check-ok"
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
@@ -120,6 +139,21 @@ def _ref_keyed(group: object) -> bool:
     return any(key in text for key in PER_REF_KEYS)
 
 
+def _is_cancellable(value: object) -> bool:
+    """True if a `cancel-in-progress` value can evaluate to cancel-on-supersede.
+
+    PyYAML parses `true`/`false` as bools and an expression such as
+    `${{ github.event_name == 'pull_request' }}` as a string. Absent (None) means
+    the field defaults to false. Any non-`false` value — `true` or an expression
+    that could be true at runtime — is treated as cancellable, so an expression is
+    conservatively flagged rather than assumed safe."""
+    if value is None or value is False:
+        return False
+    if value is True:
+        return True
+    return str(value).strip().lower() != "false"
+
+
 def _message(storm: set[str]) -> str:
     types = ", ".join(sorted(storm))
     return (
@@ -137,30 +171,10 @@ def _message(storm: set[str]) -> str:
     )
 
 
-def check_file(path: Path) -> list[tuple[int | None, str]]:
-    """Return (line, message) for every ref-keyed concurrency group — workflow-
-    level OR job-level — on a required-check workflow whose pull_request types
-    can queue multiple runs on one head SHA.
-
-    A file that cannot be parsed as YAML is itself reported as a violation
-    (line ``None``) rather than silently passed as clean — matching the sibling
-    workflow lints (check_workflow_pipefail &c.)."""
-    text = path.read_text()
-    try:
-        doc = yaml.safe_load(text)
-    except yaml.YAMLError as err:
-        first_line = str(err).partition("\n")[0]
-        return [
-            (
-                None,
-                f"could not parse as YAML ({first_line}); cannot verify "
-                "concurrency-group safety against same-SHA pending-cancellation — "
-                "fix the syntax (or run actionlint) and re-check.",
-            )
-        ]
-    if not isinstance(doc, dict) or opted_out(text, OPT_OUT):
-        return []
-
+def _storm_violations(doc: dict, text: str) -> list[tuple[int | None, str]]:
+    """The ref-keyed-group findings: every per-ref/per-PR group — workflow-level
+    OR job-level — on a decide+always() workflow whose pull_request types can
+    queue multiple runs on one head SHA."""
     storm = _storm_types(doc)
     if not storm:
         return []  # one run per SHA — a ref-keyed group only supersedes older SHAs
@@ -184,6 +198,72 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
             fallback = block[0] if block else concurrency_line(text)
             line = job_concurrency_line(block, fallback)
             violations.append((line, f"job '{name}': {_message(storm)}"))
+    return violations
+
+
+def _static_cancellable_violations(doc: dict, text: str) -> list[tuple[int | None, str]]:
+    """The static-cancellable finding: a workflow-level group with no per-ref key
+    and a truthy cancel-in-progress, on a workflow that declares a required check
+    via the `# required-check: true` marker."""
+    conc = doc.get("concurrency")
+    if not isinstance(conc, dict) or "group" not in conc:
+        return []
+    if group_is_per_ref(str(conc.get("group", ""))):
+        return []  # per-ref / per-PR group — only superseded by its own ref
+    if not _is_cancellable(conc.get("cancel-in-progress")):
+        return []  # not cancel-on-supersede — nothing tears down the reporter
+    # Only a workflow that actually declares a required check can be stranded.
+    if not required_check_contexts(text):
+        return []
+    return [
+        (
+            concurrency_line(text),
+            "workflow-level concurrency.group is static (no github.ref / "
+            "github.head_ref key) AND cancellable (cancel-in-progress truthy) on "
+            "a workflow that declares a required check ('# required-check: "
+            "true'). A sibling ref's run shares the one static slot and cancels "
+            "this run wholesale — the workflow-level cancel tears down the "
+            "always() reporter too, no status posts for this ref's head, and the "
+            "required check hangs at 'Expected — Waiting' forever. Key the group "
+            "per-ref/per-PR (github.ref / github.head_ref / "
+            "pull_request.number), move the concurrency: block onto the "
+            "expensive job so the run + reporter always execute, or set "
+            f"cancel-in-progress: false. Add '# {STATIC_OPT_OUT}' if this static "
+            "cancellable group is deliberate and known-safe.",
+        )
+    ]
+
+
+def check_file(path: Path) -> list[tuple[int | None, str]]:
+    """Every reporter-cancelling concurrency finding for one workflow file:
+    ref-keyed groups under a same-SHA type storm, plus a static cancellable
+    workflow-level group on a marker-declared required check. Each arm honors
+    its own opt-out token (see the module docstring).
+
+    A file that cannot be parsed as YAML is itself reported as a violation
+    (line ``None``) rather than silently passed as clean — matching the sibling
+    workflow lints (check_workflow_pipefail &c.)."""
+    text = path.read_text()
+    try:
+        doc = yaml.safe_load(text)
+    except yaml.YAMLError as err:
+        first_line = str(err).partition("\n")[0]
+        return [
+            (
+                None,
+                f"could not parse as YAML ({first_line}); cannot verify "
+                "concurrency-group safety against same-SHA pending-cancellation — "
+                "fix the syntax (or run actionlint) and re-check.",
+            )
+        ]
+    if not isinstance(doc, dict):
+        return []
+
+    violations: list[tuple[int | None, str]] = []
+    if not opted_out(text, OPT_OUT):
+        violations += _storm_violations(doc, text)
+    if not opted_out(text, STATIC_OPT_OUT):
+        violations += _static_cancellable_violations(doc, text)
     return violations
 
 

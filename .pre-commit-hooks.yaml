@@ -210,8 +210,8 @@
   types: [yaml]
 
 - id: check-pending-cancel-concurrency
-  name: "opinionated: no ref-keyed concurrency group where PR types storm one SHA"
-  description: With pull_request types beyond opened/synchronize/reopened, multiple runs queue on ONE head SHA; a per-ref/per-PR group then cancels a current-SHA sibling and its always() reporter reddens the required check with no real failure.
+  name: "opinionated: no concurrency group that can cancel a required check's reporter"
+  description: "Two hazards, one lint: with pull_request types beyond opened/synchronize/reopened, a per-ref/per-PR group cancels a current-SHA sibling and its always() reporter reddens the required check with no real failure; and a static cancellable workflow-level group on a `# required-check: true` workflow lets a sibling ref cancel the run — reporter included — hanging the check at 'Expected — Waiting'."
   entry: python -m ci_truth_serum.check_pending_cancel_concurrency
   language: python
   additional_dependencies: [PyYAML]
@@ -245,16 +245,6 @@
   name: "opinionated: keep the failure notifier's workflow_run list in sync with the tree"
   description: workflow_run has no wildcard, so the notifier's workflows list is a derived copy; a stale copy silently drops failure notifications. The notifier is discovered by shape (on.workflow_run plus a notification sink), whatever the file is called, and no discoverable notifier is a failure rather than a green nothing verified.
   entry: python -m ci_truth_serum.check_failure_notifier_coverage
-  language: python
-  additional_dependencies: [PyYAML]
-  pass_filenames: false
-  files: ^\.github/workflows/
-  types: [yaml]
-
-- id: check-cancellable-required-check
-  name: "opinionated: no static cancellable workflow-level concurrency lock on required checks"
-  description: "A static cancellable concurrency group on a `# required-check: true` workflow lets a sibling ref cancel the run and its workflow-level always() reporter wholesale, hanging the check at 'Expected — Waiting'."
-  entry: python -m ci_truth_serum.check_cancellable_required_check
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
