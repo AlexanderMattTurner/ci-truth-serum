@@ -38,6 +38,14 @@ watchdog a consumer declares:
   * `--require-stale-marker` demands a well-formed marker on every scheduled
     workflow. When a valid `--watchdog-workflow` is also declared, the demand
     narrows to that watchdog alone — it is the one cron nothing else watches.
+    A watchdog that ALSO fires on a non-`schedule:` trigger (push,
+    workflow_run, …) owes no marker either: GitHub's 60-day dormancy disable
+    applies to `schedule:` only, so an always-live trigger keeps firing in
+    exactly the scenario the marker would wave away — and a consumer whose
+    runtime sweep reads the same marker as an opt-out would otherwise be
+    forced to drop the watchdog from its own watched set. (An always-live
+    trigger excludes the dominant silencing mode; whether the sweep also
+    reads its own schedule's history is not statically knowable.)
 
 Without flags the hook is silent in a repo that has not adopted the pattern and
 only reports a marker that is present but malformed: a noisy guard gets disabled
@@ -58,6 +66,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     has_trigger,
     key_block_lines,
     parse_optout_marker,
+    workflow_triggers,
 )
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -171,15 +180,35 @@ def watchdog_violations(name: str) -> list[str]:
     return []
 
 
+def _has_non_schedule_trigger(text: str) -> bool:
+    """True when the workflow's `on:` block declares any trigger besides
+    `schedule:` — a trigger GitHub's dormancy disable cannot kill, so the
+    workflow is not solely cron-driven. Caller guarantees TEXT parses."""
+    triggers = workflow_triggers(yaml.safe_load(text))
+    if isinstance(triggers, dict):
+        return any(str(name) != "schedule" for name in triggers)
+    if isinstance(triggers, list):
+        return any(str(name) != "schedule" for name in triggers)
+    return triggers is not None and str(triggers) != "schedule"
+
+
 def check_repo(require_marker: bool, watchdog: str | None) -> list[str]:
     """Every staleness-opt-out violation for the repo, as printable messages."""
     found = watchdog_violations(watchdog) if watchdog else []
     watchdog_ok = watchdog is not None and not found
+    # A valid schedule-only watchdog covers every cron but its own: nothing
+    # watches the watcher, so it is the one file that still owes a marker. But a
+    # watchdog that ALSO fires on a non-schedule trigger is covered structurally
+    # — dormancy cannot silence it, so demanding a marker would assert something
+    # false about the one workflow whose staleness IS observed (and a runtime
+    # sweep reading that marker as an opt-out would drop the watchdog from its
+    # own watched set — the issue #81 failure).
+    self_covered = watchdog_ok and _has_non_schedule_trigger(
+        (WORKFLOWS_DIR / watchdog).read_text(encoding="utf-8")
+    )
     for path in workflow_files():
         rel = path.relative_to(REPO_ROOT)
-        # A valid watchdog covers every cron but its own: nothing watches the
-        # watcher, so it is the one file that still owes a marker.
-        watched = watchdog_ok and path.name != watchdog
+        watched = watchdog_ok and (path.name != watchdog or self_covered)
         for line, message in violations(
             path.read_text(encoding="utf-8"), require_marker, watched
         ):
@@ -193,7 +222,8 @@ def main(argv: list[str] | None = None) -> int:
         "--require-stale-marker",
         action="store_true",
         help="fail a scheduled workflow with no `# cron-stale: false  # <reason>` "
-        "marker (narrowed to the watchdog itself when --watchdog-workflow is set)",
+        "marker (narrowed to the watchdog itself when --watchdog-workflow is set; "
+        "a watchdog that also fires on a non-schedule trigger owes none)",
     )
     parser.add_argument(
         "--watchdog-workflow",

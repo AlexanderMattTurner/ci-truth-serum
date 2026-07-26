@@ -208,6 +208,62 @@ def test_the_watchdog_itself_is_excused_by_its_own_marker(tmp_path, monkeypatch)
     assert cso.check_repo(True, "watch.yaml") == []
 
 
+# The issue #81 regression: a watchdog that ALSO fires on a trigger GitHub's
+# dormancy disable cannot kill is not solely cron-driven, so it owes no marker
+# — forcing one would make a consumer's runtime sweep (which reads the same
+# marker as an opt-out) drop the watchdog from its own watched set.
+SELF_COVERING_WATCHDOG = textwrap.dedent(
+    """\
+    name: w
+    on:
+      schedule:
+        - cron: '0 3 * * *'
+      push:
+        branches: [main]
+    jobs:
+      sweep:
+        runs-on: ubuntu-latest
+        steps:
+          - run: ./sweep --event schedule
+    """
+)
+
+
+def test_self_covering_watchdog_owes_no_marker(tmp_path, monkeypatch):
+    _tree(
+        tmp_path,
+        monkeypatch,
+        {"a.yaml": _workflow(), "watch.yaml": SELF_COVERING_WATCHDOG},
+    )
+    assert cso.check_repo(True, "watch.yaml") == []
+
+
+@pytest.mark.parametrize(
+    "on_block",
+    [
+        "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_run:\n    workflows: [CI]\n    types: [completed]\n",
+        "on:\n  schedule:\n    - cron: '0 3 * * *'\n  workflow_dispatch:\n",
+        "on: [push, schedule]\n",
+    ],
+)
+def test_every_non_schedule_trigger_shape_makes_the_watchdog_self_covering(
+    tmp_path, monkeypatch, on_block
+):
+    watchdog = f"name: w\n{on_block}jobs: {{}}\n"
+    _tree(tmp_path, monkeypatch, {"a.yaml": _workflow(), "watch.yaml": watchdog})
+    assert cso.check_repo(True, "watch.yaml") == []
+
+
+def test_schedule_only_watchdog_still_owes_its_marker(tmp_path, monkeypatch):
+    """The carve-out stays sound for the shape it was written for: a watchdog
+    dormancy CAN silence still answers --require-stale-marker itself."""
+    watchdog = "name: w\non:\n  schedule:\n    - cron: '0 3 * * *'\njobs: {}\n"
+    _tree(tmp_path, monkeypatch, {"a.yaml": _workflow(), "watch.yaml": watchdog})
+    found = cso.check_repo(True, "watch.yaml")
+    assert len(found) == 1, found
+    assert "watch.yaml" in found[0]
+
+
 def test_a_broken_watchdog_does_not_excuse_the_other_crons(tmp_path, monkeypatch):
     # Fail closed: a watchdog that cannot run must not silently confer coverage.
     _tree(tmp_path, monkeypatch, {"a.yaml": _workflow()})
