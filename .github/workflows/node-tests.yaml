@@ -29,6 +29,9 @@ jobs:
           - '**/*.jsx'
           - '**/*.mjs'
           - 'package.json'
+          # markdownlint-orphan-table-row.test.mjs asserts this config wires
+          # the custom rule in, so a change here must re-run the suite.
+          - '.markdownlint-cli2.jsonc'
           - '.github/actions/setup-base-env/**'
           - '.github/actions/setup-uv/**'
           - '.github/scripts/script-configured.sh'

@@ -29,6 +29,9 @@ jobs:
           - '**/*.jsx'
           - '**/*.mjs'
           - 'package.json'
+          # `pnpm lint` is markdownlint over every tracked .md file.
+          - '**/*.md'
+          - '.markdownlint-cli2.jsonc'
           - '.github/actions/setup-base-env/**'
           - '.github/actions/setup-uv/**'
           - '.github/scripts/script-configured.sh'

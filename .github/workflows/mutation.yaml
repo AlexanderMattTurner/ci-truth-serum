@@ -70,8 +70,10 @@ jobs:
     with:
       filters: |
         run:
-          - 'scripts/assemble-changelog.mjs'
-          - 'scripts/assemble-changelog.test.mjs'
+          - 'scripts/*.mjs'
+          # The suite stryker runs drives markdownlint through this config, so
+          # a change to it must re-run the mutation gate.
+          - '.markdownlint-cli2.jsonc'
           - 'stryker.config.json'
           - 'package.json'
           - 'pnpm-lock.yaml'
