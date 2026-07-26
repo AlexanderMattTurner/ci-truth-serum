@@ -381,7 +381,9 @@ def test_static_cancellable_on_non_required_workflow_is_clean(tmp_path):
 
 def test_absent_cancel_in_progress_is_clean(tmp_path):
     """Omitted cancel-in-progress defaults to false (not cancel-on-supersede)."""
-    assert pc.check_file(_write(tmp_path, _marker_wf("  group: my-static-lock\n"))) == []
+    assert (
+        pc.check_file(_write(tmp_path, _marker_wf("  group: my-static-lock\n"))) == []
+    )
 
 
 def test_static_opt_out_comment_suppresses_the_error(tmp_path):
@@ -392,9 +394,7 @@ def test_static_opt_out_comment_suppresses_the_error(tmp_path):
 def test_static_opt_out_token_in_string_value_does_not_suppress(tmp_path):
     """The opt-out counts only inside a real `#` comment, never a string value —
     matching it anywhere in the byte stream would be a fail-open."""
-    body = _marker_wf(
-        f'  group: "{pc.STATIC_OPT_OUT}"\n  cancel-in-progress: true\n'
-    )
+    body = _marker_wf(f'  group: "{pc.STATIC_OPT_OUT}"\n  cancel-in-progress: true\n')
     violations = pc.check_file(_write(tmp_path, body))
     assert len(violations) == 1
     assert "static" in violations[0][1]
@@ -407,22 +407,24 @@ def test_each_opt_out_clears_only_its_own_arm(tmp_path):
     assert len(pc.check_file(_write(tmp_path, static_body))) == 1
 
     storm_body = (
-        f"# {pc.STATIC_OPT_OUT}\n"
-        + STORM_TRIGGER
-        + REF_GROUP
-        + REQUIRED_CHECK_JOBS
+        f"# {pc.STATIC_OPT_OUT}\n" + STORM_TRIGGER + REF_GROUP + REQUIRED_CHECK_JOBS
     )
     assert len(pc.check_file(_write(tmp_path, storm_body))) == 1
 
 
 def test_groupless_concurrency_is_clean(tmp_path):
-    assert pc.check_file(_write(tmp_path, _marker_wf("  cancel-in-progress: true\n"))) == []
+    assert (
+        pc.check_file(_write(tmp_path, _marker_wf("  cancel-in-progress: true\n")))
+        == []
+    )
 
 
 def test_static_scalar_concurrency_shorthand_is_clean_for_the_static_arm(tmp_path):
     """`concurrency: <expr>` shorthand implies cancel-in-progress: false, so the
     static-cancellable arm has nothing to flag on a marker-declared workflow."""
-    body = "name: x\non:\n  pull_request:\nconcurrency: my-lock\n" + MARKER_REQUIRED_JOBS
+    body = (
+        "name: x\non:\n  pull_request:\nconcurrency: my-lock\n" + MARKER_REQUIRED_JOBS
+    )
     assert pc.check_file(_write(tmp_path, body)) == []
 
 

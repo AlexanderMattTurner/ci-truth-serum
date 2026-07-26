@@ -201,7 +201,9 @@ def _storm_violations(doc: dict, text: str) -> list[tuple[int | None, str]]:
     return violations
 
 
-def _static_cancellable_violations(doc: dict, text: str) -> list[tuple[int | None, str]]:
+def _static_cancellable_violations(
+    doc: dict, text: str
+) -> list[tuple[int | None, str]]:
     """The static-cancellable finding: a workflow-level group with no per-ref key
     and a truthy cancel-in-progress, on a workflow that declares a required check
     via the `# required-check: true` marker."""
