@@ -40,6 +40,10 @@ SHELL_OR_WORKFLOW_YAML = "shell_or_workflow_yaml"
 MARKDOWN = "markdown"
 COMMENTED_CODE = "commented_code"
 PROSE_OR_COMMENTED_CODE = "prose_or_commented_code"
+# check_workflow_refs reads narration wherever it lives, and a workflow's own
+# `#` comments are one of the densest sources of sibling-workflow citations —
+# hence prose + commented code + YAML.
+REFERENCING_TEXT = "referencing_text"
 # check_drift_guards dispatches by extension: `.py` → AST marker pass, else → a
 # phrase pass. Its file class is therefore Python plus the JS/TS/shell suites that
 # carry copies-agree tests but no @pytest.mark.
@@ -99,6 +103,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_graceful_handwave", PROSE_OR_COMMENTED_CODE),
         ("check_historical_comments", COMMENTED_CODE),
         ("check_doc_line_refs", MARKDOWN),
+        ("check_workflow_refs", REFERENCING_TEXT),
         ("check_flag_arity", SHELL),
         ("check_secret_file_perms", SHELL),
         ("check_case_default", SHELL),
@@ -133,6 +138,8 @@ def matches(path: str, kind: str) -> bool:
         return bool(tags & _COMMENT_TAGS)
     if kind == PROSE_OR_COMMENTED_CODE:
         return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS))
+    if kind == REFERENCING_TEXT:
+        return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS | {"yaml"}))
     if kind == DRIFT:
         return bool(tags & {"python", "javascript", "ts", "shell"})
     return False

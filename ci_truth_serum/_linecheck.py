@@ -198,6 +198,26 @@ def logical_lines(text: str) -> list[tuple[int, str]]:
     return out
 
 
+def comment_body(line: str) -> str | None:
+    """The comment text of LINE, or None when LINE carries no comment.
+
+    A full-line ``#`` / ``//`` / ``/*`` / ``*`` comment returns the whole
+    stripped line; a trailing ``code  # ...`` / ``code  // ...`` comment returns
+    the text from the delimiter on. A bare ``#`` / ``//`` inside code
+    (``${#arr}``, ``https://``) is not a comment delimiter — the trailing form
+    requires the surrounding whitespace a real inline comment has.
+
+    Shared by every lint that reads narration rather than code: a string literal
+    is a value the program builds, not a claim about the tree, so scanning only
+    comment bodies is what keeps those lints off test fixtures and user copy.
+    """
+    stripped = line.lstrip()
+    if stripped.startswith(("#", "//", "/*", "*")):
+        return stripped
+    starts = [i for i in (line.find(" # "), line.find(" // ")) if i != -1]
+    return line[min(starts) + 1 :] if starts else None
+
+
 def run_line_checks(
     argv: list[str],
     find_violations: Callable[[str], list[int]],
