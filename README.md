@@ -10,6 +10,32 @@ lints that catch two kinds of lie a green check can hide:
   name (a tag, a bare URL) that can change under you, so the bytes you run
   aren’t provably the bytes you reviewed.
 
+## Scope / inclusion criteria
+
+A check belongs in this pack only if it passes both tests (from
+[#79](https://github.com/AlexanderMattTurner/ci-truth-serum/issues/79)):
+
+- **Grep test.** Grep the finished check for repo identifiers and look at
+  _where_ they land. Zero hits, or hits only in the docstring / remedy string →
+  upstreamable. A repo identifier inside the predicate that decides
+  _violation_ → keep it local.
+- **Remedy test.** If the fix is “route through _our_ helper”, it’s local —
+  unless the helper is a language or OS primitive. A check banning
+  `flock <literal-fd>` travels (the defect is a property of `flock` itself); a
+  check demanding a repo’s own `with_lock` wrapper does not.
+
+Two counter-examples that look general and aren’t: a check that can never fire
+in a stranger’s repo is not upstreamable however cleanly it greps (zero false
+positives and zero value is not a passing grade); and a perfectly portable
+regex can encode a locally-inverted policy (a lint _requiring_ `--no-verify` on
+CI pushes is correct only in a repo whose `core.hooksPath` names a dev-only
+hook dir — almost everywhere else it’s the opposite of correct).
+
+A check whose only failure mode is prose style does not belong in the pack.
+Checks that read a repo-authored manifest ship the _engine_ only, parameterized
+and non-aggregated (the `check-env-symmetry --prefix` /
+`check-lockstep-pins --pair` shape).
+
 ## What it checks
 
 ### Honesty (Tier 1, default-on)
