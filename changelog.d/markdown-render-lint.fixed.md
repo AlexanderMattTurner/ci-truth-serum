@@ -6,5 +6,5 @@
   columns, truncating the visible text and mangling `check-trusted-base`’s
   wording. All are fixed, and markdownlint now runs over every `.md` file (in
   `pnpm lint`, pre-commit, and CI) with a local `orphan-table-row` rule that
-  catches and autofixes a severed table row — the one no stock rule sees,
-  because the parser never accepted it as a table row to begin with.
+  reports a severed table row — the one no stock rule sees, because the parser
+  never accepted it as a table row to begin with.

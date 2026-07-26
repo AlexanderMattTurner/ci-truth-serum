@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyFixes } from "markdownlint";
 import { lint } from "markdownlint/promise";
 
 import rule from "./markdownlint-orphan-table-row.mjs";
@@ -27,129 +26,53 @@ const linesFlagged = async (markdown) =>
 const TABLE = "| Hook | Failure |\n| ---- | ------- |\n| `a`  | first   |\n";
 const ROW = "| `b` | second |";
 
-// Rows the rule can prove were severed from the table directly above: deleting
-// the blank line puts each one back where it was written to be.
-const REJOINED = [
+const FLAGGED = [
   {
-    name: "a row severed by a blank line",
+    name: "a row severed from its table by a blank line",
     markdown: `${TABLE}\n${ROW}\n`,
-    flagged: [5],
-    fixed: `${TABLE}${ROW}\n`,
+    lines: [5],
   },
   {
     name: "a severed row with no trailing pipe (GFM lets a row drop it)",
     markdown: `${TABLE}\n| \`b\` | second\n`,
-    flagged: [5],
-    fixed: `${TABLE}| \`b\` | second\n`,
+    lines: [5],
   },
   {
     name: "a severing line of whitespace rather than nothing",
     markdown: `${TABLE}   \n${ROW}\n`,
-    flagged: [5],
-    fixed: `${TABLE}${ROW}\n`,
+    lines: [5],
   },
   {
-    name: "a run of severed rows, rejoined in one pass",
-    markdown: `${TABLE}\n${ROW}\n\n| \`c\` | third |\n`,
-    flagged: [5, 7],
-    fixed: `${TABLE}${ROW}\n| \`c\` | third |\n`,
-  },
-  {
-    // Two rows in one paragraph, then another paragraph: a walk that stepped
-    // line-pair-wise instead of paragraph-wise would settle only the first run
-    // per pass, so `--fix` would rewrite the file on every invocation.
-    name: "a run of multi-row paragraphs, all rejoined in one pass",
+    name: "every row of a run of severed paragraphs",
     markdown: `${TABLE}\n| 3 | 4 |\n| 5 | 6 |\n\n| 7 | 8 |\n`,
-    flagged: [5, 6, 8],
-    fixed: `${TABLE}| 3 | 4 |\n| 5 | 6 |\n| 7 | 8 |\n`,
+    lines: [5, 6, 8],
   },
   {
     name: "a severed row nested in a list item (the table is not top level)",
     markdown:
       "- item\n\n  | A | B |\n  | - | - |\n  | 1 | 2 |\n\n  | 3 | 4 |\n",
-    flagged: [7],
-    fixed: "- item\n\n  | A | B |\n  | - | - |\n  | 1 | 2 |\n  | 3 | 4 |\n",
-  },
-];
-
-for (const { name, markdown, flagged, fixed } of REJOINED) {
-  test(`flagged and rejoined: ${name}`, async () => {
-    const errors = await run(markdown);
-    assert.deepEqual(
-      errors.map((error) => error.lineNumber),
-      flagged,
-    );
-    assert.equal(applyFixes(markdown, errors), fixed);
-    // A fix that leaves work behind would need a second `--fix` pass to settle.
-    assert.deepEqual(await linesFlagged(fixed), []);
-  });
-}
-
-// Rows the rule cannot prove anything about. Each is still reported — the line
-// does not render as a table row either way — but guessing at a fix here would
-// rewrite text the author never asked it to touch.
-const REPORTED_ONLY = [
-  {
-    name: "a row at the very top of a file, with nothing above to rejoin it to",
-    markdown: `${ROW}\n`,
-    flagged: [1],
+    lines: [7],
   },
   {
-    name: "a row whose only neighbour above is prose",
-    markdown: `Some prose.\n\n${ROW}\n`,
-    flagged: [3],
-  },
-  {
-    name: "a row two blank lines below a table",
+    name: "a row two blank lines below its table",
     markdown: `${TABLE}\n\n${ROW}\n`,
-    flagged: [6],
+    lines: [6],
   },
   {
     name: "a row mid-paragraph, a lazy continuation of the prose above it",
     markdown: `${TABLE}\nProse lead-in.\n${ROW}\n`,
-    flagged: [6],
+    lines: [6],
   },
   {
-    // The blank line is the only thing keeping the fix from being destructive:
-    // without that check the fix would delete the heading.
-    name: "a row whose neighbour above is a heading, not a blank line",
-    markdown: `${TABLE}# Heading\n${ROW}\n`,
-    flagged: [5],
-  },
-  {
-    // A column-0 row is not a continuation of a table indented into a list, so
-    // deleting the blank between them would rewrite the file and rejoin
-    // nothing — leaving `--fix` to churn on an error it can never clear.
-    name: "a row outdented from the list-indented table above it",
-    markdown: "- item\n\n  | A | B |\n  | - | - |\n  | 1 | 2 |\n\n| 3 | 4 |\n",
-    flagged: [7],
-  },
-  {
-    name: "a run that traces back to prose rather than to a table",
-    markdown: "prose\n| 1 | 2 |\n\n| 3 | 4 |\n",
-    flagged: [2, 4],
-  },
-  {
-    // Rejoining would hand the table the whole paragraph — a table runs to the
-    // next blank line — so the prose tail would be eaten as table rows.
-    name: "a severed row whose paragraph continues into prose",
-    markdown: `${TABLE}\n${ROW}\nplain prose sentence\n`,
-    flagged: [5],
+    name: "a row with no table anywhere above it",
+    markdown: `${ROW}\n`,
+    lines: [1],
   },
 ];
 
-for (const { name, markdown, flagged } of REPORTED_ONLY) {
-  test(`flagged but not fixed: ${name}`, async () => {
-    const errors = await run(markdown);
-    assert.deepEqual(
-      errors.map((error) => error.lineNumber),
-      flagged,
-    );
-    assert.deepEqual(
-      errors.map((error) => error.fixInfo),
-      flagged.map(() => null),
-    );
-    assert.equal(applyFixes(markdown, errors), markdown);
+for (const { name, markdown, lines } of FLAGGED) {
+  test(`flagged: ${name}`, async () => {
+    assert.deepEqual(await linesFlagged(markdown), lines);
   });
 }
 
@@ -169,8 +92,8 @@ const CLEAN = [
     markdown: `${TABLE}\nUse \`a | b\` to pipe | like this.\n`,
   },
   {
-    // Out of scope by design: deleting a bare blank line would not rejoin a
-    // quoted table, whose blank line needs its own `>`.
+    // Out of scope: inside a blockquote this rule cannot tell a severed row
+    // from prose that happens to start with a pipe.
     name: "a severed row inside a blockquote",
     markdown: "> | A | B |\n> | - | - |\n> | 1 | 2 |\n>\n> | 3 | 4 |\n",
   },
@@ -182,6 +105,18 @@ for (const { name, markdown } of CLEAN) {
   });
 }
 
+test("the rule reports but never rewrites", async () => {
+  // Deleting the severing blank line only helps when the row provably rejoins
+  // the table above it, and that proof has to survive prose tails, block
+  // containers and blockquote prefixes. A fix that guesses wrong rewrites the
+  // file without clearing the error, so `--fix` churns on it every run.
+  const errors = await run(`${TABLE}\n${ROW}\n`);
+  assert.deepEqual(
+    errors.map((error) => error.fixInfo),
+    [null],
+  );
+});
+
 test("a long row is reported truncated, a short one in full", async () => {
   const long = `| \`b\` | ${"x".repeat(200)} |`;
   const [longError] = await run(`${TABLE}\n${long}\n`);
@@ -189,16 +124,13 @@ test("a long row is reported truncated, a short one in full", async () => {
   assert.equal(longError.errorDetail, DETAIL);
   assert.equal(longError.errorContext, `${long.slice(0, 57)}...`);
 
-  const [shortError] = await run(`${TABLE}\n${ROW}\n`);
-  assert.equal(shortError.errorContext, ROW);
-
   // Exactly at the threshold is short; one over is truncated.
   const exactly60 = `| a |${" ".repeat(54)}|`;
   assert.equal(exactly60.length, 60);
   const [atLimit] = await run(`${TABLE}\n${exactly60}\n`);
   assert.equal(atLimit.errorContext, exactly60);
   const [overLimit] = await run(`${TABLE}\n${exactly60} |\n`);
-  assert.equal(overLimit.errorContext, `${exactly60} |`.slice(0, 57) + "...");
+  assert.equal(overLimit.errorContext, `${`${exactly60} |`.slice(0, 57)}...`);
 });
 
 test("the repo's own markdownlint config catches both defects it exists for", async () => {
