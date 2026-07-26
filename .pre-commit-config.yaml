@@ -47,6 +47,17 @@ repos:
     hooks:
       - id: actionlint
 
+  # Catches markdown that does not render as written — malformed tables, broken
+  # link fragments, code spans that swallow their delimiters — plus the local
+  # `orphan-table-row` rule (see scripts/markdownlint-orphan-table-row.mjs).
+  # Prettier owns whitespace/wrapping; every rule it touches is off in
+  # .markdownlint-cli2.jsonc so the two never rewrite each other.
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.1
+    hooks:
+      - id: markdownlint-cli2
+        args: [--fix]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.5
     hooks:
@@ -99,7 +110,8 @@ repos:
         # its test fixtures necessarily quote the banned idiom.
         # check_cron_alert_coverage is skipped for the same reason as
         # check_failure_notifier_coverage above: it is re-listed in strict mode.
-        args: [--skip, check_global_stdio_swap, --skip, check_cron_alert_coverage]
+        args:
+          [--skip, check_global_stdio_swap, --skip, check_cron_alert_coverage]
         # Excluded files quote the banned idioms by necessity: the prose-honesty
         # checks' test/fuzz fixtures embed un-annotated hits on purpose, the
         # README catalog must name each banned pattern to document its check,

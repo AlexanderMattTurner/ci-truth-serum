@@ -4,10 +4,13 @@
   "packageManager": "pnpm",
   "testRunner": "command",
   "commandRunner": {
-    "command": "node --test scripts/assemble-changelog.test.mjs"
+    "command": "node --test scripts/*.test.mjs"
   },
   "coverageAnalysis": "off",
-  "mutate": ["scripts/assemble-changelog.mjs"],
+  "mutate": [
+    "scripts/assemble-changelog.mjs",
+    "scripts/markdownlint-orphan-table-row.mjs"
+  ],
   "_ignore_comment": "Stryker copies the project into a sandbox; keep the Python venv, mutation artifacts, and worktrees out of it (the venv's symlinks crash the copy, and none are needed to run the JS test).",
   "ignorePatterns": [
     ".venv",

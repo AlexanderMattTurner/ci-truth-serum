@@ -18,7 +18,7 @@ Create a file named `<id>.<category>.md`:
   `fixed`, `security` (the [Keep a Changelog](https://keepachangelog.com/) groups).
 
 The file’s contents are the Markdown that will appear under that `### Category`
-heading—write it as one or more `- ` bullets, exactly as it should read in the
+heading—write it as one or more `-` bullets, exactly as it should read in the
 changelog:
 
 ```markdown

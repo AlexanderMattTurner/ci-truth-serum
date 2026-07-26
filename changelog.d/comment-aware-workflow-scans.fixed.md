@@ -1,6 +1,6 @@
 - `check-workflow-secret-names`, `check-token-fallback` and
   `check-provenance-repo-url` no longer read a YAML `#` comment as workflow
-  content. A comment merely *mentioning* `secrets.NAME`, the
+  content. A comment merely _mentioning_ `secrets.NAME`, the
   `secrets.A || secrets.B` idiom, or `npm publish` used to produce a finding
   whose only remedy was to pad `.github/workflow-secrets.txt` (or
   `package.json`) with something the workflows never use — weakening the very

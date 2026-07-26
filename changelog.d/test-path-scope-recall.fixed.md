@@ -7,7 +7,7 @@
   entirely. A scope filter's recall bug is invisible: it produces a green vacuous
   pass, never an error. There is now one shared predicate rather than two peers to
   drift, and a guard test asserts nothing else re-derives it.
-- `check-claude-model`'s `uses:` matcher put the optional `- ` before the indent
+- `check-claude-model`'s `uses:` matcher put the optional `-` before the indent
   run (`^-?\s*uses:`), so it matched an indented block-sequence entry only because
   its caller pre-stripped the line. Corrected to `^\s*-?\s*` and the strip dropped,
   so the pattern is right on its own. A commented-out or example `# uses: …` line

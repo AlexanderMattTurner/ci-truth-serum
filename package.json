@@ -38,7 +38,8 @@
     "start": "echo 'ERROR: Configure start script in package.json' && exit 1",
     "pretest": "ls scripts/*.test.mjs >/dev/null",
     "test": "node --test scripts/*.test.mjs",
-    "lint": "echo 'ERROR: Configure lint script in package.json' && exit 1",
+    "lint": "markdownlint-cli2 \"**/*.md\"",
+    "lint:fix": "markdownlint-cli2 --fix \"**/*.md\"",
     "check": "echo 'ERROR: Configure check script in package.json' && exit 1",
     "changelog:check": "node scripts/assemble-changelog.mjs --check",
     "changelog:draft": "node scripts/assemble-changelog.mjs --draft",
@@ -62,6 +63,7 @@
       "prettier --write"
     ],
     "*.md": [
+      "markdownlint-cli2 --fix",
       "prettier --write"
     ],
     ".claude/skills/*/SKILL.md": [
@@ -80,6 +82,8 @@
     "@commitlint/config-conventional": "^21.0.1",
     "@stryker-mutator/core": "^8.0.0",
     "lint-staged": "^17.0.5",
+    "markdownlint": "^0.41.1",
+    "markdownlint-cli2": "^0.23.1",
     "prettier": "^3.0.0"
   }
 }

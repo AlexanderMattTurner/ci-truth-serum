@@ -70,8 +70,7 @@ jobs:
     with:
       filters: |
         run:
-          - 'scripts/assemble-changelog.mjs'
-          - 'scripts/assemble-changelog.test.mjs'
+          - 'scripts/*.mjs'
           - 'stryker.config.json'
           - 'package.json'
           - 'pnpm-lock.yaml'
