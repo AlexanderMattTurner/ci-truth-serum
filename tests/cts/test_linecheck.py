@@ -551,11 +551,11 @@ def test_group_is_per_ref_requires_expression_span(group: str, per_ref: bool) ->
 
 
 # ── is_test_path: one predicate, two consumers ───────────────────────────
-# check_drift_guards scopes its phrase pass to tests; check_toolchain_skips
-# scopes its skipif scan to what pytest collects. Two hand-rolled peers had
-# already diverged, and BOTH were dead for the shortest members of the set — a
-# scope filter's recall bug produces a green vacuous pass, never an error, so it
-# is enumerated member by member here.
+# check_test_predicate_shadow scopes its test-side scan to tests;
+# check_toolchain_skips scopes its skipif scan to what pytest collects. Two
+# hand-rolled peers had already diverged, and BOTH were dead for the shortest
+# members of the set — a scope filter's recall bug produces a green vacuous
+# pass, never an error, so it is enumerated member by member here.
 
 
 @pytest.mark.parametrize(

@@ -15,8 +15,6 @@ other while every consumer's pin still 404s.
 import json
 import re
 
-import pytest
-
 from tests._helpers import REPO_ROOT
 
 _REV = re.compile(r"^\s*rev:\s*(?P<rev>\S+)", re.MULTILINE)
@@ -27,11 +25,9 @@ def _released_version() -> str:
     return manifest["version"]
 
 
-@pytest.mark.drift_guard(
-    "the README's yaml examples are prose a consumer copy-pastes — they cannot "
-    "read package.json at render time, so the doc copy is pinned against the "
-    "release SSOT here instead"
-)
+# The README's yaml examples are prose a consumer copy-pastes — they cannot
+# read package.json at render time, so the doc copy is pinned against the
+# release SSOT here instead.
 def test_readme_rev_pins_name_the_released_tag() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     revs = _REV.findall(readme)

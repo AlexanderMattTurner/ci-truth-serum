@@ -134,10 +134,10 @@ def test_matches_markdown(tmp_path):
     p = tmp_path / "notes.md"
     p.write_text("# heading\n")
     assert rt.matches(str(p), rt.MARKDOWN) is True
-    assert rt.matches(str(p), rt.COMMENTED_CODE) is False
+    assert rt.matches(str(p), rt.SHELL) is False
 
 
-def test_matches_commented_code_accepts_each_language(tmp_path):
+def test_matches_prose_or_commented_code_accepts_each_language(tmp_path):
     for name, body in [
         ("s.sh", "#!/usr/bin/env bash\n"),
         ("m.py", "x = 1\n"),
@@ -146,24 +146,7 @@ def test_matches_commented_code_accepts_each_language(tmp_path):
     ]:
         p = tmp_path / name
         p.write_text(body)
-        assert rt.matches(str(p), rt.COMMENTED_CODE) is True, name
         assert rt.matches(str(p), rt.PROSE_OR_COMMENTED_CODE) is True, name
-
-
-def test_matches_drift_accepts_python_js_ts_shell_only(tmp_path):
-    for name, body in [
-        ("m.py", "x = 1\n"),
-        ("c.test.mjs", "test('x', () => {});\n"),
-        ("j.js", "let x = 1;\n"),
-        ("t.ts", "let x = 1;\n"),
-        ("s.sh", "#!/usr/bin/env bash\n"),
-    ]:
-        p = tmp_path / name
-        p.write_text(body)
-        assert rt.matches(str(p), rt.DRIFT) is True, name
-    md = tmp_path / "notes.md"
-    md.write_text("# heading\n")
-    assert rt.matches(str(md), rt.DRIFT) is False
 
 
 def test_matches_prose_or_commented_code_accepts_prose(tmp_path):

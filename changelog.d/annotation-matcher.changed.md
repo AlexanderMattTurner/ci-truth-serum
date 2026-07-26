@@ -10,9 +10,6 @@
   unverified artifact download), while `wget -qO file` / `curl -fsSLO` remain
   artifacts and `wget -qO- url | sh` still fires; a shell redirect to a file
   now wins over a stdout sink flag (`wget -qO- url > tool` is an artifact).
-- `check-drift-guards`' non-Python phrase pass only scans TEST files
-  (`tests/`-like directories, `test_*`, `*.test.*`/`*.spec.*`) — production
-  scripts' own "keeps X in sync" comments no longer false-positive.
 - `check-flag-arity` tracks the arity a guard actually PROVES as a number: a
   `[[ $# -ge 2 ]] || die` no longer clears an arm that reads `$3`/`shift 3`,
   a defaulting `${2:-x}` read no longer excuses a following `shift 2`, and a

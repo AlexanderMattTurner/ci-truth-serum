@@ -4,7 +4,7 @@ tokens that hit their real branches and must never raise, every reported line
 number must refer to a real line, and the same input must yield the same
 result (the same contract as the sibling fuzz suites).
 
-Covered here: check_token_fallback, check_workflow_secret_names,
+Covered here: check_token_fallback,
 check_provenance_repo_url (URL normalization), check_pin_comment_truth,
 check_stderr_merge_parse, check_echo_fallback, check_case_default,
 check_lockstep_pins, check_cron_comment, check_toolchain_skips, and
@@ -17,9 +17,6 @@ from hypothesis import strategies as st
 from tests._helpers import load_hook
 
 token_fallback = load_hook("check_token_fallback.py", "fuzz_check_token_fallback")
-secret_names = load_hook(
-    "check_workflow_secret_names.py", "fuzz_check_workflow_secret_names"
-)
 provenance = load_hook("check_provenance_repo_url.py", "fuzz_check_provenance_repo_url")
 pin_comment = load_hook("check_pin_comment_truth.py", "fuzz_check_pin_comment_truth")
 stderr_merge = load_hook("check_stderr_merge_parse.py", "fuzz_check_stderr_merge_parse")
@@ -118,16 +115,6 @@ def test_line_detectors_never_crash_and_report_real_lines(text: str) -> None:
         assert detector(text) == result, name  # deterministic
         for lineno in _line_numbers(result):
             assert 1 <= lineno <= max(n_lines, 1), name
-
-
-@given(_text)
-def test_secret_names_extraction_is_total_and_deterministic(text: str) -> None:
-    names = secret_names.referenced_names(text)
-    assert names == secret_names.referenced_names(text)
-    assert all(isinstance(n, str) and n for n in names)
-    assert secret_names.check_repo(names, text) is not None
-    parsed = secret_names.parse_allowlist(text)
-    assert all(isinstance(n, str) for n in parsed)
 
 
 @given(st.text(max_size=200))

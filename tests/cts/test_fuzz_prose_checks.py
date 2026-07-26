@@ -1,6 +1,5 @@
-"""Property/fuzz tests for the prose/comment-honesty extras: check_drift_guards,
-check_graceful_handwave, check_historical_comments, check_doc_line_refs,
-check_workflow_refs.
+"""Property/fuzz tests for the prose/comment extras: check_doc_line_refs,
+check_stray_tool_markup, check_workflow_refs.
 
 Same contract as test_fuzz_parsers.py: the detectors are fed whatever bytes
 happen to be staged and must never raise an unexpected exception; every reported
@@ -16,31 +15,16 @@ from hypothesis import strategies as st
 
 from tests._helpers import load_hook
 
-drift_guards = load_hook("check_drift_guards.py", "fuzz_check_drift_guards")
-graceful = load_hook("check_graceful_handwave.py", "fuzz_check_graceful_handwave")
-historical = load_hook("check_historical_comments.py", "fuzz_check_historical_comments")
 doc_line_refs = load_hook("check_doc_line_refs.py", "fuzz_check_doc_line_refs")
 stray_markup = load_hook("check_stray_tool_markup.py", "fuzz_check_stray_tool_markup")
 workflow_refs = load_hook("check_workflow_refs.py", "fuzz_check_workflow_refs")
 
 # Tokens the detectors actually look for, so generated text isn't all inert
-# noise — it hits real branches (guard phrasing, markers, annotations, fences,
-# line-cite shapes, comment/URL boundaries, Python syntax fragments).
+# noise — it hits real branches (markers, annotations, fences, line-cite
+# shapes, comment/URL boundaries, Python syntax fragments).
 _TOKENS = [
     "def test_sync():",
-    '    """drift guard: the two lists agree"""',
-    '@pytest.mark.drift_guard("external value, no SSOT")',
-    "@pytest.mark.drift_guard()",
-    "async def test_kept_in_sync():",
     "class T:",
-    "# a graceful fallback",
-    "// degrades gracefully",
-    "graceful_shutdown()",
-    "# allow-graceful: exits 0 and skips the write",
-    "# formerly a no-op",
-    "// switched to the lazy reader",
-    "# allow-history: parses the legacy shape",
-    'msg = "renamed from old to new"',
     "```",
     "```yaml",
     "(L12)",
@@ -101,32 +85,6 @@ def _assert_line_numbers_valid(hits: list[int], text: str) -> None:
     n = len(text.splitlines())
     assert all(isinstance(h, int) and 1 <= h <= n for h in hits)
     assert hits == sorted(hits)
-
-
-@given(_texts())
-def test_historical_violations_no_crash_and_valid_lines(text: str) -> None:
-    hits = historical.violations(text)
-    assert hits == historical.violations(text)  # deterministic
-    _assert_line_numbers_valid(hits, text)
-
-
-@given(_texts(), st.booleans())
-def test_graceful_violations_no_crash_and_valid_lines(text: str, prose: bool) -> None:
-    hits = graceful.violations(text, prose)
-    assert hits == graceful.violations(text, prose)  # deterministic
-    _assert_line_numbers_valid(hits, text)
-    # code mode can only ever flag a subset of what prose mode sees
-    if not prose:
-        assert set(hits) <= set(graceful.violations(text, True))
-
-
-@given(_texts())
-def test_drift_guards_violations_no_crash_and_shape(text: str) -> None:
-    hits = drift_guards.violations(text)
-    assert hits == drift_guards.violations(text)  # deterministic
-    for lineno, name in hits:
-        assert isinstance(lineno, int) and lineno >= 1
-        assert name.startswith("test_")
 
 
 @given(_texts())
