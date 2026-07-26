@@ -34,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
+    comment_body,
     run_line_checks,
 )
 
@@ -62,25 +63,6 @@ _MARKER_RE = re.compile(
 )
 
 _ALLOW = "allow-history"
-
-
-def comment_body(line: str) -> str | None:
-    """The comment text of LINE, or None when LINE carries no comment.
-
-    A full-line ``#`` / ``//`` / ``/*`` comment returns the whole stripped line; a
-    trailing ``code  # ...`` / ``code  // ...`` comment returns the text from the
-    delimiter on. A ``#`` / ``//`` inside code (``${#arr}``, ``https://``) is not a
-    comment delimiter, so it is not matched — the trailing form requires the
-    surrounding whitespace a real inline comment has."""
-    stripped = line.lstrip()
-    if stripped.startswith(("#", "//", "/*")):
-        return stripped
-    indices = [line.find(delim) for delim in (" # ", " // ")]
-    starts = [i for i in indices if i != -1]
-    if starts:
-        # Skip the single leading space of the delimiter so the body starts at #//.
-        return line[min(starts) + 1 :]
-    return None
 
 
 def violations(text: str) -> list[int]:

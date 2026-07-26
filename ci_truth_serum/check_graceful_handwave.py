@@ -38,7 +38,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated,
+    comment_body,
+)
 
 _WORD_RE = re.compile(r"\bgraceful(?:ly)?\b", re.IGNORECASE)
 _ALLOW = "allow-graceful"
@@ -53,21 +56,6 @@ MESSAGE = (
     "produces which output / exit code / fallback), or, when the behaviour is "
     "genuinely named, annotate `allow-graceful: <what actually happens>`."
 )
-
-
-def comment_body(line: str) -> str | None:
-    """The comment text of LINE, or None when LINE carries no comment.
-
-    A full-line ``#`` / ``//`` / ``/*`` / ``*`` comment returns the whole
-    stripped line; a trailing ``code  # ...`` / ``code  // ...`` comment returns
-    the text from the delimiter on. A bare ``#`` / ``//`` inside code
-    (``${#arr}``, ``https://``) is not a comment delimiter — the trailing form
-    requires the surrounding whitespace a real inline comment has."""
-    stripped = line.lstrip()
-    if stripped.startswith(("#", "//", "/*", "*")):
-        return stripped
-    starts = [i for i in (line.find(" # "), line.find(" // ")) if i != -1]
-    return line[min(starts) + 1 :] if starts else None
 
 
 def violations(text: str, prose: bool) -> list[int]:

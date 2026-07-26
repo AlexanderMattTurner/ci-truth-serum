@@ -384,6 +384,13 @@
   language: python
   types: [markdown]
 
+- id: check-workflow-refs
+  name: "extra: ban a doc/comment citing a workflow file that does not exist"
+  description: A renamed or consolidated workflow leaves every sentence naming the old file pointing at nothing; the citation is a bare basename, so no link checker catches it.
+  entry: python -m ci_truth_serum.check_workflow_refs
+  language: python
+  types_or: [shell, python, javascript, ts, markdown, rst, yaml]
+
 - id: check-flag-arity
   name: "extra: require an arity guard on value-taking CLI flag arms"
   description: A `--flag) x=$2; shift 2` arm relying only on the loop's `$# -gt 0` dies with a raw unbound-variable error when the flag is passed last; guard `$2` before reading it.

@@ -1,5 +1,6 @@
 """Property/fuzz tests for the prose/comment-honesty extras: check_drift_guards,
-check_graceful_handwave, check_historical_comments, check_doc_line_refs.
+check_graceful_handwave, check_historical_comments, check_doc_line_refs,
+check_workflow_refs.
 
 Same contract as test_fuzz_parsers.py: the detectors are fed whatever bytes
 happen to be staged and must never raise an unexpected exception; every reported
@@ -20,6 +21,7 @@ graceful = load_hook("check_graceful_handwave.py", "fuzz_check_graceful_handwave
 historical = load_hook("check_historical_comments.py", "fuzz_check_historical_comments")
 doc_line_refs = load_hook("check_doc_line_refs.py", "fuzz_check_doc_line_refs")
 stray_markup = load_hook("check_stray_tool_markup.py", "fuzz_check_stray_tool_markup")
+workflow_refs = load_hook("check_workflow_refs.py", "fuzz_check_workflow_refs")
 
 # Tokens the detectors actually look for, so generated text isn't all inert
 # noise — it hits real branches (guard phrasing, markers, annotations, fences,
@@ -57,6 +59,12 @@ _TOKENS = [
     '<parameter name="content">',
     "<function_calls>",
     "</content>",
+    "# the CI job moved to evals.yaml",
+    "# dispatched by release-prep.yaml",
+    "see .github/workflows/breakout-ctf.yaml",
+    "# no pnpm-lock.yaml here",
+    "<!-- allow-workflow-ref: template repo -->",
+    "# allow-workflow-ref:",
     "# allow-stray-markup: fixture",
     "<!-- allow-stray-markup: docs -->",
     'echo "${#arr}"',
@@ -136,3 +144,19 @@ def test_stray_markup_violations_no_crash_and_valid_lines(text: str) -> None:
     hits = stray_markup.violations(text)
     assert hits == stray_markup.violations(text)  # deterministic
     _assert_line_numbers_valid(hits, text)
+
+
+@given(_texts(), st.booleans(), st.booleans())
+def test_workflow_refs_violations_no_crash_and_shape(
+    text: str, prose: bool, dot_github: bool
+) -> None:
+    workflows, tracked = {"evals.yaml"}, {"evals.yaml", "pnpm-lock.yaml"}
+    hits = workflow_refs.violations(text, prose, workflows, tracked, dot_github)
+    # deterministic
+    assert hits == workflow_refs.violations(text, prose, workflows, tracked, dot_github)
+    lines = text.splitlines()
+    for lineno, cited in hits:
+        assert 1 <= lineno <= len(lines)
+        assert cited in lines[lineno - 1]
+        # A name that resolves is never reported, whatever the surrounding bytes.
+        assert not cited.endswith("evals.yaml")

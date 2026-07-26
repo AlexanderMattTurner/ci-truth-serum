@@ -73,6 +73,7 @@ FUZZ_REQUIRED = {
     "check_graceful_handwave": "violations",
     "check_historical_comments": "violations",
     "check_doc_line_refs": "violations",
+    "check_workflow_refs": "violations",
     "check_flag_arity": "violations",
     "check_secret_file_perms": "violations",
     "check_token_fallback": "violations",
