@@ -55,6 +55,15 @@ const REJOINED = [
     fixed: `${TABLE}${ROW}\n| \`c\` | third |\n`,
   },
   {
+    // Two rows in one paragraph, then another paragraph: a walk that stepped
+    // line-pair-wise instead of paragraph-wise would settle only the first run
+    // per pass, so `--fix` would rewrite the file on every invocation.
+    name: "a run of multi-row paragraphs, all rejoined in one pass",
+    markdown: `${TABLE}\n| 3 | 4 |\n| 5 | 6 |\n\n| 7 | 8 |\n`,
+    flagged: [5, 6, 8],
+    fixed: `${TABLE}| 3 | 4 |\n| 5 | 6 |\n| 7 | 8 |\n`,
+  },
+  {
     name: "a severed row nested in a list item (the table is not top level)",
     markdown:
       "- item\n\n  | A | B |\n  | - | - |\n  | 1 | 2 |\n\n  | 3 | 4 |\n",
@@ -99,6 +108,21 @@ const REPORTED_ONLY = [
     name: "a row mid-paragraph, a lazy continuation of the prose above it",
     markdown: `${TABLE}\nProse lead-in.\n${ROW}\n`,
     flagged: [6],
+  },
+  {
+    // The blank line is the only thing keeping the fix from being destructive:
+    // without that check the fix would delete the heading.
+    name: "a row whose neighbour above is a heading, not a blank line",
+    markdown: `${TABLE}# Heading\n${ROW}\n`,
+    flagged: [5],
+  },
+  {
+    // A column-0 row is not a continuation of a table indented into a list, so
+    // deleting the blank between them would rewrite the file and rejoin
+    // nothing — leaving `--fix` to churn on an error it can never clear.
+    name: "a row outdented from the list-indented table above it",
+    markdown: "- item\n\n  | A | B |\n  | - | - |\n  | 1 | 2 |\n\n| 3 | 4 |\n",
+    flagged: [7],
   },
   {
     name: "a run that traces back to prose rather than to a table",
@@ -167,6 +191,14 @@ test("a long row is reported truncated, a short one in full", async () => {
 
   const [shortError] = await run(`${TABLE}\n${ROW}\n`);
   assert.equal(shortError.errorContext, ROW);
+
+  // Exactly at the threshold is short; one over is truncated.
+  const exactly60 = `| a |${" ".repeat(54)}|`;
+  assert.equal(exactly60.length, 60);
+  const [atLimit] = await run(`${TABLE}\n${exactly60}\n`);
+  assert.equal(atLimit.errorContext, exactly60);
+  const [overLimit] = await run(`${TABLE}\n${exactly60} |\n`);
+  assert.equal(overLimit.errorContext, `${exactly60} |`.slice(0, 57) + "...");
 });
 
 test("the repo's own markdownlint config catches both defects it exists for", async () => {
@@ -193,6 +225,9 @@ test("the repo's own markdownlint config catches both defects it exists for", as
         );
         return "";
       } catch (exit) {
+        // Only a real lint failure carries an exit status; anything else (a
+        // missing binary, say) must not be mistaken for "found no issues".
+        if (exit.status === undefined) throw exit;
         return `${exit.stdout}${exit.stderr}`;
       }
     } finally {

@@ -43,32 +43,50 @@ const scan = (tokens) => {
   return { inTable, paragraphs };
 };
 
-// Autofix only the shape this rule exists to catch: a row sitting one blank
-// line below a table that ends directly above, which deleting that blank line
-// rejoins. Requiring a blank line immediately above also excludes a row buried
-// mid-paragraph — its predecessor is prose by definition — where deleting a
-// line would splice unrelated text into a table.
-const severingBlankLine = (lines, lineNumber, inTable) => {
-  const index = lineNumber - 1;
-  // Step up over blank/row pairs — each severed row sits one blank line below
-  // the previous — and stop as soon as the pair above is a real table, whose
-  // severing blank line is the one directly above this row.
-  let i = index;
-  while (i >= 2 && isBlank(lines[i - 1]) && isTableRowShaped(lines[i - 2])) {
-    if (inTable.has(i - 1)) return index;
-    i -= 2;
-  }
-  return null;
-};
+const indentOf = (line) => line.length - line.trimStart().length;
 
-// Deleting the blank line hands the table every line of this paragraph, since
-// a table runs to the next blank line. A prose tail would be silently eaten as
-// table rows, so a paragraph that is not rows all the way down gets no fix.
+// Deleting the blank line hands the table every line of the paragraph below,
+// since a table runs to the next blank line. A prose tail would be silently
+// eaten as table rows, so only an all-rows paragraph can ever be rejoined.
 const allRows = (lines, from, to) => {
   for (let n = from; n <= to; n++) {
     if (!isTableRowShaped(lines[n - 1])) return false;
   }
   return true;
+};
+
+// Autofix only the shape this rule exists to catch: an all-rows paragraph
+// sitting one blank line below a table it was severed from, which deleting
+// that blank line rejoins. Returns the blank line's number, or null.
+//
+// The walk steps paragraph-wise so a run of severed paragraphs is rejoined in
+// a single `--fix` pass — every blank line in the run is reported at once,
+// rather than the run collapsing one paragraph per pass.
+//
+// Indentation must match the table's: a col-0 row is not a continuation of a
+// table indented inside a list item, so deleting the blank between them would
+// rewrite the file without rejoining anything, leaving the error live forever.
+const severingBlankLine = (lines, paragraph, byEndLine, inTable) => {
+  const indent = indentOf(lines[paragraph.startLine - 1]);
+  let start = paragraph.startLine;
+  while (start >= 3 && isBlank(lines[start - 2])) {
+    const above = start - 2;
+    if (inTable.has(above)) {
+      // The line to delete is this paragraph's own severing blank, not the
+      // one that severed whichever paragraph the walk finished on.
+      return indentOf(lines[above - 1]) === indent
+        ? paragraph.startLine - 1
+        : null;
+    }
+    // Not a table yet: keep walking only through earlier severed paragraphs of
+    // the same run. Anything else above means there is nothing to rejoin to.
+    const previous = byEndLine.get(above);
+    if (!previous || !allRows(lines, previous.startLine, previous.endLine)) {
+      return null;
+    }
+    start = previous.startLine;
+  }
+  return null;
 };
 
 export default {
@@ -79,18 +97,22 @@ export default {
   parser: "micromark",
   function: ({ lines, parsers }, onError) => {
     const { inTable, paragraphs } = scan(parsers.micromark.tokens);
+    const byEndLine = new Map(paragraphs.map((p) => [p.endLine, p]));
     for (const paragraph of paragraphs) {
-      const fixable = allRows(lines, paragraph.startLine, paragraph.endLine);
+      const fixLine = allRows(lines, paragraph.startLine, paragraph.endLine)
+        ? severingBlankLine(lines, paragraph, byEndLine, inTable)
+        : null;
       for (let n = paragraph.startLine; n <= paragraph.endLine; n++) {
         const line = lines[n - 1];
         if (!isTableRowShaped(line)) continue;
-        const fixLine = fixable ? severingBlankLine(lines, n, inTable) : null;
         onError({
           lineNumber: n,
           detail:
             "GFM tables end at the first blank line; this row renders as literal text",
           context: line.length > 60 ? `${line.slice(0, 57)}...` : line,
-          ...(fixLine === null
+          // One deletion per severed paragraph: the fix belongs to the run, not
+          // to each row in it.
+          ...(fixLine === null || n !== paragraph.startLine
             ? {}
             : { fixInfo: { lineNumber: fixLine, deleteCount: -1 } }),
         });
