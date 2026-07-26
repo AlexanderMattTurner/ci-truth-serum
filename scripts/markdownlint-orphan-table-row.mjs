@@ -7,6 +7,10 @@
 // `| pipe | text |`. No stock markdownlint rule fires: MD055/MD056 only inspect
 // rows the parser already accepted as part of a table.
 //
+// Scope: rows at the document's own indentation. A row inside a blockquote
+// (`> | a | b |`) is not matched, because the fix — deleting a blank line —
+// would not rejoin it anyway; the quote's blank line needs its own `>`.
+//
 // Loaded by markdownlint-cli2 (see .markdownlint-cli2.jsonc) in an environment
 // that installs no other packages, so this module must stay import-free.
 
@@ -20,29 +24,23 @@ const isTableRowShaped = (line) => TABLE_ROW.test(line);
 
 const isBlank = (line) => line.trim() === "";
 
-/** Line numbers (1-based) the parser accepted as part of a real table. */
-const tableLineNumbers = (tokens) => {
-  const lines = new Set();
+/**
+ * One pass over the micromark token tree: the 1-based line numbers the parser
+ * accepted as part of a real table, and every paragraph token.
+ */
+const scan = (tokens) => {
+  const inTable = new Set();
+  const paragraphs = [];
   const walk = (token) => {
     if (token.type === "table") {
-      for (let n = token.startLine; n <= token.endLine; n++) lines.add(n);
+      for (let n = token.startLine; n <= token.endLine; n++) inTable.add(n);
       return;
     }
+    if (token.type === "paragraph") paragraphs.push(token);
     for (const child of token.children ?? []) walk(child);
   };
   for (const token of tokens) walk(token);
-  return lines;
-};
-
-/** Paragraph tokens, flattened out of the micromark token tree. */
-const paragraphs = (tokens) => {
-  const found = [];
-  const walk = (token) => {
-    if (token.type === "paragraph") found.push(token);
-    for (const child of token.children ?? []) walk(child);
-  };
-  for (const token of tokens) walk(token);
-  return found;
+  return { inTable, paragraphs };
 };
 
 // Autofix only the shape this rule exists to catch: a row sitting one blank
@@ -52,17 +50,25 @@ const paragraphs = (tokens) => {
 // line would splice unrelated text into a table.
 const severingBlankLine = (lines, lineNumber, inTable) => {
   const index = lineNumber - 1;
-  if (index === 0 || !isBlank(lines[index - 1])) return null;
-  // Walk up over earlier orphan rows of the same severed run — each one a
-  // table-shaped line sitting under exactly one blank line — and require the
-  // run to terminate in a real table. A run that traces back to prose (or to
-  // the top of the file) is not a severed table, so it gets no fix.
-  let i = index - 2;
-  while (i >= 0 && isTableRowShaped(lines[i]) && !inTable.has(i + 1)) {
-    if (i === 0 || !isBlank(lines[i - 1])) return null;
+  // Step up over blank/row pairs — each severed row sits one blank line below
+  // the previous — and stop as soon as the pair above is a real table, whose
+  // severing blank line is the one directly above this row.
+  let i = index;
+  while (i >= 2 && isBlank(lines[i - 1]) && isTableRowShaped(lines[i - 2])) {
+    if (inTable.has(i - 1)) return index;
     i -= 2;
   }
-  return i >= 0 && inTable.has(i + 1) ? index : null;
+  return null;
+};
+
+// Deleting the blank line hands the table every line of this paragraph, since
+// a table runs to the next blank line. A prose tail would be silently eaten as
+// table rows, so a paragraph that is not rows all the way down gets no fix.
+const allRows = (lines, from, to) => {
+  for (let n = from; n <= to; n++) {
+    if (!isTableRowShaped(lines[n - 1])) return false;
+  }
+  return true;
 };
 
 export default {
@@ -72,12 +78,13 @@ export default {
   tags: ["tables"],
   parser: "micromark",
   function: ({ lines, parsers }, onError) => {
-    const inTable = tableLineNumbers(parsers.micromark.tokens);
-    for (const paragraph of paragraphs(parsers.micromark.tokens)) {
+    const { inTable, paragraphs } = scan(parsers.micromark.tokens);
+    for (const paragraph of paragraphs) {
+      const fixable = allRows(lines, paragraph.startLine, paragraph.endLine);
       for (let n = paragraph.startLine; n <= paragraph.endLine; n++) {
         const line = lines[n - 1];
         if (!isTableRowShaped(line)) continue;
-        const fixLine = severingBlankLine(lines, n, inTable);
+        const fixLine = fixable ? severingBlankLine(lines, n, inTable) : null;
         onError({
           lineNumber: n,
           detail:
