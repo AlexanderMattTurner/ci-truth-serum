@@ -94,10 +94,9 @@ repos:
         pass_filenames: false
         always_run: true
         additional_dependencies: [PyYAML]
-      - id: check-cron-alert-coverage-strict
+      - id: check-cron-alert-coverage
         name: "dogfood: every scheduled workflow's failures must reach a human"
         entry: python -m ci_truth_serum.check_cron_alert_coverage
-        args: [--require-alert]
         language: python
         pass_filenames: false
         always_run: true

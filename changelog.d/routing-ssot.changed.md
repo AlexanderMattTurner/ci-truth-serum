@@ -12,7 +12,7 @@
   a workflow whose failure is already a check on the PR paged for a red a reviewer
   was looking at. A repo may still watch more than that minimum: a listed name is
   reported stale only when it matches no workflow in the tree.
-- **Behaviour change:** `check-cron-alert-coverage --require-alert` now accepts a
+- **Behaviour change:** `check-cron-alert-coverage` now accepts a
   failure notifier that watches the scheduled workflow as coverage, so a repo whose
   crons are covered centrally is no longer told to add a notification step that
   would page twice. A `pull_request` trigger is deliberately NOT accepted there: a

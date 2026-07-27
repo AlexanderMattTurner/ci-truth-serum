@@ -444,7 +444,7 @@
 
 - id: check-cron-alert-coverage
   name: "extra: a scheduled workflow's failures must reach a human"
-  description: A cron has no PR surface, so its red is visible only in the Actions tab; a notifier behind a success-only gate reads as coverage and fires never.
+  description: A cron has no PR surface, so its red is visible only in the Actions tab; a notifier behind a success-only gate reads as coverage and fires never. Fails closed — a repo that routes its crons nowhere passes --allow-unrouted.
   entry: python -m ci_truth_serum.check_cron_alert_coverage
   language: python
   additional_dependencies: [PyYAML]

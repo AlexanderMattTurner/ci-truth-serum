@@ -50,14 +50,20 @@ placeholder ("n/a", "none", "not needed"), is a failure: the reason is the
 entire point of the marker, because it is the only thing a reviewer can
 actually check.
 
-Two modes, split at the line between a repo that has not adopted the pattern and
-one that has adopted it wrongly. By DEFAULT the only findings are (a) a malformed
-`# cron-alert:` marker and (b) a notifier a SUCCESS-ONLY gate blocks — claiming
-coverage you do not have is worse than claiming none, while a scheduled workflow
-with no notifier at all is simply un-adopted and stays silent, so the hook can
-ship in a default hook set. With `--require-alert`, every scheduled workflow must
-be routed to a human by one of the three ways above; a notifier gated on
-something unrelated to status (an output, an event name) no longer suffices.
+The check FAILS CLOSED, like check_failure_notifier_coverage's notifier
+discovery: by default every scheduled workflow must reach a human by one of the
+three routes above, and a repo that deliberately routes its crons nowhere says
+so with `--allow-unrouted`. A silent pass on a tree where nothing is routed is
+the one outcome this check must never produce — it verified nothing, and
+"verified nothing" is indistinguishable from "everything is covered" in exactly
+the tree where the distinction matters.
+
+`--allow-unrouted` is a narrower silence, not a mute: a malformed
+`# cron-alert:` marker and a notifier a SUCCESS-ONLY gate blocks are still
+findings under it, because claiming coverage you do not have is worse than
+claiming none. Only the un-adopted case — a scheduled workflow with no notifier
+at all — goes quiet.
+
 Globs every workflow like the other workflow lints; the passed file list is
 ignored.
 """
@@ -228,12 +234,15 @@ def main(argv: list[str] | None = None) -> int:
         "extends the built-in patterns rather than replacing them",
     )
     parser.add_argument(
-        "--require-alert",
+        "--allow-unrouted",
         action="store_true",
-        help="also fail a scheduled workflow that has no notifier at all "
-        "(default: only a notifier no failure can reach is a finding)",
+        help="pass a scheduled workflow that routes its failures nowhere at all; "
+        "without it an unrouted cron is a failure, because a check that verifies "
+        "nothing must not report success. A malformed marker and a notifier "
+        "blocked by a success-only gate remain findings either way",
     )
     args = parser.parse_args(argv)
+    require_alert = not args.allow_unrouted
     matcher = notifier_matcher(args.notifier_pattern)
     watched = tree_watched_names(matcher)
 
@@ -241,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     for path in workflow_files():
         rel = path.relative_to(REPO_ROOT)
         found = violations(
-            path.read_text(encoding="utf-8"), matcher, args.require_alert, watched
+            path.read_text(encoding="utf-8"), matcher, require_alert, watched
         )
         for line, message in found:
             print(f"::error file={rel},line={line}::{message}")
@@ -252,6 +261,12 @@ def main(argv: list[str] | None = None) -> int:
             "A scheduled workflow has no PR surface — a red nobody is told about "
             "is indistinguishable from a green."
         )
+        if require_alert:
+            print(
+                "A repo that deliberately routes its scheduled failures nowhere "
+                "passes --allow-unrouted; it keeps failing on a malformed marker "
+                "and on a notifier a success-only gate blocks."
+            )
         return 1
     return 0
 
