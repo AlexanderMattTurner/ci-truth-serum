@@ -389,7 +389,7 @@ def test_main_is_clean_on_a_compliant_tree(tmp_path, monkeypatch, capsys):
             "pr.yaml": "name: p\non:\n  pull_request:\njobs: {}\n",
         },
     )
-    assert cac.main(["--require-alert"]) == 0
+    assert cac.main([]) == 0
     assert capsys.readouterr().out == ""
 
 
@@ -408,7 +408,7 @@ def test_main_accepts_repeated_notifier_patterns(tmp_path, monkeypatch, capsys):
         "        run: ./bin/page\n"
     )
     _tree(tmp_path, monkeypatch, {"a.yaml": text})
-    assert cac.main([]) == 0
+    assert cac.main(["--allow-unrouted"]) == 0
     assert (
         cac.main(["--notifier-pattern", "siren", "--notifier-pattern", "klaxon"]) == 1
     )
@@ -419,6 +419,55 @@ def test_main_argv_defaults_to_sys_argv(tmp_path, monkeypatch):
     _tree(tmp_path, monkeypatch, {"a.yaml": _workflow(step_gate="success()")})
     monkeypatch.setattr(sys, "argv", ["check_cron_alert_coverage"])
     assert cac.main() == 1
+
+
+# ── fail-closed default and its one escape ───────────────────────────────
+def test_main_fails_closed_on_an_unrouted_cron_with_no_flags(
+    tmp_path, monkeypatch, capsys
+):
+    # The whole point of the default: a tree where nothing is routed must not
+    # read as a tree where everything is covered.
+    _tree(tmp_path, monkeypatch, {"a.yaml": BARE_CRON})
+    assert cac.main([]) == 1
+    out = capsys.readouterr().out
+    assert "routes its failures nowhere" in out
+    assert "--allow-unrouted" in out, "the escape must be named in the failure"
+
+
+def test_allow_unrouted_silences_the_same_tree(tmp_path, monkeypatch, capsys):
+    # Non-vacuity pair with the case above: byte-identical tree, one flag.
+    _tree(tmp_path, monkeypatch, {"a.yaml": BARE_CRON})
+    assert cac.main(["--allow-unrouted"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    ("case", "body", "expected"),
+    [
+        ("success-gated notifier", _workflow(step_gate="success()"), "success-only"),
+        (
+            "malformed marker",
+            _workflow(marker="# cron-alert: false", step_name="build"),
+            "cron-alert",
+        ),
+    ],
+)
+def test_allow_unrouted_still_fails_on_a_false_claim_of_coverage(
+    tmp_path, monkeypatch, capsys, case, body, expected
+):
+    # --allow-unrouted excuses only the un-adopted case. Claiming coverage you
+    # do not have stays a finding, or the flag would be a mute switch.
+    _tree(tmp_path, monkeypatch, {"a.yaml": body})
+    assert cac.main(["--allow-unrouted"]) == 1, case
+    assert expected in capsys.readouterr().out, case
+
+
+def test_allow_unrouted_is_the_only_flag_that_relaxes_the_default(capsys):
+    # A repo cannot reach the lenient mode by any other spelling: the removed
+    # --require-alert must not survive as an accepted no-op that reads as
+    # enforcement while changing nothing.
+    with pytest.raises(SystemExit):
+        cac.main(["--require-alert"])
 
 
 def _notifier_over(*names: str) -> str:
@@ -440,7 +489,7 @@ def test_main_credits_a_workflow_the_discovered_notifier_lists(
         monkeypatch,
         {"a.yaml": BARE_CRON, "notify.yaml": _notifier_over("Nightly")},
     )
-    assert cac.main(["--require-alert"]) == 0
+    assert cac.main([]) == 0
     assert capsys.readouterr().out == ""
 
 
@@ -452,7 +501,7 @@ def test_main_still_flags_a_workflow_the_notifier_does_not_list(
         monkeypatch,
         {"a.yaml": BARE_CRON, "notify.yaml": _notifier_over("Something else")},
     )
-    assert cac.main(["--require-alert"]) == 1
+    assert cac.main([]) == 1
     assert "routes its failures nowhere" in capsys.readouterr().out
 
 
@@ -466,7 +515,7 @@ def test_main_does_not_credit_a_list_on_a_workflow_that_is_not_a_notifier(
         '      - "Nightly"\n    types: [completed]\njobs: {}\n'
     )
     _tree(tmp_path, monkeypatch, {"a.yaml": BARE_CRON, "collect.yaml": collector})
-    assert cac.main(["--require-alert"]) == 1
+    assert cac.main([]) == 1
     assert "routes its failures nowhere" in capsys.readouterr().out
 
 
