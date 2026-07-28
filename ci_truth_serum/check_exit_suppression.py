@@ -16,6 +16,19 @@ is kept (so a failure leaves no trace at all). Auto-allowed without annotation:
     ``&>/dev/null``) in the same simple command — already marked fully
     best-effort, with nothing left to surface.
 
+The output-discard allowance has ONE exception: a git command that MUTATES the
+worktree, index or history (``merge``, ``commit``, ``add``, ``reset``, …). For
+those the "nothing left to surface" reasoning inverts — the stdout is noise, but
+the exit status is the only evidence the mutation ran, and the next command reads
+the tree it was supposed to produce. A suppressed failure there does not vanish;
+it becomes a WRONG ANSWER computed from an unmutated tree. The worked case:
+``git merge --no-commit --no-ff "$base" >/dev/null || true`` in a CI checkout
+with no committer identity, where git refuses to merge at all, the following
+``diff --diff-filter=U`` reports no conflicts, and a resolution-confinement check
+built on it accuses every correctly-merged path of being an out-of-scope edit.
+Read-only verbs (``git grep``, ``git log``, ``git rev-parse``, ``git fetch``) keep
+the allowance — suppressing those really does only drop a diagnostic.
+
 Everything else — ``some_func || true`` with its output intact — must opt out
 with a same-line or immediately-preceding-line ``# allow-exit-suppress: <reason>``
 stating why the failure is safe to ignore (e.g. "best-effort GC reaper; the
@@ -54,6 +67,15 @@ _MESSAGE_PREFIX = re.compile(r"^(?:echo|printf|warn|status|die|log|cg_\w+|:)\b")
 _SEGMENT_SPLIT = re.compile(r"\|\||&&|;|\bthen\b|\bdo\b|\{|\(")
 
 _REDIRECT_DEVNULL = re.compile(r"(?:[0-9&]?>|&>)\s*/dev/null")
+# The git subcommands that change the worktree, the index or history — the ones a
+# LATER command's correctness depends on having run. Read-only verbs are absent on
+# purpose (see the module docstring). `git(?:_\w+)?` also matches a thin wrapper
+# (`git_as_bot -C … merge …`), which suppresses the same status for the same cost.
+_GIT_MUTATION = re.compile(
+    r"\bgit(?:_\w+)?\b(?:\s+(?:-[Cc]\s+\S+|--\S+))*\s+"
+    r"(?:merge|rebase|cherry-pick|revert|am|apply|commit|add|reset|restore"
+    r"|checkout|switch|update-ref|stash|clean|rm|mv)\b"
+)
 # An assignment whose whole right-hand side is a command substitution:
 # `var=$(cmd) || true` is a value capture (empty var on failure, handled by the
 # caller) exactly like `var=$(cmd || true)`, so it carries the same safety.
@@ -85,7 +107,7 @@ def violations(text: str) -> list[int]:
         if inside_substitution(prefix) or _ASSIGN_CAPTURE.match(prefix):
             continue  # value capture — empty-on-failure, handled by the caller
         segment = _SEGMENT_SPLIT.split(prefix)[-1]
-        if _REDIRECT_DEVNULL.search(segment):
+        if _REDIRECT_DEVNULL.search(segment) and not _GIT_MUTATION.search(segment):
             continue  # output already discarded — nothing left to surface
         hits.append(start)
     return hits
@@ -95,9 +117,10 @@ def main(argv: list[str]) -> int:
     return run_line_checks(
         argv,
         violations,
-        "exit status suppressed with `|| true` while the command's output is kept "
-        "— a real failure would vanish. Discard the output too, capture it, or "
-        "annotate `# allow-exit-suppress: <reason>`.",
+        "exit status suppressed with `|| true` while the command's output is kept, or "
+        "on a git command that mutates the worktree/index/history — a real failure "
+        "would vanish, and a later command would read a tree the mutation never "
+        "produced. Capture the output, or annotate `# allow-exit-suppress: <reason>`.",
     )
 
 

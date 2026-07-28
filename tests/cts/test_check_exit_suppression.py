@@ -4,6 +4,7 @@ unjustified exit-status suppression (`|| true` / `|| :`).
 Drives `violations()` directly so each rule is asserted in isolation.
 """
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -253,3 +254,77 @@ def test_own_shell_tree_is_clean() -> None:
     assert offenders == [], (
         f"unannotated exit-status suppression in hooks/: {offenders}"
     )
+
+
+# ── The mutating-git exception to the output-discard allowance ────────────────
+#
+# `>/dev/null || true` is normally accepted: nothing is left to surface. For a git
+# command that changes the worktree/index/history the reasoning inverts — the exit
+# status is the only evidence the mutation ran, and the next command reads the tree
+# it was supposed to produce, so the failure becomes a wrong answer rather than a
+# silence.
+@pytest.mark.parametrize(
+    "line",
+    [
+        'git -C "$raw" merge --no-commit --no-ff "$base" >/dev/null || true',
+        "git add -A -- packaging >/dev/null || true",
+        'git commit -m "x" >/dev/null 2>&1 || true',
+        'git reset --hard "$sha" &>/dev/null || true',
+        "git cherry-pick --abort >/dev/null 2>&1 || :",
+        "git switch -c tmp >/dev/null || true",
+        "git update-ref -d refs/x >/dev/null || true",
+        "git rebase origin/main >/dev/null || true",
+        'git_as_bot -C "$r" merge --no-ff "$b" >/dev/null 2>&1 || true',
+        'git -c user.name=b -c user.email=b@b commit -m "x" >/dev/null || true',
+    ],
+)
+def test_a_discarded_output_does_not_excuse_a_mutating_git_command(line: str) -> None:
+    assert mod.violations(line + "\n") == [1]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'git grep -nE "$RE" -- . >/dev/null || true',
+        'git log --oneline -1 "$sha" >/dev/null || true',
+        'git rev-parse "$ref" >/dev/null 2>&1 || true',
+        'git fetch origin "$branch" >/dev/null || true',
+        "git ls-files -s -z >/dev/null || true",
+        "git status --porcelain >/dev/null 2>&1 || true",
+    ],
+)
+def test_a_read_only_git_command_keeps_the_output_discard_allowance(line: str) -> None:
+    assert mod.violations(line + "\n") == []
+
+
+def test_a_mutating_git_command_is_still_excusable_by_annotation() -> None:
+    text = (
+        'git merge "$b" >/dev/null || true  # allow-exit-suppress: caller re-derives\n'
+    )
+    assert mod.violations(text) == []
+
+
+def test_a_bare_annotation_does_not_excuse_a_mutating_git_command() -> None:
+    assert mod.violations(
+        'git merge "$b" >/dev/null || true  # allow-exit-suppress\n'
+    ) == [1]
+
+
+def test_a_mutating_git_command_inside_a_capture_stays_allowed() -> None:
+    """A value capture is empty-on-failure and the caller already handles that —
+    the mutation exception narrows the OUTPUT-DISCARD allowance, not this one."""
+    assert mod.violations('v=$(git merge "$b" >/dev/null || true)\n') == []
+
+
+def test_a_non_git_command_keeps_the_output_discard_allowance() -> None:
+    assert mod.violations("docker rm -f box >/dev/null 2>&1 || true\n") == []
+
+
+def test_every_declared_mutating_verb_is_actually_refused() -> None:
+    """Iterate the pattern's own verb list rather than restating it: a verb added
+    to the regex and then misspelled would otherwise pass unnoticed."""
+    verbs = re.findall(r"[a-z][a-z-]+", mod._GIT_MUTATION.pattern.split("(?:")[-1])
+    assert len(verbs) >= 10
+    for verb in verbs:
+        line = f"git {verb} --flag >/dev/null || true"
+        assert mod.violations(line + "\n") == [1], verb
