@@ -298,12 +298,16 @@ def test_a_read_only_git_command_keeps_the_output_discard_allowance(line: str) -
 
 
 def test_a_mutating_git_command_is_still_excusable_by_annotation() -> None:
-    text = 'git merge "$b" >/dev/null || true  # allow-exit-suppress: caller re-derives\n'
+    text = (
+        'git merge "$b" >/dev/null || true  # allow-exit-suppress: caller re-derives\n'
+    )
     assert mod.violations(text) == []
 
 
 def test_a_bare_annotation_does_not_excuse_a_mutating_git_command() -> None:
-    assert mod.violations('git merge "$b" >/dev/null || true  # allow-exit-suppress\n') == [1]
+    assert mod.violations(
+        'git merge "$b" >/dev/null || true  # allow-exit-suppress\n'
+    ) == [1]
 
 
 def test_a_mutating_git_command_inside_a_capture_stays_allowed() -> None:
