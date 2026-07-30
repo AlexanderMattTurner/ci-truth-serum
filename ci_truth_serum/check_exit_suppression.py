@@ -42,6 +42,14 @@ built on it accuses every correctly-merged path of being an out-of-scope edit.
 Read-only verbs (``git grep``, ``git log``, ``git rev-parse``, ``git fetch``) keep
 the allowance — suppressing those really does only drop a diagnostic.
 
+A shell's own ``-c`` argument is a SCRIPT, not a datum, so a quoted body
+(``bash -c "cleanup || true"``) is re-parsed and judged by these same rules —
+allowances included — with its findings reported on the enclosing file's line.
+Only a body whose literal text is certain is read: a single-quoted string, or a
+double-quoted one carrying no backslash escape. The shell must also BE the
+command word — behind a wrapper (``timeout 5 bash -c '…'``) the same tokens can
+equally be a printing command's arguments, which the grammar cannot tell apart.
+
 Everything else — ``some_func || true`` with its output intact — must opt out
 with a same-line or immediately-preceding-line ``# allow-exit-suppress: <reason>``
 stating why the failure is safe to ignore (e.g. "best-effort GC reaper; the
@@ -130,6 +138,16 @@ _GIT_COMMAND = re.compile(r"^git(?:_\w+)?$")
 # The git global flags whose value is the NEXT token, so the subcommand search does
 # not read `user.name=b` (from `git -c user.name=b commit`) as the subcommand.
 _GIT_VALUE_FLAGS = frozenset({"-C", "-c"})
+
+# A shell invoked with `-c` runs its argument as a SCRIPT, so a `|| true` written
+# there drops an exit status exactly as an inline one does — `bash -c "cleanup ||
+# true"` is the same defect one quoting layer down. The body is re-parsed and
+# judged by the same rules, which is what keeps the allowances intact too
+# (`bash -c "cmd >/dev/null || true"` stays allowed).
+_SHELLS = frozenset({"bash", "sh", "dash", "zsh", "ksh", "ash"})
+# `-c`, or a short cluster ending in it (`sh -ec '…'`) — the value-taking short
+# must end its cluster, so the next argument is the script.
+_DASH_C = re.compile(r"^-[A-Za-z]*c$")
 
 
 def _text(node) -> str:
@@ -277,9 +295,59 @@ def _mutates_git(command) -> bool:
     return False
 
 
-def _suppression_spans(root) -> list[tuple[int, int]]:
+def _literal_script(node) -> str | None:
+    """The exact script a quoted `-c` argument runs, or None when its literal text
+    cannot be read off the source with certainty.
+
+    A `raw_string` is literal by definition. A double-quoted `string` is the script
+    verbatim only while it carries no backslash escape — with one, the text between
+    the quotes is not what bash runs, and a mis-read body would invent a
+    suppression that is not there. Every other argument shape (a bare word, a
+    `concatenation`, `$'…'`, a lone expansion) is skipped for the same reason."""
+    raw = _text(node)
+    if node.type == "raw_string":
+        return raw[1:-1]
+    if node.type == "string" and "\\" not in raw:
+        return raw[1:-1]
+    return None
+
+
+def _shell_scripts(root) -> list[tuple[int, str]]:
+    """(0-based row of the body, script) for every `sh -c '<script>'` under ROOT.
+
+    A call inside a substitution is skipped: the capture allowance the caller
+    relies on is decided on the OUTER tree, which the re-parse of the body cannot
+    see, so judging the body there would report a suppression the outer rules
+    exempt."""
+    scripts: list[tuple[int, str]] = []
+    for command in iter_nodes(root, "command"):
+        name = _command_name(command)
+        if name is None or name.rsplit("/", 1)[-1] not in _SHELLS:
+            continue
+        if _inside_substitution(command):
+            continue
+        arguments = [c for c in command.children if c.type in _ARGUMENT_TYPES]
+        flag = next(
+            (i for i, arg in enumerate(arguments) if _DASH_C.match(_text(arg))), None
+        )
+        if flag is None:
+            continue
+        # The script is the argument IMMEDIATELY after `-c`; a later one is
+        # `$0`/`$1…` for the body, not the body itself.
+        body = arguments[flag + 1] if flag + 1 < len(arguments) else None
+        script = None if body is None else _literal_script(body)
+        if script is not None:
+            scripts.append((body.start_point[0], script))
+    return scripts
+
+
+def _suppression_spans(root, row_offset: int = 0) -> list[tuple[int, int]]:
     """(first line, last line) of every unjustified suppression under ROOT, both
-    1-based."""
+    1-based and shifted by ROW_OFFSET.
+
+    The offset is what lets a `sh -c` body be judged by re-parsing it while the
+    findings still land on the enclosing file's physical lines — which is where a
+    reader writes the annotation."""
     spans: list[tuple[int, int]] = []
     for node in iter_nodes(root, "list"):
         # A `list` carries exactly one operator between two operands (a chain nests),
@@ -295,7 +363,11 @@ def _suppression_spans(root) -> list[tuple[int, int]]:
         command, redirects = _suppressed_command(left)
         if any(_discards_output(r) for r in redirects) and not _mutates_git(command):
             continue  # output already discarded — nothing left to surface
-        spans.append((node.start_point[0] + 1, node.end_point[0] + 1))
+        spans.append(
+            (node.start_point[0] + 1 + row_offset, node.end_point[0] + 1 + row_offset)
+        )
+    for row, script in _shell_scripts(root):
+        spans += _suppression_spans(parse(script), row_offset + row)
     return spans
 
 

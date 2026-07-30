@@ -346,3 +346,47 @@ def test_own_shell_tree_is_clean() -> None:
         text = (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
         offenders += [f"{rel}:{n}" for n in mod.violations(text)]
     assert offenders == [], f"impossible gh api --slurp calls: {offenders}"
+
+
+# ── recall: gh reached through a variable ───────────────────────────────
+@pytest.mark.parametrize(
+    "src",
+    [
+        'GH=gh\n$GH api repos/o/r/issues --slurp --jq ".[]"\n',
+        'GH=gh\n${GH} api repos/o/r/issues --slurp --jq ".[]"\n',
+        'GH="gh"\n"$GH" api repos/o/r/issues --slurp\n',
+        "GH=/usr/local/bin/gh\n$GH api repos/o/r/issues --slurp --template x\n",
+    ],
+)
+def test_gh_through_a_literal_alias_is_flagged(src: str) -> None:
+    """The source fixes the command word, so the call is judged as the gh call
+    it is — reported at the line the call is written on."""
+    assert mod.violations(src) == [2]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # the value is not gh
+        'GH=hub\n$GH api repos/o/r --slurp --jq ".[]"\n',
+        # the source does not fix the value at all
+        'GH=$(command -v gh)\n$GH api repos/o/r --slurp --jq ".[]"\n',
+        'GH="${GH_BIN}"\n$GH api repos/o/r --slurp --jq ".[]"\n',
+        # one non-literal assignment anywhere drops the name, even beside a
+        # literal `gh` one
+        'GH=gh\nGH=$OTHER\n$GH api repos/o/r --slurp --jq ".[]"\n',
+        # a name never assigned in this file is not an alias
+        '$GH api repos/o/r --slurp --jq ".[]"\n',
+        # a token that merely CONTAINS the expansion is a different word
+        'GH=gh\n"$GH-wrapper" api repos/o/r --slurp --jq ".[]"\n',
+        # the alias resolves, and the flag combination is a legal one
+        "GH=gh\n$GH api repos/o/r --paginate --slurp\n",
+    ],
+)
+def test_gh_alias_precision(src: str) -> None:
+    assert mod.violations(src) == []
+
+
+def test_gh_alias_opt_out_is_honored() -> None:
+    src = 'GH=gh\n$GH api repos/o/r --slurp --jq ".[]"  # allow-gh-slurp-jq: pinned upstream\n'
+    assert mod.violations(src) == []

@@ -9,9 +9,9 @@ every release aborted on the nonsense comparison that followed.
 
 Flagged (precision over recall — plain diagnostic captures must never fire):
 
-  (a) a command substitution whose value is produced by merging (`2>&1`) and
-      then piping the merged stream into a parsing command
-      (`v=$(cmd 2>&1 | tail -1)`);
+  (a) a command substitution whose value is produced by merging (`2>&1`, or the
+      `|&` pipe bash defines as `2>&1 |`) and then piping the merged stream into
+      a parsing command (`v=$(cmd 2>&1 | tail -1)`, `v=$(cmd |& tail -1)`);
   (b) `var=$(cmd 2>&1)` where, within the next 10 lines, `$var` is piped into
       a parsing command or read in a `[[ … ]]` comparison / `(( … ))`
       arithmetic.
@@ -66,6 +66,10 @@ OPT_OUT = "stderr-merge-ok"
 # these is the defect; `tee`, `cat`, a logger or a shell function are not.
 _PARSERS = frozenset({"head", "tail", "grep", "awk", "cut", "sed", "jq", "sort", "wc"})
 _MERGE = "2>&1"
+# `cmd |& parser` is defined by bash as `cmd 2>&1 | parser`, so it merges the same
+# two streams into the same parser. It is a pipe OPERATOR rather than a redirect,
+# which is why it needs naming separately from `_MERGE`.
+_MERGE_PIPE = "|&"
 # Operators inside `[[ … ]]` that rank/match the value as data. `-z`/`-n`
 # (emptiness) and `-f`-style file tests are diagnostics, so they are unary
 # expressions here and never reach this set.
@@ -161,15 +165,32 @@ def _owns(container, node) -> bool:
     return parent is not None
 
 
-def _stages(pipeline):
-    """A `pipeline`'s stages in order, nested pipelines flattened."""
+def _stage_pairs(pipeline) -> list:
+    """(stage, merges) for a `pipeline`'s stages in order, nested pipelines
+    flattened. MERGES is true when the stage's stderr joins the stream the NEXT
+    stage reads — either the stage carries its own `2>&1`, or the pipe after it is
+    `|&`, which is bash's exact shorthand for `2>&1 |` and merges the same two
+    streams by the same rule."""
+    pairs: list = []
     for child in pipeline.children:
-        if child.type in _PIPE_TOKENS or child.type == "comment":
+        if child.type == "comment":
+            continue
+        if child.type in _PIPE_TOKENS:
+            # `|&` merges the stage to its LEFT, which after flattening a nested
+            # pipeline is the last stage recorded so far.
+            if child.type == _MERGE_PIPE and pairs:
+                pairs[-1] = (pairs[-1][0], True)
             continue
         if child.type == "pipeline":
-            yield from _stages(child)
+            pairs.extend(_stage_pairs(child))
         else:
-            yield child
+            pairs.append((child, _stage_merges(child)))
+    return pairs
+
+
+def _stages(pipeline):
+    """A `pipeline`'s stages in order, nested pipelines flattened."""
+    return [stage for stage, _merges in _stage_pairs(pipeline)]
 
 
 def _stage_merges(stage) -> bool:
@@ -205,19 +226,22 @@ def _merged_then_parsed(subst) -> bool:
         if not _owns(subst, pipeline):
             continue
         merged = False
-        for stage in _stages(pipeline):
+        for stage, stage_merges in _stage_pairs(pipeline):
             if merged and _parses(stage):
                 return True
-            merged = merged or _stage_merges(stage)
+            merged = merged or stage_merges
     return False
 
 
 def _merges(subst) -> bool:
-    """True when SUBST merges stderr into the stream it captures."""
-    return any(
+    """True when SUBST merges stderr into the stream it captures — by a `2>&1`
+    redirect, or by a `|&` pipe, which merges the identical pair of streams."""
+    if any(
         "".join(_text(node).split()) == _MERGE
         for node in iter_nodes(subst, "file_redirect")
-    )
+    ):
+        return True
+    return any(True for _ in iter_nodes(subst, _MERGE_PIPE))
 
 
 def _captured_substitution(assign):

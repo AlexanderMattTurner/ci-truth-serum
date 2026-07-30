@@ -38,6 +38,11 @@ command, so the idiom written into a generated document or an error string is
 not a call at all. Flags are read off the command's own argument children, so a
 ``file_redirect`` (``>/tmp/x.json``) is never mistaken for one.
 
+A call reached through a variable (``GH=gh`` … ``$GH api --slurp --jq .x``) is
+judged as the call it is, but only where the source PROVES the command word:
+the name must resolve literally to the ``gh`` binary at every assignment in the
+file. One assignment the source does not fix drops the name entirely.
+
 A call that must keep the combination — there is no legitimate one, since gh
 refuses it — opts out with a same-line or immediately-preceding-line
 ``# allow-gh-slurp-jq: <reason>``. The reason is REQUIRED, matching the sibling
@@ -94,6 +99,10 @@ _SHORT_FILTER = re.compile(r"-(?!-)[A-Za-z]*[qt]")
 
 _ALLOW = annotation_re(OPT_OUT)
 
+# A bare read of one variable — `$GH` or `${GH}` — and nothing else. A token that
+# only CONTAINS an expansion is a different word at run time, so it never matches.
+_EXPANSION = re.compile(r"\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?")
+
 # Child types of a `command` that carry an argument value. Everything else under
 # it — `file_redirect`, `variable_assignment`, heredoc plumbing — is not an
 # argument, which is what keeps a `>/tmp/x.json` out of the flag set.
@@ -111,6 +120,52 @@ def _unquote(raw: str) -> str:
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
         return raw[1:-1]
     return raw
+
+
+def _literal_value(node) -> str | None:
+    """An assignment value's literal text, or None when it carries an expansion,
+    an escape or any other shape whose run-time value the source does not fix."""
+    raw = _text(node)
+    if node.type == "word":
+        return None if "$" in raw or "\\" in raw else raw
+    if node.type == "raw_string":
+        return raw[1:-1]
+    if node.type == "string":
+        content = [child for child in node.children if child.type != '"']
+        if len(content) == 1 and content[0].type == "string_content":
+            body = _text(content[0])
+            return None if "\\" in body else body
+        return "" if not content else None
+    return None
+
+
+def _gh_aliases(root) -> set[str]:
+    """Variable names that hold the `gh` binary — `GH=gh`, `GH=/usr/bin/gh`.
+
+    A name is an alias only when EVERY assignment to it in the file resolves
+    literally to `gh`; one assignment the source does not fix (a `$(…)`, a
+    parameter default, a loop variable) drops the name, so a `$X api --slurp`
+    whose `X` merely might be gh is never rewritten. That is what keeps the recall
+    gain free of false positives: the rewrite happens only where the source itself
+    proves the command word."""
+    all_gh: dict[str, bool] = {}
+    for assign in iter_nodes(root, "variable_assignment"):
+        name = assign.child_by_field_name("name")
+        value = assign.child_by_field_name("value")
+        if name is None:
+            continue
+        literal = None if value is None else _literal_value(value)
+        is_gh = literal is not None and literal.rsplit("/", 1)[-1] == "gh"
+        key = _text(name)
+        all_gh[key] = all_gh.get(key, True) and is_gh
+    return {name for name, is_gh in all_gh.items() if is_gh}
+
+
+def _resolve(token: str, aliases: set[str]) -> str:
+    """TOKEN with a read of a `gh` alias (`$GH`, `${GH}`) replaced by `gh`, so a
+    call reached through a variable is judged as the call it is."""
+    match = _EXPANSION.fullmatch(token)
+    return "gh" if match and match.group("name") in aliases else token
 
 
 def _arguments(command) -> list:
@@ -176,8 +231,12 @@ def violations(text: str) -> list[int]:
     # line reported twice would be a duplicate finding, and the wider span gives
     # the annotation lookup every physical line the reader would put it on.
     widest: dict[int, int] = {}
-    for command in iter_nodes(parse(text), "command"):
-        tokens = [_unquote(_text(node)) for node in _arguments(command)]
+    root = parse(text)
+    aliases = _gh_aliases(root)
+    for command in iter_nodes(root, "command"):
+        tokens = [
+            _resolve(_unquote(_text(node)), aliases) for node in _arguments(command)
+        ]
         if tokens and MESSAGE_PREFIX.match(tokens[0]):
             continue  # a command that only prints; its arguments are text
         if not _rejects(tokens):

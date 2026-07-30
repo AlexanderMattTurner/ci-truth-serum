@@ -210,3 +210,46 @@ def test_main_clean_files_pass(tmp_path) -> None:
     p = tmp_path / "s.sh"
     p.write_text('out=$(cmd 2>&1)\necho "$out"\n')
     assert mod.main([str(p)]) == 0
+
+
+# ── recall: `|&`, bash's shorthand for `2>&1 |` ─────────────────────────
+@pytest.mark.parametrize(
+    "line",
+    [
+        "v=$(npm view pkg version |& tail -1)",
+        "n=$(make build |& grep -c error)",
+        "w=$(tool |& sort | head -1)",
+        'echo "$(tool |& grep ok)"',
+    ],
+)
+def test_merge_pipe_into_parser_is_flagged(line: str) -> None:
+    """`cmd |& parser` is defined as `cmd 2>&1 | parser`, so it merges the same
+    two streams into the same parser and is the same defect."""
+    assert _lines(line + "\n") == [1]
+
+
+def test_merge_pipe_capture_read_later_is_flagged() -> None:
+    src = 'out=$(npm view pkg |& cat)\nv=$(echo "$out" | tail -1)\n'
+    assert _lines(src) == [2]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # a plain pipe merges nothing, whatever it feeds
+        "v=$(cmd | tail -1)\n",
+        # `|&` into a non-parser is a diagnostic capture, exactly as `2>&1` is
+        "v=$(cmd |& cat)\n",
+        # the operator written as argument text is data, not a pipe
+        'gb_warn "never write cmd |& tail -1"\n',
+        # …and so is a `|&` inside a quoted-delimiter heredoc body
+        "cat <<'EOF'\nv=$(cmd |& tail -1)\nEOF\n",
+    ],
+)
+def test_merge_pipe_precision(src: str) -> None:
+    assert _lines(src) == []
+
+
+def test_merge_pipe_opt_out_is_honored() -> None:
+    src = "v=$(cmd |& tail -1)  # stderr-merge-ok: the tool prints its version on stderr\n"
+    assert _lines(src) == []

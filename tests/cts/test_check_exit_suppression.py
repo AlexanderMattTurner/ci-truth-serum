@@ -412,3 +412,57 @@ def test_pathological_input_fails_loudly(
     err = capsys.readouterr().err
     assert "pipe bytes" in err
     assert f"{bad}:1: exit status suppressed" in err
+
+
+# ── recall: a shell's own `-c` body is a script, not a datum ────────────
+@pytest.mark.parametrize(
+    "text",
+    [
+        'bash -c "cleanup || true"',
+        "sh -c 'cleanup || true'",
+        "dash -c 'cleanup || true'",
+        "bash -ec 'cleanup || true'",
+    ],
+)
+def test_suppression_inside_a_shell_c_body_is_flagged(text: str) -> None:
+    assert mod.violations(text + "\n") == [1]
+
+
+def test_multiline_shell_c_body_reports_the_enclosing_file_line() -> None:
+    """A finding on the body's third line lands on the file line that carries it,
+    which is where the reader writes the annotation."""
+    src = 'echo start\nbash -c "\n  setup\n  cleanup || true\n"\n'
+    assert mod.violations(src) == [4]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # every allowance the outer rules grant holds one quoting layer down
+        "bash -c 'cleanup >/dev/null || true'",
+        "bash -c 'v=$(cmd) || true'",
+        # a capture around the whole call is the outer exemption, and the body
+        # must not report through it
+        "out=$(bash -c 'cleanup || true')",
+        # the annotation is read off the enclosing file's line
+        "bash -c 'cleanup || true'  # allow-exit-suppress: best-effort reaper",
+        # not a shell, so the argument is a datum this lint cannot read as code
+        "docker run img 'cleanup || true'",
+        # a body carrying an escape is NOT the script bash runs, so it is skipped
+        # rather than guessed at
+        'bash -c "printf \\"x\\"; cleanup || true"',
+        # `-c` with no quoted body names no script
+        "bash -c $script",
+        # a `|| true` in an argument that is not the `-c` body is still data
+        "bash script.sh 'cleanup || true'",
+        # the body is the argument IMMEDIATELY after `-c`; a later one is a
+        # positional for the script, not the script
+        "bash -c script.sh 'cleanup || true'",
+        # the shell must BE the command word: behind a wrapper the same tokens
+        # can equally be a printer's arguments (`echo bash -c "x || true"`), and
+        # the grammar cannot tell those apart
+        'timeout 5 bash -c "cleanup || true"',
+    ],
+)
+def test_shell_c_body_precision(text: str) -> None:
+    assert mod.violations(text + "\n") == []
