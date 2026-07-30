@@ -203,13 +203,20 @@ _DYNAMIC = re.compile(r"[$`]")
 
 _GLOBAL_FLAG = re.compile(r"(?:^|\s)(?:-\w*g\w*|--global)\b")
 
-# What has to appear in front of a QUOTED install for it to run: something that
-# executes the string. `bash -c "pip install x"` and `ssh host "apt-get install x"`
-# install; `gb_error "install it: apt install coreutils"` and
-# `require_command jq "e.g. apt-get install jq"` are text written for a human, and
-# a repo's own logger/help-text helpers are unenumerable — so the rule keys on the
-# executor being present rather than on knowing every printing command's name.
-_INTERPRETER = re.compile(r"\b(?:sh|bash|dash|zsh|ksh|ash|eval|ssh|xargs)\b")
+# What has to appear in front of a QUOTED install for it to run: the command being
+# invoked must itself execute the string. `bash -c "pip install x"` and
+# `ssh host "apt-get install x"` install; `gb_error "install it: apt install
+# coreutils"` and `require_command jq "e.g. apt-get install jq"` are text written
+# for a human, and a repo's own logger/help-text helpers are unenumerable — so the
+# rule keys on the executor rather than on knowing every printing command's name.
+#
+# ANCHORED at the command word, because an interpreter NAME can appear inside the
+# very hint text being excused: `missing_gate "install it with 'bash setup.bash'"`
+# is not a `bash` invocation, and an unanchored search reads it as one.
+_INTERPRETER = re.compile(
+    r"^(?:sudo\s+(?:-\S+\s+)*)?(?:env\s+)?(?:\w+=\S+\s+)*(?:\S*/)?"
+    r"(?:sh|bash|dash|zsh|ksh|ash|eval|ssh|xargs)\b"
+)
 
 
 def _tokens(segment: str) -> list[str]:
@@ -349,7 +356,7 @@ def _has_unpinned_install(line: str) -> bool:
             # A match whose own leading character is the quote opens the string it
             # sits in, so it is quoted too — `echo "pip install x"` must not read
             # as an unquoted install just because the quote came first.
-            if (in_quotes or match.group()[:1] in "\"'") and not _INTERPRETER.search(
+            if (in_quotes or match.group()[:1] in "\"'") and not _INTERPRETER.match(
                 prefix
             ):
                 continue  # text inside a string nothing executes

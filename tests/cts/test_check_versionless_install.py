@@ -359,3 +359,25 @@ def test_redirections_are_not_read_as_unpinned_packages(line: str) -> None:
 def test_a_redirect_does_not_mask_a_real_unpinned_package() -> None:
     # The mirror image: dropping the plumbing must not drop the spec beside it.
     assert mod.violations("apt-get install --only-upgrade -y docker-sbx >&2\n") == [1]
+
+
+def test_an_interpreter_name_inside_the_hint_text_does_not_execute_it() -> None:
+    # `bash` appears in the message, not as the command: the string is an
+    # argument to `missing_gate`, which prints it.
+    src = (
+        'missing_gate "pre-commit framework" \\\n'
+        "  \"install it with 'bash setup.bash' (or 'uv tool install pre-commit')\"\n"
+    )
+    assert mod.violations(src) == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'sudo bash -c "pip install ruff"',
+        'env FOO=1 bash -c "pip install ruff"',
+        '/bin/sh -c "apt-get install -y curl"',
+    ],
+)
+def test_the_executor_is_recognized_through_sudo_env_and_a_path(line: str) -> None:
+    assert mod.violations(f"{line}\n") == [1]
