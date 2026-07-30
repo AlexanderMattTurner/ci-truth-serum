@@ -119,7 +119,9 @@ def test_violations_passes_justified_drift_guard() -> None:
         ),
         ("# canonical env names, hand-maintained beside config.json", "canonical"),
         ("# the SSOT rows, duplicated for the shell side", "SSOT"),
-        ("# canonical set, kept in step with the loader", "canonical"),
+        # "in step with" alone — `kept in step` would be claimed by the older
+        # phrase pass first, so it proves nothing about this trigger.
+        ("# canonical set, in step with the loader", "canonical"),
         ("    x = 1  # canonical order, mirrors the schema", "canonical"),
         # Only one half present -> not the laundered shape.
         ("# the SSOT for detector ids", None),
@@ -142,7 +144,8 @@ def test_violations_passes_justified_drift_guard() -> None:
     ],
 )
 def test_launders_a_copy(comment: str, phrase: str | None) -> None:
-    assert mod._launders_a_copy(comment) == phrase
+    hits = mod.text_violations(comment + "\n")
+    assert hits == ([(1, phrase)] if phrase else [])
 
 
 def test_violations_flags_a_laundered_body_comment() -> None:
@@ -244,6 +247,49 @@ def test_laundering_pass_reaches_non_python_suites(
     )
     assert mod.main([str(suite)]) == 1
     assert f"{suite}:1: drift-guard intent" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "name, script, flagged",
+    [
+        # The repo's two documented shell probes. Neither is executed code, so a
+        # finding on either is a false positive — and the text heuristic produced
+        # one on the heredoc, reading its body as a run of comments.
+        ("message string", 'gb_warn "canonical rows, mirrored from the loader"', False),
+        (
+            "heredoc body",
+            "cat <<'EOF' > doc.txt\n# canonical rows, mirrored from the loader\nEOF",
+            False,
+        ),
+        # Positive control: the same idiom as a REAL comment must still fire, so
+        # the two probes above cannot pass by the check having gone inert.
+        ("real comment", "# canonical rows, mirrored from the loader", True),
+        ("trailing comment", "x=1  # canonical rows, mirrored from the loader", True),
+    ],
+)
+def test_shell_laundering_uses_the_grammar(
+    tmp_path: Path, name: str, script: str, flagged: bool
+) -> None:
+    """`.claude/rules/shell-lint-parsing.md`'s audit, run through the real entry
+    point: a `#` inside a heredoc is data no shell executes, and the grammar is
+    the only thing that can say so."""
+    suite = tmp_path / "checks.test.sh"
+    suite.write_text(script + "\n", encoding="utf-8")
+    assert mod.main([str(suite)]) == int(flagged)
+
+
+def test_shell_comments_reads_the_grammar() -> None:
+    """The unit behind the probes: quoted `#` and heredoc bodies are not
+    comments, and the reported line numbers are the real ones."""
+    script = (
+        "# a real comment\n"
+        "cat <<'EOF' > d.txt\n"
+        "# heredoc data, not a comment\n"
+        "EOF\n"
+        'gb_warn "# printed, not a comment"\n'
+        "x=1  # trailing\n"
+    )
+    assert mod.shell_comments(script) == {1: "# a real comment", 6: "# trailing"}
 
 
 def test_laundering_pass_respects_the_text_annotation() -> None:

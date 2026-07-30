@@ -67,6 +67,7 @@ Neither is executed code, so a finding is a false positive:
 | `check_stderr_suppression`        | no                        | no                      |
 | `check_substitution_exit_swallow` | no                        | no                      |
 | `check_secret_file_perms`         | no                        | no                      |
+| `check_drift_guards`              | no                        | no                      |
 
 The top five fired on one or both probes and were rewritten on the grammar, which
 removed the class rather than the instance. **The bottom three still scan text** —
@@ -75,6 +76,17 @@ they are the remaining candidates: `check_stderr_suppression` and
 `check_substitution_exit_swallow` both ask redirect/substitution questions the
 grammar answers directly, and `check_secret_file_perms` reasons about command
 ordering.
+
+`check_drift_guards` is the ninth row and a later, separate instance of the same
+story: its laundered-copy trigger shipped reading comments out of the text, fired
+on the heredoc probe the first time the probe was run against it, and was moved
+onto `shell_comments` (`iter_nodes(parse(script), "comment")`) before landing.
+Note which half moved — only "where does a comment start", the structural
+question. Judging the PROSE inside that comment stays a regex, because English
+has no grammar here to parse; that is the carve-out above, not a second thing to
+fix. Its Python half has the same split and answers the same question with
+`tokenize`. Its JS/TS half still scans text, and that is the honest remaining
+gap: no JS grammar is a dependency here yet.
 
 Reproduce with `violations()` on `gb_warn "<idiom>"` and on a
 `cat <<'EOF' > doc.txt` block containing the idiom — that pair is the cheapest

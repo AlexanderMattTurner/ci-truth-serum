@@ -68,9 +68,14 @@ import tokenize
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    iter_nodes,
+    parse as _parse_bash,
+)
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotation_re,
     comment_body,
+    is_shell_source,
     is_test_path,
 )
 
@@ -145,19 +150,24 @@ def _launders(body: str) -> str | None:
     return None if _NEGATED_RE.search(preceding) else authority.group(0)
 
 
-def _launders_a_copy(line: str) -> str | None:
-    """``_launders`` over LINE's comment, for the non-Python pass.
+def shell_comments(script: str) -> dict[int, str]:
+    """1-based line -> comment text, for every bash ``comment`` node in SCRIPT.
 
-    ``comment_body`` is a TEXT heuristic for where a comment starts, which is a
-    structural question — the Python pass answers it with the tokenizer instead
-    (see ``_python_comments``). It is used here because ``text_violations`` scans
-    JS/TS *and* shell through one path and this package carries no JS grammar;
-    ``_bash_ast`` would answer for the shell half only. That is the stated
-    trade-off, not an oversight: the residual error is a comment introducer
-    inside a JS string literal.
+    The shell counterpart of ``_python_comments``, and mandatory for the reason
+    `.claude/rules/shell-lint-parsing.md` gives: "is this a comment, or data a
+    command prints?" is a question about the grammar. Measured on this package's
+    own two probes, the text heuristic reads a whole HEREDOC BODY as comments —
+    the documented false-positive class, since a heredoc is data no shell
+    executes and nobody authored as a claim about the tree.
+
+    ``PathologicalInputError`` from ``parse`` propagates: a lint that degraded to
+    "no findings" on the one input an adversary controls would be exactly the
+    false green this pack exists to catch.
     """
-    body = comment_body(line)
-    return _launders(body) if body is not None else None
+    return {
+        node.start_point[0] + 1: node.text.decode("utf-8", "replace")
+        for node in iter_nodes(_parse_bash(script), "comment")
+    }
 
 
 def _python_comments(source: str) -> dict[int, str]:
@@ -400,14 +410,28 @@ def violations(source: str) -> list[tuple[int, str]]:
     return hits
 
 
-def text_violations(text: str) -> list[tuple[int, str]]:
+def text_violations(
+    text: str, comments: dict[int, str] | None = None
+) -> list[tuple[int, str]]:
     """(1-based line, matched phrase) for every line of TEXT that expresses
     drift-guard intent — an intent PHRASE anywhere on the line, or a LAUNDERED
     authority-plus-copy conjunction inside its comment — without a reason-bearing
     ``drift-guard-ok:`` annotation on that line or the one immediately above.
 
     The non-AST sibling of ``violations()``: JS/TS/shell tests carry no
-    ``@pytest.mark``, so intent is detected by phrase and excused inline instead."""
+    ``@pytest.mark``, so intent is detected by phrase and excused inline instead.
+
+    COMMENTS maps 1-based line -> comment body when the caller HAS a grammar that
+    can say where comments are — ``shell_comments`` for shell. Passing it is what
+    keeps the laundering trigger out of a heredoc body. Omitting it falls back to
+    the ``comment_body`` text heuristic, which is correct only for JS/TS, the one
+    language here with no grammar available.
+
+    The PHRASE half deliberately scans the whole line, comment or not: a test
+    NAME is a self-declaration, so ``it('configs must stay in sync', …)`` is a
+    finding even though it lives in a string literal. Only the laundering half is
+    comment-scoped, because only it reads narration ABOUT the tree.
+    """
     lines = text.splitlines()
     hits: list[tuple[int, str]] = []
     for i, line in enumerate(lines):
@@ -415,8 +439,9 @@ def text_violations(text: str) -> list[tuple[int, str]]:
             continue
         if i > 0 and _ALLOW_MARKER.search(lines[i - 1]):
             continue
+        body = comment_body(line) if comments is None else comments.get(i + 1)
         match = _GUARD_RE.search(line)
-        phrase = match.group(0) if match else _launders_a_copy(line)
+        phrase = match.group(0) if match else body and _launders(body)
         if not phrase:
             continue
         hits.append((i + 1, phrase))
@@ -450,7 +475,16 @@ def main(argv: list[str]) -> int:
         # already scopes to `test_*` functions.
         if not is_test_path(path):
             continue
-        for lineno, phrase in text_violations(source):
+        # Shell gets its comments from the bash grammar; JS/TS falls back to the
+        # text heuristic because this package carries no JS grammar. Routing here
+        # rather than inside `text_violations` keeps the path — the only thing
+        # that says which language this is — where it is actually known.
+        comments = (
+            shell_comments(source)
+            if is_shell_source(path, source.split("\n", 1)[0])
+            else None
+        )
+        for lineno, phrase in text_violations(source, comments):
             print(
                 f"{path}:{lineno}: drift-guard intent ({phrase!r}) lacks a "
                 "justification — prefer removing the duplication (make one source "

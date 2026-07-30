@@ -366,6 +366,10 @@
   description: A test asserting two copies agree hides a missing SSOT; mark it @pytest.mark.drift_guard("<why>") so the reason is reviewed.
   entry: python -m ci_truth_serum.check_drift_guards
   language: python
+  # PyYAML for the shared _linecheck import; the grammar bindings because the
+  # shell half reads comments from tree-sitter-bash rather than the text (a `#`
+  # in a heredoc body is data, not narration).
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
   # Python tests use @pytest.mark.drift_guard; JS/TS/shell suites carry copies-agree
   # tests too, caught by a phrase pass and excused with `drift-guard-ok: <reason>`.
   types_or: [python, javascript, ts, shell]

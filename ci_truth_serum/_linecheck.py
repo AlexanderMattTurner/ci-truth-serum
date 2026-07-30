@@ -281,6 +281,24 @@ _SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
 _SHELL_SHEBANG = re.compile(r"^#!.*\b(?:bash|sh)\b")
 
 
+def is_shell_source(path: str, first_line: str) -> bool:
+    """True when PATH names shell: a `.sh` / `.bash` suffix, or an EXTENSIONLESS
+    file whose FIRST_LINE is a bash/sh shebang (git hooks under `.hooks/`, `bin/`
+    scripts).
+
+    One definition, so a lint choosing between the bash grammar and a text scan
+    classifies a path the same way `tracked_shell_files` does. Getting this wrong
+    is silent in the dangerous direction: a shell file misread as non-shell falls
+    back to a text scan and quietly loses the grammar's heredoc/string precision.
+    """
+    path = path.replace("\\", "/")
+    if _SHELL_SUFFIX.search(path):
+        return True
+    if "." in path.rsplit("/", 1)[-1]:
+        return False
+    return bool(_SHELL_SHEBANG.match(first_line))
+
+
 def is_test_path(path: str) -> bool:
     """True when PATH names a test file: a tests/ or spec/ directory component, a
     test_* or conftest module, or a test.* / spec.* / *.test.* / *.spec.* suite."""
@@ -312,7 +330,7 @@ def tracked_shell_files() -> list[str]:
             first = Path(path).read_text(encoding="utf-8").split("\n", 1)[0]
         except (OSError, UnicodeDecodeError):
             continue
-        if _SHELL_SHEBANG.match(first):
+        if is_shell_source(path, first):
             out.append(path)
     return out
 
