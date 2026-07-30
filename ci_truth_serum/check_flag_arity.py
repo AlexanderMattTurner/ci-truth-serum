@@ -50,7 +50,10 @@ from pathlib import Path
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    node_text,
+    parse,
+)
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     tracked_shell_files,
 )
@@ -102,10 +105,6 @@ _MSG_EMPTY_OPTOUT = (
 )
 
 
-def _text(node: Node) -> str:
-    return node.text.decode("utf-8", "replace")
-
-
 def _walk(node: Node, prune: tuple[str, ...] = ()):
     """Pre-order traversal, skipping any subtree whose root type is in PRUNE."""
     yield node
@@ -139,7 +138,7 @@ def _bound(op: str, n: int) -> tuple[str, int] | None:
 
 def _has_hash(nodes: list[Node]) -> bool:
     return any(
-        x.type == "special_variable_name" and _text(x) == "#"
+        x.type == "special_variable_name" and node_text(x) == "#"
         for n in nodes
         for x in _walk(n)
     )
@@ -148,8 +147,8 @@ def _has_hash(nodes: list[Node]) -> bool:
 def _first_number(nodes: list[Node]) -> int | None:
     for n in nodes:
         for x in _walk(n):
-            if x.type == "number" and _text(x).isdigit():
-                return int(_text(x))
+            if x.type == "number" and node_text(x).isdigit():
+                return int(node_text(x))
     return None
 
 
@@ -157,10 +156,10 @@ def _binexpr_bound(binexpr: Node) -> tuple[str, int] | None:
     """Polarity and proven bound of a `$# <op> <number>` comparison (either
     operand order), or None if BINEXPR is not a `$#`-vs-literal arity test."""
     kids = binexpr.children
-    op_idx = next((i for i, c in enumerate(kids) if _text(c) in _ARITY_OPS), None)
+    op_idx = next((i for i, c in enumerate(kids) if node_text(c) in _ARITY_OPS), None)
     if op_idx is None:
         return None
-    op = _text(kids[op_idx])
+    op = node_text(kids[op_idx])
     left, right = kids[:op_idx], kids[op_idx + 1 :]
     if _has_hash(left):
         n = _first_number(right)
@@ -189,7 +188,7 @@ def _function_bodies(root: Node) -> dict[str, Node]:
             continue
         name = _first_child(node, "word")
         if name is not None:
-            out[_text(name)] = node.children[-1]
+            out[node_text(name)] = node.children[-1]
     return out
 
 
@@ -209,7 +208,9 @@ def exit_names(root: Node) -> frozenset[str]:
         for name, body in bodies.items():
             if name in known:
                 continue
-            if any(c.type == "command_name" and _text(c) in known for c in _walk(body)):
+            if any(
+                c.type == "command_name" and node_text(c) in known for c in _walk(body)
+            ):
                 known.add(name)
                 changed = True
     return frozenset(known)
@@ -218,7 +219,7 @@ def exit_names(root: Node) -> frozenset[str]:
 def _has_exit(node: Node, exits: frozenset[str]) -> bool:
     """True if NODE runs a command that aborts — the bail that turns an arity
     test into a real guard. EXITS is the file's resolved `exit_names`."""
-    return any(c.type == "command_name" and _text(c) in exits for c in _walk(node))
+    return any(c.type == "command_name" and node_text(c) in exits for c in _walk(node))
 
 
 def _list_guards(node: Node, exits: frozenset[str]) -> int | None:
@@ -288,10 +289,10 @@ def _self_guard_bound(node: Node) -> int:
         if n.type != "expansion":
             continue
         var = _first_child(n, "variable_name")
-        if var is None or not _text(var).isdigit():
+        if var is None or not node_text(var).isdigit():
             continue
         if any(c.type == ":?" for c in n.children):
-            best = max(best, int(_text(var)))
+            best = max(best, int(node_text(var)))
     return best
 
 
@@ -299,7 +300,7 @@ def _is_helper(node: Node) -> bool:
     if node.type != "command":
         return False
     name = _first_child(node, "command_name")
-    return name is not None and _text(name) in ALLOWLISTED_HELPERS
+    return name is not None and node_text(name) in ALLOWLISTED_HELPERS
 
 
 def _statement_guard_bound(stmt: Node, exits: frozenset[str]) -> int | None:
@@ -324,21 +325,23 @@ def _positional_reads(stmt: Node) -> list[tuple[Node, int]]:
     for n in _walk(stmt, prune=("case_statement",)):
         if n.type == "simple_expansion":
             var = _first_child(n, "variable_name")
-            if var is not None and _text(var).isdigit():
-                reads.append((n, int(_text(var))))
+            if var is not None and node_text(var).isdigit():
+                reads.append((n, int(node_text(var))))
         elif n.type == "expansion":
             # A plain `${N}` is exactly `${`, the name, and `}` — anything else
             # (an operator, a substring, an array index) is not a bare read.
             if [c.type for c in n.children] == ["${", "variable_name", "}"]:
                 var = _first_child(n, "variable_name")
-                if _text(var).isdigit():
-                    reads.append((n, int(_text(var))))
+                if node_text(var).isdigit():
+                    reads.append((n, int(node_text(var))))
         elif n.type == "command":
             name = _first_child(n, "command_name")
-            if name is not None and _text(name) == "shift":
+            if name is not None and node_text(name) == "shift":
                 num = _first_child(n, "number")
                 amount = (
-                    int(_text(num)) if num is not None and _text(num).isdigit() else 1
+                    int(node_text(num))
+                    if num is not None and node_text(num).isdigit()
+                    else 1
                 )
                 reads.append((n, amount))
     reads.sort(key=lambda pair: pair[0].start_byte)
@@ -352,10 +355,12 @@ def _shift_amount(stmt: Node) -> int:
     for n in _walk(stmt, prune=("case_statement",)):
         if n.type == "command":
             name = _first_child(n, "command_name")
-            if name is not None and _text(name) == "shift":
+            if name is not None and node_text(name) == "shift":
                 num = _first_child(n, "number")
                 total += (
-                    int(_text(num)) if num is not None and _text(num).isdigit() else 1
+                    int(node_text(num))
+                    if num is not None and node_text(num).isdigit()
+                    else 1
                 )
     return total
 
@@ -369,7 +374,7 @@ def _label_is_flag(case_item: Node) -> bool:
             break
         if child.type == "|":
             continue
-        alts.append(_text(child).strip())
+        alts.append(node_text(child).strip())
     return bool(alts) and all(_FLAG_ALT_RE.match(a) for a in alts)
 
 

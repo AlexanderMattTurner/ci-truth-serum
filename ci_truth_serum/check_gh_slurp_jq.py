@@ -62,8 +62,11 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
+    command_arguments,
     iter_nodes,
+    node_text,
     parse,
+    unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
@@ -103,29 +106,11 @@ _ALLOW = annotation_re(OPT_OUT)
 # only CONTAINS an expansion is a different word at run time, so it never matches.
 _EXPANSION = re.compile(r"\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?")
 
-# Child types of a `command` that carry an argument value. Everything else under
-# it — `file_redirect`, `variable_assignment`, heredoc plumbing — is not an
-# argument, which is what keeps a `>/tmp/x.json` out of the flag set.
-_ARGUMENT_TYPES = frozenset(
-    {"word", "string", "raw_string", "concatenation", "number", "simple_expansion"}
-)
-
-
-def _text(node) -> str:
-    return node.text.decode("utf-8", "replace")
-
-
-def _unquote(raw: str) -> str:
-    """A quoted argument's literal text (`'.[][]'` → `.[][]`)."""
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-        return raw[1:-1]
-    return raw
-
 
 def _literal_value(node) -> str | None:
     """An assignment value's literal text, or None when it carries an expansion,
     an escape or any other shape whose run-time value the source does not fix."""
-    raw = _text(node)
+    raw = node_text(node)
     if node.type == "word":
         return None if "$" in raw or "\\" in raw else raw
     if node.type == "raw_string":
@@ -133,7 +118,7 @@ def _literal_value(node) -> str | None:
     if node.type == "string":
         content = [child for child in node.children if child.type != '"']
         if len(content) == 1 and content[0].type == "string_content":
-            body = _text(content[0])
+            body = node_text(content[0])
             return None if "\\" in body else body
         return "" if not content else None
     return None
@@ -156,7 +141,7 @@ def _gh_aliases(root) -> set[str]:
             continue
         literal = None if value is None else _literal_value(value)
         is_gh = literal is not None and literal.rsplit("/", 1)[-1] == "gh"
-        key = _text(name)
+        key = node_text(name)
         all_gh[key] = all_gh.get(key, True) and is_gh
     return {name for name, is_gh in all_gh.items() if is_gh}
 
@@ -166,21 +151,6 @@ def _resolve(token: str, aliases: set[str]) -> str:
     call reached through a variable is judged as the call it is."""
     match = _EXPANSION.fullmatch(token)
     return "gh" if match and match.group("name") in aliases else token
-
-
-def _arguments(command) -> list:
-    """A `command` node's name and argument nodes, in order.
-
-    Every non-argument child is skipped — a `file_redirect` (`>/tmp/x.json`), a
-    `variable_assignment` prefix (`FOO=1 gh api …`), heredoc plumbing — so only
-    real arguments can be read as a flag."""
-    args = []
-    for child in command.children:
-        if child.type == "command_name":
-            args.extend(child.children or [child])
-        elif child.type in _ARGUMENT_TYPES:
-            args.append(child)
-    return args
 
 
 def _flag_names(tokens: list[str]) -> set[str]:
@@ -235,7 +205,8 @@ def violations(text: str) -> list[int]:
     aliases = _gh_aliases(root)
     for command in iter_nodes(root, "command"):
         tokens = [
-            _resolve(_unquote(_text(node)), aliases) for node in _arguments(command)
+            _resolve(unquote(node_text(node)), aliases)
+            for node in command_arguments(command)
         ]
         if tokens and MESSAGE_PREFIX.match(tokens[0]):
             continue  # a command that only prints; its arguments are text

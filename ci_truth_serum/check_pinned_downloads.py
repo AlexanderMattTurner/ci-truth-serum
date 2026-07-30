@@ -57,9 +57,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ARGUMENT_TYPES,
     PathologicalInputError,
+    command_arguments,
     iter_nodes,
+    node_text,
     parse,
+    unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
@@ -129,21 +133,6 @@ _VERIFY_COMMANDS = frozenset(
 )
 _CHECKSUM_FLAG = "--checksum=sha256:"  # Docker `ADD --checksum=sha256:<digest> <url>`
 
-# Child types of a `command` that carry an argument value. Everything else under it
-# — `file_redirect`, `variable_assignment`, heredoc plumbing — is not an argument,
-# which is what keeps a `>&2` out of the output-target list.
-_ARGUMENT_TYPES = frozenset(
-    {
-        "word",
-        "string",
-        "raw_string",
-        "concatenation",
-        "number",
-        "simple_expansion",
-        "expansion",
-    }
-)
-
 # The redirection operators that write the fetched bytes into a file. `>&`/`&>`
 # (an FD dup, `>&2`) and `>|` are excluded, as is any redirect carrying a
 # `file_descriptor` (`2>/dev/null` routes diagnostics, not the artifact).
@@ -156,36 +145,10 @@ _WRITE_OPERATORS = frozenset({">", ">>"})
 _REDIRECT_WRAPPERS = frozenset({"compound_statement", "subshell", "list"})
 
 
-def _text(node) -> str:
-    return node.text.decode("utf-8", "replace")
-
-
-def _unquote(raw: str) -> str:
-    """A quoted argument's literal text (`'tool'` → `tool`)."""
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-        return raw[1:-1]
-    return raw
-
-
-def _arguments(command) -> list:
-    """A `command` node's name and argument nodes, in order.
-
-    Every non-argument child is skipped — a `file_redirect` (`>&2`), a
-    `variable_assignment` prefix (`FOO=1 cmd`), heredoc plumbing — so only real
-    arguments can be read as an output target or a command word."""
-    args = []
-    for child in command.children:
-        if child.type == "command_name":
-            args.extend(child.children or [child])
-        elif child.type in _ARGUMENT_TYPES:
-            args.append(child)
-    return args
-
-
 def _tokens(command) -> list[str]:
     """A `command` node's argument tokens as literal text. A quoted message is ONE
     token, so a command name spelled inside it never matches a command word."""
-    return [_unquote(_text(node)) for node in _arguments(command)]
+    return [unquote(node_text(node)) for node in command_arguments(command)]
 
 
 def _names(tokens: list[str]) -> set[str]:
@@ -228,9 +191,9 @@ def _writes_a_file(redirect) -> bool:
     if "file_descriptor" in kinds or not kinds & _WRITE_OPERATORS:
         return False
     return any(
-        _unquote(_text(child)) not in _NULL_TARGETS
+        unquote(node_text(child)) not in _NULL_TARGETS
         for child in redirect.children
-        if child.type in _ARGUMENT_TYPES
+        if child.type in ARGUMENT_TYPES
     )
 
 
@@ -380,14 +343,14 @@ def _executed_scripts(
     fed to an interpreter (`bash <<'EOF' … EOF`) — whose body IS the script, unlike
     a heredoc written to a file (`cat <<'EOF' > doc.txt`), which is data."""
     scripts = [
-        (node, _unquote(_text(node))) for node in _executed_strings(tokens, args)
+        (node, unquote(node_text(node))) for node in _executed_strings(tokens, args)
     ]
     # Only the command's OWN redirections can carry its heredoc: a `heredoc_body`
     # found anywhere else belongs to another command's redirect.
     statement = command.parent
     if _names(tokens) & _SHELLS and statement is not None:
         scripts += [
-            (node, _text(node))
+            (node, node_text(node))
             for redirect in statement.children
             if redirect.type == "heredoc_redirect"
             for node in iter_nodes(redirect, "heredoc_body")
@@ -405,8 +368,8 @@ def _findings(root) -> tuple[list[tuple[int, int]], set[int]]:
     downloads: list[tuple[int, int]] = []
     verified: set[int] = set()
     for command in iter_nodes(root, "command"):
-        args = _arguments(command)
-        tokens = [_unquote(_text(node)) for node in args]
+        args = command_arguments(command)
+        tokens = [unquote(node_text(node)) for node in args]
         for node, script in _executed_scripts(command, tokens, args):
             offset = node.start_point[0]
             inner_downloads, inner_verified = _findings(parse(script))

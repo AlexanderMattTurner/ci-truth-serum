@@ -66,9 +66,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ARGUMENT_TYPES,
     PathologicalInputError,
+    command_name,
     iter_nodes,
+    node_text,
     parse,
+    unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
@@ -98,13 +102,6 @@ _OPERATORS = frozenset({"||", "&&", "|", "|&", ";", ";;", "&", "\n"})
 # handles, so a `|| true` inside one is not a dropped status. `$(…)` and a backtick
 # capture are both `command_substitution`; `<(…)` is `process_substitution`.
 _SUBSTITUTIONS = frozenset({"command_substitution", "process_substitution"})
-
-# Child types of a `command` that carry an argument value — everything else under
-# it (`file_redirect`, a `variable_assignment` prefix, heredoc plumbing) is not an
-# argument, which is what keeps a `>&2` out of the git subcommand search.
-_ARGUMENT_TYPES = frozenset(
-    {"word", "string", "raw_string", "concatenation", "number", "simple_expansion"}
-)
 
 _DEVNULL = "/dev/null"
 
@@ -150,30 +147,9 @@ _SHELLS = frozenset({"bash", "sh", "dash", "zsh", "ksh", "ash"})
 _DASH_C = re.compile(r"^-[A-Za-z]*c$")
 
 
-def _text(node) -> str:
-    return node.text.decode("utf-8", "replace")
-
-
-def _unquote(raw: str) -> str:
-    """A quoted token's literal text (`"/dev/null"` → `/dev/null`)."""
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-        return raw[1:-1]
-    return raw
-
-
 def _operands(node) -> list:
     """NODE's branches, with the operator tokens between them dropped."""
     return [child for child in node.children if child.type not in _OPERATORS]
-
-
-def _command_name(node) -> str | None:
-    """The command word of NODE, or None when NODE is not a simple command."""
-    if node.type != "command":
-        return None
-    for child in node.children:
-        if child.type == "command_name":
-            return _text(child)
-    return None
 
 
 def _is_noop(node) -> bool:
@@ -182,7 +158,7 @@ def _is_noop(node) -> bool:
     parses the operand as a pipeline whose first stage is still the suppressor."""
     while node.type == "pipeline" and _operands(node):
         node = _operands(node)[0]
-    return _command_name(node) in _NOOP_COMMANDS
+    return command_name(node) in _NOOP_COMMANDS
 
 
 def _inside_substitution(node) -> bool:
@@ -270,21 +246,21 @@ def _discards_output(redirect) -> bool:
     )
     if operator is None or operator + 1 >= len(children):
         return False
-    return _unquote(_text(children[operator + 1])) == _DEVNULL
+    return unquote(node_text(children[operator + 1])) == _DEVNULL
 
 
 def _mutates_git(command) -> bool:
     """True when COMMAND is a git invocation whose subcommand changes the worktree,
     index or history — where a suppressed status becomes a wrong answer rather than
     a lost diagnostic."""
-    name = _command_name(command)
+    name = command_name(command)
     if name is None or not _GIT_COMMAND.match(name.rsplit("/", 1)[-1]):
         return False
     skip_next = False
     for child in command.children:
-        if child.type not in _ARGUMENT_TYPES:
+        if child.type not in ARGUMENT_TYPES:
             continue
-        arg = _text(child)
+        arg = node_text(child)
         if skip_next:
             skip_next = False
             continue
@@ -304,7 +280,7 @@ def _literal_script(node) -> str | None:
     the quotes is not what bash runs, and a mis-read body would invent a
     suppression that is not there. Every other argument shape (a bare word, a
     `concatenation`, `$'…'`, a lone expansion) is skipped for the same reason."""
-    raw = _text(node)
+    raw = node_text(node)
     if node.type == "raw_string":
         return raw[1:-1]
     if node.type == "string" and "\\" not in raw:
@@ -321,14 +297,15 @@ def _shell_scripts(root) -> list[tuple[int, str]]:
     exempt."""
     scripts: list[tuple[int, str]] = []
     for command in iter_nodes(root, "command"):
-        name = _command_name(command)
+        name = command_name(command)
         if name is None or name.rsplit("/", 1)[-1] not in _SHELLS:
             continue
         if _inside_substitution(command):
             continue
-        arguments = [c for c in command.children if c.type in _ARGUMENT_TYPES]
+        arguments = [c for c in command.children if c.type in ARGUMENT_TYPES]
         flag = next(
-            (i for i, arg in enumerate(arguments) if _DASH_C.match(_text(arg))), None
+            (i for i, arg in enumerate(arguments) if _DASH_C.match(node_text(arg))),
+            None,
         )
         if flag is None:
             continue

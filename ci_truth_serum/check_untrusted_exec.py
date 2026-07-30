@@ -55,6 +55,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     PathologicalInputError,
     iter_nodes,
     parse as _parse_bash,
+    unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader as _LineLoader,
@@ -192,13 +193,6 @@ def _words(command) -> list[str]:
     return out
 
 
-def _unquote(word: str) -> str:
-    """WORD with one layer of matching surrounding quotes removed."""
-    if len(word) >= 2 and word[0] == word[-1] and word[0] in "\"'":
-        return word[1:-1]
-    return word
-
-
 def _is_workspace_path(word: str) -> bool:
     """True when WORD is a path GitHub resolves inside ``$GITHUB_WORKSPACE``.
 
@@ -208,7 +202,7 @@ def _is_workspace_path(word: str) -> bool:
     not guess at. Such a step is not counted as an execution form; it is also not
     a rescue, because a job reported for one of the other forms already owns it.
     """
-    bare = _unquote(word)
+    bare = unquote(word)
     if not bare or bare.startswith(("-", "/", "~", "$")):
         return False
     return "/" in bare or bool(_SCRIPT_SUFFIX.search(bare))
@@ -227,7 +221,7 @@ def _script_execution(words: list[str]) -> str:
     """
     if not words:
         return ""
-    name = _unquote(words[0])
+    name = unquote(words[0])
     if name == "make":
         target = _first_operand(words)
         return f"`make {target}`" if target else "`make`"

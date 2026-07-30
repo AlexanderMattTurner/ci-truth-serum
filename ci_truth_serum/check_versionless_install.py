@@ -73,8 +73,11 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
+    command_arguments,
     iter_nodes,
+    node_text,
     parse,
+    unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
@@ -200,12 +203,6 @@ _GLOBAL_FLAG = re.compile(r"^(?:-\w*g\w*|--global)$")
 _SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "busybox"})
 _CODE_COMMANDS = frozenset({"eval", "ssh"})
 
-# Child types of a `command` that carry an argument value. Everything else under it
-# — `file_redirect`, `variable_assignment`, heredoc plumbing — is not an argument,
-# which is what keeps a `>&2` out of the package list.
-_ARGUMENT_TYPES = frozenset(
-    {"word", "string", "raw_string", "concatenation", "number", "simple_expansion"}
-)
 # A value decided at run time by the shell, as NODE TYPES rather than a `$` in the
 # text: `"ruff==${V}"` is a string with an `expansion` child, `"$PKG"` a string
 # whose whole content is one.
@@ -214,37 +211,11 @@ _DYNAMIC_TYPES = frozenset(
 )
 
 
-def _text(node) -> str:
-    return node.text.decode("utf-8", "replace")
-
-
 def _is_dynamic(node) -> bool:
     """True when NODE's value depends on a shell expansion (`iter_nodes` is
     inclusive, so a bare `$PKG` argument counts as much as one nested in a
     string)."""
     return next(iter_nodes(node, *_DYNAMIC_TYPES), None) is not None
-
-
-def _unquote(raw: str) -> str:
-    """A quoted argument's literal text (`'ruff>=1'` → `ruff>=1`)."""
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-        return raw[1:-1]
-    return raw
-
-
-def _arguments(command) -> list:
-    """A `command` node's name and argument nodes, in order.
-
-    Every non-argument child is skipped — a `file_redirect` (`>&2`), a
-    `variable_assignment` prefix (`FOO=1 cmd`), heredoc plumbing — so only real
-    arguments can be read as a package spec."""
-    args = []
-    for child in command.children:
-        if child.type == "command_name":
-            args.extend(child.children or [child])
-        elif child.type in _ARGUMENT_TYPES:
-            args.append(child)
-    return args
 
 
 def _find_install(tokens: list[str]) -> tuple[str, int] | None:
@@ -292,7 +263,7 @@ def _unpinned_specs(args: list, family: str) -> list[str]:
     unpinned: list[str] = []
     skip_next = False
     for node in args:
-        raw = _unquote(_text(node))
+        raw = unquote(node_text(node))
         if skip_next:
             skip_next = False
             continue
@@ -336,13 +307,13 @@ def _install_spans(root) -> list[tuple[int, int]]:
     relative to the enclosing script."""
     spans: list[tuple[int, int]] = []
     for command in iter_nodes(root, "command"):
-        args = _arguments(command)
-        tokens = [_unquote(_text(node)) for node in args]
+        args = command_arguments(command)
+        tokens = [unquote(node_text(node)) for node in args]
         for node in _executed_strings(tokens, args):
             offset = node.start_point[0]
             spans += [
                 (offset + first, offset + last)
-                for first, last in _install_spans(parse(_unquote(_text(node))))
+                for first, last in _install_spans(parse(unquote(node_text(node))))
             ]
         if tokens and MESSAGE_PREFIX.match(tokens[0]):
             continue  # a command that only prints; its arguments are text

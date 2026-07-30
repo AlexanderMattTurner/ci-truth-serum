@@ -53,6 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     iter_nodes,
+    node_text,
     parse,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -121,10 +122,6 @@ _BLOCKS = frozenset(
 # The pipe operators between a `pipeline`'s stages, so stage enumeration can skip
 # them without positional indexing.
 _PIPE_TOKENS = frozenset({"|", "|&"})
-
-
-def _text(node) -> str:
-    return node.text.decode("utf-8", "replace")
 
 
 def _statement_rows(node) -> tuple[int, int]:
@@ -198,7 +195,7 @@ def _stage_merges(stage) -> bool:
     child of the stage itself, so a `2>&1` deeper inside (a nested substitution,
     or the literal text of an argument) does not count."""
     return any(
-        child.type == "file_redirect" and "".join(_text(child).split()) == _MERGE
+        child.type == "file_redirect" and "".join(node_text(child).split()) == _MERGE
         for child in stage.children
     )
 
@@ -216,7 +213,7 @@ def _parses(stage) -> bool:
     """True when pipeline STAGE runs one of the parsing commands."""
     command = _stage_command(stage)
     name = None if command is None else command.child_by_field_name("name")
-    return name is not None and _text(name).rsplit("/", 1)[-1] in _PARSERS
+    return name is not None and node_text(name).rsplit("/", 1)[-1] in _PARSERS
 
 
 def _merged_then_parsed(subst) -> bool:
@@ -237,7 +234,7 @@ def _merges(subst) -> bool:
     """True when SUBST merges stderr into the stream it captures — by a `2>&1`
     redirect, or by a `|&` pipe, which merges the identical pair of streams."""
     if any(
-        "".join(_text(node).split()) == _MERGE
+        "".join(node_text(node).split()) == _MERGE
         for node in iter_nodes(subst, "file_redirect")
     ):
         return True
@@ -298,7 +295,7 @@ def _reads(node):
     for name in iter_nodes(node, "variable_name"):
         if name.parent is not None and name.parent.type == "variable_assignment":
             continue
-        yield name, _text(name)
+        yield name, node_text(name)
 
 
 def _data_reads(root):
@@ -312,7 +309,7 @@ def _data_reads(root):
                 yield from _reads(stage)
     for test in iter_nodes(root, "test_command"):
         for expression in iter_nodes(test, "binary_expression"):
-            if any(_text(child) in _COMPARE_OPS for child in expression.children):
+            if any(node_text(child) in _COMPARE_OPS for child in expression.children):
                 yield from _reads(expression)
     for arithmetic in _arithmetic_nodes(root):
         yield from _reads(arithmetic)
@@ -381,7 +378,7 @@ def violations(text: str) -> list[tuple[int, str]]:
             and not _exit_status_tested(assign)
         ):
             merged_capture.add(assign.id)
-        captures.setdefault(_text(target), []).append(assign)
+        captures.setdefault(node_text(target), []).append(assign)
 
     later: dict[tuple[int, str], bool] = {}
     for node, name in _data_reads(root):
