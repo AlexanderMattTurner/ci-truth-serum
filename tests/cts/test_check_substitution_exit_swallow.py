@@ -102,6 +102,45 @@ def test_clean_lines_do_not_fire(text: str) -> None:
     assert mod.violations(text) == []
 
 
+# ── verdicts only the grammar can reach ──────────────────────────────────────
+@pytest.mark.parametrize(
+    "name, text, expected",
+    [
+        # A logging call at the head of the line no longer excuses the rest of
+        # it: the loop that follows is a command, not part of the message.
+        (
+            "real construct after a logging call",
+            'log "collecting"; mapfile -t h < <(jq -r ".h[]" "$f")',
+            [1],
+        ),
+        # The producer is the stage before the consumer, wherever the pipeline
+        # starts — no character class has to keep the scan inside one segment.
+        (
+            "producer two stages up",
+            'jq ".a" f | jq ".b" | while read -r d; do :; done',
+            [1],
+        ),
+        (
+            "absolute path to the producer",
+            "/usr/bin/jq .a f | while read -r d; do :; done",
+            [1],
+        ),
+        # `read`/`mapfile` swallow the producer's status exactly as `while` does.
+        ("piped into a bare read", "jq .a f | read -r x", [1]),
+        # A construct inside a heredoc is data written to a file, not a command.
+        (
+            "construct inside a heredoc body",
+            "cat <<'EOF' > doc.txt\nwhile read -r d; do :; done < <(jq .a f)\nEOF\n",
+            [],
+        ),
+        # A `<(…)` argument is still an argument, however many there are.
+        ("proc-sub arguments to a command", "cmp <(jq .a x) <(jq .a y)", []),
+    ],
+)
+def test_grammar_reachable_verdicts(name: str, text: str, expected: list[int]) -> None:
+    assert mod.violations(text) == expected, name
+
+
 # ── opt-out annotation (reason REQUIRED) ─────────────────────────────────────
 def test_same_line_annotation_with_reason_suppresses() -> None:
     line = (

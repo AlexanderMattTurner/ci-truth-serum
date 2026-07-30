@@ -77,6 +77,51 @@ def test_line_numbers_for_multiple_hits() -> None:
     assert mod.violations(src) == [1, 3]
 
 
+# ── verdicts only the grammar can reach ──────────────────────────────────
+@pytest.mark.parametrize(
+    "name, src, expected",
+    [
+        # A skip SPELLED in a value is a fixture, not a skip. This is the class
+        # that made the checker flag its own test file.
+        (
+            "skip inside a string literal",
+            "BAD = 'pytest.mark.skipif(shutil.which(\"jq\") is None)'\n",
+            [],
+        ),
+        # The reason is PROSE — it can neither supply the missing CI guard nor
+        # invent the binary discovery that puts a skip in scope.
+        (
+            "reason mentioning CI does not stand in for the guard",
+            'pytest.mark.skipif(shutil.which("jq") is None, reason="skipped on CI")\n',
+            [1],
+        ),
+        (
+            "reason mentioning which is not binary discovery",
+            'pytest.mark.skipif(sys.platform == "win32", reason="see shutil.which")\n',
+            [],
+        ),
+        # Recall: the import spelling does not change what the skip does.
+        (
+            "bare mark.skipif from `from pytest import mark`",
+            '@mark.skipif(which("node") is None, reason="r")\ndef test_x():\n    pass\n',
+            [1],
+        ),
+        (
+            "condition passed by keyword",
+            'pytest.mark.skipif(condition=shutil.which("jq") is None, reason="r")\n',
+            [1],
+        ),
+        (
+            "guard read through a bare environ import",
+            'pytest.mark.skipif(which("jq") is None and not environ.get("CI"), reason="r")\n',
+            [],
+        ),
+    ],
+)
+def test_grammar_reachable_verdicts(name: str, src: str, expected: list[int]) -> None:
+    assert mod.violations(src) == expected, name
+
+
 # ── is_test_path ─────────────────────────────────────────────────────────
 @pytest.mark.parametrize(
     "path, expected",

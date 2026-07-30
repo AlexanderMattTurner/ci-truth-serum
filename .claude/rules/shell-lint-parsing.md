@@ -70,12 +70,22 @@ Neither is executed code, so a finding is a false positive:
 | `check_drift_guards`              | no                        | no                      |
 
 The top five fired on one or both probes and were rewritten on the grammar, which
-removed the class rather than the instance. **The bottom three still scan text** —
-they pass these two probes, which is not the same as being structurally sound, so
-they are the remaining candidates: `check_stderr_suppression` and
-`check_substitution_exit_swallow` both ask redirect/substitution questions the
-grammar answers directly, and `check_secret_file_perms` reasons about command
-ordering.
+removed the class rather than the instance. **Every lint in the table now parses**;
+the bottom three were the last text scanners, and passing both probes was never
+the same as being structurally sound — each was answering a structural question by
+approximation:
+
+| Lint                              | The approximation it dropped                                                                                      |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `check_substitution_exit_swallow` | `[^\|;&]*` standing in for "inside one pipeline segment" — which is what a `pipeline` node **is**                 |
+| `check_stderr_suppression`        | co-occurring `>/dev/null` + `2>&1` tokens, order-blind; and `(?<![-\w])build` to tell a subcommand from `--build` |
+| `check_secret_file_perms`         | "~3 non-blank lines" standing in for the next few statements, and a hand-rolled redirect/comment scanner          |
+
+Two verdicts CHANGED, both toward the grammar's answer, and both are pinned by a
+new test: `2>&1 >/dev/null` no longer counts as suppression (bash dups stderr onto
+the still-live stdout, then moves only stdout), and a launch or a producer after a
+logging call on the same line is now judged — the old `MESSAGE_PREFIX` skip excused
+the whole line because its FIRST word printed something.
 
 `check_drift_guards` is the ninth row and a later, separate instance of the same
 story: its laundered-copy trigger shipped reading comments out of the text, fired
@@ -99,6 +109,19 @@ picks the parser the PATH names:
 | shell    | `_bash_ast` | a heredoc body read as a run of comments                                            |
 | JS/TS    | `_js_ast`   | a `//` inside a string or template literal; a `/* … */` after code on the same line |
 | YAML     | none        | nothing — its parsers discard comments, so the delimiter scan is the decision       |
+
+Nor is it only about comments. The lints that read PYTHON ask the same shape of
+structural question, and answered it the same wrong way until they were moved onto
+`_py_ast` (stdlib `ast`, no new dependency):
+
+| Lint                      | The structural question                   | What the text scan got wrong                                                                                           |
+| ------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `check_global_stdio_swap` | is this name an assignment TARGET?        | a swap inside a string literal — it flagged its own docstring and 12 of its own fixtures                               |
+| `check_toolchain_skips`   | where does this call's argument list end? | a balanced-paren walk with its own quote state; and a `reason=` string counting as both the discovery and the CI guard |
+
+Between them that was 23 findings on this repo's tracked tree, every one a false
+positive, and both had been muted in `.pre-commit-config.yaml` because of it — the
+quiet cost of a text scan is not the noise, it is the check being switched off.
 
 Measured over 241 real `.mjs`/`.js`/`.ts` files in `agent-glovebox`, the JS
 delimiter scan claimed 169 lines that are not comments and missed 250 that are.

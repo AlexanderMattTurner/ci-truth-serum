@@ -43,6 +43,7 @@ FUZZ_DIR = REPO_ROOT / "tests" / "cts"
 FUZZ_REQUIRED = {
     "_bash_ast": "parse",
     "_js_ast": "parse",
+    "_py_ast": "trees",
     "_comments": "comment_lines",
     "_linecheck": "required_check_contexts",
     "_failure_routing": "routing",

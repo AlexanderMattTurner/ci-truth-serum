@@ -112,6 +112,55 @@ def test_guarded_or_benign_creates_pass(name: str, src: str) -> None:
     assert mod.violations(src) == [], name
 
 
+# ── verdicts only the grammar can reach ──────────────────────────────────
+@pytest.mark.parametrize(
+    "name, src, expected",
+    [
+        # A heredoc's trailing `> file` opens the file exactly as any redirect
+        # does — and the heredoc BODY is data, so a create written inside one is
+        # not a create at all.
+        (
+            "heredoc writing a secret file",
+            "cat <<EOF > tokenfile\n$T\nEOF\nchmod 600 tokenfile\n",
+            [1],
+        ),
+        (
+            "create spelled inside a heredoc body",
+            "cat <<'EOF' > notes.txt\nprintf x > tokenfile\nchmod 600 tokenfile\nEOF\n",
+            [],
+        ),
+        # A create spelled inside a printed message is text, not a command.
+        (
+            "create quoted in a message",
+            'echo "printf x > tokenfile; chmod 600 tokenfile"\n',
+            [],
+        ),
+        ("create behind sudo", "sudo touch id_rsa\nchmod 600 id_rsa\n", [1]),
+        # The redirect belongs to the GROUP, so no single command owns it.
+        (
+            "group redirect writing a secret file",
+            "{ printf x; } > tokenfile\nchmod 600 tokenfile\n",
+            [1],
+        ),
+        # A chmod BEFORE the create tightens nothing the create then loosens —
+        # `>` on an existing file leaves its mode alone.
+        (
+            "chmod precedes the create",
+            "chmod 600 tokenfile; printf x > tokenfile\n",
+            [],
+        ),
+        # The umask in a subshell governs only what runs inside it.
+        (
+            "subshell umask does not reach a later create",
+            "(umask 077; :)\nprintf x > tokenfile\nchmod 600 tokenfile\n",
+            [2],
+        ),
+    ],
+)
+def test_grammar_reachable_verdicts(name: str, src: str, expected: list[int]) -> None:
+    assert mod.violations(src) == expected, name
+
+
 def test_secret_perms_ok_marker_suppresses() -> None:
     src = (
         "#!/usr/bin/env bash\n"

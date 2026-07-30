@@ -106,8 +106,8 @@ repos:
         name: "dogfood aggregate: every Extras Python check"
         entry: python -m ci_truth_serum.run_tier extras
         # check_global_stdio_swap is skipped, per its own docstring's scoping
-        # advice: nothing here runs concurrently, and the checker's source plus
-        # its test fixtures necessarily quote the banned idiom.
+        # advice: nothing in this package runs concurrently, so a swap here
+        # cannot produce the interleaving the check exists to prevent.
         # check_cron_alert_coverage is skipped for the same reason as
         # check_failure_notifier_coverage above: it is re-listed in strict mode.
         args:
@@ -122,9 +122,8 @@ repos:
           (?x)^(
             README\.md
             |\.claude/.*
-            |tests/cts/test_check_(drift_guards|graceful_handwave|historical_comments|doc_line_refs|toolchain_skips|stray_tool_markup|workflow_refs)\.py
+            |tests/cts/test_check_(drift_guards|graceful_handwave|historical_comments|doc_line_refs|stray_tool_markup|workflow_refs)\.py
             |tests/cts/test_fuzz_prose_checks\.py
-            |tests/cts/test_fuzz_new_checks\.py
           )$
         language: python
         additional_dependencies:
