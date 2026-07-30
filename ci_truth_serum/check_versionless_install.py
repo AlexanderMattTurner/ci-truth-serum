@@ -198,6 +198,18 @@ _DYNAMIC = re.compile(r"[$`]")
 
 _GLOBAL_FLAG = re.compile(r"(?:^|\s)(?:-\w*g\w*|--global)\b")
 
+# A command that only PRINTS text, so an install quoted inside it is a hint for a
+# human and not something that runs: the shared message prefixes, plus the logger
+# family repos wrap their output in (`gb_warn "install it: apt install coreutils"`,
+# `log_info`, `note`, `_die`). Composed from MESSAGE_PREFIX rather than replacing
+# it, and kept local because widening the shared constant would also widen what
+# five other lints excuse.
+_MESSAGE_COMMAND = re.compile(
+    rf"{MESSAGE_PREFIX.pattern}"
+    r"|^_?(?:\w+[_-])?(?:echo|printf|print|warn|warning|error|status|die|log"
+    r"|note|info|debug|msg|say)\b"
+)
+
 
 def _tokens(segment: str) -> list[str]:
     """Shell-split SEGMENT, falling back to whitespace splitting.
@@ -264,11 +276,34 @@ def _command_prefix(line: str, start: int) -> str:
     Scoping the message-command test (`echo "run pip install ruff"`) to this
     prefix rather than to the whole line is what keeps an install joined onto a
     message — `echo installing && pip install ruff` — in view; skipping the whole
-    logical line would let the leading `echo` hide it."""
+    logical line would let the leading `echo` hide it.
+
+    Separators inside a quoted string do not start a new command, or a hint that
+    happens to contain one (`gb_error "install it: apt install coreutils"`) would
+    read as a command of its own with `install` as its name."""
+    prefix = line[:start]
     cut = 0
-    for separator in _SEGMENT_END.finditer(line[:start]):
-        cut = separator.end()
-    return line[cut:start].lstrip()
+    quote = ""
+    i = 0
+    while i < len(prefix):
+        char = prefix[i]
+        if char == "\\":
+            i += 2
+            continue
+        if quote:
+            quote = "" if char == quote else quote
+            i += 1
+            continue
+        if char in "\"'":
+            quote = char
+            i += 1
+            continue
+        separator = _SEGMENT_END.match(prefix, i)
+        if separator:
+            cut = i = separator.end()
+            continue
+        i += 1
+    return prefix[cut:].lstrip()
 
 
 def violations(text: str) -> list[int]:
@@ -301,7 +336,7 @@ def _has_unpinned_install(line: str) -> bool:
     """True when LINE runs an install command with at least one unpinned spec."""
     for family, pattern in _INSTALLERS:
         for match in pattern.finditer(line):
-            if MESSAGE_PREFIX.match(_command_prefix(line, match.start())):
+            if _MESSAGE_COMMAND.match(_command_prefix(line, match.start())):
                 continue  # quoted inside a message, not run
             segment = _segment_after(line, match.end())
             # Only a GLOBAL Node install pins nowhere else; a local one records its
