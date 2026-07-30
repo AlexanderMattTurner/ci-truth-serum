@@ -56,14 +56,11 @@ jobs:
 
       # The release verifier this package ships, run on the release path it
       # describes. It sits AFTER tagging because it compares the markers a cut
-      # release leaves behind (npm, the `v*` tag, the changelog's top dated
+      # release leaves behind (the `v*` tag and the changelog's top dated
       # heading), so before the tag exists there is nothing to agree. It lives
       # in THIS job because this workflow's failures already reach a human:
       # build-publish-notify.yaml watches "Tag release (post-merge)" by name and
       # grades it priority 5. A canary in a workflow nobody watches is the
       # defect that let this one sit unrun.
-      # `--no-npm`: this package's releases ARE the `v*` tags consumers pin with
-      # pre-commit's `rev:`; nothing here publishes to the npm registry, so the
-      # npm marker would be permanently absent and red every push.
       - name: Verify the release version markers agree
-        run: bash .github/scripts/release-canary.sh --no-npm
+        run: bash .github/scripts/release-canary.sh

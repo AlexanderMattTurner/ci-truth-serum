@@ -220,23 +220,14 @@ def test_wrapper_fails_loud_when_tags_cannot_be_fetched(tmp_path: Path) -> None:
 
 
 def test_wrapper_forwards_its_arguments_to_the_canary(tmp_path: Path) -> None:
-    """The wrapper is a pass-through, which is what lets the workflow choose the
-    marker set (`--no-npm` here) without a second copy of the invocation."""
+    """The wrapper is a pass-through, so a caller can point the canary at a
+    non-default changelog or PKGBUILD without a second copy of the invocation."""
     repo, uv_log, bindir = _make_repo(tmp_path, uv_exit=0)
-    assert _run(repo, bindir, "--no-npm").returncode == 0
+    assert _run(repo, bindir, "--pkgbuild", "aur/PKGBUILD").returncode == 0
     assert uv_log.read_text().split() == [
         "run",
         "--frozen",
         "release-canary",
-        "--no-npm",
+        "--pkgbuild",
+        "aur/PKGBUILD",
     ]
-
-
-def test_tag_release_runs_the_canary_with_no_npm() -> None:
-    """This repo publishes to no npm registry — its releases are the `v*` tags
-    consumers pin with pre-commit's `rev:` — so the canary must be told to skip
-    that marker. Without the flag the npm marker is permanently absent and the
-    tag-release job (which the failure notifier watches) reds on every push to
-    main."""
-    _job, step = _steps_running(_tag_release_doc(), SCRIPT_REL)[0]
-    assert "--no-npm" in str(step["run"]).split()
