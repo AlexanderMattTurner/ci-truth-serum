@@ -175,3 +175,17 @@ def test_wrapped_launch_with_suppression_is_flagged() -> None:
     same command — the per-physical-line scan missed it (red on the pre-joiner
     implementation)."""
     assert mod.violations("docker compose up \\\n  2>/dev/null\n") == [1]
+
+
+@pytest.mark.parametrize(
+    "word", ["${SUB}", "$SUB", '"$SUB"'], ids=["braced", "bare", "quoted"]
+)
+def test_an_opaque_word_blocks_the_subcommand_scan_in_every_spelling(word: str) -> None:
+    """`docker <expansion> build .` reads as a launch only if the lint can see past
+    a word whose value the source does not fix. It cannot — so it stays silent, and
+    it must do so for all three spellings of that word rather than for two of them.
+    """
+    assert mod.violations(f"docker {word} build . 2>/dev/null\n") == []
+    # The same command with nothing opaque in the way still fires, so the silence
+    # above is the opaque word and not a broken launch scan.
+    assert mod.violations("docker build . 2>/dev/null\n") == [1]

@@ -210,7 +210,6 @@ def test_command_arguments_drops_redirects_and_assignments() -> None:
 def test_command_arguments_keeps_a_braced_expansion() -> None:
     # `${PKG}` is an `expansion` node — an argument value like any other. A set that
     # omitted it would silently shorten every caller's argument list.
-    assert "expansion" in bash_ast.ARGUMENT_TYPES
     args = bash_ast.command_arguments(_command("pip install ${PKG} ruff"))
     assert [bash_ast.node_text(a) for a in args] == [
         "pip",
@@ -239,3 +238,17 @@ def test_command_words_keeps_the_name_as_one_word() -> None:
         "-o",
         "out",
     ]
+
+
+def test_command_arguments_of_a_prefix_only_command() -> None:
+    # `FOO=1 >out` runs no program. The grammar still gives its `command_name` one
+    # zero-width `word` child — a name that matches nothing — so unwrapping the name
+    # into its children needs no empty-children fallback.
+    args = bash_ast.command_arguments(_command("FOO=1 >out"))
+    assert [(a.type, bash_ast.node_text(a)) for a in args] == [("word", "")]
+
+
+def test_command_words_of_a_prefix_only_command() -> None:
+    # The zero-width name surfaces as an empty word rather than an empty list, so a
+    # caller reading the program off `words[0]` gets a name matching nothing.
+    assert bash_ast.command_words(_command("FOO=1 >out")) == [""]

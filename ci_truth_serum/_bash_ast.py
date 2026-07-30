@@ -112,9 +112,15 @@ def iter_nodes(node: Node, *types: str):
         stack.extend(reversed(current.children))
 
 
-# Child types of a `command` that carry an argument VALUE. Every other child —
-# `file_redirect`, `variable_assignment`, heredoc plumbing — is not an argument,
-# which is what keeps a `>&2` out of an argument list.
+# Child types of a `command` that carry an argument VALUE. A `file_redirect`, a
+# `variable_assignment` prefix and heredoc plumbing are the children this leaves
+# out on purpose — that exclusion is what keeps a `>&2` out of an argument list.
+#
+# The substitution types (`command_substitution`, `process_substitution`,
+# `arithmetic_expansion`) are absent, so a bare `$(pwd)` argument is not in the
+# list either. That is the set the lints have always used, and each of them is a
+# separate judgement about whether a value only the shell can compute should be
+# read as an argument at all; widening it is a behaviour change, not a spelling.
 ARGUMENT_TYPES = frozenset(
     {
         "word",
@@ -129,8 +135,7 @@ ARGUMENT_TYPES = frozenset(
 
 
 def node_text(node: Node) -> str:
-    """NODE's source text. Undecodable bytes become U+FFFD rather than raising, so
-    a lint reads a mis-encoded file instead of crashing a whole commit on it."""
+    """NODE's source text, decoded from the bytes tree-sitter indexes."""
     return node.text.decode("utf-8", "replace")
 
 
@@ -143,8 +148,11 @@ def unquote(raw: str) -> str:
 
 
 def command_name(node: Node) -> str | None:
-    """The command word of NODE, or None when NODE is not a `command` at all — so a
-    caller can ask any node without pre-checking its type.
+    """The command word of NODE, or None when NODE is not a `command` at all.
+
+    The type check is here because callers reach this one while WALKING (a `||`
+    operand that may be a pipeline, a sibling statement); `command_arguments` and
+    `command_words` take a `command` they already have and so do not repeat it.
 
     A `command` that runs no program (`FOO=1 >out`, all prefix and redirect) still
     carries a ZERO-WIDTH `command_name` in the grammar, so this returns `""` there:
@@ -160,14 +168,14 @@ def command_name(node: Node) -> str | None:
 def command_arguments(command: Node) -> list[Node]:
     """A `command` node's name and argument nodes, in order.
 
-    The name is yielded as its CHILDREN when it has any, so a name the shell
-    assembles (`"$tool"`, `bin/foo`) is read at the same granularity as an
-    argument. Every non-argument child is skipped, so only real arguments can be
-    read as a flag, a package spec, or an output target."""
+    The name is yielded as its CHILDREN, so a name the shell assembles
+    (`"$tool"`, `bin/foo`) is read at the same granularity as an argument. Every
+    non-argument child is skipped, so only real arguments can be read as a flag, a
+    package spec, or an output target."""
     args: list[Node] = []
     for child in command.children:
         if child.type == "command_name":
-            args.extend(child.children or [child])
+            args.extend(child.children)
         elif child.type in ARGUMENT_TYPES:
             args.append(child)
     return args

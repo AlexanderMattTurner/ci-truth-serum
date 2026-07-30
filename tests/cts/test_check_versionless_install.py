@@ -391,3 +391,13 @@ def test_two_installs_starting_on_one_line_report_that_line_once() -> None:
     # number (the invariant the fuzz suite pins for every line detector).
     assert mod.violations("pip install ruff; pip install pytest\n") == [1]
     assert mod.violations("pip install ruff; pip install pytest==8.4.2\n") == [1]
+
+
+@pytest.mark.parametrize(
+    "word", ["${D}", "$D", '"$D"'], ids=["braced", "bare", "quoted"]
+)
+def test_a_value_flag_consumes_an_expansion_in_every_spelling(word: str) -> None:
+    """`--target <expansion>` must eat that expansion, whichever way it is written,
+    leaving `ruff` as the unpinned spec. When one spelling is not read as an
+    argument at all, `--target` eats `ruff` instead and the finding disappears."""
+    assert mod.violations(f"pip install --target {word} ruff\n") == [1]
