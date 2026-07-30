@@ -307,3 +307,36 @@ def test_a_quoted_install_run_by_an_interpreter_is_not_excused() -> None:
     # Quote-awareness must not turn every quoted install into a message: the
     # command in front of it is `bash -c`, not a logger.
     assert mod.violations('bash -c "pip install ruff"\n') == [1]
+
+
+# ── a quoted install runs only when something executes the string ────────
+@pytest.mark.parametrize(
+    "line",
+    [
+        'require_command jq "e.g. apt-get install jq / brew install jq"',
+        'gb_error "install it (Debian: apt install coreutils)"',
+        'usage "run: pip install ruff"',  # not a name this lint could enumerate
+        'fail_with_hint "pipx install pre-commit"',
+    ],
+)
+def test_a_quoted_install_with_no_executor_is_help_text(line: str) -> None:
+    assert mod.violations(f"{line}\n") == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'bash -c "pip install ruff"',
+        'sh -c "apt-get install -y curl"',
+        'eval "pipx install pre-commit"',
+        'ssh host "apt-get install -y curl"',
+        "xargs -I{} sh -c 'pip install ruff'",
+    ],
+)
+def test_a_quoted_install_an_executor_runs_is_flagged(line: str) -> None:
+    assert mod.violations(f"{line}\n") == [1]
+
+
+def test_an_unquoted_install_after_a_quoted_argument_is_flagged() -> None:
+    # The quoted part is a progress message; the install itself is bare.
+    assert mod.violations('run_quiet "Installing uv..." pipx install uv\n') == [1]

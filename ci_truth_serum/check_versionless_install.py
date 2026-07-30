@@ -198,17 +198,13 @@ _DYNAMIC = re.compile(r"[$`]")
 
 _GLOBAL_FLAG = re.compile(r"(?:^|\s)(?:-\w*g\w*|--global)\b")
 
-# A command that only PRINTS text, so an install quoted inside it is a hint for a
-# human and not something that runs: the shared message prefixes, plus the logger
-# family repos wrap their output in (`gb_warn "install it: apt install coreutils"`,
-# `log_info`, `note`, `_die`). Composed from MESSAGE_PREFIX rather than replacing
-# it, and kept local because widening the shared constant would also widen what
-# five other lints excuse.
-_MESSAGE_COMMAND = re.compile(
-    rf"{MESSAGE_PREFIX.pattern}"
-    r"|^_?(?:\w+[_-])?(?:echo|printf|print|warn|warning|error|status|die|log"
-    r"|note|info|debug|msg|say)\b"
-)
+# What has to appear in front of a QUOTED install for it to run: something that
+# executes the string. `bash -c "pip install x"` and `ssh host "apt-get install x"`
+# install; `gb_error "install it: apt install coreutils"` and
+# `require_command jq "e.g. apt-get install jq"` are text written for a human, and
+# a repo's own logger/help-text helpers are unenumerable — so the rule keys on the
+# executor being present rather than on knowing every printing command's name.
+_INTERPRETER = re.compile(r"\b(?:sh|bash|dash|zsh|ksh|ash|eval|ssh|xargs)\b")
 
 
 def _tokens(segment: str) -> list[str]:
@@ -270,8 +266,9 @@ def _segment_after(line: str, end: int) -> str:
     return tail[: cut.start()] if cut else tail
 
 
-def _command_prefix(line: str, start: int) -> str:
-    """LINE's text from the previous command separator up to offset START.
+def _command_prefix(line: str, start: int) -> tuple[str, bool]:
+    """LINE's text from the previous command separator up to offset START, plus
+    whether START sits inside a quoted string.
 
     Scoping the message-command test (`echo "run pip install ruff"`) to this
     prefix rather than to the whole line is what keeps an install joined onto a
@@ -280,7 +277,8 @@ def _command_prefix(line: str, start: int) -> str:
 
     Separators inside a quoted string do not start a new command, or a hint that
     happens to contain one (`gb_error "install it: apt install coreutils"`) would
-    read as a command of its own with `install` as its name."""
+    read as a command of its own with `install` as its name — which is also why
+    the quote state travels back with the prefix."""
     prefix = line[:start]
     cut = 0
     quote = ""
@@ -303,7 +301,7 @@ def _command_prefix(line: str, start: int) -> str:
             cut = i = separator.end()
             continue
         i += 1
-    return prefix[cut:].lstrip()
+    return prefix[cut:].lstrip(), bool(quote)
 
 
 def violations(text: str) -> list[int]:
@@ -336,8 +334,16 @@ def _has_unpinned_install(line: str) -> bool:
     """True when LINE runs an install command with at least one unpinned spec."""
     for family, pattern in _INSTALLERS:
         for match in pattern.finditer(line):
-            if _MESSAGE_COMMAND.match(_command_prefix(line, match.start())):
-                continue  # quoted inside a message, not run
+            prefix, in_quotes = _command_prefix(line, match.start())
+            if MESSAGE_PREFIX.match(prefix):
+                continue  # an argument to a command that only prints
+            # A match whose own leading character is the quote opens the string it
+            # sits in, so it is quoted too — `echo "pip install x"` must not read
+            # as an unquoted install just because the quote came first.
+            if (in_quotes or match.group()[:1] in "\"'") and not _INTERPRETER.search(
+                prefix
+            ):
+                continue  # text inside a string nothing executes
             segment = _segment_after(line, match.end())
             # Only a GLOBAL Node install pins nowhere else; a local one records its
             # range in package.json. `yarn global add` says so in the command
