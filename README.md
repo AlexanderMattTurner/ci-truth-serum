@@ -241,8 +241,11 @@ contexts, and rewrites the repo’s branch-protection ruleset so
 `required_status_checks` matches that set exactly. The annotations become the
 single source of truth, so the required-set stops drifting in the GitHub UI.
 
+This package is not published to any registry — install it from the tag you
+already pin in `.pre-commit-config.yaml`:
+
 ```bash
-pip install ci-truth-serum
+pip install "git+https://github.com/AlexanderMattTurner/ci-truth-serum@v1.0.0"
 
 # Report drift and exit non-zero WITHOUT mutating (PR-safe gate):
 sync-required-checks --repo owner/name --check
@@ -295,7 +298,7 @@ precisely what a first release that tagged but never published looks like (that
 case is reported as a missing marker, not excused).
 
 ```bash
-pip install ci-truth-serum
+pip install "git+https://github.com/AlexanderMattTurner/ci-truth-serum@v1.0.0"
 
 release-canary                    # package name read from ./package.json
 release-canary --package my-pkg --changelog CHANGELOG.md --repo-dir .
