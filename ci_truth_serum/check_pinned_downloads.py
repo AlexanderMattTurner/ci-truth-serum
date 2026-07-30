@@ -19,12 +19,33 @@ close after it:
   * ``_sha256_verify`` (a common verify-helper naming)
   * ``ADD --checksum=sha256:<digest>`` (Docker's own built-in pin)
 
+The scan runs on the REAL bash grammar (``_bash_ast``), walking ``command`` nodes,
+so the questions that sink a text scan are answered by structure instead of
+guessed at:
+
+  * a download named inside a quoted message (``gb_warn "curl -o t $url"``) is a
+    ``string`` argument of the command that prints it — one token, holding no
+    commands, so it is text and never a finding;
+  * a ``heredoc_body`` written to a file (``cat <<'EOF' > doc.txt``) is data, so
+    the grammar yields no commands from it at all — while the same body fed to an
+    interpreter (``bash <<'EOF'``) is a script, and is parsed as one;
+  * a redirection is a ``file_redirect`` under the command's
+    ``redirected_statement``, never an argument — which is what keeps a ``>&2``
+    (an ``>&`` operator, or a ``2>`` carrying a ``file_descriptor``) out of the
+    output-target list;
+  * ``|`` / ``&&`` / ``;`` split a ``pipeline``/``list`` into separate commands,
+    and one written inside a string splits nothing — so the interpreter that a
+    download is piped INTO is a real downstream stage, matched by token rather
+    than by "some shell name appears after a ``|`` character";
+  * an inline fetch the interpreter executes (``bash -c "$(curl …)"``,
+    ``bash <(curl …)``, ``eval "$(curl …)"``) is a
+    ``command_substitution``/``process_substitution`` child carrying a real
+    ``curl`` command.
+
 Downloads to ``/dev/null``/``/dev/stdout``/``-`` (reachability probes, piped
 API reads to a data reader like ``| jq``) are not artifacts and are ignored — but a
 stdout sink piped into a *shell* (``curl -O- … | sh``) still executes, so it fires.
-The same goes for commands inside message
-strings (``echo``/``printf``/``warn``/``status``/``die``/``log`` lines). A
-download that genuinely cannot be pinned opts out with a same-line or
+A download that genuinely cannot be pinned opts out with a same-line or
 preceding-line ``# pin-exempt: <reason>``.
 
 Invoked by pre-commit with the staged shell + Dockerfile paths as arguments.
@@ -35,179 +56,428 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import strip_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PathologicalInputError,
+    iter_nodes,
+    parse,
+)
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    MESSAGE_PREFIX,
     annotated,
-    logical_lines,
-    run_line_checks,
+)
+
+OPT_OUT = "pin-exempt"
+
+MESSAGE = (
+    "downloaded artifact is not checksum/signature verified — add a "
+    f"sha256sum/cosign/gpg check after it, or annotate `# {OPT_OUT}: <reason>`"
 )
 
 # How many lines after a download to scan for its verification before giving up.
-# The scan also stops early at the next download, so one check can't cover two.
+# The scan also stops at the next download, so one check can't cover two.
 _WINDOW = 25
 
-_DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")
+_WGET = "wget"
+_DOWNLOADERS = frozenset({"curl", _WGET})
 
-# A Dockerfile `ADD <url> <dest>` that fetches a remote artifact (optionally with
-# build flags like `--chown=`/`--chmod=`). This is the idiomatic Dockerfile
-# download and writes the bytes straight into the image, so it owes a verification
-# exactly like curl/wget. Docker's own `--checksum=sha256:<digest>` IS that
-# verification (matched by _VERIFY below), so a pinned ADD passes.
-_ADD_URL = re.compile(r"^\s*ADD\s+(?:--\S+\s+)*\S*https?://", re.IGNORECASE)
+# Any `scheme://` value. A token carrying one is a URL the fetch reads, so it is
+# never the name of the command being run.
+_URL_SCHEME = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://")
 
 # An output flag that makes the fetch write a file. `-o`/`--output` and wget's
-# `-O` take a target (captured so a /dev/null/stdout/- sink can be excused);
-# curl's `-O` and `--remote-name` derive the name from the URL and take none. The
-# target may be space-separated (`-o f`) or `=`-joined (`--output=f`); the `-O-`
-# shorthand (write to stdout, no space) is captured by the `stdout` alternative.
-# `o`/`O` is also recognized at the END of a short-flag cluster (`wget -qO-`,
-# `curl -sSLo f`, `curl -fsSLO`): a `-q` on wget is quiet mode, not an output
-# flag, and misreading `-qO-` as flag-less made a piped stdout read a "bare wget
-# artifact download". A cluster whose target is GLUED after a non-final `o`/`O`
-# (`-Oq`) is not matched and conservatively stays an artifact download.
+# `-O` take a target (so a /dev/null/stdout/- sink can be excused); curl's `-O`
+# and `--remote-name` derive the name from the URL and take none. The target may
+# be the next token (`-o f`), `=`-joined (`--output=f`), or the `-` glued after a
+# short-flag cluster (`wget -qO-`, write to stdout). `o`/`O` is recognized at the
+# END of a cluster (`-qO-`, `-sSLo f`, `-fsSLO`): a `-q` on wget is quiet mode,
+# not an output flag, and misreading `-qO-` as flag-less makes a piped stdout read
+# look like a "bare wget artifact download". A cluster whose target is GLUED after
+# a non-final `o`/`O` (`-Oq`) is not an output flag and conservatively leaves the
+# fetch an artifact download.
 _OUTPUT_FLAG = re.compile(
-    r"(?:^|\s)(?:-[A-Za-z]*[oO]|--output|--remote-name(?:-all)?)\b"
-    r"(?:[=\s]+(?P<target>\S+)|(?P<stdout>-)(?=\s|$))?"
+    r"^(?:-[A-Za-z]*[oO]|--output|--remote-name(?:-all)?)(?P<glued>|=\S*|-)$"
 )
 
-_NULL_TARGETS = {"/dev/null", "/dev/stdout", "/dev/stderr", "-"}
+_NULL_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "-"})
 
-# A shell redirect that writes the fetched bytes into a file: `> f` / `>> f` (with
-# any inter-token spacing). The `>` must be at a word boundary (start or after
-# whitespace) so an FD-qualified redirect like `2>` / `1>` (stderr/stdout, glued to
-# a digit) is NOT mistaken for an artifact write; a `&`/`|`-led target (`2>&1`, a
-# pipe) is excluded from the captured path.
-_REDIRECT = re.compile(r"(?:^|\s)>>?\s*(?P<rt>[^\s&|<>]+)")
+# The shells whose `-c` argument is a script, plus the commands whose arguments are
+# code by definition (`eval`'s every argument, `ssh`'s remote command). A string or
+# heredoc body reached this way is parsed as its own script — the one place where
+# quoted text and heredoc data are treated as commands. The shell names also
+# identify the interpreter a download is piped into, or the one running an inline
+# `$(curl …)`.
+_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "busybox"})
+_EVAL = "eval"
+_SSH = "ssh"
 
-# wget (unlike curl, which defaults to stdout) writes to disk by default, so a bare
-# `wget <url>` with no output flag or redirect is still an artifact download.
-_WGET = re.compile(r"\bwget\b")
+# A remote source for a Dockerfile `ADD`. `ADD` of a build-context path fetches
+# nothing; only an http(s) URL pulls bytes into the image.
+_HTTP_URL = re.compile(r"https?://")
+_ADD = "ADD"
 
-# `curl … | sh` / `curl -fsSL … | sudo bash`: the streamed bytes never hit disk, but
-# the shell EXECUTES them — the same supply-chain exposure as save-then-run, and the
-# marquee one-line installer. A pipe to a data reader (`| jq`, `| tar`, `| grep`) is
-# NOT an execution, so only a shell interpreter counts. `ssh`/`bashful` are rejected
-# by the `\b…\b` word boundaries. An optional `sudo` (with its flags) and an absolute
-# path (`/bin/sh`) are tolerated between the pipe and the interpreter name.
-_PIPE_TO_SHELL = re.compile(
-    r"\|\s*"
-    r"(?:sudo\b[^|]*?\s)?"
-    r"(?:\S*/)?"
-    r"\b(?:sh|bash|dash|zsh|ksh|ash)\b"
+# Verification a download can be held to. Each is matched as a COMMAND TOKEN, so a
+# `sha256sum` named inside a message string (one `string` token) verifies nothing.
+_VERIFY_COMMANDS = frozenset(
+    {
+        "sha256sum",
+        "sha512sum",
+        "sha384sum",
+        "sha1sum",
+        "shasum",
+        "md5sum",
+        "_sha256_verify",
+    }
+)
+_CHECKSUM_FLAG = "--checksum=sha256:"  # Docker `ADD --checksum=sha256:<digest> <url>`
+
+# Child types of a `command` that carry an argument value. Everything else under it
+# — `file_redirect`, `variable_assignment`, heredoc plumbing — is not an argument,
+# which is what keeps a `>&2` out of the output-target list.
+_ARGUMENT_TYPES = frozenset(
+    {
+        "word",
+        "string",
+        "raw_string",
+        "concatenation",
+        "number",
+        "simple_expansion",
+        "expansion",
+    }
 )
 
-# `bash -c "$(curl …)"`, `sh -c "$(curl…)"`, `eval "$(curl…)"`, `bash <(curl…)`: an
-# interpreter executing bytes fetched inline via command/process substitution — the
-# Homebrew-style installer. The same execute-unverified exposure as the pipe form,
-# just spelled with `$(…)`/`<(…)`. The curl/wget must sit INSIDE the substitution
-# (before its closing `)`), so a `bash -c "$(build_cfg)"` that merely shares a line
-# with an unrelated, already-verified curl is not swept in.
-_EXEC_SUBST = re.compile(
-    r"\b(?:sh|bash|dash|zsh|ksh|ash|eval)\b[^\n]*?(?:\$\(|<\()[^)]*\b(?:curl|wget)\b"
-)
+# The redirection operators that write the fetched bytes into a file. `>&`/`&>`
+# (an FD dup, `>&2`) and `>|` are excluded, as is any redirect carrying a
+# `file_descriptor` (`2>/dev/null` routes diagnostics, not the artifact).
+_WRITE_OPERATORS = frozenset({">", ">>"})
 
-_VERIFY = re.compile(
-    r"\b(?:sha256sum|sha512sum|sha384sum|sha1sum|shasum|md5sum|_sha256_verify)\b"
-    r"|\bcosign\s+verify\b"
-    r"|\bgpg\b[^\n]*--verify\b"
-    r"|--checksum=sha256:"  # Docker `ADD --checksum=sha256:<digest> <url>`
-)
+# Nodes that pass a redirection down to the commands inside them: `{ curl …; } > f`
+# and `( curl …; ) > f` send each grouped command's stdout to the file. A
+# `pipeline` is deliberately absent — inside `{ curl … | jq .; } > f` the fetch
+# writes to `jq`, not to the file.
+_REDIRECT_WRAPPERS = frozenset({"compound_statement", "subshell", "list"})
 
 
-def _is_artifact_download(line: str) -> bool:
-    """True if LINE runs curl/wget to save a real file (not /dev/null/stdout/-).
+def _text(node) -> str:
+    return node.text.decode("utf-8", "replace")
 
-    Recognizes three ways bytes reach disk: an explicit output flag
-    (``-o FILE``/``-O``/``--output``/``--remote-name``), a shell redirect into a
-    file (``curl url > f``), and a bare ``wget url`` (wget saves by default; curl,
-    which defaults to stdout, does not — so a flag-less, redirect-less curl is not
-    an artifact) — plus two execute-without-saving forms: a pipe straight into a
-    shell (``curl … | sh``) and an interpreter run on an inline substitution
-    (``bash -c "$(curl …)"`` / ``bash <(curl …)`` / ``eval "$(curl …)"``)."""
-    if not _DOWNLOADER.search(line):
+
+def _unquote(raw: str) -> str:
+    """A quoted argument's literal text (`'tool'` → `tool`)."""
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+    return raw
+
+
+def _arguments(command) -> list:
+    """A `command` node's name and argument nodes, in order.
+
+    Every non-argument child is skipped — a `file_redirect` (`>&2`), a
+    `variable_assignment` prefix (`FOO=1 cmd`), heredoc plumbing — so only real
+    arguments can be read as an output target or a command word."""
+    args = []
+    for child in command.children:
+        if child.type == "command_name":
+            args.extend(child.children or [child])
+        elif child.type in _ARGUMENT_TYPES:
+            args.append(child)
+    return args
+
+
+def _tokens(command) -> list[str]:
+    """A `command` node's argument tokens as literal text. A quoted message is ONE
+    token, so a command name spelled inside it never matches a command word."""
+    return [_unquote(_text(node)) for node in _arguments(command)]
+
+
+def _names(tokens: list[str]) -> set[str]:
+    """The command names TOKENS could be invoking: each token's basename, so
+    `/bin/sh` reads as `sh` and a leading wrapper (`sudo`, `retry`, `RUN`) leaves
+    the real name matchable at any position. A URL is an argument value and never
+    a name, so its last path segment stays out (`https://cdn/curl` invokes
+    nothing)."""
+    return {
+        token.rsplit("/", 1)[-1] for token in tokens if not _URL_SCHEME.search(token)
+    }
+
+
+def _output_target(tokens: list[str]) -> tuple[bool, str | None]:
+    """(an output flag is present, the file it names) for a fetch's TOKENS.
+
+    The target is None when the flag derives the name from the URL (curl's `-O`,
+    `--remote-name`) — still a real artifact on disk."""
+    for index, token in enumerate(tokens):
+        flag = _OUTPUT_FLAG.match(token)
+        if not flag:
+            continue
+        glued = flag.group("glued")
+        if glued == "-":
+            return True, "-"  # `-O-` writes to stdout
+        if glued.startswith("="):
+            return True, glued[1:]
+        following = tokens[index + 1 :]
+        return True, following[0] if following else None
+    return False, None
+
+
+def _writes_a_file(redirect) -> bool:
+    """True when a `file_redirect` node sends stdout into a real file.
+
+    An FD dup (`>&2`, whose operator is `>&`) and an FD-qualified route
+    (`2>/dev/null`, which carries a `file_descriptor`) move diagnostics, not the
+    artifact, so neither counts as a saved download."""
+    kinds = {child.type for child in redirect.children}
+    if "file_descriptor" in kinds or not kinds & _WRITE_OPERATORS:
         return False
-    # Executing the fetched bytes (piped into a shell, or run from a `$(…)`/`<(…)`
-    # substitution) is an artifact regardless of any stdout sink, so these are checked
-    # before the `-O-`/`-o -` early-returns below (which would otherwise excuse
-    # `curl -O- … | sh` as a mere stdout write).
-    if _PIPE_TO_SHELL.search(line) or _EXEC_SUBST.search(line):
-        return True
-    # A shell redirect into a real file saves the bytes regardless of any
-    # stdout-sink output flag (`wget -qO- url > tool` writes `tool`), so it is
-    # checked before the stdout early-return below.
-    rm = _REDIRECT.search(line)
-    if rm and rm.group("rt") not in _NULL_TARGETS:
-        return True
-    m = _OUTPUT_FLAG.search(line)
-    if m:
-        if m.group("stdout"):  # `-O-` writes to stdout, not an artifact
+    return any(
+        _unquote(_text(child)) not in _NULL_TARGETS
+        for child in redirect.children
+        if child.type in _ARGUMENT_TYPES
+    )
+
+
+def _redirects_to_file(command) -> bool:
+    """True when a redirection covering COMMAND writes its stdout into a real file.
+
+    Redirections belong to the enclosing `redirected_statement`, never to the
+    command's argument list — which is why a `>&2` cannot be read as an output
+    file here. A group that redirects as a whole (`{ curl …; } > f`) covers the
+    commands inside it, so the search climbs the grouping nodes."""
+    node = command
+    while node.parent is not None:
+        parent = node.parent
+        if parent.type == "redirected_statement":
+            return any(
+                _writes_a_file(child)
+                for child in parent.children
+                if child.type == "file_redirect"
+            )
+        if parent.type not in _REDIRECT_WRAPPERS:
             return False
-        # A captured target may be a null sink; `-O`/`--remote-name` capture none
-        # (they derive the name from the URL) and so are always a real artifact.
-        return m.group("target") not in _NULL_TARGETS
-    return bool(_WGET.search(line))
+        node = parent
+    return False
 
 
-def _is_download(line: str) -> bool:
-    """True if LINE fetches a remote artifact to disk — a curl/wget save or a
-    Dockerfile `ADD <url>` — so it must carry a nearby verification."""
-    return _is_artifact_download(line) or bool(_ADD_URL.search(line))
+def _stage_command(stage):
+    """The command a `pipeline` child runs, or None for the `|` tokens between
+    them. A stage carrying its own redirection is a `redirected_statement`
+    wrapping the command."""
+    if stage.type == "command":
+        return stage
+    if stage.type == "redirected_statement":
+        return next((c for c in stage.children if c.type == "command"), None)
+    return None
+
+
+def _piped_into_shell(command) -> bool:
+    """True when COMMAND's output is piped into an interpreter that runs it.
+
+    The interpreter has to be a real downstream STAGE of the `pipeline` — so a
+    `|` written inside a quoted string separates nothing, `ssh` is a different
+    token than `sh`, and a shell named deep inside a later stage's argument
+    (`| tee "$(bash -c name)"`) is not the thing being piped to."""
+    stage = command
+    while stage.parent is not None and stage.parent.type != "pipeline":
+        stage = stage.parent
+    pipeline = stage.parent
+    if pipeline is None:
+        return False
+    downstream = [
+        _stage_command(child)
+        for child in pipeline.children
+        if child.start_byte >= stage.end_byte
+    ]
+    return any(_names(_tokens(sink)) & _SHELLS for sink in downstream if sink)
+
+
+def _names_a_downloader(tokens: list[str]) -> bool:
+    return bool(_names(tokens) & _DOWNLOADERS)
+
+
+def _executes_an_inline_fetch(command, tokens: list[str]) -> bool:
+    """True when COMMAND is an interpreter running bytes fetched inline —
+    ``bash -c "$(curl …)"``, ``bash <(curl …)``, ``eval "$(curl …)"``.
+
+    The fetch has to sit inside the substitution the interpreter consumes, so a
+    `bash -c "$(build_cfg)"` sharing a line with an unrelated (already verified)
+    curl is not swept in."""
+    names = _names(tokens)
+    if not (names & _SHELLS or _EVAL in names):
+        return False
+    return any(
+        _names_a_downloader(_tokens(fetch))
+        for subst in iter_nodes(command, "command_substitution", "process_substitution")
+        for fetch in iter_nodes(subst, "command")
+    )
+
+
+def _adds_from_url(tokens: list[str]) -> bool:
+    """True for a Dockerfile `ADD <url> <dest>`, which writes the remote bytes
+    straight into the image."""
+    return bool(
+        tokens
+        and tokens[0].upper() == _ADD
+        and any(_HTTP_URL.search(token) for token in tokens[1:])
+    )
+
+
+def _is_download(command, tokens: list[str]) -> bool:
+    """True when COMMAND fetches remote bytes that then get saved or executed.
+
+    Executing the fetched bytes (piped into a shell, or run from a `$(…)`/`<(…)`
+    substitution) counts regardless of any stdout sink, and a redirect into a real
+    file saves them regardless of one (`wget -qO- url > tool` writes `tool`) — so
+    both are decided before the `-O-`/`-o -` sinks are excused."""
+    if _executes_an_inline_fetch(command, tokens) or _adds_from_url(tokens):
+        return True
+    if not _names_a_downloader(tokens):
+        return False
+    if _piped_into_shell(command) or _redirects_to_file(command):
+        return True
+    flagged, target = _output_target(tokens)
+    if flagged:
+        return target not in _NULL_TARGETS
+    # wget (unlike curl, which defaults to stdout) writes to disk by default, so a
+    # bare `wget <url>` with no output flag or redirect is still an artifact.
+    return _WGET in _names(tokens)
+
+
+def _verifies(tokens: list[str]) -> bool:
+    """True when TOKENS check fetched bytes against a digest or a signature."""
+    names = _names(tokens)
+    return bool(
+        names & _VERIFY_COMMANDS
+        or ("cosign" in names and "verify" in tokens)
+        or ("gpg" in names and "--verify" in tokens)
+        or any(token.startswith(_CHECKSUM_FLAG) for token in tokens)
+    )
+
+
+def _executed_strings(tokens: list[str], args: list) -> list:
+    """String arguments whose contents something RUNS, so they hold commands.
+
+    A shell's `-c` script, `eval`'s arguments and `ssh`'s remote command are code;
+    an interpreter reached through a wrapper (`xargs … sh -c '…'`) is covered
+    because the shell is found at any token position. Every other string is text a
+    command prints or passes on."""
+    quoted = [node for node in args if node.type in ("string", "raw_string")]
+    if not (quoted and tokens):
+        return []
+    head = tokens[0].rsplit("/", 1)[-1]
+    if head in (_EVAL, _SSH):
+        return quoted[-1:] if head == _SSH else quoted
+    for index, token in enumerate(tokens):
+        if token.rsplit("/", 1)[-1] in _SHELLS and "-c" in tokens[index + 1 :]:
+            return quoted[:1]
+    return []
+
+
+def _executed_scripts(
+    command, tokens: list[str], args: list
+) -> list[tuple[object, str]]:
+    """(node, script) for every body COMMAND runs as shell code of its own.
+
+    Two shapes carry a script the grammar does not parse as commands on its own:
+    a quoted argument something executes (see `_executed_strings`), and a heredoc
+    fed to an interpreter (`bash <<'EOF' … EOF`) — whose body IS the script, unlike
+    a heredoc written to a file (`cat <<'EOF' > doc.txt`), which is data."""
+    scripts = [
+        (node, _unquote(_text(node))) for node in _executed_strings(tokens, args)
+    ]
+    # Only the command's OWN redirections can carry its heredoc: a `heredoc_body`
+    # found anywhere else belongs to another command's redirect.
+    statement = command.parent
+    if _names(tokens) & _SHELLS and statement is not None:
+        scripts += [
+            (node, _text(node))
+            for redirect in statement.children
+            if redirect.type == "heredoc_redirect"
+            for node in iter_nodes(redirect, "heredoc_body")
+        ]
+    return scripts
+
+
+def _findings(root) -> tuple[list[tuple[int, int]], set[int]]:
+    """((first line, last line) of every download, lines carrying a verification)
+    under ROOT, all 1-based.
+
+    Recurses into the bodies something executes, so a download inside
+    `bash -c "…"` or a `bash <<'EOF'` heredoc is judged as the command it becomes;
+    its lines are reported relative to the enclosing script."""
+    downloads: list[tuple[int, int]] = []
+    verified: set[int] = set()
+    for command in iter_nodes(root, "command"):
+        args = _arguments(command)
+        tokens = [_unquote(_text(node)) for node in args]
+        for node, script in _executed_scripts(command, tokens, args):
+            offset = node.start_point[0]
+            inner_downloads, inner_verified = _findings(parse(script))
+            downloads += [
+                (offset + first, offset + last) for first, last in inner_downloads
+            ]
+            verified |= {offset + line for line in inner_verified}
+        if _verifies(tokens):
+            verified.add(command.start_point[0] + 1)
+        if _is_download(command, tokens):
+            downloads.append((command.start_point[0] + 1, command.end_point[0] + 1))
+    return downloads, verified
 
 
 def violations(text: str) -> list[int]:
     """1-based line numbers of artifact downloads with no nearby verification.
 
-    Download and verification detection run over LOGICAL lines (continuations
-    joined) of a COMMENT-STRIPPED view of the text (bash `comment` nodes
-    blanked), so a `curl … \\`-wrapped download is analyzed as one command AND a
-    verification token that lives only in a comment — ``# TODO: verify with
-    sha256sum`` — cannot satisfy the gate; the token must sit in executed code.
-    The raw physical lines are kept for the ``# pin-exempt:`` opt-out, which by
-    definition lives in a comment (accepted on any physical line of the flagged
-    command, or the line directly above it)."""
+    Detection walks the bash grammar, so a `\\`-continued download is ONE node
+    (reported at its first line), a download written in a comment is a `comment`
+    node rather than a command, and one written inside a message string or a
+    heredoc body is text the grammar yields no command from. A verification is
+    likewise a real command, so a ``# TODO: verify with sha256sum`` cannot satisfy
+    the gate. The raw physical lines are kept for the ``# pin-exempt:`` opt-out,
+    which by definition lives in a comment (accepted on any physical line of the
+    flagged command, or the line directly above it)."""
     raw = text.splitlines()
-    logicals = logical_lines(strip_comments(text))
-    starts = [s for s, _ in logicals]
-    code = [line for _, line in logicals]
+    downloads, verified = _findings(parse(text))
+    # One finding per line, carrying the WIDEST span that starts there: two
+    # downloads can begin on the same row (`curl -o a x; curl -o b y`, or a
+    # `bash -c` string whose fetch sits on the line that opened it), and a line
+    # reported twice would be a duplicate finding — plus the wider span gives the
+    # `pin-exempt` lookup every physical line the reader would put it on.
+    widest: dict[int, int] = {}
+    for start, end in downloads:
+        widest[start] = max(widest.get(start, end), end)
+    starts = sorted(widest)
     hits = []
-    for i, (start, line) in enumerate(logicals):
-        stripped = line.strip()
-        if not stripped or MESSAGE_PREFIX.match(stripped):
+    for index, start in enumerate(starts):
+        if any(
+            annotated(physical, OPT_OUT) for physical in raw[start - 1 : widest[start]]
+        ) or (start >= 2 and annotated(raw[start - 2], OPT_OUT)):
             continue
-        if not _is_download(line):
-            continue
-        span_end = starts[i + 1] - 1 if i + 1 < len(starts) else len(raw)
-        span = raw[start - 1 : span_end]
-        if any(annotated(pl, "pin-exempt") for pl in span) or (
-            start >= 2 and annotated(raw[start - 2], "pin-exempt")
-        ):
-            continue
-        if not _verified_within_window(code, i):
+        # Each download must carry its OWN check: the scan reaches _WINDOW lines
+        # past it and stops before the next download, so one checksum can't cover
+        # two fetches.
+        limit = start + _WINDOW
+        if index + 1 < len(starts):
+            limit = min(limit, starts[index + 1] - 1)
+        if not any(start <= line <= limit for line in verified):
             hits.append(start)
     return hits
 
 
-def _verified_within_window(code: list[str], start: int) -> bool:
-    """Scan [start, start+_WINDOW] of the comment-stripped logical CODE lines for
-    a verification token, stopping at the next download so each fetch must carry
-    its own check. Because the lines are comment-stripped, a ``sha256sum``
-    mentioned in a comment cannot count as verification."""
-    for j in range(start, min(len(code), start + _WINDOW + 1)):
-        if j > start and _is_download(code[j]):
-            return False
-        if _VERIFY.search(code[j]):
-            return True
-    return False
-
-
 def main(argv: list[str]) -> int:
-    return run_line_checks(
-        argv,
-        violations,
-        "downloaded artifact is not checksum/signature verified — add a "
-        "sha256sum/cosign/gpg check after it, or annotate `# pin-exempt: <reason>`",
-    )
+    status = 0
+    for arg in argv:
+        try:
+            hits = violations(Path(arg).read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue  # a deleted/renamed path pre-commit may still list
+        except PathologicalInputError as err:
+            # A shape the grammar cannot parse safely fails the check LOUDLY (the
+            # same posture as check_untrusted_exec): skipping it would false-green
+            # exactly the input an adversary controls.
+            print(f"{arg}: {err}", file=sys.stderr)
+            status = 1
+            continue
+        for lineno in hits:
+            print(f"{arg}:{lineno}: {MESSAGE}", file=sys.stderr)
+            status = 1
+    return status
 
 
 if __name__ == "__main__":
