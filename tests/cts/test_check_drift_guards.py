@@ -104,6 +104,116 @@ def test_violations_passes_justified_drift_guard() -> None:
     assert mod.violations(src) == []
 
 
+# ── Laundered authority: a comment calling a copy a source of truth ───────────
+
+
+@pytest.mark.parametrize(
+    "comment, phrase",
+    [
+        # Authority word + copy word in one comment body: the laundered form.
+        ("# SSOT char sets (mirrored from the per-layer suites)", "SSOT"),
+        ("# the canonical list, restated here", "canonical"),
+        (
+            "// single source of truth — a copy of the manifest",
+            "single source of truth",
+        ),
+        ("# canonical env names, hand-maintained beside config.json", "canonical"),
+        ("# the SSOT rows, duplicated for the shell side", "SSOT"),
+        ("# canonical set, kept in step with the loader", "canonical"),
+        ("    x = 1  # canonical order, mirrors the schema", "canonical"),
+        # Only one half present -> not the laundered shape.
+        ("# the SSOT for detector ids", None),
+        ("# mirrors whatever the upstream API returns", None),
+        ("# canonical form of the request path", None),
+        # Denial governing the copy word: the honest neighbour that says the
+        # value is READ rather than duplicated. Must not fire.
+        ("# read from the SSOT, never a copy", None),
+        ("# the canonical list, not restated here", None),
+        ("# the SSOT, so no duplication of the row set", None),
+        ("# derived from the canonical config rather than mirrored", None),
+        # A denial in an EARLIER sentence does not excuse a later admission.
+        ("# not the loader. the canonical rows, mirrored below", "canonical"),
+        # `cannot` is not a denial — a character-width window would misread its
+        # tail as a bare `not` and wrongly excuse this line.
+        ("# the canonical set cannot be regenerated, so it is mirrored", "canonical"),
+        # Outside a comment the same words are a value the program builds.
+        ('LABEL = "canonical copy"', None),
+        ("assert msg == 'SSOT mirrored from upstream'", None),
+    ],
+)
+def test_launders_a_copy(comment: str, phrase: str | None) -> None:
+    assert mod._launders_a_copy(comment) == phrase
+
+
+def test_violations_flags_a_laundered_body_comment() -> None:
+    """The class the phrasing pass structurally cannot see: no drift vocabulary
+    at all, just a comment calling a hand-kept copy the canonical one."""
+    src = (
+        "def test_shell_and_python_agree():\n"
+        "    # canonical char set, mirrored from the per-layer suites\n"
+        "    assert SHELL_CHARS == PY_CHARS\n"
+    )
+    assert mod.violations(src) == [(1, "test_shell_and_python_agree")]
+
+
+def test_laundered_comment_cleared_by_marker() -> None:
+    src = (
+        '@pytest.mark.drift_guard("the shell side cannot import the Python set")\n'
+        "def test_shell_and_python_agree():\n"
+        "    # canonical char set, mirrored from the per-layer suites\n"
+        "    assert SHELL_CHARS == PY_CHARS\n"
+    )
+    assert mod.violations(src) == []
+
+
+def test_laundering_is_not_cleared_by_the_structural_optout() -> None:
+    """`# not-a-drift-guard:` clears a STRUCTURAL-only hit. Laundering is a
+    self-declaration, so it survives the opt-out exactly as intent phrasing does —
+    otherwise the escape hatch would excuse the very shape it was built to expose.
+    """
+    src = (
+        "def test_shell_and_python_agree():\n"
+        "    # not-a-drift-guard: the two are generated from one template\n"
+        "    # canonical char set, mirrored from the per-layer suites\n"
+        "    assert SHELL_CHARS == PY_CHARS\n"
+    )
+    assert mod.violations(src) == [(1, "test_shell_and_python_agree")]
+
+
+@pytest.mark.parametrize("token", ["not-a-drift-guard", "drift-guard-ok"])
+def test_an_annotation_line_never_flags_itself(token: str) -> None:
+    """Both opt-out tokens contain "drift-guard", and a reason naturally spells
+    the words this check hunts for. Scanning the annotation line itself would make
+    every opted-out test re-flag on its own opt-out."""
+    src = (
+        "def test_a():\n"
+        f"    # {token}: the canonical rows are mirrored from an external vendor\n"
+        "    assert f() == 1\n"
+    )
+    assert mod.violations(src) == []
+
+
+def test_laundering_pass_reaches_non_python_suites(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The laundered form needs only a comment, so the JS/shell phrase pass runs
+    it too — a suite that dodges every intent phrase is still flagged there."""
+    suite = tmp_path / "chars.test.mjs"
+    suite.write_text(
+        "// canonical char set, mirrored from the Python suite\n", encoding="utf-8"
+    )
+    assert mod.main([str(suite)]) == 1
+    assert f"{suite}:1: drift-guard intent" in capsys.readouterr().err
+
+
+def test_laundering_pass_respects_the_text_annotation() -> None:
+    text = (
+        "// drift-guard-ok: the vendor owns the upstream value\n"
+        "// canonical char set, mirrored from the Python suite\n"
+    )
+    assert mod.text_violations(text) == []
+
+
 # ── Structural trigger: a maintained copy pinned against a read source ────────
 # The laundering that motivated this trigger: a test worded to dodge the phrase
 # lint ("SSOT-coverage contract") that still, structurally, asserts a
