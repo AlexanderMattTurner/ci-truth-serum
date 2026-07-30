@@ -29,6 +29,13 @@ are all local. Not a pre-commit lint and not in any tier aggregate — like
     release-canary                     # package name read from ./package.json
     release-canary --package my-pkg --changelog CHANGELOG.md --repo-dir .
     release-canary --pkgbuild aur/PKGBUILD   # non-default PKGBUILD location
+    release-canary --no-npm            # repo publishes no npm package
+
+`--no-npm` is the explicit opt-out for a repo whose releases are git tags only:
+it drops the npm marker (and the network call) so the remaining markers are
+still compared. It is never inferred from an absent package — a package missing
+from the registry is reported as a missing marker, since that is exactly what a
+first release that tagged but never published looks like.
 """
 
 import argparse
@@ -82,16 +89,40 @@ def max_semver(versions: list[str]) -> str | None:
     return best.strip().lstrip("v")
 
 
+def _npm_error_code(stdout: str) -> str | None:
+    """The `error.code` npm prints in its `--json` output on failure (`E404`,
+    `ENEEDAUTH`, …), or None when stdout is not one of those error objects."""
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    error = data.get("error") if isinstance(data, dict) else None
+    return error.get("code") if isinstance(error, dict) else None
+
+
 def npm_published_versions(package: str) -> list[str]:
     """Every published version of PACKAGE, via `npm view <pkg> versions --json`
-    — the full list, never the `latest` dist-tag. The tool's only network
-    touch; a failure propagates loudly."""
+    — the full list, never the `latest` dist-tag. The tool's only network touch.
+
+    An `E404` (PACKAGE is not in the registry at all) yields an empty list, which
+    the caller reports as a missing npm marker — that IS the finding when a first
+    release tagged but never published, and it is the diagnosis this tool exists
+    to print. Every other npm failure (auth, network, a registry 5xx) raises: it
+    says nothing about the release, so treating it as "not published" would
+    invent a mismatch."""
     proc = subprocess.run(
         ["npm", "view", package, "versions", "--json"],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if proc.returncode:
+        if _npm_error_code(proc.stdout) == "E404":
+            return []
+        raise SystemExit(
+            f"release-canary: `npm view {package} versions --json` failed "
+            f"(exit {proc.returncode}): {proc.stderr.strip() or proc.stdout.strip()}"
+        )
     data = json.loads(proc.stdout)
     # npm prints a bare string when exactly one version is published.
     return [data] if isinstance(data, str) else list(data)
@@ -155,23 +186,38 @@ def package_name(repo_dir: Path) -> str:
     return name
 
 
+def _join(names: list[str]) -> str:
+    """`a and b` / `a, b, and c` — the marker list in the OK line."""
+    return (
+        f"{', '.join(names[:-1])}, and {names[-1]}"
+        if len(names) > 2
+        else " and ".join(names)
+    )
+
+
 def compare(
     npm: str | None,
     tag: str | None,
     changelog: str | None,
     aur: str | None = None,
+    *,
+    check_npm: bool = True,
 ) -> list[str]:
     """Human-readable report lines; empty means every present marker agrees.
 
-    npm/tag/changelog are mandatory (a None among them is a `missing marker`
-    failure). AUR is optional: it is folded in only when AUR is not None, so an
-    absent PKGBUILD never fails the canary, but a PKGBUILD that disagrees
-    does."""
+    tag/changelog are mandatory (a None among them is a `missing marker`
+    failure), and so is npm unless CHECK_NPM is False — the opt-out a repo that
+    publishes to no npm registry passes explicitly, never inferred from an absent
+    package (inferring it would silently excuse the died-before-publish release
+    this tool exists to catch). AUR is optional: it is folded in only when AUR is
+    not None, so an absent PKGBUILD never fails the canary, but a PKGBUILD that
+    disagrees does."""
     labeled = [
-        ("npm (max published)", npm),
         ("git tag (max v*)", tag),
         ("changelog (top dated heading)", changelog),
     ]
+    if check_npm:
+        labeled.insert(0, ("npm (max published)", npm))
     if aur is not None:
         labeled.append(("AUR (PKGBUILD pkgver)", aur))
     missing = [label for label, value in labeled if value is None]
@@ -203,6 +249,12 @@ def main(argv: list[str] | None = None) -> int:
         "--repo-dir", type=Path, default=Path.cwd(), help="git repo to read tags from"
     )
     parser.add_argument(
+        "--no-npm",
+        action="store_true",
+        help="this repo publishes no npm package: skip that marker (and its "
+        "network call) and compare the rest",
+    )
+    parser.add_argument(
         "--pkgbuild",
         type=Path,
         default=Path("PKGBUILD"),
@@ -214,7 +266,7 @@ def main(argv: list[str] | None = None) -> int:
         return path if path.is_absolute() else args.repo_dir / path
 
     package = args.package or package_name(args.repo_dir)
-    npm = max_semver(npm_published_versions(package))
+    npm = None if args.no_npm else max_semver(npm_published_versions(package))
     tag = latest_git_tag(args.repo_dir)
     changelog_path = resolve(args.changelog)
     changelog = (
@@ -229,15 +281,15 @@ def main(argv: list[str] | None = None) -> int:
         else None
     )
 
-    report = compare(npm, tag, changelog, aur)
+    report = compare(npm, tag, changelog, aur, check_npm=not args.no_npm)
     for line in report:
         print(line, file=sys.stderr)
     if report:
         return 1
-    markers = "npm, git tag, and changelog"
+    names = ([] if args.no_npm else ["npm"]) + ["git tag", "changelog"]
     if aur is not None:
-        markers = "npm, git tag, changelog, and AUR"
-    print(f"release-canary: OK — {markers} all say {npm}.")
+        names.append("AUR")
+    print(f"release-canary: OK — {_join(names)} all say {npm if npm else tag}.")
     return 0
 
 

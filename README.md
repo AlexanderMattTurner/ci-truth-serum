@@ -288,7 +288,11 @@ optional fourth marker — checked only when a PKGBUILD is present, so forgettin
 to bump it is caught while a repo without one is unaffected (a build-time
 `pkgver()` that can't be read offline is skipped, never a failure). On mismatch
 it prints all present labeled values and exits non-zero; the `npm view` call is
-its only network touch.
+its only network touch. A repo whose releases are git tags only passes
+`--no-npm` to drop that marker and its network call — an explicit opt-out, never
+inferred from an absent package, because a package missing from the registry is
+precisely what a first release that tagged but never published looks like (that
+case is reported as a missing marker, not excused).
 
 ```bash
 pip install ci-truth-serum
@@ -296,6 +300,7 @@ pip install ci-truth-serum
 release-canary                    # package name read from ./package.json
 release-canary --package my-pkg --changelog CHANGELOG.md --repo-dir .
 release-canary --pkgbuild aur/PKGBUILD   # non-default PKGBUILD location
+release-canary --no-npm                  # releases are git tags only
 ```
 
 Run it as a post-release workflow step so a publish that died after tagging

@@ -177,11 +177,11 @@ def _make_repo(tmp_path: Path, *, uv_exit: int, with_origin: bool = True) -> tup
     return repo, uv_log, bindir
 
 
-def _run(repo: Path, bindir: Path) -> subprocess.CompletedProcess:
+def _run(repo: Path, bindir: Path, *args: str) -> subprocess.CompletedProcess:
     env = git_env()
     env["PATH"] = f"{bindir}{os.pathsep}{env['PATH']}"
     return subprocess.run(
-        ["bash", SCRIPT_REL],
+        ["bash", SCRIPT_REL, *args],
         cwd=repo,
         env=env,
         capture_output=True,
@@ -217,3 +217,26 @@ def test_wrapper_fails_loud_when_tags_cannot_be_fetched(tmp_path: Path) -> None:
     assert result.returncode == 1, result.stdout + result.stderr
     assert "failed to fetch tags" in result.stderr, result.stderr
     assert not uv_log.exists(), "the canary ran on an incomplete tag set"
+
+
+def test_wrapper_forwards_its_arguments_to_the_canary(tmp_path: Path) -> None:
+    """The wrapper is a pass-through, which is what lets the workflow choose the
+    marker set (`--no-npm` here) without a second copy of the invocation."""
+    repo, uv_log, bindir = _make_repo(tmp_path, uv_exit=0)
+    assert _run(repo, bindir, "--no-npm").returncode == 0
+    assert uv_log.read_text().split() == [
+        "run",
+        "--frozen",
+        "release-canary",
+        "--no-npm",
+    ]
+
+
+def test_tag_release_runs_the_canary_with_no_npm() -> None:
+    """This repo publishes to no npm registry — its releases are the `v*` tags
+    consumers pin with pre-commit's `rev:` — so the canary must be told to skip
+    that marker. Without the flag the npm marker is permanently absent and the
+    tag-release job (which the failure notifier watches) reds on every push to
+    main."""
+    _job, step = _steps_running(_tag_release_doc(), SCRIPT_REL)[0]
+    assert "--no-npm" in str(step["run"]).split()

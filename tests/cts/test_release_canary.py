@@ -272,3 +272,100 @@ def test_npm_single_version_string_shape(monkeypatch) -> None:
 
     monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _Done())
     assert mod.npm_published_versions("p") == ["1.0.0"]
+
+
+# ── npm failure modes: absent package vs a broken npm ────────────────────
+def _npm_failure(monkeypatch, stdout: str, stderr: str = "", returncode: int = 1):
+    class _Done:
+        pass
+
+    _Done.stdout, _Done.stderr, _Done.returncode = stdout, stderr, returncode
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _Done())
+
+
+def test_npm_e404_is_no_versions_not_a_crash(monkeypatch) -> None:
+    # A package absent from the registry is the first-release-never-published
+    # finding, which compare() reports as a missing marker — not a traceback.
+    _npm_failure(monkeypatch, '{"error":{"code":"E404","summary":"Not Found"}}')
+    assert mod.npm_published_versions("p") == []
+    assert mod.max_semver(mod.npm_published_versions("p")) is None
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr"),
+    [
+        ('{"error":{"code":"ENEEDAUTH"}}', "need auth"),  # a real npm error
+        ("", "npm ERR! network timeout"),  # no JSON at all
+        ("not json at all", "boom"),
+        ('{"error":"a bare string"}', ""),  # error present but not an object
+        ("[]", "registry 503"),  # JSON, but not an error object
+    ],
+)
+def test_npm_non_404_failure_raises_loudly(monkeypatch, stdout, stderr) -> None:
+    # Anything other than "absent from the registry" says nothing about the
+    # release, so it must not be read as "not published".
+    _npm_failure(monkeypatch, stdout, stderr)
+    with pytest.raises(SystemExit, match="npm view p versions --json` failed"):
+        mod.npm_published_versions("p")
+
+
+def test_npm_failure_message_carries_the_diagnostic_output(monkeypatch) -> None:
+    _npm_failure(monkeypatch, "", "npm ERR! network timeout", returncode=7)
+    with pytest.raises(SystemExit, match="exit 7.*network timeout"):
+        mod.npm_published_versions("p")
+
+
+# ── --no-npm: the explicit git-tags-only opt-out ─────────────────────────
+def test_compare_without_npm_drops_that_marker() -> None:
+    assert mod.compare(None, "1.2.3", "1.2.3", check_npm=False) == []
+
+
+def test_compare_without_npm_still_catches_the_other_markers() -> None:
+    report = mod.compare(None, "1.2.4", "1.2.3", check_npm=False)
+    joined = "\n".join(report)
+    assert "npm" not in joined
+    assert report[-1] == "release-canary: mismatch: 1.2.3 != 1.2.4"
+
+
+def test_compare_without_npm_still_requires_tag_and_changelog() -> None:
+    report = mod.compare(None, None, "1.2.3", check_npm=False)
+    assert "missing marker(s): git tag (max v*)" in report[-1]
+
+
+def test_absent_npm_package_is_a_missing_marker_not_a_pass(
+    tmp_path, monkeypatch
+) -> None:
+    # Without --no-npm, a package that is not in the registry must still fail:
+    # that is exactly what a release that tagged but never published looks like.
+    repo = _release_repo(tmp_path, "v1.4.0", "1.4.0")
+    _inject_npm(monkeypatch, [])
+    assert mod.main(["--repo-dir", str(repo)]) == 1
+
+
+def test_main_no_npm_passes_on_tag_and_changelog(tmp_path, monkeypatch, capsys) -> None:
+    repo = _release_repo(tmp_path, "v1.4.0", "1.4.0")
+
+    def _boom(package):
+        raise AssertionError("--no-npm must skip the npm call entirely")
+
+    monkeypatch.setattr(mod, "npm_published_versions", _boom)
+    assert mod.main(["--repo-dir", str(repo), "--no-npm"]) == 0
+    out = capsys.readouterr().out
+    assert "git tag and changelog all say 1.4.0" in out
+    assert "npm" not in out
+
+
+def test_main_no_npm_still_fails_on_a_tag_changelog_mismatch(
+    tmp_path, monkeypatch
+) -> None:
+    repo = _release_repo(tmp_path, "v1.4.0", "1.3.0")
+    monkeypatch.setattr(mod, "npm_published_versions", lambda p: [])
+    assert mod.main(["--repo-dir", str(repo), "--no-npm"]) == 1
+
+
+def test_main_ok_line_lists_every_active_marker(tmp_path, monkeypatch, capsys) -> None:
+    repo = _release_repo(tmp_path, "v1.4.0", "1.4.0")
+    _inject_npm(monkeypatch, ["1.4.0"])
+    (repo / "PKGBUILD").write_text("pkgver=1.4.0\n")
+    assert mod.main(["--repo-dir", str(repo)]) == 0
+    assert "npm, git tag, changelog, and AUR all say 1.4.0" in capsys.readouterr().out
