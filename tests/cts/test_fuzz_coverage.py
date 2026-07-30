@@ -52,6 +52,7 @@ FUZZ_REQUIRED = {
     "check_substitution_exit_swallow": "violations",
     "check_pinned_downloads": "violations",
     "check_pinned_base_images": "violations",
+    "check_versionless_install": "violations",
     "check_global_stdio_swap": "violations",
     "check_workflow_pipefail": "analyze",
     "check_inline_run_length": "analyze",

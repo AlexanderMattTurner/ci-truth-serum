@@ -106,6 +106,13 @@
   language: python
   files: '\.(sh|bash)$|(^|/)Dockerfile(\.[\w-]+)?$'
 
+- id: check-versionless-install
+  name: "identity: every install command must name a version"
+  description: A versionless `pip install pkg` / `apt-get install pkg` resolves to whatever the index serves that day.
+  entry: python -m ci_truth_serum.check_versionless_install
+  language: python
+  files: '\.(sh|bash)$|(^|/)\.github/(workflows|actions)/.*\.ya?ml$'
+
 - id: check-provenance-repo-url
   name: "identity: package repository URLs must name the repo that publishes"
   description: A repository.url naming another owner/repo (a fork's stale upstream URL) kills the release at npm's provenance validation (E422).

@@ -9,10 +9,13 @@ echo "Setting up Claude automation template..."
 git config core.hooksPath .hooks
 
 if [[ -f package.json ]]; then
-  # Install pnpm if not available
+  # Install pnpm if not available, at the version package.json's `packageManager`
+  # field already declares — reading that field is what keeps the bootstrap off
+  # "whatever npm serves today" without a second copy of the version to drift.
   if ! command -v pnpm &>/dev/null; then
-    echo "Installing pnpm..."
-    npm install -g pnpm
+    pnpm_spec="$(node -p "require('./package.json').packageManager || 'pnpm'")"
+    echo "Installing ${pnpm_spec}..."
+    npm install -g "${pnpm_spec}"
   fi
 
   # Install dependencies (postinstall also sets core.hooksPath, redundantly)

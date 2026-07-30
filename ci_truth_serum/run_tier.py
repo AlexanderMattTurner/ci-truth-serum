@@ -70,6 +70,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_pr_paths", WORKFLOW),
         ("check_pinned_base_images", DOCKERFILE),
         ("check_pinned_downloads", SHELL_OR_DOCKERFILE),
+        ("check_versionless_install", SHELL_OR_WORKFLOW_YAML),
         ("check_frozen_head_sha", WORKFLOW),
         ("check_provenance_repo_url", WORKFLOW),
         ("check_trusted_base", WORKFLOW),

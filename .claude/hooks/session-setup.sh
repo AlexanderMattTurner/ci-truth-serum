@@ -103,6 +103,7 @@ webi_install_if_missing shfmt shfmt@3
 webi_install_if_missing gh gh@2
 webi_install_if_missing jq jq@1.7
 if ! command -v shellcheck &>/dev/null && is_root; then
+  # pin-exempt: apt serves one shellcheck per distro release; pinning fails once its index rolls
   { apt-get update -qq && apt-get install -y -qq shellcheck; } || warn "Failed to install shellcheck"
 fi
 

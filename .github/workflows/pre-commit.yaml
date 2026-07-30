@@ -31,7 +31,7 @@ jobs:
           restore-keys: pre-commit-${{ runner.os }}-
       - name: Run pre-commit
         run: |
-          pip install pre-commit
+          pip install pre-commit==4.6.1
           pre-commit run --all-files --show-diff-on-failure
 
   # Stable Required check: runs even when `pre-commit` is cancelled/skipped, so

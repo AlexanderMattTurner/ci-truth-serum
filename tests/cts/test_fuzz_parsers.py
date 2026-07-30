@@ -34,6 +34,9 @@ substitution_exit_swallow = load_hook(
 )
 pinned_downloads = load_hook("check_pinned_downloads.py", "fuzz_pinned_downloads")
 pinned_base_images = load_hook("check_pinned_base_images.py", "fuzz_pinned_base_images")
+versionless_install = load_hook(
+    "check_versionless_install.py", "fuzz_versionless_install"
+)
 global_stdio_swap = load_hook("check_global_stdio_swap.py", "fuzz_global_stdio_swap")
 secret_file_perms = load_hook("check_secret_file_perms.py", "fuzz_secret_file_perms")
 workflow_pipefail = load_hook("check_workflow_pipefail.py", "fuzz_workflow_pipefail")
@@ -51,6 +54,7 @@ LINE_DETECTORS = {
     "check_substitution_exit_swallow": substitution_exit_swallow.violations,
     "check_pinned_downloads": pinned_downloads.violations,
     "check_pinned_base_images": pinned_base_images.violations,
+    "check_versionless_install": versionless_install.violations,
     "check_global_stdio_swap": global_stdio_swap.violations,
     "check_secret_file_perms": secret_file_perms.violations,
     "check_gh_slurp_jq": gh_slurp_jq.violations,
@@ -97,6 +101,15 @@ _INTERESTING_TOKENS = [
     "`cmd`",
     "# allow-exit-suppress: x",
     "# pin-exempt: x",
+    "pip install ruff",
+    "pip install ruff==0.14.5",
+    "pip install -c constraints.txt ruff",
+    "apt-get install -y shellcheck",
+    "apt-get install -o Dpkg::Options::=--force-confnew -y curl",
+    "pipx install pre-commit",
+    "uv tool install ruff@0.14.5",
+    "npm install -g pnpm",
+    "yarn global add typescript",
     "# allow-stderr-suppress: x",
     "# allow-stdio-swap: x",
     "# allow-no-pipefail: x",
