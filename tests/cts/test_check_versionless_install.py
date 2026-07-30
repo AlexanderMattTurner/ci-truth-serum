@@ -340,3 +340,22 @@ def test_a_quoted_install_an_executor_runs_is_flagged(line: str) -> None:
 def test_an_unquoted_install_after_a_quoted_argument_is_flagged() -> None:
     # The quoted part is a progress message; the install itself is bare.
     assert mod.violations('run_quiet "Installing uv..." pipx install uv\n') == [1]
+
+
+# ── shell plumbing in the argument list is not a package ─────────────────
+@pytest.mark.parametrize(
+    "line",
+    [
+        'apt-get install --only-upgrade -y "$pin_spec" >&2',
+        "apt-get install -y docker-sbx=0.35.0-1 >&2",
+        "pip install ruff==1.0 >log 2>&1",
+        "apt-get install -y curl=8.5.0-2 &",
+    ],
+)
+def test_redirections_are_not_read_as_unpinned_packages(line: str) -> None:
+    assert mod.violations(f"{line}\n") == []
+
+
+def test_a_redirect_does_not_mask_a_real_unpinned_package() -> None:
+    # The mirror image: dropping the plumbing must not drop the spec beside it.
+    assert mod.violations("apt-get install --only-upgrade -y docker-sbx >&2\n") == [1]

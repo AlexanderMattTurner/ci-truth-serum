@@ -191,6 +191,11 @@ _NOT_A_REGISTRY_SPEC = re.compile(
     r"|\.(?:whl|deb|tar\.gz|tgz|tar\.bz2|zip)$"
 )
 
+# Shell plumbing that shares the argument list but names no package: a redirection
+# (`>&2`, `2>&1`, `>log`) or a control operator the segment scan did not cut. Read as
+# a spec, `>&2` would make every `apt-get install pkg=1.2 >&2` look unpinned.
+_SHELL_PLUMBING = re.compile(r"^[<>&]|^\d+[<>]")
+
 # A spec whose version is decided at run time by the shell: `"$PKG"`,
 # `"ruff==${RUFF_VERSION}"`, `` `cat spec` ``. Reading it as unpinned would flag a
 # line whose pin this lint cannot see, so it is left alone.
@@ -252,7 +257,11 @@ def _unpinned_specs(segment: str, family: str) -> list[str]:
                 return []
             skip_next = flag in _VALUE_FLAGS[family] and "=" not in token
             continue
-        if _DYNAMIC.search(token) or _NOT_A_REGISTRY_SPEC.search(token):
+        if (
+            _DYNAMIC.search(token)
+            or _NOT_A_REGISTRY_SPEC.search(token)
+            or _SHELL_PLUMBING.match(token)
+        ):
             continue
         if not _is_pinned(token, family):
             unpinned.append(token)
