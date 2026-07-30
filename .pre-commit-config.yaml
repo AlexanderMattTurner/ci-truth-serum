@@ -128,7 +128,14 @@ repos:
           )$
         language: python
         additional_dependencies:
-          [PyYAML, identify, tree-sitter, tree-sitter-bash]
+          [
+            PyYAML,
+            identify,
+            tree-sitter,
+            tree-sitter-bash,
+            tree-sitter-javascript,
+            tree-sitter-typescript,
+          ]
 
       - id: zizmor
         name: zizmor (GitHub Actions security audit)

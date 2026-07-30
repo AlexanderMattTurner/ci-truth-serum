@@ -13,9 +13,10 @@ write" beats "pip degrades gracefully".
 Scanned surfaces:
   - PROSE — Markdown / reStructuredText files (and any file under --prose):
     every line.
-  - CODE — everything else: only true comment lines (a `#` / `//` line, or a
-    `#` / `//` trailing code). Identifiers and string literals are NOT comments,
-    so a `graceful_shutdown()` symbol or a wordlist entry is never flagged.
+  - CODE — everything else: only true comments, located by the language's own
+    grammar (see `_comments`). Identifiers and string literals are NOT comments,
+    so a `graceful_shutdown()` symbol or a wordlist entry is never flagged; a
+    `/* … */` block in a JS suite IS one, every line of it.
 
 Opt out — only when the concrete behaviour is named in the annotation itself — with
 `allow-graceful: <what actually happens>` on the flagged line or the line above it
@@ -38,9 +39,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    comment_lines,
+    text_comments,
+)
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
-    comment_body,
 )
 
 _WORD_RE = re.compile(r"\bgraceful(?:ly)?\b", re.IGNORECASE)
@@ -58,15 +62,23 @@ MESSAGE = (
 )
 
 
-def violations(text: str, prose: bool) -> list[int]:
+def violations(
+    text: str, prose: bool, comments: dict[int, str] | None = None
+) -> list[int]:
     """1-based line numbers where the word appears un-annotated.
 
     In PROSE mode every line is scanned; in CODE mode only comment bodies are. A
-    line is excused when ``allow-graceful`` appears on it or the line above."""
-    lines = text.splitlines()
+    line is excused when ``allow-graceful`` appears on it or the line above.
+
+    COMMENTS maps 1-based line -> comment body, from ``comment_lines`` — omitting
+    it applies the text delimiter scan to the whole file, which only the caller's
+    path can improve on. It is unused in PROSE mode, where every line counts."""
+    lines = text.split("\n")
+    if comments is None:
+        comments = text_comments(text)
     hits: list[int] = []
     for lineno, raw in enumerate(lines, 1):
-        target = raw if prose else comment_body(raw)
+        target = raw if prose else comments.get(lineno)
         if target is None or not _WORD_RE.search(target):
             continue
         if annotated(raw, _ALLOW) or (
@@ -95,7 +107,7 @@ def main(argv: list[str]) -> int:
         if force_prose and _DOC_ALLOW.search(text):
             continue
         prose = force_prose or Path(path).suffix.lower() in _PROSE_SUFFIXES
-        for lineno in violations(text, prose):
+        for lineno in violations(text, prose, comment_lines(text, path)):
             print(f"{path}:{lineno}: {MESSAGE}", file=sys.stderr)
             status = 1
     return status

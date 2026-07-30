@@ -42,6 +42,8 @@ FUZZ_DIR = REPO_ROOT / "tests" / "cts"
 #   - check_symlinks.sh: a shell hook, not a Python parser.
 FUZZ_REQUIRED = {
     "_bash_ast": "parse",
+    "_js_ast": "parse",
+    "_comments": "comment_lines",
     "_linecheck": "required_check_contexts",
     "_failure_routing": "routing",
     "check_exit_suppression": "violations",

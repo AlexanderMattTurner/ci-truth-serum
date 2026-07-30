@@ -612,3 +612,49 @@ def test_exactly_one_definition_of_the_predicate_exists() -> None:
     assert {k: v for k, v in definitions.items() if v} == {"_linecheck.py": 1}, (
         f"is_test_path must be defined exactly once, in _linecheck: {definitions}"
     )
+
+
+# ── comment_body / is_python_source ──────────────────────────────────────
+# `comment_body` is the no-grammar fallback behind `_comments.text_comments`;
+# its cases lived duplicated in the check_graceful_handwave and
+# check_historical_comments suites, which consume the helper rather than own it.
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("# a full comment", "# a full comment"),
+        ("   // indented line comment", "// indented line comment"),
+        ("/* block opener", "/* block opener"),
+        ("* a block continuation", "* a block continuation"),
+        ("code()  # trailing", "# trailing"),
+        ("code();  // trailing js", "// trailing js"),
+        # `#`/`//` glued into code is not a comment delimiter.
+        ("len=${#arr}", None),
+        ("u = http://x", None),
+        ("plain code line", None),
+        ("", None),
+    ],
+)
+def test_comment_body_extraction(line: str, expected: str | None) -> None:
+    assert lc.comment_body(line) == expected
+
+
+@pytest.mark.parametrize(
+    "path,is_python",
+    [
+        ("a.py", True),
+        ("pkg/mod.py", True),
+        ("stubs/mod.pyi", True),
+        ("x\\y.py", True),
+        ("a.pyx", False),
+        ("a.py.bak", False),
+        ("a.sh", False),
+        ("a.mjs", False),
+        # Extensionless: no suffix to read, so the text fallback owns it rather
+        # than `tokenize` being handed shell.
+        ("hooks/pre-commit", False),
+    ],
+)
+def test_is_python_source(path: str, is_python: bool) -> None:
+    assert lc.is_python_source(path) is is_python
