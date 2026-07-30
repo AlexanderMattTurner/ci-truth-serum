@@ -225,10 +225,21 @@ def run_line_checks(
     find_violations: Callable[[str], list[int]],
     message: str,
 ) -> int:
+    """``run_source_checks`` for a detector that needs only the text. Most
+    line-oriented lints do; a lint that must pick a parser (see ``_comments``)
+    needs the path and calls the two-argument form directly."""
+    return run_source_checks(argv, lambda text, _path: find_violations(text), message)
+
+
+def run_source_checks(
+    argv: list[str],
+    find_violations: Callable[[str, str], list[int]],
+    message: str,
+) -> int:
     """Drive a line-oriented lint over ARGV.
 
-    For each readable path, FIND_VIOLATIONS(text) returns the 1-based line numbers
-    that violate. Each hit prints ``<path>:<lineno>: <message>`` to stderr; an
+    For each readable path, FIND_VIOLATIONS(text, path) returns the 1-based line
+    numbers that violate. Each hit prints ``<path>:<lineno>: <message>`` to stderr; an
     unreadable path (OSError / UnicodeDecodeError) is skipped. Returns 1 if any
     path produced a hit, else 0.
 
@@ -250,7 +261,7 @@ def run_line_checks(
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
             continue
-        for lineno in find_violations(text):
+        for lineno in find_violations(text, path):
             print(f"{path}:{lineno}: {message}", file=sys.stderr)
             status = 1
     return status
@@ -279,6 +290,7 @@ _TEST_PATH = re.compile(
 # `tracked_shell_files`.
 _SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
 _SHELL_SHEBANG = re.compile(r"^#!.*\b(?:bash|sh)\b")
+_PYTHON_SUFFIX = re.compile(r"\.pyi?$")
 
 
 def is_shell_source(path: str, first_line: str) -> bool:
@@ -297,6 +309,13 @@ def is_shell_source(path: str, first_line: str) -> bool:
     if "." in path.rsplit("/", 1)[-1]:
         return False
     return bool(_SHELL_SHEBANG.match(first_line))
+
+
+def is_python_source(path: str) -> bool:
+    """True when PATH names Python: a `.py` / `.pyi` suffix. Extensionless
+    Python is not recognised — a lint choosing a grammar by path gets the text
+    fallback there rather than feeding shell to `tokenize`."""
+    return bool(_PYTHON_SUFFIX.search(path.replace("\\", "/")))
 
 
 def is_test_path(path: str) -> bool:

@@ -77,9 +77,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    comment_lines,
+    text_comments,
+)
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
-    comment_body,
 )
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -191,20 +194,27 @@ def violations(
     workflows: set[str],
     tracked: set[str],
     in_dot_github: bool,
+    comments: dict[int, str] | None = None,
 ) -> list[tuple[int, str]]:
     """(1-based line, cited name) for every un-suppressed dangling workflow
     reference. In PROSE mode every line outside a fenced code block is scanned;
     in code mode only comment bodies are. IN_DOT_GITHUB says the scanned file
     lives under `.github/`, which by itself makes a bare basename a workflow
-    claim (see gate 3)."""
-    lines = text.splitlines()
+    claim (see gate 3).
+
+    COMMENTS maps 1-based line -> comment body, from ``comment_lines`` — omitting
+    it applies the text delimiter scan to the whole file, which only the caller's
+    path can improve on. It is unused in PROSE mode, where every line counts."""
+    lines = text.split("\n")
+    if comments is None:
+        comments = text_comments(text)
     hits: list[tuple[int, str]] = []
     in_fence = False
     for lineno, raw in enumerate(lines, 1):
         if prose and raw.lstrip().startswith("```"):
             in_fence = not in_fence
             continue
-        target = raw if prose else comment_body(raw)
+        target = raw if prose else comments.get(lineno)
         if target is None or (prose and in_fence):
             continue
         cited = _dangling(target, workflows, tracked, in_dot_github)
@@ -235,7 +245,9 @@ def main(argv: list[str]) -> int:
             continue
         prose = Path(path).suffix.lower() in _PROSE_SUFFIXES
         in_dot_github = bool(_DOT_GITHUB.search(path.replace("\\", "/")))
-        for lineno, cited in violations(text, prose, workflows, tracked, in_dot_github):
+        for lineno, cited in violations(
+            text, prose, workflows, tracked, in_dot_github, comment_lines(text, path)
+        ):
             print(f"{path}:{lineno}: `{cited}` — {MESSAGE}", file=sys.stderr)
             status = 1
     return status

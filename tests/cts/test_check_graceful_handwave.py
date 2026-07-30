@@ -2,7 +2,7 @@
 "graceful"/"gracefully" in prose and code comments as a stand-in for an unstated
 requirement.
 
-Drives `violations()` and `comment_body()` directly, plus the script end-to-end
+Drives `violations()` directly, plus the script end-to-end
 over real temp files for the mode selection (prose-by-suffix, --prose) and
 exit-code contract.
 """
@@ -88,21 +88,6 @@ def test_allow_annotation_same_line_and_line_above() -> None:
 def test_stale_annotation_two_lines_above_does_not_count() -> None:
     text = "# allow-graceful: reason\n#\n# a graceful fallback"
     assert mod.violations(text, prose=False) == [3]
-
-
-@pytest.mark.parametrize(
-    ("line", "expected"),
-    [
-        ("# full-line", "# full-line"),
-        ("  // indented", "// indented"),
-        ("code()  # trailing", "# trailing"),
-        ("code();  // trailing", "// trailing"),
-        ("plain code, no comment", None),
-        ('echo "${#arr}"', None),
-    ],
-)
-def test_comment_body_extraction(line: str, expected: str | None) -> None:
-    assert mod.comment_body(line) == expected
 
 
 def _run_script(*argv: str) -> subprocess.CompletedProcess:
@@ -242,6 +227,27 @@ def test_main_prose_flag_flags_an_unannotated_document(tmp_path, capsys) -> None
     f.write_text("this degrades gracefully\n", "utf-8")
     assert mod.main(["--prose", str(f)]) == 1
     assert "graceful" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "name, source, flagged",
+    [
+        # A block comment after code on the same line: no ` # `/` // ` delimiter,
+        # so the delimiter scan read the whole line as code and never saw it.
+        ("trailing block comment", "run(); /* a graceful fallback */", True),
+        # `//` inside a string opens nothing, so what follows is not narration —
+        # the delimiter scan read it as a comment and flagged the value.
+        ("string containing a //", 'const m = "see // graceful fallback";', False),
+        # Positive control, so the "no" row cannot pass by the check going inert.
+        ("line comment", "// a graceful fallback", True),
+    ],
+)
+def test_js_comments_come_from_the_grammar(
+    tmp_path: Path, name: str, source: str, flagged: bool
+) -> None:
+    suite = tmp_path / "a.mjs"
+    suite.write_text(source + "\n", encoding="utf-8")
+    assert mod.main([str(suite)]) == int(flagged)
 
 
 def test_enforced_scope_is_clean() -> None:

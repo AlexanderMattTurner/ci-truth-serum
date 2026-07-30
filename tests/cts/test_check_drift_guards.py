@@ -196,15 +196,9 @@ def test_an_annotation_line_never_flags_itself(token: str) -> None:
     assert mod.violations(src) == []
 
 
-# ── the Python pass reads comment TOKENS, not text that looks like a comment ──
-
-
-def test_python_comments_reads_tokens_not_text() -> None:
-    """A `#` inside a string literal is a character, not a comment; a real
-    trailing comment is one whatever spacing precedes it. The text heuristic this
-    replaces gets both backwards."""
-    src = 'MSG = "run # canonical, mirrored"\nx = 1  # a real comment\ny = 2 #tight\n'
-    assert mod._python_comments(src) == {2: "# a real comment", 3: "#tight"}
+# ── comments come from the grammar, not from text that looks like one ──
+# (`_comments` owns the extractors and their unit oracle; these pin the effect
+# on this check's verdicts.)
 
 
 @pytest.mark.parametrize(
@@ -250,6 +244,64 @@ def test_laundering_pass_reaches_non_python_suites(
 
 
 @pytest.mark.parametrize(
+    "name, suite, flagged",
+    [
+        # The JS/TS analogues of the shell probes below: values the program
+        # builds, which no author wrote as a claim about the tree. The `//` in
+        # the second is a false positive the text scan produced — it reads any
+        # ` // ` as a delimiter, string or not.
+        (
+            "template literal",
+            "const s = `canonical rows, mirrored from the loader`;",
+            False,
+        ),
+        (
+            "string containing a //",
+            'const m = "see // canonical rows, mirrored from the loader";',
+            False,
+        ),
+        # The miss in the other direction: a block comment after code on the same
+        # line matches no ` # `/` // ` delimiter, so the text scan read the whole
+        # line as code and never scanned the narration in it.
+        (
+            "trailing block comment",
+            "run(); /* canonical rows, mirrored from the loader */",
+            True,
+        ),
+        # Positive controls, so the two "no" rows above cannot pass by the check
+        # having gone inert.
+        ("line comment", "// canonical rows, mirrored from the loader", True),
+        (
+            "jsdoc block",
+            "/**\n * canonical rows, mirrored from the loader\n */",
+            True,
+        ),
+    ],
+)
+def test_js_laundering_uses_the_grammar(
+    tmp_path: Path, name: str, suite: str, flagged: bool
+) -> None:
+    """The JS/TS half now answers "where is the comment" with a grammar too, so a
+    `//` inside a string is not one and a `/* … */` block is one on every line."""
+    path = tmp_path / "chars.test.mjs"
+    path.write_text(suite + "\n", encoding="utf-8")
+    assert mod.main([str(path)]) == int(flagged)
+
+
+def test_typescript_annotations_do_not_hide_a_comment(tmp_path: Path) -> None:
+    """A `.ts` suite is parsed by the TypeScript grammar: under the JavaScript
+    one its type annotations are ERROR nodes and the comment after them is lost.
+    """
+    path = tmp_path / "chars.test.ts"
+    path.write_text(
+        "const rows: Record<string, number> = load();\n"
+        "// canonical rows, mirrored from the loader\n",
+        encoding="utf-8",
+    )
+    assert mod.main([str(path)]) == 1
+
+
+@pytest.mark.parametrize(
     "name, script, flagged",
     [
         # The repo's two documented shell probes. Neither is executed code, so a
@@ -276,20 +328,6 @@ def test_shell_laundering_uses_the_grammar(
     suite = tmp_path / "checks.test.sh"
     suite.write_text(script + "\n", encoding="utf-8")
     assert mod.main([str(suite)]) == int(flagged)
-
-
-def test_shell_comments_reads_the_grammar() -> None:
-    """The unit behind the probes: quoted `#` and heredoc bodies are not
-    comments, and the reported line numbers are the real ones."""
-    script = (
-        "# a real comment\n"
-        "cat <<'EOF' > d.txt\n"
-        "# heredoc data, not a comment\n"
-        "EOF\n"
-        'gb_warn "# printed, not a comment"\n'
-        "x=1  # trailing\n"
-    )
-    assert mod.shell_comments(script) == {1: "# a real comment", 6: "# trailing"}
 
 
 def test_laundering_pass_respects_the_text_annotation() -> None:

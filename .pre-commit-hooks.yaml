@@ -366,10 +366,17 @@
   description: A test asserting two copies agree hides a missing SSOT; mark it @pytest.mark.drift_guard("<why>") so the reason is reviewed.
   entry: python -m ci_truth_serum.check_drift_guards
   language: python
-  # PyYAML for the shared _linecheck import; the grammar bindings because the
-  # shell half reads comments from tree-sitter-bash rather than the text (a `#`
-  # in a heredoc body is data, not narration).
-  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  # PyYAML for the shared _linecheck import; the grammar bindings because
+  # comments are located by each language's own parser rather than by delimiter
+  # (a `#` in a heredoc body, a `//` inside a JS string, are not narration).
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
   # Python tests use @pytest.mark.drift_guard; JS/TS/shell suites carry copies-agree
   # tests too, caught by a phrase pass and excused with `drift-guard-ok: <reason>`.
   types_or: [python, javascript, ts, shell]
@@ -379,6 +386,15 @@
   description: The word claims a guarantee while specifying nothing; state the concrete behaviour or annotate allow-graceful.
   entry: python -m ci_truth_serum.check_graceful_handwave
   language: python
+  # Comments are located by each language's own grammar (see `_comments`).
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
   types_or: [shell, python, javascript, ts, markdown, rst]
 
 - id: check-historical-comments
@@ -386,6 +402,15 @@
   description: A comment narrating how the code changed is unverifiable and rots; describe the current code, or annotate allow-history.
   entry: python -m ci_truth_serum.check_historical_comments
   language: python
+  # Comments are located by each language's own grammar (see `_comments`).
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
   types_or: [shell, python, javascript, ts]
 
 - id: check-doc-line-refs
@@ -400,6 +425,15 @@
   description: A renamed or consolidated workflow leaves every sentence naming the old file pointing at nothing; the citation is a bare basename, so no link checker catches it.
   entry: python -m ci_truth_serum.check_workflow_refs
   language: python
+  # Comments are located by each language's own grammar (see `_comments`).
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
   types_or: [shell, python, javascript, ts, markdown, rst, yaml]
 
 - id: check-flag-arity
@@ -508,4 +542,12 @@
   description: Runs the Python extras under one id (check-symlinks, a shell hook, is enabled separately).
   entry: python -m ci_truth_serum.run_tier extras
   language: python
-  additional_dependencies: [PyYAML, identify, tree-sitter, tree-sitter-bash]
+  additional_dependencies:
+    [
+      PyYAML,
+      identify,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]

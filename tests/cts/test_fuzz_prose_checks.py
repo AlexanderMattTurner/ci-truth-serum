@@ -97,9 +97,13 @@ def _texts(draw) -> str:
     return nl.join(lines)
 
 
-def _assert_line_numbers_valid(hits: list[int], text: str) -> None:
-    n = len(text.splitlines())
-    assert all(isinstance(h, int) and 1 <= h <= n for h in hits)
+# The comment-reading lints number physical lines by `\n`, matching the grammars
+# they locate comments with (`_comments`); the two that never read a comment still
+# number with `str.splitlines()`, which also breaks on `\v`, `\f` and U+2028. Each
+# assertion below passes the list its lint actually enumerates, so a hit is checked
+# against the line the lint would print.
+def _assert_line_numbers_valid(hits: list[int], lines: list[str]) -> None:
+    assert all(isinstance(h, int) and 1 <= h <= len(lines) for h in hits)
     assert hits == sorted(hits)
 
 
@@ -107,14 +111,14 @@ def _assert_line_numbers_valid(hits: list[int], text: str) -> None:
 def test_historical_violations_no_crash_and_valid_lines(text: str) -> None:
     hits = historical.violations(text)
     assert hits == historical.violations(text)  # deterministic
-    _assert_line_numbers_valid(hits, text)
+    _assert_line_numbers_valid(hits, text.split("\n"))
 
 
 @given(_texts(), st.booleans())
 def test_graceful_violations_no_crash_and_valid_lines(text: str, prose: bool) -> None:
     hits = graceful.violations(text, prose)
     assert hits == graceful.violations(text, prose)  # deterministic
-    _assert_line_numbers_valid(hits, text)
+    _assert_line_numbers_valid(hits, text.split("\n"))
     # code mode can only ever flag a subset of what prose mode sees
     if not prose:
         assert set(hits) <= set(graceful.violations(text, True))
@@ -143,7 +147,7 @@ def test_doc_line_refs_violations_no_crash_and_shape(text: str) -> None:
 def test_stray_markup_violations_no_crash_and_valid_lines(text: str) -> None:
     hits = stray_markup.violations(text)
     assert hits == stray_markup.violations(text)  # deterministic
-    _assert_line_numbers_valid(hits, text)
+    _assert_line_numbers_valid(hits, text.splitlines())
 
 
 @given(_texts(), st.booleans(), st.booleans())
@@ -154,7 +158,7 @@ def test_workflow_refs_violations_no_crash_and_shape(
     hits = workflow_refs.violations(text, prose, workflows, tracked, dot_github)
     # deterministic
     assert hits == workflow_refs.violations(text, prose, workflows, tracked, dot_github)
-    lines = text.splitlines()
+    lines = text.split("\n")
     for lineno, cited in hits:
         assert 1 <= lineno <= len(lines)
         assert cited in lines[lineno - 1]

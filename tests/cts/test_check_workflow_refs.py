@@ -225,6 +225,32 @@ def test_main_reports_path_line_name_and_remedy(tmp_path: Path, capsys) -> None:
     assert "does not exist under .github/workflows/" in err
 
 
+@pytest.mark.parametrize(
+    "name, source, flagged",
+    [
+        # A block comment after code on the same line: no ` # `/` // ` delimiter,
+        # so the delimiter scan read the whole line as code and never saw it.
+        ("trailing block comment", "run(); /* dispatched by gone.yaml */", True),
+        # `//` inside a string opens nothing, so the citation is a value the
+        # program builds — the delimiter scan read it as a comment and flagged it.
+        ("string containing a //", 'const m = "see // gone.yaml job";', False),
+        # Positive control, so the "no" row cannot pass by the check going inert.
+        ("line comment", "// dispatched by gone.yaml", True),
+    ],
+)
+def test_js_comments_come_from_the_grammar(
+    tmp_path: Path, name: str, source: str, flagged: bool
+) -> None:
+    repo = _repo(
+        tmp_path,
+        {
+            ".github/workflows/evals.yaml": WORKFLOW_YAML,
+            "a.mjs": source + "\n",
+        },
+    )
+    assert mod.main([str(repo / "a.mjs")]) == int(flagged)
+
+
 def test_main_returns_zero_once_the_workflow_exists(tmp_path: Path, capsys) -> None:
     repo = _repo(
         tmp_path,

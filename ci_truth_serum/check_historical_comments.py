@@ -16,9 +16,11 @@ image for this commit", "the value is used to authenticate", "the previously
 cached digest". Gating on them would flag legitimate comments wholesale, so they
 are left to review. This check guards the unambiguous class so it can't reappear.
 
-Only true COMMENTS are scanned — a ``#`` / ``//`` line (or a ``#`` / ``//``
-trailing a line of code). Docstrings and string literals are NOT comments, so
-test provenance strings and user-facing copy are spared.
+Only true COMMENTS are scanned, located by the language's own grammar (see
+``_comments``): docstrings, string literals and template literals are NOT
+comments, so test provenance strings and user-facing copy are spared, and a
+``/* … */`` block in a JS suite IS scanned even though no line of it starts with
+a delimiter.
 
 A comment that genuinely must reference history (rare — e.g. a data-migration
 reader explaining the on-disk shape it still parses) opts out with a same-line or
@@ -32,10 +34,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    comment_lines,
+    text_comments,
+)
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
-    comment_body,
-    run_line_checks,
+    run_source_checks,
 )
 
 # The banned phrases, one per member so the test can drive a case from each (a
@@ -65,13 +70,19 @@ _MARKER_RE = re.compile(
 _ALLOW = "allow-history"
 
 
-def violations(text: str) -> list[int]:
+def violations(text: str, comments: dict[int, str] | None = None) -> list[int]:
     """1-based line numbers whose comment narrates history without an
-    ``# allow-history:`` annotation."""
-    physical = text.splitlines()
+    ``# allow-history:`` annotation.
+
+    COMMENTS maps 1-based line -> comment body, from ``comment_lines`` — omitting
+    it applies the text delimiter scan to the whole file, which only the caller's
+    path can improve on."""
+    physical = text.split("\n")
+    if comments is None:
+        comments = text_comments(text)
     hits: list[int] = []
     for lineno, raw in enumerate(physical, 1):
-        body = comment_body(raw)
+        body = comments.get(lineno)
         if body is None or not _MARKER_RE.search(body):
             continue
         if annotated(raw, _ALLOW):
@@ -84,9 +95,9 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> int:
-    return run_line_checks(
+    return run_source_checks(
         argv,
-        violations,
+        lambda text, path: violations(text, comment_lines(text, path)),
         "historical narration in a comment — describe the current code, not how "
         "it changed, or annotate `# allow-history: <reason>`.",
     )

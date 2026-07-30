@@ -80,13 +80,31 @@ ordering.
 `check_drift_guards` is the ninth row and a later, separate instance of the same
 story: its laundered-copy trigger shipped reading comments out of the text, fired
 on the heredoc probe the first time the probe was run against it, and was moved
-onto `shell_comments` (`iter_nodes(parse(script), "comment")`) before landing.
-Note which half moved — only "where does a comment start", the structural
-question. Judging the PROSE inside that comment stays a regex, because English
-has no grammar here to parse; that is the carve-out above, not a second thing to
-fix. Its Python half has the same split and answers the same question with
-`tokenize`. Its JS/TS half still scans text, and that is the honest remaining
-gap: no JS grammar is a dependency here yet.
+onto the bash grammar before landing. Note which half moved — only "where does a
+comment start", the structural question. Judging the PROSE inside that comment
+stays a regex, because English has no grammar here to parse; that is the
+carve-out above, not a second thing to fix.
+
+## The rule is not about bash
+
+"Where is the comment" is the same structural question in every language, and a
+delimiter scan gets each one wrong in its own way. All four lints that read
+narration — `check_drift_guards`, `check_graceful_handwave`,
+`check_historical_comments`, `check_workflow_refs` — now ask `_comments`, which
+picks the parser the PATH names:
+
+| language | the parser  | what the text scan got wrong                                                        |
+| -------- | ----------- | ----------------------------------------------------------------------------------- |
+| Python   | `tokenize`  | a `#` in a string literal — and an opt-out token there SUPPRESSED, failing open     |
+| shell    | `_bash_ast` | a heredoc body read as a run of comments                                            |
+| JS/TS    | `_js_ast`   | a `//` inside a string or template literal; a `/* … */` after code on the same line |
+| YAML     | none        | nothing — its parsers discard comments, so the delimiter scan is the decision       |
+
+Measured over 241 real `.mjs`/`.js`/`.ts` files in `agent-glovebox`, the JS
+delimiter scan claimed 169 lines that are not comments and missed 250 that are.
+Pick the JS/TS grammar by the path's suffix, never by sniffing the content: a
+`.ts` file parsed as JavaScript is a tree of ERROR nodes from its first type
+annotation on, and every comment after that is lost.
 
 Reproduce with `violations()` on `gb_warn "<idiom>"` and on a
 `cat <<'EOF' > doc.txt` block containing the idiom — that pair is the cheapest

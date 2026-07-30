@@ -1,7 +1,7 @@
 """Tests for ci_truth_serum/check_historical_comments.py — the pre-commit lint that bans
 historical narration in code comments.
 
-Drives `violations()` and `comment_body()` directly so each rule is asserted in
+Drives `violations()` directly so each rule is asserted in
 isolation, plus the real script end-to-end.
 """
 
@@ -85,24 +85,6 @@ def test_stale_annotation_two_lines_above_does_not_count() -> None:
     assert mod.violations(text) == [3]
 
 
-@pytest.mark.parametrize(
-    ("line", "expected"),
-    [
-        ("# a full comment", "# a full comment"),
-        ("   // indented line comment", "// indented line comment"),
-        ("/* block opener", "/* block opener"),
-        ("code()  # trailing", "# trailing"),
-        ("code();  // trailing js", "// trailing js"),
-        # `#`/`//` glued into code is not a comment
-        ("len=${#arr}", None),
-        ("u = http://x", None),
-        ("plain code line", None),
-    ],
-)
-def test_comment_body_extraction(line: str, expected: str | None) -> None:
-    assert mod.comment_body(line) == expected
-
-
 def test_main_wires_violations_and_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -146,6 +128,27 @@ def test_script_accepts_clean_and_annotated(tmp_path: Path) -> None:
     assert proc.stderr == ""
 
 
+@pytest.mark.parametrize(
+    "name, source, flagged",
+    [
+        # A block comment after code on the same line: no ` # `/` // ` delimiter,
+        # so the delimiter scan read the whole line as code and never saw it.
+        ("trailing block comment", "run(); /* formerly a no-op */", True),
+        # `//` inside a string opens nothing, so what follows is not narration —
+        # the delimiter scan read it as a comment and flagged the value.
+        ("string containing a //", 'const m = "see // formerly a no-op";', False),
+        # Positive control, so the "no" row cannot pass by the check going inert.
+        ("line comment", "// formerly a no-op", True),
+    ],
+)
+def test_js_comments_come_from_the_grammar(
+    tmp_path: Path, name: str, source: str, flagged: bool
+) -> None:
+    suite = tmp_path / "a.mjs"
+    suite.write_text(source + "\n", encoding="utf-8")
+    assert mod.main([str(suite)]) == int(flagged)
+
+
 def test_enforced_scope_is_clean() -> None:
     """Every tracked file of the hook's kinds (minus the dogfood excludes, the
     one authoritative skip list) passes today — a new historical comment anywhere
@@ -167,6 +170,9 @@ def test_enforced_scope_is_clean() -> None:
             continue
         if not identify.tags_from_path(str(path)) & kinds:
             continue
-        hits = mod.violations(path.read_text(encoding="utf-8", errors="replace"))
+        text = path.read_text(encoding="utf-8", errors="replace")
+        # Through the same comment source main() uses, so the dogfood covers the
+        # grammar path rather than the text fallback.
+        hits = mod.violations(text, mod.comment_lines(text, rel))
         offenders += [f"{rel}:{n}" for n in hits]
     assert offenders == [], f"historical comments in enforced scope: {offenders}"
