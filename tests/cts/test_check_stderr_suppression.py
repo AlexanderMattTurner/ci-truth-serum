@@ -93,6 +93,40 @@ def test_clean_lines_do_not_fire(text: str) -> None:
     assert mod.violations(text) == []
 
 
+# ── verdicts only the grammar can reach ──────────────────────────────────
+@pytest.mark.parametrize(
+    "name, text, expected",
+    [
+        # Bash applies redirects left to right: here stderr is duped onto the
+        # STILL-LIVE stdout and only stdout is then moved, so stderr survives.
+        # Same three tokens as the suppressing order, opposite meaning.
+        ("dup before the stdout redirect", "docker build -t img . 2>&1 >/dev/null", []),
+        ("dup after the stdout redirect", "docker build -t img . >/dev/null 2>&1", [1]),
+        # Recall: a logging call at the head of the line no longer excuses the
+        # launch that follows it.
+        ("launch after a logging call", 'log "up"; docker compose up 2>/dev/null', [1]),
+        ("launch behind sudo", "sudo docker compose up -d 2>/dev/null", [1]),
+        ("launch behind an absolute path", "/usr/bin/docker build . 2>/dev/null", [1]),
+        # A group's redirect suppresses every command inside it.
+        ("suppressed by a group redirect", "{ docker build . ; } >/dev/null 2>&1", [1]),
+        # The verb may come from the array itself, not only from the call site.
+        (
+            "verb inside the launcher array",
+            'DC=(docker compose up)\n"${DC[@]}" 2>/dev/null\n',
+            [2],
+        ),
+        # A flag's VALUE is not a subcommand: this runs `run`, not `build`.
+        (
+            "build-named file passed to -f",
+            "docker compose -f build.yml run s 2>/dev/null",
+            [],
+        ),
+    ],
+)
+def test_grammar_reachable_verdicts(name: str, text: str, expected: list[int]) -> None:
+    assert mod.violations(text) == expected, name
+
+
 def _is_shell(path: Path) -> bool:
     """Match the pre-commit hook's `types: [shell]` selection."""
     if path.suffix in (".bash", ".sh"):

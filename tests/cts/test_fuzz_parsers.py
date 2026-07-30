@@ -18,6 +18,7 @@ These complement (do not replace) the example-based suites, which pin the exact
 rule semantics. Fuzzing pins the contract that holds for ALL inputs.
 """
 
+import ast
 import string
 
 from hypothesis import assume, given
@@ -44,6 +45,7 @@ inline_run_length = load_hook("check_inline_run_length.py", "fuzz_inline_run_len
 linecheck = load_hook("_linecheck.py", "fuzz_linecheck")
 env_symmetry = load_hook("check_env_symmetry.py", "fuzz_env_symmetry")
 gh_slurp_jq = load_hook("check_gh_slurp_jq.py", "fuzz_gh_slurp_jq")
+py_ast = load_hook("_py_ast.py", "fuzz_py_ast")
 
 # `violations(text) -> list[int]` line-oriented detectors. Each maps text to the
 # 1-based physical line numbers it flags.
@@ -249,6 +251,18 @@ def test_line_detectors_never_crash_and_report_real_lines(text: str) -> None:
         hits = detect(text)
         assert isinstance(hits, list), name
         _assert_valid_linenos(text, hits)
+
+
+@given(text=source_text())
+def test_py_ast_trees_stay_inside_the_source(text: str) -> None:
+    """Every node ``_py_ast.trees`` hands back must anchor on a line the SOURCE
+    has — the per-line recovery shifts line numbers, and an off-by-one there would
+    make its callers report a line the file does not contain."""
+    count = len(py_ast.lines(text))
+    for tree in py_ast.trees(text):
+        for node in ast.walk(tree):
+            lineno = getattr(node, "lineno", None)
+            assert lineno is None or 1 <= lineno <= count, (lineno, count)
 
 
 @given(text=source_text())

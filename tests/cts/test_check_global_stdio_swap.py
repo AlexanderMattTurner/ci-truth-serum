@@ -57,6 +57,39 @@ def test_clean_lines_do_not_fire(text: str) -> None:
     assert mod.violations(text) == []
 
 
+# ── verdicts only the grammar can reach ──────────────────────────────────
+@pytest.mark.parametrize(
+    "name, src, expected",
+    [
+        # A swap SPELLED in a value is text the program builds, not a swap. This
+        # is the class that made the checker flag its own docstring and its own
+        # test fixtures.
+        ("swap inside a string literal", 'msg = "sys.stdout = io.StringIO()"\n', []),
+        (
+            "swap inside a docstring",
+            '"""Never write sys.stderr = buf in a handler."""\n',
+            [],
+        ),
+        # A stream READ to index with is not a bind, even inside a target.
+        ("stream read inside a subscript target", "registry[sys.stdout] = 1\n", []),
+        # Recall: the binding need not sit left of an `=` on its own line.
+        ("assignment wrapped across lines", "sys.stdout = (\n    Wrapper()\n)\n", [1]),
+        ("bound by a with-as", "with open(p) as sys.stdout:\n    pass\n", [1]),
+        ("bound by a for", "for sys.stdout in streams:\n    pass\n", [1]),
+        ("rebound through setattr", 'setattr(sys, "stdout", buf)\n', [1]),
+        ("setattr on something else", 'setattr(cfg, "stdout", buf)\n', []),
+    ],
+)
+def test_grammar_reachable_verdicts(name: str, src: str, expected: list[int]) -> None:
+    assert mod.violations(src) == expected, name
+
+
+def test_a_file_that_does_not_parse_still_reports_its_real_lines() -> None:
+    """ "No findings" on a half-written file would be a false green, so the swap
+    on a line that IS Python is still reported."""
+    assert mod.violations("def broken(:\nsys.stdout = buf\n") == [2]
+
+
 def test_main_wires_violations_and_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
