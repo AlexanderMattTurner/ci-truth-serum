@@ -56,11 +56,12 @@ def test_each_unpinned_command_on_its_own_line_is_reported() -> None:
     assert mod.violations(src) == [1, 3]
 
 
-def test_install_after_a_separator_is_found() -> None:
-    # The `&&` continuation joins both commands into one logical line; the install
-    # is not at its start.
+def test_install_after_a_separator_is_reported_at_its_own_line() -> None:
+    # `&&` makes these two commands, not one: the grammar gives the install its own
+    # node, so the report points at the offending line rather than at the `update`
+    # that happens to precede it.
     src = "apt-get update -qq &&\n  apt-get install -y shellcheck\n"
-    assert mod.violations(src) == [1]
+    assert mod.violations(src) == [2]
 
 
 def test_continued_command_is_reported_at_its_first_line() -> None:
@@ -146,8 +147,10 @@ def test_install_in_a_message_string_is_not_a_command() -> None:
 
 
 def test_install_joined_onto_a_message_is_still_a_command() -> None:
-    # The leading `echo` scopes to its own command, not to the whole joined line.
-    assert mod.violations('echo "installing" &&\n  pip install ruff\n') == [1]
+    # The `echo` is its own command; the install after `&&` is another, and is
+    # reported at its own line.
+    assert mod.violations('echo "installing" &&\n  pip install ruff\n') == [2]
+    assert mod.violations('echo "installing" && pip install ruff\n') == [1]
 
 
 def test_install_run_through_an_interpreter_string_is_flagged() -> None:
@@ -381,3 +384,10 @@ def test_an_interpreter_name_inside_the_hint_text_does_not_execute_it() -> None:
 )
 def test_the_executor_is_recognized_through_sudo_env_and_a_path(line: str) -> None:
     assert mod.violations(f"{line}\n") == [1]
+
+
+def test_two_installs_starting_on_one_line_report_that_line_once() -> None:
+    # `;` makes two commands on one row: one finding, not a duplicated line
+    # number (the invariant the fuzz suite pins for every line detector).
+    assert mod.violations("pip install ruff; pip install pytest\n") == [1]
+    assert mod.violations("pip install ruff; pip install pytest==8.4.2\n") == [1]

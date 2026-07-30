@@ -22,48 +22,64 @@ carries no version, for four families —
   * global Node (`npm install -g`, `npm i --global`, `pnpm add -g`,
     `yarn global add`) — `pkg@1.2.3`.
 
+The scan runs on the REAL bash grammar (``_bash_ast``), walking ``command`` nodes,
+so the questions that sink a text scan are answered by structure instead of
+guessed at: a redirection is a ``file_redirect`` sibling and never an argument; a
+quoted message is a ``string`` argument of the command that prints it, holding no
+commands at all; a heredoc body is a ``heredoc_body``; ``&&``/``;``/``|`` split a
+``list``/``pipeline`` into separate commands; and a ``$VAR``/``$(…)`` spec is an
+``expansion`` child rather than a ``$`` somewhere in the line.
+
 Not flagged, because the version lives somewhere this lint can see is pinned or
-somewhere it cannot judge: a requirements/constraints file (`-r`, `-c`) or a
-pipx `--spec`, a local
-path or archive (`.`, `./pkg`, `/tmp/x.whl`, `pkg.deb`), a URL or VCS spec
-(`git+https://…@rev` carries its own ref), a spec built from a variable
-(`"$PKG"`, `"ruff==${RUFF_VERSION}"` — the first is unknowable, the second is
-already pinned), and a command inside a message string
-(`echo "run pip install ruff"`). A **local** `npm install pkg` is also out of
-scope: it writes the range into `package.json`, which is where that pin belongs
-and what a lockfile check reads — only the global form, which pins nowhere, is
-flagged.
+somewhere it cannot judge: a requirements/constraints file (``-r``, ``-c``) or a
+pipx ``--spec``, a local path or archive (``.``, ``./pkg``, ``/tmp/x.whl``,
+``pkg.deb``), a URL or VCS spec (``git+https://…@rev`` carries its own ref), a
+spec whose value comes from the shell (``"$PKG"``, ``"ruff==${RUFF_VERSION}"`` —
+the first is unknowable, the second already pinned), and an install named by a
+command that only prints (``echo``, ``printf``, ``warn``, …). A **local** ``npm
+install pkg`` is also out of scope: it writes the range into ``package.json``,
+which is where that pin belongs and what a lockfile check reads — only the global
+form, which pins nowhere, is flagged.
+
+An install inside a string is text, not a command — EXCEPT where something
+executes that string: ``bash -c "pip install x"``, ``eval "…"``, ``ssh host "…"``,
+and an interpreter reached through a wrapper (``xargs … sh -c '…'``). Those bodies
+are parsed as scripts in their own right, so the install inside them is judged
+like any other.
 
 An install that genuinely cannot be pinned opts out with a same-line or
-preceding-line `# pin-exempt: <reason>` (the same annotation
+preceding-line ``# pin-exempt: <reason>`` (the same annotation
 check_pinned_downloads accepts). The recurring legitimate case is a distro
-package tracking a moving index: `apt-get install -y curl` against Ubuntu's
+package tracking a moving index: ``apt-get install -y curl`` against Ubuntu's
 archive fails outright once the indexed version rolls, so those sites annotate
 rather than pin.
 
 Dockerfiles are deliberately out of scope: hadolint's DL3008/DL3013/DL3018
-already demand pinned `apt-get`/`pip`/`apk` installs there. This lint covers the
-two places hadolint never looks — shell scripts and inline workflow `run:` blocks.
+already demand pinned ``apt-get``/``pip``/``apk`` installs there. This lint covers
+the two places hadolint never looks — shell scripts and inline workflow ``run:``
+blocks.
 
 Invoked by pre-commit with the staged shell paths as arguments; a
-`.github/{workflows,actions}` YAML path among them has each inline `run:` block
-scanned instead (reported at the step's line).
+``.github/{workflows,actions}`` YAML path among them has each inline ``run:``
+block scanned instead (reported at the step's line).
 """
 
 import re
-import shlex
 import sys
 from pathlib import Path
 
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import strip_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PathologicalInputError,
+    iter_nodes,
+    parse,
+)
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     MESSAGE_PREFIX,
     annotated,
-    logical_lines,
 )
 
 OPT_OUT = "pin-exempt"
@@ -83,43 +99,28 @@ TOOL = "tool"  # pipx / uv tool: `pkg==1.2.3` or `pkg@1.2.3`
 APT = "apt"  # `pkg=1.2.3-1`
 NODE = "node"  # `pkg@1.2.3` (global installs only)
 
-# An optional `sudo` (with its flags and `VAR=value` prefixes) between the command
-# boundary and the installer name.
-_SUDO = r"(?:sudo\s+(?:-\S+\s+|\w+=\S+\s+)*)?"
-# Start of a command: line start, or after whitespace, a shell separator, or a
-# quote (`bash -c "pip install x"` runs the install). Keeps `nopip install` out.
-_LEAD = r"""(?:^|[\s;&|(`"'])"""
-
-_INSTALLERS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        PIP,
-        re.compile(
-            rf"{_LEAD}{_SUDO}(?:python[\d.]*\s+-m\s+pip|pip[\d.]*|uv\s+pip)\s+install\b"
-        ),
-    ),
-    (TOOL, re.compile(rf"{_LEAD}{_SUDO}(?:pipx\s+install|uv\s+tool\s+install)\b")),
-    (
-        APT,
-        re.compile(
-            rf"{_LEAD}{_SUDO}(?:apt-get|apt|aptitude)\s+(?:-{{1,2}}[\w-]+\s+)*install\b"
-        ),
-    ),
-    (
-        NODE,
-        re.compile(
-            rf"{_LEAD}{_SUDO}(?:npm\s+(?:install|i|add)|pnpm\s+(?:add|install)"
-            rf"|yarn\s+global\s+add)\b"
-        ),
-    ),
+# The command words that open an install, matched against a command's argument
+# tokens. A leading wrapper needs no enumeration — `retry sudo apt-get install …`,
+# `time pip install …` — because the sequence is searched at any token position,
+# and a message's contents are a `string` node rather than tokens.
+_INSTALL_COMMANDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (PIP, ("pip", "install")),
+    (PIP, ("uv", "pip", "install")),
+    (TOOL, ("pipx", "install")),
+    (TOOL, ("uv", "tool", "install")),
+    (APT, ("apt-get", "install")),
+    (APT, ("apt", "install")),
+    (APT, ("aptitude", "install")),
+    (NODE, ("npm", "install")),
+    (NODE, ("npm", "i")),
+    (NODE, ("npm", "add")),
+    (NODE, ("pnpm", "add")),
+    (NODE, ("pnpm", "install")),
+    (NODE, ("yarn", "global", "add")),
 )
-
-# Where one command ends inside a joined logical line: a separator, a redirect, or
-# the close of the substitution/subshell the command sits in. Everything after it
-# belongs to a different command, not to this install's argument list. A redirect
-# must be whitespace-surrounded so the `>` of a version floor (`pkg>=1.2`, quoted
-# in real shell precisely because a bare one WOULD redirect) does not cut the
-# segment mid-spec.
-_SEGMENT_END = re.compile(r"&&|\|\||[;|)]|\s>>?\s|\s<\s")
+# `pip3`/`pip3.11` are the same installer; `python -m pip` reaches it the long way.
+_PIP_ALIAS = re.compile(r"^pip[\d.]*$")
+_PYTHON = re.compile(r"^python[\d.]*$")
 
 # Flags that consume the next token, per family. Without these an `-o Foo=bar` or
 # `-r req.txt` value would be read as a package spec — and `Foo=bar` carries an
@@ -178,8 +179,8 @@ _VALUE_FLAGS = {
 _PINS_THE_COMMAND = {
     PIP: {"-c", "--constraint"},
     TOOL: {"-c", "--constraint", "--spec"},
-    APT: set(),
-    NODE: set(),
+    APT: frozenset(),
+    NODE: frozenset(),
 }
 
 # A positional that is not a registry package name: a local path or archive, or a
@@ -191,46 +192,82 @@ _NOT_A_REGISTRY_SPEC = re.compile(
     r"|\.(?:whl|deb|tar\.gz|tgz|tar\.bz2|zip)$"
 )
 
-# Shell plumbing that shares the argument list but names no package: a redirection
-# (`>&2`, `2>&1`, `>log`) or a control operator the segment scan did not cut. Read as
-# a spec, `>&2` would make every `apt-get install pkg=1.2 >&2` look unpinned.
-_SHELL_PLUMBING = re.compile(r"^[<>&]|^\d+[<>]")
+_GLOBAL_FLAG = re.compile(r"^(?:-\w*g\w*|--global)$")
 
-# A spec whose version is decided at run time by the shell: `"$PKG"`,
-# `"ruff==${RUFF_VERSION}"`, `` `cat spec` ``. Reading it as unpinned would flag a
-# line whose pin this lint cannot see, so it is left alone.
-_DYNAMIC = re.compile(r"[$`]")
+# The shells whose `-c` argument is a script, and the commands whose arguments are
+# code by definition. A string reached this way is parsed as its own script — the
+# one place where quoted text is treated as commands.
+_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "busybox"})
+_CODE_COMMANDS = frozenset({"eval", "ssh"})
 
-_GLOBAL_FLAG = re.compile(r"(?:^|\s)(?:-\w*g\w*|--global)\b")
-
-# What has to appear in front of a QUOTED install for it to run: the command being
-# invoked must itself execute the string. `bash -c "pip install x"` and
-# `ssh host "apt-get install x"` install; `gb_error "install it: apt install
-# coreutils"` and `require_command jq "e.g. apt-get install jq"` are text written
-# for a human, and a repo's own logger/help-text helpers are unenumerable — so the
-# rule keys on the executor rather than on knowing every printing command's name.
-#
-# ANCHORED at the command word, because an interpreter NAME can appear inside the
-# very hint text being excused: `missing_gate "install it with 'bash setup.bash'"`
-# is not a `bash` invocation, and an unanchored search reads it as one.
-_INTERPRETER = re.compile(
-    r"^(?:sudo\s+(?:-\S+\s+)*)?(?:env\s+)?(?:\w+=\S+\s+)*(?:\S*/)?"
-    r"(?:sh|bash|dash|zsh|ksh|ash|eval|ssh|xargs)\b"
+# Child types of a `command` that carry an argument value. Everything else under it
+# — `file_redirect`, `variable_assignment`, heredoc plumbing — is not an argument,
+# which is what keeps a `>&2` out of the package list.
+_ARGUMENT_TYPES = frozenset(
+    {"word", "string", "raw_string", "concatenation", "number", "simple_expansion"}
+)
+# A value decided at run time by the shell, as NODE TYPES rather than a `$` in the
+# text: `"ruff==${V}"` is a string with an `expansion` child, `"$PKG"` a string
+# whose whole content is one.
+_DYNAMIC_TYPES = frozenset(
+    {"expansion", "simple_expansion", "command_substitution", "arithmetic_expansion"}
 )
 
 
-def _tokens(segment: str) -> list[str]:
-    """Shell-split SEGMENT, falling back to whitespace splitting.
+def _text(node) -> str:
+    return node.text.decode("utf-8", "replace")
 
-    ``shlex.split`` is what knows that `"ruff==1.2"` is one token and that a quote
-    does not belong to the package name. It raises on an unbalanced quote, which a
-    joined logical line legitimately has (the closing quote lives in a command this
-    segment cut away), so that one case degrades to whitespace splitting rather
-    than crashing a commit."""
-    try:
-        return shlex.split(segment)
-    except ValueError:
-        return segment.split()
+
+def _is_dynamic(node) -> bool:
+    """True when NODE's value depends on a shell expansion (`iter_nodes` is
+    inclusive, so a bare `$PKG` argument counts as much as one nested in a
+    string)."""
+    return next(iter_nodes(node, *_DYNAMIC_TYPES), None) is not None
+
+
+def _unquote(raw: str) -> str:
+    """A quoted argument's literal text (`'ruff>=1'` → `ruff>=1`)."""
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+    return raw
+
+
+def _arguments(command) -> list:
+    """A `command` node's name and argument nodes, in order.
+
+    Every non-argument child is skipped — a `file_redirect` (`>&2`), a
+    `variable_assignment` prefix (`FOO=1 cmd`), heredoc plumbing — so only real
+    arguments can be read as a package spec."""
+    args = []
+    for child in command.children:
+        if child.type == "command_name":
+            args.extend(child.children or [child])
+        elif child.type in _ARGUMENT_TYPES:
+            args.append(child)
+    return args
+
+
+def _find_install(tokens: list[str]) -> tuple[str, int] | None:
+    """(family, index of the first argument) for the install invocation in TOKENS,
+    or None. `python -m pip install` and `pip3`/`pip3.11` resolve to pip."""
+    for start, token in enumerate(tokens):
+        if _PYTHON.match(token) and tokens[start + 1 : start + 4] == [
+            "-m",
+            "pip",
+            "install",
+        ]:
+            return PIP, start + 4
+        for family, words in _INSTALL_COMMANDS:
+            end = start + len(words)
+            candidate = tokens[start:end]
+            if len(candidate) < len(words):
+                continue
+            head_matches = candidate[0] == words[0] or (
+                words[0] == "pip" and bool(_PIP_ALIAS.match(candidate[0]))
+            )
+            if head_matches and candidate[1:] == list(words[1:]):
+                return family, end
+    return None
 
 
 def _is_pinned(spec: str, family: str) -> bool:
@@ -246,133 +283,112 @@ def _is_pinned(spec: str, family: str) -> bool:
     return False
 
 
-def _unpinned_specs(segment: str, family: str) -> list[str]:
-    """Positional package specs in SEGMENT that name no version.
+def _unpinned_specs(args: list, family: str) -> list[str]:
+    """Package specs among ARGS that name no version.
 
     Flags and their values are consumed, non-registry specs (paths, URLs, VCS refs)
-    and shell-dynamic specs are skipped, and a constraints/`--spec` flag pins the
+    and shell-decided values are skipped, and a constraints/`--spec` flag pins the
     whole command."""
     unpinned: list[str] = []
     skip_next = False
-    for token in _tokens(segment):
+    for node in args:
+        raw = _unquote(_text(node))
         if skip_next:
             skip_next = False
             continue
-        if token.startswith("-"):
-            flag = token.split("=", 1)[0]
+        if raw.startswith("-"):
+            flag = raw.split("=", 1)[0]
             if flag in _PINS_THE_COMMAND[family]:
                 return []
-            skip_next = flag in _VALUE_FLAGS[family] and "=" not in token
+            skip_next = flag in _VALUE_FLAGS[family] and "=" not in raw
             continue
-        if (
-            _DYNAMIC.search(token)
-            or _NOT_A_REGISTRY_SPEC.search(token)
-            or _SHELL_PLUMBING.match(token)
-        ):
+        if _is_dynamic(node) or _NOT_A_REGISTRY_SPEC.search(raw):
             continue
-        if not _is_pinned(token, family):
-            unpinned.append(token)
+        if not _is_pinned(raw, family):
+            unpinned.append(raw)
     return unpinned
 
 
-def _segment_after(line: str, end: int) -> str:
-    """LINE's argument text from offset END up to the end of that command."""
-    tail = line[end:]
-    cut = _SEGMENT_END.search(tail)
-    return tail[: cut.start()] if cut else tail
+def _executed_strings(tokens: list[str], args: list) -> list:
+    """String arguments whose contents something RUNS, so they hold commands.
+
+    A shell's `-c` script, `eval`'s arguments and `ssh`'s remote command are code;
+    an interpreter reached through a wrapper (`xargs … sh -c '…'`) is covered
+    because the shell is found at any token position. Every other string is text a
+    command prints or passes on."""
+    quoted = [node for node in args if node.type in ("string", "raw_string")]
+    if not (quoted and tokens):
+        return []
+    if tokens[0] in _CODE_COMMANDS:
+        return quoted[-1:] if tokens[0] == "ssh" else quoted
+    for index, token in enumerate(tokens):
+        if token.split("/")[-1] in _SHELLS and "-c" in tokens[index + 1 :]:
+            return quoted[:1]
+    return []
 
 
-def _command_prefix(line: str, start: int) -> tuple[str, bool]:
-    """LINE's text from the previous command separator up to offset START, plus
-    whether START sits inside a quoted string.
+def _install_spans(root) -> list[tuple[int, int]]:
+    """(first line, last line) of every unpinned install command under ROOT, both
+    1-based.
 
-    Scoping the message-command test (`echo "run pip install ruff"`) to this
-    prefix rather than to the whole line is what keeps an install joined onto a
-    message — `echo installing && pip install ruff` — in view; skipping the whole
-    logical line would let the leading `echo` hide it.
-
-    Separators inside a quoted string do not start a new command, or a hint that
-    happens to contain one (`gb_error "install it: apt install coreutils"`) would
-    read as a command of its own with `install` as its name — which is also why
-    the quote state travels back with the prefix."""
-    prefix = line[:start]
-    cut = 0
-    quote = ""
-    i = 0
-    while i < len(prefix):
-        char = prefix[i]
-        if char == "\\":
-            i += 2
+    Recurses into the string bodies something executes, so an install inside
+    `bash -c "…"` is judged as the command it becomes; its lines are reported
+    relative to the enclosing script."""
+    spans: list[tuple[int, int]] = []
+    for command in iter_nodes(root, "command"):
+        args = _arguments(command)
+        tokens = [_unquote(_text(node)) for node in args]
+        for node in _executed_strings(tokens, args):
+            offset = node.start_point[0]
+            spans += [
+                (offset + first, offset + last)
+                for first, last in _install_spans(parse(_unquote(_text(node))))
+            ]
+        if tokens and MESSAGE_PREFIX.match(tokens[0]):
+            continue  # a command that only prints; its arguments are text
+        found = _find_install(tokens)
+        if not found:
             continue
-        if quote:
-            quote = "" if char == quote else quote
-            i += 1
+        family, index = found
+        rest = args[index:]
+        # Only a GLOBAL Node install pins nowhere; a local one records its range in
+        # package.json. `yarn global add` says so in the command words themselves.
+        if family == NODE and not (
+            "global" in tokens[:index]
+            or any(_GLOBAL_FLAG.match(token) for token in tokens[index:])
+        ):
             continue
-        if char in "\"'":
-            quote = char
-            i += 1
-            continue
-        separator = _SEGMENT_END.match(prefix, i)
-        if separator:
-            cut = i = separator.end()
-            continue
-        i += 1
-    return prefix[cut:].lstrip(), bool(quote)
+        if _unpinned_specs(rest, family):
+            spans.append((command.start_point[0] + 1, command.end_point[0] + 1))
+    return spans
 
 
 def violations(text: str) -> list[int]:
     """1-based line numbers of install commands that name no version.
 
-    Detection runs over LOGICAL lines (continuations joined) of a
-    COMMENT-STRIPPED view, so a `\\`-wrapped install is analyzed as one command and
-    an install quoted in a comment is not a command at all. The raw physical lines
-    are kept for the `# pin-exempt:` opt-out, which by definition lives in a
-    comment (accepted on any physical line of the flagged command, or the line
-    directly above it)."""
+    Detection walks the bash grammar, so a `\\`-continued command is ONE node
+    (reported at its first line), an install written in a comment is a `comment`
+    node rather than a command, and one written inside a message string is that
+    string. The raw physical lines are kept for the `# pin-exempt:` opt-out, which
+    by definition lives in a comment (accepted on any physical line of the flagged
+    command, or the line directly above it)."""
     raw = text.splitlines()
-    logicals = logical_lines(strip_comments(text))
-    starts = [start for start, _ in logicals]
-    hits: list[int] = []
-    for index, (start, line) in enumerate(logicals):
-        if not _has_unpinned_install(line):
-            continue
-        span_end = starts[index + 1] - 1 if index + 1 < len(starts) else len(raw)
-        span = raw[start - 1 : span_end]
-        if any(annotated(physical, OPT_OUT) for physical in span) or (
+    # One finding per line, carrying the WIDEST span that starts there: two commands
+    # can begin on the same row (`pip install a; pip install b`, or a `bash -c`
+    # string whose install sits on the line that opened it), and a line reported
+    # twice would be a duplicate finding — plus the wider span gives the
+    # `pin-exempt` lookup every physical line the reader would put it on.
+    widest: dict[int, int] = {}
+    for start, end in _install_spans(parse(text)):
+        widest[start] = max(widest.get(start, end), end)
+    hits = []
+    for start, end in sorted(widest.items()):
+        if any(annotated(physical, OPT_OUT) for physical in raw[start - 1 : end]) or (
             start >= 2 and annotated(raw[start - 2], OPT_OUT)
         ):
             continue
         hits.append(start)
     return hits
-
-
-def _has_unpinned_install(line: str) -> bool:
-    """True when LINE runs an install command with at least one unpinned spec."""
-    for family, pattern in _INSTALLERS:
-        for match in pattern.finditer(line):
-            prefix, in_quotes = _command_prefix(line, match.start())
-            if MESSAGE_PREFIX.match(prefix):
-                continue  # an argument to a command that only prints
-            # A match whose own leading character is the quote opens the string it
-            # sits in, so it is quoted too — `echo "pip install x"` must not read
-            # as an unquoted install just because the quote came first.
-            if (in_quotes or match.group()[:1] in "\"'") and not _INTERPRETER.match(
-                prefix
-            ):
-                continue  # text inside a string nothing executes
-            segment = _segment_after(line, match.end())
-            # Only a GLOBAL Node install pins nowhere else; a local one records its
-            # range in package.json. `yarn global add` says so in the command
-            # itself, npm/pnpm say it with a `-g`/`--global` flag.
-            if (
-                family == NODE
-                and "global" not in match.group()
-                and not _GLOBAL_FLAG.search(segment)
-            ):
-                continue
-            if _unpinned_specs(segment, family):
-                return True
-    return False
 
 
 def _run_scripts(path: Path) -> list[tuple[int, str]]:
@@ -421,6 +437,13 @@ def main(argv: list[str] | None = None) -> int:
                 hits = violations(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError):
             continue  # a deleted/renamed path pre-commit may still list
+        except PathologicalInputError as err:
+            # A shape the grammar cannot parse safely fails the check LOUDLY (the
+            # same posture as check_untrusted_exec): skipping it would false-green
+            # exactly the input an adversary controls.
+            print(f"{arg}: {err}", file=sys.stderr)
+            status = 1
+            continue
         for lineno in hits:
             print(f"{arg}:{lineno}: {MESSAGE}", file=sys.stderr)
             status = 1
