@@ -11,13 +11,20 @@ boundary), and that judgement belongs in the open. A guard MUST carry
 
 so review checks the stated reason, not the mere existence of the guard.
 
-A Python guard is detected two ways, because either alone is evadable:
+A Python guard is detected three ways, because no one of them alone is evadable:
 
   1. INTENT PHRASING — the name or docstring says what it is ("drift guard",
      "must stay in sync", ...). Honest, but a guard reworded to dodge the
      phrasing — calling itself an "SSOT-coverage contract" instead — slips
      straight through. That laundering is the whole failure mode this check
      exists to stop, so phrasing cannot be the only trigger.
+  1b. LAUNDERED AUTHORITY — a body COMMENT that claims a value is authoritative
+     while admitting it is a copy of one held elsewhere ("SSOT char sets
+     (mirrored from the per-layer suites)"). Neither half is a smell alone, so
+     only the conjunction fires. This is the shape trigger 1 structurally
+     cannot see: a copy relabelled as a source of truth uses none of the drift
+     vocabulary, so the phrasing pass reads it as the sanctioned single-source
+     pattern and passes it.
   2. COPIES-AGREE STRUCTURE — the test READS an external source (a file/config)
      and asserts a COLLECTION equality where one side is a hand-maintained copy
      (an in-source collection literal, or an UPPER_CASE constant / its
@@ -39,9 +46,10 @@ Copies-agree tests also live in JavaScript/TypeScript (``*.test.mjs``) and shell
 suites, which carry no ``@pytest.mark``. For those a SIBLING phrase pass runs
 (``text_violations``): any line expressing drift-guard intent must carry a
 same-line or immediately-preceding ``drift-guard-ok: <why a true SSOT is
-infeasible>`` annotation, or it is flagged. That non-Python surface is
-phrase-only — it has the same dodge-the-phrasing weakness the structural trigger
-closes for Python; a JS-side structural pass is the honest follow-up.
+infeasible>`` annotation, or it is flagged. The laundered-authority trigger runs
+there too (it needs only a comment, not an AST). That non-Python surface still
+has no STRUCTURAL pass, so a guard that dodges both phrasings slips; a JS-side
+structural pass is the honest follow-up.
 
 Honest limits, stated so this check is not itself laundered: detection is a
 heuristic, not proof. A copies-agree comparison the AST can't see (a hand-rolled
@@ -53,13 +61,21 @@ Invoked by pre-commit with the staged Python / JS / TS / shell files as argument
 """
 
 import ast
+import io
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    iter_nodes,
+    parse as _parse_bash,
+)
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotation_re,
+    comment_body,
+    is_shell_source,
     is_test_path,
 )
 
@@ -91,6 +107,117 @@ _ALLOW_MARKER = annotation_re("drift-guard-ok")
 # STRUCTURAL hit (a genuine collection-equality unit test), with a non-empty
 # reason so the escape is a stated judgement, not a silent mute.
 _OPTOUT_RE = annotation_re("not-a-drift-guard")
+
+# The LAUNDERED form: a comment that claims authority for a value while admitting
+# the value is a copy of one held elsewhere ("SSOT char sets (mirrored from the
+# per-layer suites)", "the canonical list, restated here"). Neither half is a
+# smell alone — naming a real SSOT is the sanctioned idiom, and "mirror" describes
+# plenty of honest runtime behaviour — so this fires only on the CONJUNCTION, and
+# only inside a comment body.
+_AUTHORITY_RE = re.compile(
+    r"\bSSOT\b|\bsingle source of truth\b|\bcanonical\b", re.IGNORECASE
+)
+_COPY_RE = re.compile(
+    r"\bmirror(?:s|ed|ing)?\b|\bcop(?:y|ies|ied)\b|\bduplicat(?:e|es|ed|ion)\b"
+    r"|\brestat(?:e|es|ed|ing)\b|\bhand-(?:maintained|kept|copied)\b|\bin step with\b",
+    re.IGNORECASE,
+)
+# A denial governing the copy word ("not restated here", "never a copy of the
+# SSOT"). Without this the check inverts on its most common honest neighbour: a
+# comment whose whole point is that the value is READ from the SSOT rather than
+# duplicated says both halves in one breath, and would flag for saying so. The
+# denial must sit in the same sentence as the copy word — hence `[^.]*$` — so a
+# negation that belongs to an earlier clause does not excuse a later admission.
+_NEGATED_RE = re.compile(
+    r"\b(?:not|never|no|without|rather than|instead of)\b[^.]*$", re.IGNORECASE
+)
+# How far back a denial may sit and still govern the copy word. Counted in WORDS,
+# never characters: a character window can cut mid-token and turn "cannot" into a
+# string starting "not", which `\b` then reads as a denial that was never written.
+_DENIAL_WINDOW_WORDS = 4
+
+
+def _launders(body: str) -> str | None:
+    """The matched authority word when comment BODY claims a value is
+    authoritative while admitting it is a copy — else None."""
+    authority = _AUTHORITY_RE.search(body)
+    if not authority:
+        return None
+    copied = _COPY_RE.search(body)
+    if not copied:
+        return None
+    preceding = " ".join(body[: copied.start()].split()[-_DENIAL_WINDOW_WORDS:])
+    return None if _NEGATED_RE.search(preceding) else authority.group(0)
+
+
+def shell_comments(script: str) -> dict[int, str]:
+    """1-based line -> comment text, for every bash ``comment`` node in SCRIPT.
+
+    The shell counterpart of ``_python_comments``, and mandatory for the reason
+    `.claude/rules/shell-lint-parsing.md` gives: "is this a comment, or data a
+    command prints?" is a question about the grammar. Measured on this package's
+    own two probes, the text heuristic reads a whole HEREDOC BODY as comments —
+    the documented false-positive class, since a heredoc is data no shell
+    executes and nobody authored as a claim about the tree.
+
+    ``PathologicalInputError`` from ``parse`` propagates: a lint that degraded to
+    "no findings" on the one input an adversary controls would be exactly the
+    false green this pack exists to catch.
+    """
+    return {
+        node.start_point[0] + 1: node.text.decode("utf-8", "replace")
+        for node in iter_nodes(_parse_bash(script), "comment")
+    }
+
+
+def _python_comments(source: str) -> dict[int, str]:
+    """1-based line -> comment text, for every comment in SOURCE.
+
+    Read from Python's OWN tokenizer rather than scanned out of the text. "Is
+    this `#` a comment or a character inside a string literal?" is a question
+    about the grammar, and the text answer gets it wrong in the direction that
+    matters here: a lint fixture or an error message containing `# canonical
+    rows, mirrored from X` is a value the program builds, not an author claiming
+    anything about the tree — yet it reads as a comment to any `find(" # ")`.
+    That false positive is not hypothetical; it is what this check's own test
+    fixtures produce.
+
+    A comment is one token, so at most one exists per line and a dict keyed by
+    line is lossless.
+    """
+    comments: dict[int, str] = {}
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            comments[token.start[0]] = token.string
+    return comments
+
+
+def _self_declares(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, comments: dict[int, str]
+) -> bool:
+    """True when a comment inside NODE's line span launders a copy as
+    authoritative.
+
+    An annotation comment is skipped: `# not-a-drift-guard: …` and
+    `# drift-guard-ok: …` both spell the token they exist to excuse, and a reason
+    naturally spells the words this hunts for, so scanning them would make every
+    opted-out test re-flag on the wording of its own opt-out.
+
+    Only the laundering conjunction is read from body comments, never the
+    _GUARD_PATTERNS phrases. Those phrases are tuned for a NAME or DOCSTRING,
+    where "cannot drift" is the author classifying the test; in a free-form body
+    comment the same words usually describe the code's behaviour ("the guard
+    cannot drift into rejecting valid requests").
+    """
+    end = node.end_lineno or node.lineno
+    return any(
+        _launders(body)
+        for line, body in comments.items()
+        if node.lineno <= line <= end
+        and not _OPTOUT_RE.search(body)
+        and not _ALLOW_MARKER.search(body)
+    )
+
 
 # Callables that construct/return a collection, and the collection-view methods.
 _COLLECTION_CTORS = frozenset({"set", "frozenset", "sorted", "list", "tuple", "dict"})
@@ -208,12 +335,25 @@ def _is_structural_guard(node: ast.AST) -> bool:
     return _reads_source(node) and _asserts_maintained_copy_equals(node)
 
 
-def _has_optout(node: ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]) -> bool:
+def _has_optout(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, comments: dict[int, str]
+) -> bool:
     """True when a `# not-a-drift-guard: <reason>` comment sits within the
     function's source span — the explicit escape for a genuine collection-equality
-    unit test that the structural trigger would otherwise flag."""
+    unit test that the structural trigger would otherwise flag.
+
+    Read from real comment TOKENS, never the raw text. This one suppresses a
+    finding, so a text scan here fails OPEN: a string literal anywhere in the
+    function that happens to spell the token — a fixture for this very lint, an
+    error message quoting the escape hatch — would silently disarm the trigger
+    for the whole test. The tokenizer cannot confuse the two.
+    """
     end = node.end_lineno or node.lineno
-    return any(_OPTOUT_RE.search(line) for line in lines[node.lineno - 1 : end])
+    return any(
+        _OPTOUT_RE.search(body)
+        for line, body in comments.items()
+        if node.lineno <= line <= end
+    )
 
 
 def _justification(decorator: ast.expr) -> str | None:
@@ -238,53 +378,73 @@ def _justification(decorator: ast.expr) -> str | None:
 
 def violations(source: str) -> list[tuple[int, str]]:
     """(1-based line, function name) for every test in SOURCE that reads as a
-    drift guard — by intent PHRASING or copies-agree STRUCTURE — but lacks a
-    justified @pytest.mark.drift_guard marker. A structural-only hit is cleared by
-    a `# not-a-drift-guard:` opt-out; a phrasing hit is not (naming a test a guard
-    is a self-declaration). A file that does not parse as Python produces no
-    findings (other tooling owns syntax errors)."""
+    drift guard — by intent PHRASING, by a LAUNDERED-authority body comment, or by
+    copies-agree STRUCTURE — but lacks a justified @pytest.mark.drift_guard marker.
+    A structural-only hit is cleared by a `# not-a-drift-guard:` opt-out; the other
+    two are not (calling a copy authoritative is a self-declaration). A file that
+    does not parse as Python produces no findings (other tooling owns syntax
+    errors)."""
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+        comments = _python_comments(source)
+    except (SyntaxError, ValueError, tokenize.TokenError):
         return []
 
-    lines = source.splitlines()
     hits: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         if not node.name.startswith("test_"):
             continue
-        phrasing = _is_drift_guard(node.name, ast.get_docstring(node) or "")
+        phrasing = _is_drift_guard(
+            node.name, ast.get_docstring(node) or ""
+        ) or _self_declares(node, comments)
         structural = _is_structural_guard(node)
         if not (phrasing or structural):
             continue
         if any(_justification(dec) for dec in node.decorator_list):
             continue
-        if structural and not phrasing and _has_optout(node, lines):
+        if structural and not phrasing and _has_optout(node, comments):
             continue
         hits.append((node.lineno, node.name))
     return hits
 
 
-def text_violations(text: str) -> list[tuple[int, str]]:
+def text_violations(
+    text: str, comments: dict[int, str] | None = None
+) -> list[tuple[int, str]]:
     """(1-based line, matched phrase) for every line of TEXT that expresses
-    drift-guard intent without a reason-bearing ``drift-guard-ok:`` annotation on
-    that line or the one immediately above.
+    drift-guard intent — an intent PHRASE anywhere on the line, or a LAUNDERED
+    authority-plus-copy conjunction inside its comment — without a reason-bearing
+    ``drift-guard-ok:`` annotation on that line or the one immediately above.
 
     The non-AST sibling of ``violations()``: JS/TS/shell tests carry no
-    ``@pytest.mark``, so intent is detected by phrase and excused inline instead."""
+    ``@pytest.mark``, so intent is detected by phrase and excused inline instead.
+
+    COMMENTS maps 1-based line -> comment body when the caller HAS a grammar that
+    can say where comments are — ``shell_comments`` for shell. Passing it is what
+    keeps the laundering trigger out of a heredoc body. Omitting it falls back to
+    the ``comment_body`` text heuristic, which is correct only for JS/TS, the one
+    language here with no grammar available.
+
+    The PHRASE half deliberately scans the whole line, comment or not: a test
+    NAME is a self-declaration, so ``it('configs must stay in sync', …)`` is a
+    finding even though it lives in a string literal. Only the laundering half is
+    comment-scoped, because only it reads narration ABOUT the tree.
+    """
     lines = text.splitlines()
     hits: list[tuple[int, str]] = []
     for i, line in enumerate(lines):
-        match = _GUARD_RE.search(line)
-        if not match:
-            continue
         if _ALLOW_MARKER.search(line):
             continue
         if i > 0 and _ALLOW_MARKER.search(lines[i - 1]):
             continue
-        hits.append((i + 1, match.group(0)))
+        body = comment_body(line) if comments is None else comments.get(i + 1)
+        match = _GUARD_RE.search(line)
+        phrase = match.group(0) if match else body and _launders(body)
+        if not phrase:
+            continue
+        hits.append((i + 1, phrase))
     return hits
 
 
@@ -315,7 +475,16 @@ def main(argv: list[str]) -> int:
         # already scopes to `test_*` functions.
         if not is_test_path(path):
             continue
-        for lineno, phrase in text_violations(source):
+        # Shell gets its comments from the bash grammar; JS/TS falls back to the
+        # text heuristic because this package carries no JS grammar. Routing here
+        # rather than inside `text_violations` keeps the path — the only thing
+        # that says which language this is — where it is actually known.
+        comments = (
+            shell_comments(source)
+            if is_shell_source(path, source.split("\n", 1)[0])
+            else None
+        )
+        for lineno, phrase in text_violations(source, comments):
             print(
                 f"{path}:{lineno}: drift-guard intent ({phrase!r}) lacks a "
                 "justification — prefer removing the duplication (make one source "
