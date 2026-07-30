@@ -193,6 +193,46 @@ def test_an_annotation_line_never_flags_itself(token: str) -> None:
     assert mod.violations(src) == []
 
 
+# ── the Python pass reads comment TOKENS, not text that looks like a comment ──
+
+
+def test_python_comments_reads_tokens_not_text() -> None:
+    """A `#` inside a string literal is a character, not a comment; a real
+    trailing comment is one whatever spacing precedes it. The text heuristic this
+    replaces gets both backwards."""
+    src = 'MSG = "run # canonical, mirrored"\nx = 1  # a real comment\ny = 2 #tight\n'
+    assert mod.python_comments(src) == {2: "# a real comment", 3: "#tight"}
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        # A fixture for THIS lint: the string spells the laundered form verbatim.
+        '"    # canonical rows, mirrored from the loader"',
+        # An error message a check prints, quoting the shape it flags.
+        "'expected # canonical set, duplicated below'",
+    ],
+)
+def test_a_string_literal_is_not_a_comment(literal: str) -> None:
+    """The false positive the tokenizer removes: a value the program BUILDS is
+    not an author claiming anything about the tree. Every lint whose own fixtures
+    spell its banned idiom lands here."""
+    assert mod.violations(f"def test_a():\n    got = {literal}\n    assert got\n") == []
+
+
+def test_a_faked_optout_in_a_string_literal_does_not_suppress() -> None:
+    """The same confusion in the direction that FAILS OPEN. A text scan for the
+    opt-out token accepts this string literal and disarms the structural trigger
+    for the whole function; the tokenizer sees no comment, so the guard stands."""
+    src = (
+        "def test_examples_cover_the_config():\n"
+        "    live = json.load(open('detectors.json'))\n"
+        "    hint = 'add a # not-a-drift-guard: <reason> comment'\n"
+        "    assert sorted(EXAMPLES.keys()) == sorted(live)\n"
+    )
+    assert mod.violations(src) == [(1, "test_examples_cover_the_config")]
+
+
 def test_laundering_pass_reaches_non_python_suites(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

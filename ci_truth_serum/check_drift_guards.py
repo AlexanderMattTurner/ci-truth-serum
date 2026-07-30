@@ -61,8 +61,10 @@ Invoked by pre-commit with the staged Python / JS / TS / shell files as argument
 """
 
 import ast
+import io
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -128,18 +130,9 @@ _NEGATED_RE = re.compile(
 _DENIAL_WINDOW_WORDS = 4
 
 
-def _launders_a_copy(line: str) -> str | None:
-    """The matched authority word when LINE's COMMENT claims a value is
-    authoritative while admitting it is a copy — else None.
-
-    Scoped to the comment body (via ``comment_body``) for the reason every
-    narration lint is: a string literal is a value the program builds, not a
-    claim about the tree, so a fixture spelling "canonical copy" is not an
-    author asserting anything.
-    """
-    body = comment_body(line)
-    if body is None:
-        return None
+def _launders(body: str) -> str | None:
+    """The matched authority word when comment BODY claims a value is
+    authoritative while admitting it is a copy — else None."""
     authority = _AUTHORITY_RE.search(body)
     if not authority:
         return None
@@ -150,38 +143,68 @@ def _launders_a_copy(line: str) -> str | None:
     return None if _NEGATED_RE.search(preceding) else authority.group(0)
 
 
-def _comment_lines(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]
-) -> list[str]:
-    """The source lines within NODE's span that carry a comment.
+def _launders_a_copy(line: str) -> str | None:
+    """``_launders`` over LINE's comment, for the non-Python pass.
 
-    An annotation line is excluded: `# not-a-drift-guard: …` and
-    `# drift-guard-ok: …` both spell the token they exist to excuse, so scanning
-    them would make every opted-out test re-flag on its own opt-out.
+    ``comment_body`` is a TEXT heuristic for where a comment starts, which is a
+    structural question — the Python pass answers it with the tokenizer instead
+    (see ``python_comments``). It is used here because ``text_violations`` scans
+    JS/TS *and* shell through one path and this package carries no JS grammar;
+    ``_bash_ast`` would answer for the shell half only. That is the stated
+    trade-off, not an oversight: the residual error is a comment introducer
+    inside a JS string literal.
     """
-    end = node.end_lineno or node.lineno
-    return [
-        ln
-        for ln in lines[node.lineno - 1 : end]
-        if comment_body(ln) is not None
-        and not _OPTOUT_RE.search(ln)
-        and not _ALLOW_MARKER.search(ln)
-    ]
+    body = comment_body(line)
+    return _launders(body) if body is not None else None
+
+
+def python_comments(source: str) -> dict[int, str]:
+    """1-based line -> comment text, for every comment in SOURCE.
+
+    Read from Python's OWN tokenizer rather than scanned out of the text. "Is
+    this `#` a comment or a character inside a string literal?" is a question
+    about the grammar, and the text answer gets it wrong in the direction that
+    matters here: a lint fixture or an error message containing `# canonical
+    rows, mirrored from X` is a value the program builds, not an author claiming
+    anything about the tree — yet it reads as a comment to any `find(" # ")`.
+    That false positive is not hypothetical; it is what this check's own test
+    fixtures produce.
+
+    A comment is one token, so at most one exists per line and a dict keyed by
+    line is lossless.
+    """
+    comments: dict[int, str] = {}
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            comments[token.start[0]] = token.string
+    return comments
 
 
 def _self_declares(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]
+    node: ast.FunctionDef | ast.AsyncFunctionDef, comments: dict[int, str]
 ) -> bool:
-    """True when a comment inside NODE launders a copy as authoritative.
+    """True when a comment inside NODE's line span launders a copy as
+    authoritative.
+
+    An annotation comment is skipped: `# not-a-drift-guard: …` and
+    `# drift-guard-ok: …` both spell the token they exist to excuse, and a reason
+    naturally spells the words this hunts for, so scanning them would make every
+    opted-out test re-flag on the wording of its own opt-out.
 
     Only the laundering conjunction is read from body comments, never the
     _GUARD_PATTERNS phrases. Those phrases are tuned for a NAME or DOCSTRING,
     where "cannot drift" is the author classifying the test; in a free-form body
     comment the same words usually describe the code's behaviour ("the guard
-    cannot drift into rejecting valid requests"), and scanning for them there
-    measured a majority of false positives on this tree.
+    cannot drift into rejecting valid requests").
     """
-    return any(_launders_a_copy(line) for line in _comment_lines(node, lines))
+    end = node.end_lineno or node.lineno
+    return any(
+        _launders(body)
+        for line, body in comments.items()
+        if node.lineno <= line <= end
+        and not _OPTOUT_RE.search(body)
+        and not _ALLOW_MARKER.search(body)
+    )
 
 
 # Callables that construct/return a collection, and the collection-view methods.
@@ -300,12 +323,25 @@ def _is_structural_guard(node: ast.AST) -> bool:
     return _reads_source(node) and _asserts_maintained_copy_equals(node)
 
 
-def _has_optout(node: ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]) -> bool:
+def _has_optout(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, comments: dict[int, str]
+) -> bool:
     """True when a `# not-a-drift-guard: <reason>` comment sits within the
     function's source span — the explicit escape for a genuine collection-equality
-    unit test that the structural trigger would otherwise flag."""
+    unit test that the structural trigger would otherwise flag.
+
+    Read from real comment TOKENS, never the raw text. This one suppresses a
+    finding, so a text scan here fails OPEN: a string literal anywhere in the
+    function that happens to spell the token — a fixture for this very lint, an
+    error message quoting the escape hatch — would silently disarm the trigger
+    for the whole test. The tokenizer cannot confuse the two.
+    """
     end = node.end_lineno or node.lineno
-    return any(_OPTOUT_RE.search(line) for line in lines[node.lineno - 1 : end])
+    return any(
+        _OPTOUT_RE.search(body)
+        for line, body in comments.items()
+        if node.lineno <= line <= end
+    )
 
 
 def _justification(decorator: ast.expr) -> str | None:
@@ -338,10 +374,10 @@ def violations(source: str) -> list[tuple[int, str]]:
     errors)."""
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+        comments = python_comments(source)
+    except (SyntaxError, ValueError, tokenize.TokenError):
         return []
 
-    lines = source.splitlines()
     hits: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -350,13 +386,13 @@ def violations(source: str) -> list[tuple[int, str]]:
             continue
         phrasing = _is_drift_guard(
             node.name, ast.get_docstring(node) or ""
-        ) or _self_declares(node, lines)
+        ) or _self_declares(node, comments)
         structural = _is_structural_guard(node)
         if not (phrasing or structural):
             continue
         if any(_justification(dec) for dec in node.decorator_list):
             continue
-        if structural and not phrasing and _has_optout(node, lines):
+        if structural and not phrasing and _has_optout(node, comments):
             continue
         hits.append((node.lineno, node.name))
     return hits
