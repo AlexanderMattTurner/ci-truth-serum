@@ -109,11 +109,13 @@ _OPTOUT_RE = annotation_re("not-a-drift-guard")
 # smell alone — naming a real SSOT is the sanctioned idiom, and "mirror" describes
 # plenty of honest runtime behaviour — so this fires only on the CONJUNCTION, and
 # only inside a comment body.
-_AUTHORITY_RE = re.compile(r"\bSSOT\b|\bsingle source of truth\b|\bcanonical\b", re.I)
+_AUTHORITY_RE = re.compile(
+    r"\bSSOT\b|\bsingle source of truth\b|\bcanonical\b", re.IGNORECASE
+)
 _COPY_RE = re.compile(
     r"\bmirror(?:s|ed|ing)?\b|\bcop(?:y|ies|ied)\b|\bduplicat(?:e|es|ed|ion)\b"
     r"|\brestat(?:e|es|ed|ing)\b|\bhand-(?:maintained|kept|copied)\b|\bin step with\b",
-    re.I,
+    re.IGNORECASE,
 )
 # A denial governing the copy word ("not restated here", "never a copy of the
 # SSOT"). Without this the check inverts on its most common honest neighbour: a
@@ -122,7 +124,7 @@ _COPY_RE = re.compile(
 # denial must sit in the same sentence as the copy word — hence `[^.]*$` — so a
 # negation that belongs to an earlier clause does not excuse a later admission.
 _NEGATED_RE = re.compile(
-    r"\b(?:not|never|no|without|rather than|instead of)\b[^.]*$", re.I
+    r"\b(?:not|never|no|without|rather than|instead of)\b[^.]*$", re.IGNORECASE
 )
 # How far back a denial may sit and still govern the copy word. Counted in WORDS,
 # never characters: a character window can cut mid-token and turn "cannot" into a
@@ -148,7 +150,7 @@ def _launders_a_copy(line: str) -> str | None:
 
     ``comment_body`` is a TEXT heuristic for where a comment starts, which is a
     structural question — the Python pass answers it with the tokenizer instead
-    (see ``python_comments``). It is used here because ``text_violations`` scans
+    (see ``_python_comments``). It is used here because ``text_violations`` scans
     JS/TS *and* shell through one path and this package carries no JS grammar;
     ``_bash_ast`` would answer for the shell half only. That is the stated
     trade-off, not an oversight: the residual error is a comment introducer
@@ -158,7 +160,7 @@ def _launders_a_copy(line: str) -> str | None:
     return _launders(body) if body is not None else None
 
 
-def python_comments(source: str) -> dict[int, str]:
+def _python_comments(source: str) -> dict[int, str]:
     """1-based line -> comment text, for every comment in SOURCE.
 
     Read from Python's OWN tokenizer rather than scanned out of the text. "Is
@@ -374,7 +376,7 @@ def violations(source: str) -> list[tuple[int, str]]:
     errors)."""
     try:
         tree = ast.parse(source)
-        comments = python_comments(source)
+        comments = _python_comments(source)
     except (SyntaxError, ValueError, tokenize.TokenError):
         return []
 

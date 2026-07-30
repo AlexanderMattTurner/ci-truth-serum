@@ -201,7 +201,7 @@ def test_python_comments_reads_tokens_not_text() -> None:
     trailing comment is one whatever spacing precedes it. The text heuristic this
     replaces gets both backwards."""
     src = 'MSG = "run # canonical, mirrored"\nx = 1  # a real comment\ny = 2 #tight\n'
-    assert mod.python_comments(src) == {2: "# a real comment", 3: "#tight"}
+    assert mod._python_comments(src) == {2: "# a real comment", 3: "#tight"}
 
 
 @pytest.mark.parametrize(
