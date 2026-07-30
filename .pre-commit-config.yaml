@@ -85,7 +85,8 @@ repos:
         # catch.
         args: [--skip, check_failure_notifier_coverage]
         language: python
-        additional_dependencies: [PyYAML, identify]
+        additional_dependencies:
+          [PyYAML, identify, tree-sitter, tree-sitter-bash]
       - id: check-failure-notifier-coverage-strict
         name: "dogfood: the notifier must exist and every alert must state its urgency"
         entry: python -m ci_truth_serum.check_failure_notifier_coverage
