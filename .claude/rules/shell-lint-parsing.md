@@ -51,7 +51,7 @@ this pack already pays it through the aggregate. A text scan is only justified
 when the input is not shell; say so in the module docstring when you take that
 route, so the next reader knows it was a decision.
 
-## Audit — the lints still scanning text
+## Audit — the two probes every shell lint should survive
 
 Measured by feeding each one its own banned idiom twice: once inside a logger's
 message string (`gb_warn "…"`), once inside a heredoc body written to a file.
@@ -59,17 +59,30 @@ Neither is executed code, so a finding is a false positive:
 
 | Lint                              | Fires on a message string | Fires on a heredoc body |
 | --------------------------------- | ------------------------- | ----------------------- |
-| `check_exit_suppression`          | yes                       | yes                     |
-| `check_echo_fallback`             | yes                       | yes                     |
-| `check_stderr_merge_parse`        | yes                       | yes                     |
-| `check_pinned_downloads`          | yes                       | yes                     |
-| `check_gh_slurp_jq`               | no                        | yes                     |
+| `check_exit_suppression`          | no                        | no                      |
+| `check_echo_fallback`             | no                        | no                      |
+| `check_stderr_merge_parse`        | no                        | no                      |
+| `check_pinned_downloads`          | no                        | no                      |
+| `check_gh_slurp_jq`               | no                        | no                      |
 | `check_stderr_suppression`        | no                        | no                      |
 | `check_substitution_exit_swallow` | no                        | no                      |
 | `check_secret_file_perms`         | no                        | no                      |
 
+The top five fired on one or both probes and were rewritten on the grammar, which
+removed the class rather than the instance. **The bottom three still scan text** —
+they pass these two probes, which is not the same as being structurally sound, so
+they are the remaining candidates: `check_stderr_suppression` and
+`check_substitution_exit_swallow` both ask redirect/substitution questions the
+grammar answers directly, and `check_secret_file_perms` reasons about command
+ordering.
+
 Reproduce with `violations()` on `gb_warn "<idiom>"` and on a
-`cat <<'EOF' > doc.txt` block containing the idiom. Rewriting the top four is
-worth its own PR each — a rewrite has to preserve every verdict its existing
-suite pins, which is the evidence the rule was kept and only the decision
-procedure changed.
+`cat <<'EOF' > doc.txt` block containing the idiom — that pair is the cheapest
+audit of a shell lint you will ever run, and both cases are text no shell
+executes.
+
+A rewrite has to preserve every verdict its existing suite pins: that is the
+evidence the rule was kept and only the decision procedure changed. State in the
+commit message how many assertions moved and why — for these five it was one line
+number in `check_gh_slurp_jq`, one changed meta-test shape in
+`check_exit_suppression`, and zero in the other three.
