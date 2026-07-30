@@ -9,17 +9,34 @@ every release aborted on the nonsense comparison that followed.
 
 Flagged (precision over recall — plain diagnostic captures must never fire):
 
-  (a) a command substitution that merges (`2>&1`) and pipes the merged stream
-      into a parsing command INSIDE the substitution
+  (a) a command substitution whose value is produced by merging (`2>&1`) and
+      then piping the merged stream into a parsing command
       (`v=$(cmd 2>&1 | tail -1)`);
   (b) `var=$(cmd 2>&1)` where, within the next 10 lines, `$var` is piped into
-      a parsing command or used in a `[[ … ]]` / `(( … ))` comparison.
+      a parsing command or read in a `[[ … ]]` comparison / `(( … ))`
+      arithmetic.
 
 Parsing commands: head, tail, grep, awk, cut, sed, jq, sort, wc. NOT flagged:
 `var=$(cmd 2>&1)` followed only by echo/printf/logging — capture-for-
-diagnostics is the dominant legitimate use. Opt out with a
-`# stderr-merge-ok: <reason>` comment on the flagged line, the line above, or
-(for rule b) the capturing assignment.
+diagnostics is the dominant legitimate use — and a capture the script branches
+on (`if ! var=$(cmd 2>&1); then …`), where the merge feeds the failure path and
+the stream the later read sees is the success path's. Opt out with a
+`# stderr-merge-ok: <reason>` comment on any physical line of the flagged
+command, the line above it, or (for rule b) the capturing assignment.
+
+Every question this lint asks is about shell STRUCTURE, so it asks the real bash
+grammar (``_bash_ast``) rather than the text: `2>&1` is a ``file_redirect``
+(never a `2>&1` inside an argument's text), "piped into a parser" is a later
+``pipeline`` stage whose ``command_name`` is one of the parsers, "captured" is a
+``variable_assignment`` whose value is a ``command_substitution``, and
+"compared" is a ``binary_expression`` under a ``test_command`` or an
+``arithmetic_expansion``. That is also what keeps the lint off text that merely
+DEPICTS the idiom: a single-quoted string and a quoted-delimiter heredoc body
+hold no substitution nodes at all, and a `$(…)` spliced between literal
+``string_content`` runs — `gb_warn "v=$(cmd 2>&1 | tail -1) parses noise"` — is
+being interpolated into a message rather than becoming a value, so only a
+substitution that IS the whole value at its position (an assignment's
+right-hand side, or the entire string/argument) is judged.
 
 Invoked by pre-commit with the staged shell files as arguments; a
 `.github/{workflows,actions}` YAML path among them has each inline `run:`
@@ -33,28 +50,30 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PathologicalInputError,
+    iter_nodes,
+    parse,
+)
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     annotated,
-    logical_lines,
 )
 
 OPT_OUT = "stderr-merge-ok"
 
-_PARSERS = r"(?:head|tail|grep|awk|cut|sed|jq|sort|wc)"
+# Commands that read a stream as structured data. A merged stream reaching one of
+# these is the defect; `tee`, `cat`, a logger or a shell function are not.
+_PARSERS = frozenset({"head", "tail", "grep", "awk", "cut", "sed", "jq", "sort", "wc"})
 _MERGE = "2>&1"
-# `| parser` — a single pipe (not `||`) into a parsing command.
-_PIPE_TO_PARSER = re.compile(rf"(?<!\|)\|(?!\|)\s*{_PARSERS}\b")
-# `var=$(…` — a capture assignment whose right-hand side opens a substitution.
-_ASSIGN_OPEN = re.compile(
-    r"^\s*(?:local\s+|export\s+|readonly\s+|declare\s+(?:-\w+\s+)*)?"
-    r"(?P<var>\w+)=[\"']?\$\("
+# Operators inside `[[ … ]]` that rank/match the value as data. `-z`/`-n`
+# (emptiness) and `-f`-style file tests are diagnostics, so they are unary
+# expressions here and never reach this set.
+_COMPARE_OPS = frozenset(
+    {"-eq", "-ne", "-lt", "-le", "-gt", "-ge", "=~", "==", "!=", "<", ">"}
 )
-# Comparison operators inside `[[ … ]]` that treat the value as data to rank —
-# `-z`/`-n` (emptiness) and `-f`-style file tests are diagnostics, not parsing.
-_COMPARE_OP = re.compile(r"(?:-eq|-ne|-lt|-le|-gt|-ge|=~|==|!=|<|>)")
-_TEST_BRACKET = re.compile(r"\[\[(?P<body>.*?)\]\]")
-_ARITH = re.compile(r"\(\((?P<body>.*?)\)\)")
+# How far after the capture a use still refers to the merged value in practice.
+_WINDOW = 10
 
 _WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 
@@ -70,104 +89,293 @@ MESSAGE_LATER = (
     f"diagnostics), or annotate `# {OPT_OUT}: <reason>`."
 )
 
+# Node types that OPEN a new block of statements. Climbing out of a node stops
+# below one of these, which is what turns a flagged node into the physical line
+# range of the single command carrying it — the lines a reader would put the
+# `# stderr-merge-ok:` annotation on. Without the stop, a substitution inside an
+# `if` would claim the whole `if … fi` block's lines and an annotation anywhere
+# in the body would suppress the finding.
+_BLOCKS = frozenset(
+    {
+        "program",
+        "compound_statement",
+        "subshell",
+        "if_statement",
+        "elif_clause",
+        "else_clause",
+        "while_statement",
+        "until_statement",
+        "for_statement",
+        "c_style_for_statement",
+        "case_statement",
+        "case_item",
+        "do_group",
+        "function_definition",
+        "heredoc_body",
+    }
+)
+# The pipe operators between a `pipeline`'s stages, so stage enumeration can skip
+# them without positional indexing.
+_PIPE_TOKENS = frozenset({"|", "|&"})
 
-def _substitution_spans(line: str) -> list[str]:
-    """The content of every ``$(…)`` span in LINE (nested spans included in
-    their parent's content, and reported on their own too)."""
-    spans: list[str] = []
-    starts: list[int] = []
-    i = 0
-    while i < len(line):
-        if line[i] == "\\":
-            i += 2
+
+def _text(node) -> str:
+    return node.text.decode("utf-8", "replace")
+
+
+def _statement_rows(node) -> tuple[int, int]:
+    """(first row, last row) of the smallest complete statement containing NODE,
+    both 0-based — a `\\`-continued or `|`-wrapped command included whole."""
+    while node.parent is not None and node.parent.type not in _BLOCKS:
+        node = node.parent
+    return node.start_point[0], node.end_point[0]
+
+
+def _is_whole_value(node) -> bool:
+    """True when NODE's output IS the value at its position, rather than being
+    spliced into surrounding literal text.
+
+    `v=$(…)` and `echo "$(…)"` pass; `gb_warn "v=$(…) parses noise"` does not —
+    there the substitution has ``string_content`` siblings, so its output is
+    interpolated into a message the command prints, not used as a value."""
+    parent = node.parent
+    if parent is None:
+        return True
+    if parent.type == "concatenation":
+        return False
+    if parent.type == "string":
+        content = [child for child in parent.children if child.type != '"']
+        return len(content) == 1 and _is_whole_value(parent)
+    return True
+
+
+def _owns(container, node) -> bool:
+    """True when NODE sits inside CONTAINER with no nested command substitution in
+    between — so an inner `$(…)`'s pipeline is judged as its own value, not as
+    part of the enclosing substitution's."""
+    parent = node.parent
+    while parent is not None and parent.id != container.id:
+        if parent.type == "command_substitution":
+            return False
+        parent = parent.parent
+    return parent is not None
+
+
+def _stages(pipeline):
+    """A `pipeline`'s stages in order, nested pipelines flattened."""
+    for child in pipeline.children:
+        if child.type in _PIPE_TOKENS or child.type == "comment":
             continue
-        if line.startswith("$(", i):
-            starts.append(i + 2)
-            i += 2
-            continue
-        if line[i] == ")" and starts:
-            spans.append(line[starts.pop() : i])
-        i += 1
-    return spans
+        if child.type == "pipeline":
+            yield from _stages(child)
+        else:
+            yield child
 
 
-def _merged_then_parsed(span: str) -> bool:
-    """True when SPAN merges stderr and later pipes the merged stream into a
-    parsing command."""
-    idx = span.find(_MERGE)
-    return idx >= 0 and bool(_PIPE_TO_PARSER.search(span, idx + len(_MERGE)))
-
-
-def _is_compared(logical: str, var: str) -> bool:
-    """True when LOGICAL uses $VAR inside a `[[ … ]]` comparison or `(( … ))`
-    arithmetic — treating the captured stream as an orderable value."""
-    ref = re.compile(rf"\$\{{?{re.escape(var)}\b")
-    for m in _TEST_BRACKET.finditer(logical):
-        body = m.group("body")
-        if ref.search(body) and _COMPARE_OP.search(body):
-            return True
+def _stage_merges(stage) -> bool:
+    """True when STAGE redirects its own stderr onto stdout — a `file_redirect`
+    child of the stage itself, so a `2>&1` deeper inside (a nested substitution,
+    or the literal text of an argument) does not count."""
     return any(
-        re.search(rf"\b{re.escape(var)}\b", m.group("body"))
-        for m in _ARITH.finditer(logical)
+        child.type == "file_redirect" and "".join(_text(child).split()) == _MERGE
+        for child in stage.children
     )
 
 
-def _is_piped_to_parser(logical: str, var: str) -> bool:
-    """True when LOGICAL pipes a command line containing $VAR into a parser."""
-    ref = re.compile(rf"\$\{{?{re.escape(var)}\b")
-    m = ref.search(logical)
-    return bool(m and _PIPE_TO_PARSER.search(logical, m.end()))
+def _stage_command(stage):
+    """The `command` a pipeline STAGE runs, or None when the stage is a compound."""
+    if stage.type == "command":
+        return stage
+    if stage.type in ("redirected_statement", "negated_command"):
+        return next((c for c in stage.children if c.type == "command"), None)
+    return None
 
 
-def _opted_out(physical: list[str], start: int, logical: str) -> bool:
-    """Opt-out marker on the logical line itself or the physical line above it."""
-    return annotated(logical, OPT_OUT) or (
-        start >= 2 and annotated(physical[start - 2], OPT_OUT)
+def _parses(stage) -> bool:
+    """True when pipeline STAGE runs one of the parsing commands."""
+    command = _stage_command(stage)
+    name = None if command is None else command.child_by_field_name("name")
+    return name is not None and _text(name).rsplit("/", 1)[-1] in _PARSERS
+
+
+def _merged_then_parsed(subst) -> bool:
+    """True when SUBST's own value is produced by merging stderr and then piping
+    the merged stream into a parsing command."""
+    for pipeline in iter_nodes(subst, "pipeline"):
+        if not _owns(subst, pipeline):
+            continue
+        merged = False
+        for stage in _stages(pipeline):
+            if merged and _parses(stage):
+                return True
+            merged = merged or _stage_merges(stage)
+    return False
+
+
+def _merges(subst) -> bool:
+    """True when SUBST merges stderr into the stream it captures."""
+    return any(
+        "".join(_text(node).split()) == _MERGE
+        for node in iter_nodes(subst, "file_redirect")
     )
+
+
+def _captured_substitution(assign):
+    """The command substitution an assignment's value IS, or None when the value
+    is something else (a literal, a concatenation, a message with a `$(…)` in
+    it — none of which is a captured stream)."""
+    value = assign.child_by_field_name("value")
+    if value is None:
+        return None
+    if value.type == "command_substitution":
+        return value
+    if value.type == "string":
+        content = [child for child in value.children if child.type != '"']
+        if len(content) == 1 and content[0].type == "command_substitution":
+            return content[0]
+    return None
+
+
+def _exit_status_tested(assign) -> bool:
+    """True when the script branches on the CAPTURE's exit status — the
+    assignment is an `if`/`while` condition, is negated with `!`, or is an
+    `&&`/`||` operand.
+
+    There the merge exists to keep the command's error text for the failure path
+    (`if ! out=$(cmd 2>&1); then echo "$out" >&2; fi`), which is diagnostics: the
+    stream is empty on the success path the later read runs on, so the read is
+    not the defect this lint names."""
+    node = assign
+    while node.parent is not None:
+        parent = node.parent
+        index = next(i for i, c in enumerate(parent.children) if c.id == node.id)
+        if parent.type in ("negated_command", "list"):
+            return True
+        if parent.field_name_for_child(index) == "condition":
+            return True
+        if parent.type in _BLOCKS:
+            return False
+        node = parent
+    return False
+
+
+def _arithmetic_nodes(root):
+    """Every arithmetic context under ROOT: a `$(( … ))` expansion and a bare
+    `(( … ))` command (which the grammar spells as a `compound_statement`)."""
+    yield from iter_nodes(root, "arithmetic_expansion")
+    for node in iter_nodes(root, "compound_statement"):
+        if node.children and node.children[0].type == "((":
+            yield node
+
+
+def _reads(node):
+    """Every variable READ inside NODE, as (node, name). An assignment's target
+    is a write, so `FOO=1 cmd | grep x` reads nothing."""
+    for name in iter_nodes(node, "variable_name"):
+        if name.parent is not None and name.parent.type == "variable_assignment":
+            continue
+        yield name, _text(name)
+
+
+def _data_reads(root):
+    """Every place a variable's value is treated as DATA rather than printed, as
+    (node, name): piped into a parser, compared inside `[[ … ]]`, or read in
+    arithmetic."""
+    for pipeline in iter_nodes(root, "pipeline"):
+        stages = list(_stages(pipeline))
+        for index, stage in enumerate(stages):
+            if any(_parses(later) for later in stages[index + 1 :]):
+                yield from _reads(stage)
+    for test in iter_nodes(root, "test_command"):
+        for expression in iter_nodes(test, "binary_expression"):
+            if any(_text(child) in _COMPARE_OPS for child in expression.children):
+                yield from _reads(expression)
+    for arithmetic in _arithmetic_nodes(root):
+        yield from _reads(arithmetic)
+
+
+def _governing_assignment(assignments: list, read):
+    """The assignment whose value READ actually sees: the last one (document
+    order) that begins before it and does not CONTAIN it.
+
+    Containment is what keeps `out=$(echo "$out" | grep x)` reading the previous
+    value rather than its own, and "begins before" rather than "on an earlier
+    line" is what keeps `out=$(cmd 2>&1); echo "$out" | grep x` in scope."""
+    governing = None
+    for assign in assignments:
+        if assign.start_byte >= read.start_byte:
+            break  # document order: everything past here is later still
+        if assign.end_byte >= read.end_byte:
+            continue  # the read is inside this assignment's own value
+        governing = assign
+    return governing
+
+
+def _opted_out(physical: list[str], rows: tuple[int, int]) -> bool:
+    """Opt-out marker on any physical line of the flagged statement (ROWS,
+    0-based and inclusive) or on the line directly above it."""
+    first, last = rows
+    window = range(max(first - 1, 0), min(last + 1, len(physical)))
+    return any(annotated(physical[row], OPT_OUT) for row in window)
 
 
 def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for every merged-then-parsed capture in TEXT."""
     physical = text.splitlines()
-    found: list[tuple[int, str]] = []
-    # (var, assignment start line, lines remaining) for rule (b) tracking.
-    tracked: list[tuple[str, int]] = []
-    for start, logical in logical_lines(text):
-        stripped = logical.lstrip()
-        if stripped.startswith("#"):
+    root = parse(text)
+
+    # Rule (a): the substitution's own value is merged and then parsed.
+    flagged: set[int] = set()
+    inline: dict[int, bool] = {}
+    for subst in iter_nodes(root, "command_substitution"):
+        if not (_is_whole_value(subst) and _merged_then_parsed(subst)):
             continue
-        opted = _opted_out(physical, start, logical)
-
-        # Rule (a): merged and parsed inside one substitution.
-        if any(_merged_then_parsed(span) for span in _substitution_spans(logical)):
-            if not opted:
-                found.append((start, MESSAGE_INLINE))
-            continue
-
-        # Rule (b) — uses of previously tracked merged captures.
-        for var, assigned_at in tracked:
-            if start - assigned_at > 10:
-                continue
-            if not (_is_piped_to_parser(logical, var) or _is_compared(logical, var)):
-                continue
-            if not opted and OPT_OUT not in physical[assigned_at - 1]:
-                found.append((start, MESSAGE_LATER))
-        tracked = [(v, at) for v, at in tracked if start - at <= 10]
-
-        # Any reassignment supersedes the tracked capture — the old merged
-        # value is gone, so later uses read the NEW value.
-        reassigned = re.match(
-            r"^\s*(?:local\s+|export\s+|readonly\s+|declare\s+(?:-\w+\s+)*)?(?P<var>\w+)=",
-            logical,
+        flagged.add(subst.id)
+        row = subst.start_point[0]
+        # One finding per line: two such substitutions can open on the same row,
+        # and reporting the row twice is a duplicate, not a second defect.
+        inline[row] = inline.get(row, False) or not _opted_out(
+            physical, _statement_rows(subst)
         )
-        if reassigned:
-            tracked = [(v, at) for v, at in tracked if v != reassigned.group("var")]
 
-        # Rule (b) — start tracking a merged capture with no inline parse.
-        assign = _ASSIGN_OPEN.match(logical)
-        if assign and any(_MERGE in span for span in _substitution_spans(logical)):
-            tracked.append((assign.group("var"), start))
-    return found
+    # Rule (b): a merged capture whose value is later read as data. Each variable
+    # keeps its assignment history in document order, so a later assignment
+    # supersedes an earlier one exactly as the shell does.
+    captures: dict[str, list] = {}
+    merged_capture: set[int] = set()
+    for assign in iter_nodes(root, "variable_assignment"):
+        target = assign.child_by_field_name("name")
+        if target is None:
+            continue
+        subst = _captured_substitution(assign)
+        # A substitution rule (a) already flagged is reported at its own line;
+        # re-reporting every downstream read of it would be noise.
+        if (
+            subst is not None
+            and _merges(subst)
+            and subst.id not in flagged
+            and not _exit_status_tested(assign)
+        ):
+            merged_capture.add(assign.id)
+        captures.setdefault(_text(target), []).append(assign)
+
+    later: dict[tuple[int, str], bool] = {}
+    for node, name in _data_reads(root):
+        row = node.start_point[0]
+        governing = _governing_assignment(captures.get(name, []), node)
+        if governing is None or governing.id not in merged_capture:
+            continue
+        assigned_at = governing.start_point[0]
+        if row - assigned_at > _WINDOW:
+            continue
+        opted = _opted_out(physical, _statement_rows(node)) or annotated(
+            physical[assigned_at], OPT_OUT
+        )
+        later[(row, name)] = later.get((row, name), False) or not opted
+
+    found = [(row + 1, MESSAGE_INLINE) for row, hit in inline.items() if hit]
+    found += [(row + 1, MESSAGE_LATER) for (row, _name), hit in later.items() if hit]
+    return sorted(found, key=lambda entry: entry[0])
 
 
 def _run_scripts(path: Path) -> list[tuple[int, str]]:
@@ -216,6 +424,13 @@ def main(argv: list[str] | None = None) -> int:
                 hits = violations(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError):
             continue  # a deleted/renamed path pre-commit may still list
+        except PathologicalInputError as err:
+            # A shape the grammar cannot parse safely fails the check LOUDLY (the
+            # same posture as check_untrusted_exec): skipping it would false-green
+            # exactly the input an adversary controls.
+            print(f"{arg}: {err}", file=sys.stderr)
+            status = 1
+            continue
         for lineno, message in hits:
             print(f"{arg}:{lineno}: {message}", file=sys.stderr)
             status = 1
