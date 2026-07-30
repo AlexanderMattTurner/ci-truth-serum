@@ -19,3 +19,17 @@ updates:
           - "*"
     cooldown:
       default-days: 7
+
+  # The CI-only Python tooling pinned in .github/requirements-ci.txt. Without this
+  # entry those pins have no bumper at all: Dependabot reads requirements files but
+  # not versions written inline in a workflow `run:` line.
+  - package-ecosystem: "pip"
+    directory: "/.github"
+    schedule:
+      interval: "monthly"
+    groups:
+      ci-tooling:
+        patterns:
+          - "*"
+    cooldown:
+      default-days: 7

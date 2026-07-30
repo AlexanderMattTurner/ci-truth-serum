@@ -1,0 +1,7 @@
+# CI-only Python tooling, pinned here rather than inline in a workflow's `run:`
+# line so the pin has an automated bumper: Dependabot's `pip` ecosystem reads this
+# file (see .github/dependabot.yml), while nothing parses a version written inside
+# a `run:` block — Renovate's custom.regex manager can, Dependabot has no
+# equivalent. An unbumpable pin rots into the same stale-tooling problem from the
+# other direction.
+pre-commit==4.6.1
