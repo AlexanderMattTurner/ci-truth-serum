@@ -242,7 +242,7 @@ contexts, and rewrites the repo’s branch-protection ruleset so
 single source of truth, so the required-set stops drifting in the GitHub UI.
 
 ```bash
-pip install ci-truth-serum
+pip install "git+https://github.com/AlexanderMattTurner/ci-truth-serum@v1.0.0"
 
 # Report drift and exit non-zero WITHOUT mutating (PR-safe gate):
 sync-required-checks --repo owner/name --check
@@ -279,22 +279,23 @@ two captures must be equal. Repeat `--pair` for more pins.
 ### Apply: verify a release with release-canary
 
 `release-canary` asserts the places a release leaves its version agree: the
-npm registry (semver-max of `npm view <pkg> versions --json`—deliberately NOT
-`npm view <pkg> version`, which returns the `latest` dist-tag and silently
-misreports when a publish set the tag wrong), the semver-max `v*` git tag, and
-the changelog's top dated `## [x.y.z]` heading (`## Unreleased` is skipped). If
-the repo also ships to the AUR, a `PKGBUILD`'s `pkgver=` is folded in as an
-optional fourth marker — checked only when a PKGBUILD is present, so forgetting
-to bump it is caught while a repo without one is unaffected (a build-time
-`pkgver()` that can't be read offline is skipped, never a failure). On mismatch
-it prints all present labeled values and exits non-zero; the `npm view` call is
-its only network touch.
+semver-max `v*` git tag and the changelog's top dated `## [x.y.z]` heading
+(`## Unreleased` is skipped). If the repo also ships to the AUR, a `PKGBUILD`'s
+`pkgver=` is folded in as an optional third marker — checked only when a
+PKGBUILD is present, so forgetting to bump it is caught while a repo without one
+is unaffected (a build-time `pkgver()` that can't be read offline is skipped,
+never a failure). A marker that is absent entirely — a changelog rolled but
+never tagged — is reported as a missing marker, which is what a half-finished
+release looks like. On mismatch it prints all present labeled values and exits
+non-zero. **Every marker is read locally, so the tool makes no network request
+and needs no registry credentials** — it runs in the same restricted job that
+cut the release.
 
 ```bash
-pip install ci-truth-serum
+pip install "git+https://github.com/AlexanderMattTurner/ci-truth-serum@v1.0.0"
 
-release-canary                    # package name read from ./package.json
-release-canary --package my-pkg --changelog CHANGELOG.md --repo-dir .
+release-canary                           # tag + changelog in the current repo
+release-canary --changelog CHANGELOG.md --repo-dir .
 release-canary --pkgbuild aur/PKGBUILD   # non-default PKGBUILD location
 ```
 

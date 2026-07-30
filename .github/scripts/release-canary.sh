@@ -3,11 +3,10 @@
 #
 # Runs `release-canary` (this package's own console script) on the default
 # branch after tag-release.sh has tagged and published, which is the first
-# moment the comparison is meaningful: the npm registry, the `v*` tag, and the
-# changelog's top dated heading only line up once the release is cut, so a
-# pre-merge gate could only ever check the state the release is about to leave
-# behind. Verifying here catches the half-finished release — a publish that
-# died after tagging, a tag push that 403'd after publishing, a changelog
+# moment the comparison is meaningful: the `v*` tag and the changelog's top
+# dated heading only line up once the release is cut, so a pre-merge gate could
+# only ever check the state the release is about to leave behind. Verifying here
+# catches the half-finished release — a tag push that 403'd, a changelog
 # promotion that never ran — on the push that caused it.
 #
 # The canary reads the `v*` tags from the local repo, and the release job

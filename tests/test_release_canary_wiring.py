@@ -177,11 +177,11 @@ def _make_repo(tmp_path: Path, *, uv_exit: int, with_origin: bool = True) -> tup
     return repo, uv_log, bindir
 
 
-def _run(repo: Path, bindir: Path) -> subprocess.CompletedProcess:
+def _run(repo: Path, bindir: Path, *args: str) -> subprocess.CompletedProcess:
     env = git_env()
     env["PATH"] = f"{bindir}{os.pathsep}{env['PATH']}"
     return subprocess.run(
-        ["bash", SCRIPT_REL],
+        ["bash", SCRIPT_REL, *args],
         cwd=repo,
         env=env,
         capture_output=True,
@@ -217,3 +217,17 @@ def test_wrapper_fails_loud_when_tags_cannot_be_fetched(tmp_path: Path) -> None:
     assert result.returncode == 1, result.stdout + result.stderr
     assert "failed to fetch tags" in result.stderr, result.stderr
     assert not uv_log.exists(), "the canary ran on an incomplete tag set"
+
+
+def test_wrapper_forwards_its_arguments_to_the_canary(tmp_path: Path) -> None:
+    """The wrapper is a pass-through, so a caller can point the canary at a
+    non-default changelog or PKGBUILD without a second copy of the invocation."""
+    repo, uv_log, bindir = _make_repo(tmp_path, uv_exit=0)
+    assert _run(repo, bindir, "--pkgbuild", "aur/PKGBUILD").returncode == 0
+    assert uv_log.read_text().split() == [
+        "run",
+        "--frozen",
+        "release-canary",
+        "--pkgbuild",
+        "aur/PKGBUILD",
+    ]

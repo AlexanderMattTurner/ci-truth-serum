@@ -264,3 +264,98 @@ def test_main_skips_an_unparseable_workflow(tmp_path, capsys) -> None:
 def test_main_skips_a_vanished_path(tmp_path, capsys) -> None:
     assert mod.main([str(tmp_path / "gone.sh")]) == 0
     assert capsys.readouterr().err == ""
+
+
+# ── a logger's message is a hint for a human, not a command ──────────────
+@pytest.mark.parametrize(
+    "line",
+    [
+        'gb_error "install it (macOS: brew install coreutils; Debian: apt install coreutils)"',
+        'gb_warn "could not upgrade; run apt-get install docker-sbx by hand"',
+        'note "  auto-run: setup.py   [runs on pip install]"',
+        'log_info "try pip install ruff"',
+        '_die "run apt-get install jq"',
+        'warning "pip install x"',
+        'ct_debug "npm install -g pnpm"',
+    ],
+)
+def test_project_logger_messages_are_not_commands(line: str) -> None:
+    assert mod.violations(f"{line}\n") == []
+
+
+def test_a_separator_inside_a_message_string_does_not_start_a_command() -> None:
+    # The `;` lives inside the quotes, so the text after it is still the logger's
+    # message — not a second command whose name happens to be `apt-get`.
+    src = 'gb_error "first: brew install x; then: apt install y"\n'
+    assert mod.violations(src) == []
+
+
+def test_an_install_after_a_real_separator_is_still_flagged() -> None:
+    # The mirror image: an unquoted `;`/`&&` DOES start a new command, so a
+    # leading logger call cannot shield it.
+    assert mod.violations('gb_warn "installing"; pip install ruff\n') == [1]
+    assert mod.violations('note "x" && apt-get install -y curl\n') == [1]
+
+
+def test_a_command_whose_name_merely_contains_install_is_not_a_logger() -> None:
+    # Non-vacuity for the logger family: `install_deps` is not a print command,
+    # so the install after it still fires.
+    assert mod.violations("install_deps && pip install ruff\n") == [1]
+
+
+def test_a_quoted_install_run_by_an_interpreter_is_not_excused() -> None:
+    # Quote-awareness must not turn every quoted install into a message: the
+    # command in front of it is `bash -c`, not a logger.
+    assert mod.violations('bash -c "pip install ruff"\n') == [1]
+
+
+# ── a quoted install runs only when something executes the string ────────
+@pytest.mark.parametrize(
+    "line",
+    [
+        'require_command jq "e.g. apt-get install jq / brew install jq"',
+        'gb_error "install it (Debian: apt install coreutils)"',
+        'usage "run: pip install ruff"',  # not a name this lint could enumerate
+        'fail_with_hint "pipx install pre-commit"',
+    ],
+)
+def test_a_quoted_install_with_no_executor_is_help_text(line: str) -> None:
+    assert mod.violations(f"{line}\n") == []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'bash -c "pip install ruff"',
+        'sh -c "apt-get install -y curl"',
+        'eval "pipx install pre-commit"',
+        'ssh host "apt-get install -y curl"',
+        "xargs -I{} sh -c 'pip install ruff'",
+    ],
+)
+def test_a_quoted_install_an_executor_runs_is_flagged(line: str) -> None:
+    assert mod.violations(f"{line}\n") == [1]
+
+
+def test_an_unquoted_install_after_a_quoted_argument_is_flagged() -> None:
+    # The quoted part is a progress message; the install itself is bare.
+    assert mod.violations('run_quiet "Installing uv..." pipx install uv\n') == [1]
+
+
+# ── shell plumbing in the argument list is not a package ─────────────────
+@pytest.mark.parametrize(
+    "line",
+    [
+        'apt-get install --only-upgrade -y "$pin_spec" >&2',
+        "apt-get install -y docker-sbx=0.35.0-1 >&2",
+        "pip install ruff==1.0 >log 2>&1",
+        "apt-get install -y curl=8.5.0-2 &",
+    ],
+)
+def test_redirections_are_not_read_as_unpinned_packages(line: str) -> None:
+    assert mod.violations(f"{line}\n") == []
+
+
+def test_a_redirect_does_not_mask_a_real_unpinned_package() -> None:
+    # The mirror image: dropping the plumbing must not drop the spec beside it.
+    assert mod.violations("apt-get install --only-upgrade -y docker-sbx >&2\n") == [1]

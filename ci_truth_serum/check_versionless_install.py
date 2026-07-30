@@ -191,12 +191,25 @@ _NOT_A_REGISTRY_SPEC = re.compile(
     r"|\.(?:whl|deb|tar\.gz|tgz|tar\.bz2|zip)$"
 )
 
+# Shell plumbing that shares the argument list but names no package: a redirection
+# (`>&2`, `2>&1`, `>log`) or a control operator the segment scan did not cut. Read as
+# a spec, `>&2` would make every `apt-get install pkg=1.2 >&2` look unpinned.
+_SHELL_PLUMBING = re.compile(r"^[<>&]|^\d+[<>]")
+
 # A spec whose version is decided at run time by the shell: `"$PKG"`,
 # `"ruff==${RUFF_VERSION}"`, `` `cat spec` ``. Reading it as unpinned would flag a
 # line whose pin this lint cannot see, so it is left alone.
 _DYNAMIC = re.compile(r"[$`]")
 
 _GLOBAL_FLAG = re.compile(r"(?:^|\s)(?:-\w*g\w*|--global)\b")
+
+# What has to appear in front of a QUOTED install for it to run: something that
+# executes the string. `bash -c "pip install x"` and `ssh host "apt-get install x"`
+# install; `gb_error "install it: apt install coreutils"` and
+# `require_command jq "e.g. apt-get install jq"` are text written for a human, and
+# a repo's own logger/help-text helpers are unenumerable — so the rule keys on the
+# executor being present rather than on knowing every printing command's name.
+_INTERPRETER = re.compile(r"\b(?:sh|bash|dash|zsh|ksh|ash|eval|ssh|xargs)\b")
 
 
 def _tokens(segment: str) -> list[str]:
@@ -244,7 +257,11 @@ def _unpinned_specs(segment: str, family: str) -> list[str]:
                 return []
             skip_next = flag in _VALUE_FLAGS[family] and "=" not in token
             continue
-        if _DYNAMIC.search(token) or _NOT_A_REGISTRY_SPEC.search(token):
+        if (
+            _DYNAMIC.search(token)
+            or _NOT_A_REGISTRY_SPEC.search(token)
+            or _SHELL_PLUMBING.match(token)
+        ):
             continue
         if not _is_pinned(token, family):
             unpinned.append(token)
@@ -258,17 +275,42 @@ def _segment_after(line: str, end: int) -> str:
     return tail[: cut.start()] if cut else tail
 
 
-def _command_prefix(line: str, start: int) -> str:
-    """LINE's text from the previous command separator up to offset START.
+def _command_prefix(line: str, start: int) -> tuple[str, bool]:
+    """LINE's text from the previous command separator up to offset START, plus
+    whether START sits inside a quoted string.
 
     Scoping the message-command test (`echo "run pip install ruff"`) to this
     prefix rather than to the whole line is what keeps an install joined onto a
     message — `echo installing && pip install ruff` — in view; skipping the whole
-    logical line would let the leading `echo` hide it."""
+    logical line would let the leading `echo` hide it.
+
+    Separators inside a quoted string do not start a new command, or a hint that
+    happens to contain one (`gb_error "install it: apt install coreutils"`) would
+    read as a command of its own with `install` as its name — which is also why
+    the quote state travels back with the prefix."""
+    prefix = line[:start]
     cut = 0
-    for separator in _SEGMENT_END.finditer(line[:start]):
-        cut = separator.end()
-    return line[cut:start].lstrip()
+    quote = ""
+    i = 0
+    while i < len(prefix):
+        char = prefix[i]
+        if char == "\\":
+            i += 2
+            continue
+        if quote:
+            quote = "" if char == quote else quote
+            i += 1
+            continue
+        if char in "\"'":
+            quote = char
+            i += 1
+            continue
+        separator = _SEGMENT_END.match(prefix, i)
+        if separator:
+            cut = i = separator.end()
+            continue
+        i += 1
+    return prefix[cut:].lstrip(), bool(quote)
 
 
 def violations(text: str) -> list[int]:
@@ -301,8 +343,16 @@ def _has_unpinned_install(line: str) -> bool:
     """True when LINE runs an install command with at least one unpinned spec."""
     for family, pattern in _INSTALLERS:
         for match in pattern.finditer(line):
-            if MESSAGE_PREFIX.match(_command_prefix(line, match.start())):
-                continue  # quoted inside a message, not run
+            prefix, in_quotes = _command_prefix(line, match.start())
+            if MESSAGE_PREFIX.match(prefix):
+                continue  # an argument to a command that only prints
+            # A match whose own leading character is the quote opens the string it
+            # sits in, so it is quoted too — `echo "pip install x"` must not read
+            # as an unquoted install just because the quote came first.
+            if (in_quotes or match.group()[:1] in "\"'") and not _INTERPRETER.search(
+                prefix
+            ):
+                continue  # text inside a string nothing executes
             segment = _segment_after(line, match.end())
             # Only a GLOBAL Node install pins nowhere else; a local one records its
             # range in package.json. `yarn global add` says so in the command

@@ -1,38 +1,32 @@
 #!/usr/bin/env python3
-"""Verify the release version markers agree: npm, git tag, changelog, AUR.
+"""Verify the release version markers agree: git tag, changelog, AUR.
 
-A release pipeline leaves the version in several places — the npm registry, a
-`v*` git tag, and the changelog's top dated heading — and any pair can drift
-(a publish that died after tagging, a tag push that 403'd after publishing, a
-changelog promotion that never ran). This canary asserts all three are EQUAL
-and prints exactly what disagrees when they aren't, so downstream repos run
-one `pip install ci-truth-serum && release-canary` step instead of each
-hand-rolling the comparison.
+A release pipeline leaves the version in several places — a `v*` git tag, the
+changelog's top dated heading, and (for a repo that ships to the Arch User
+Repository) a `PKGBUILD`'s `pkgver=` — and any pair can drift: a tag pushed
+before the changelog was promoted, a changelog roll that never got tagged, a
+PKGBUILD nobody bumped. This canary asserts they are EQUAL and prints exactly
+what disagrees when they aren't, so downstream repos run one `release-canary`
+step instead of each hand-rolling the comparison.
 
-The npm side uses `npm view <pkg> versions --json` (the full published list)
-and takes a REAL semver max. It deliberately does NOT use
-`npm view <pkg> version`, which returns the `latest` dist-tag — a value that
-silently misreports whenever a publish set the tag wrong or a later version
-shipped without retagging (a past bug this tool exists to prevent).
+Every marker is read locally — a git tag list, two file parses — so the tool
+makes no network request and needs no registry credentials. That is what lets it
+run in the same restricted job that cut the release.
 
-A repo that also ships to the Arch User Repository carries a `PKGBUILD`; when
-one is present its `pkgver=` is folded in as a fourth marker (the classic
-drift is bumping npm/tag/changelog and forgetting the PKGBUILD). AUR is
-OPTIONAL: absent PKGBUILD, or a `pkgver` computed at build time by a
-`pkgver()` function / `$(…)` expansion that can't be read statically, is
-simply skipped, never a failure. Reading the local PKGBUILD keeps the `npm
-view` call the tool's ONLY network touch; git-tag, changelog, and AUR parsing
-are all local. Not a pre-commit lint and not in any tier aggregate — like
-`sync-required-checks`, it is an apply-side console script::
+AUR is OPTIONAL: an absent PKGBUILD, or a `pkgver` computed at build time by a
+`pkgver()` function / `$(…)` expansion that cannot be read statically, is
+skipped, never a failure. Tag and changelog are mandatory — a None among them is
+a `missing marker` failure, which is what a half-finished release looks like.
 
-    pip install ci-truth-serum
-    release-canary                     # package name read from ./package.json
-    release-canary --package my-pkg --changelog CHANGELOG.md --repo-dir .
+Not a pre-commit lint and not in any tier aggregate — like `sync-required-checks`,
+it is an apply-side console script::
+
+    release-canary                     # tag + changelog in the current repo
+    release-canary --changelog CHANGELOG.md --repo-dir .
     release-canary --pkgbuild aur/PKGBUILD   # non-default PKGBUILD location
 """
 
 import argparse
-import json
 import re
 import subprocess
 import sys
@@ -82,21 +76,6 @@ def max_semver(versions: list[str]) -> str | None:
     return best.strip().lstrip("v")
 
 
-def npm_published_versions(package: str) -> list[str]:
-    """Every published version of PACKAGE, via `npm view <pkg> versions --json`
-    — the full list, never the `latest` dist-tag. The tool's only network
-    touch; a failure propagates loudly."""
-    proc = subprocess.run(
-        ["npm", "view", package, "versions", "--json"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    data = json.loads(proc.stdout)
-    # npm prints a bare string when exactly one version is published.
-    return [data] if isinstance(data, str) else list(data)
-
-
 def latest_git_tag(repo_dir: Path) -> str | None:
     """Semver-max of the repo's `v*` tags, or None when there are none."""
     proc = subprocess.run(
@@ -141,34 +120,18 @@ def pkgbuild_version(text: str) -> str | None:
     return version.lstrip("v") if version else None
 
 
-def package_name(repo_dir: Path) -> str:
-    """The `name` from ./package.json — the default when --package is omitted."""
-    path = repo_dir / "package.json"
-    if not path.exists():
-        raise SystemExit(
-            "release-canary: no --package given and no package.json in "
-            f"{repo_dir} to read `name` from."
-        )
-    name = json.loads(path.read_text(encoding="utf-8")).get("name")
-    if not isinstance(name, str) or not name:
-        raise SystemExit("release-canary: package.json has no usable `name`.")
-    return name
-
-
 def compare(
-    npm: str | None,
     tag: str | None,
     changelog: str | None,
     aur: str | None = None,
 ) -> list[str]:
     """Human-readable report lines; empty means every present marker agrees.
 
-    npm/tag/changelog are mandatory (a None among them is a `missing marker`
+    tag/changelog are mandatory (a None among them is a `missing marker`
     failure). AUR is optional: it is folded in only when AUR is not None, so an
     absent PKGBUILD never fails the canary, but a PKGBUILD that disagrees
     does."""
     labeled = [
-        ("npm (max published)", npm),
         ("git tag (max v*)", tag),
         ("changelog (top dated heading)", changelog),
     ]
@@ -194,9 +157,6 @@ def compare(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--package", help="npm package name (default: `name` from ./package.json)"
-    )
-    parser.add_argument(
         "--changelog", type=Path, default=Path("CHANGELOG.md"), help="changelog path"
     )
     parser.add_argument(
@@ -213,8 +173,6 @@ def main(argv: list[str] | None = None) -> int:
     def resolve(path: Path) -> Path:
         return path if path.is_absolute() else args.repo_dir / path
 
-    package = args.package or package_name(args.repo_dir)
-    npm = max_semver(npm_published_versions(package))
     tag = latest_git_tag(args.repo_dir)
     changelog_path = resolve(args.changelog)
     changelog = (
@@ -229,15 +187,15 @@ def main(argv: list[str] | None = None) -> int:
         else None
     )
 
-    report = compare(npm, tag, changelog, aur)
+    report = compare(tag, changelog, aur)
     for line in report:
         print(line, file=sys.stderr)
     if report:
         return 1
-    markers = "npm, git tag, and changelog"
+    markers = "git tag and changelog"
     if aur is not None:
-        markers = "npm, git tag, changelog, and AUR"
-    print(f"release-canary: OK — {markers} all say {npm}.")
+        markers = "git tag, changelog, and AUR"
+    print(f"release-canary: OK — {markers} all say {tag}.")
     return 0
 
 
