@@ -2,8 +2,10 @@
 ``gh api --slurp`` flag combinations gh rejects at argument validation.
 
 Drives `violations()` directly so each rule is asserted in isolation. Reported
-line numbers are the line the logical line STARTS on (the shared joiner's
-contract), which is where the offending call begins.
+line numbers are the line the offending `command` node STARTS on (the bash
+grammar's `start_point`), which is where the offending call begins — a
+backslash-continued call is one node, so its flags on later lines are judged
+against its own first line.
 """
 
 import subprocess
@@ -96,9 +98,10 @@ def test_fires_across_a_backslash_continuation() -> None:
 
 
 def test_fires_across_a_multiline_capture_with_no_trailing_operator() -> None:
-    # An unclosed `$(` continues the logical line even with no trailing `\`.
+    # An unclosed `$(` spans lines with no trailing `\`; the call it contains is
+    # reported on its OWN line, not on the line that opened the capture.
     text = "out=$(\n  gh api --paginate --slurp --jq '.[][]' \"repos/$R/p\"\n)\n"
-    assert mod.violations(text) == [1]
+    assert mod.violations(text) == [2]
 
 
 def test_fires_across_a_trailing_pipe_continuation() -> None:
@@ -227,6 +230,110 @@ def test_script_accepts_remedy_and_annotated(tmp_path: Path) -> None:
     assert proc.stderr == ""
 
 
+_IDIOM = "gh api --slurp --jq . is rejected at argument validation"
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        # A heredoc body is DATA the shell writes out, not a command it runs.
+        ("quoted heredoc", f"cat <<'EOF' > doc.txt\n{_IDIOM}\nEOF\n"),
+        ("expanding heredoc", f"cat <<EOF > doc.txt\n{_IDIOM}\nEOF\n"),
+        # A message string is text its command prints. `gb_warn` is deliberately
+        # NOT in the shared printer prefix list, so only the grammar (a `string`
+        # argument holds no commands) can keep this clean.
+        ("message string", f'gb_warn "{_IDIOM}"\n'),
+        ("here-string", f'grep -q slurp <<<"{_IDIOM}"\n'),
+        # A `--jq` inside a documentation string passed to a house helper.
+        ("multi-arg message", f'log_hint "remedy" "{_IDIOM}"\n'),
+        # An UNQUOTED printed example: real command words, but the command that
+        # holds them only prints (the shared printer-prefix list).
+        ("unquoted echo example", f"echo {_IDIOM}\n"),
+    ],
+)
+def test_the_idiom_as_data_is_not_a_call(name: str, text: str) -> None:
+    assert mod.violations(text) == [], name
+
+
+def test_the_data_cases_are_not_vacuous() -> None:
+    """Positive marker for the case above: the very same words, spelled as a real
+    command instead of quoted data, still fire. Without this the parametrization
+    could be passing because the idiom itself stopped being recognized."""
+    assert mod.violations("gh api --slurp --jq . repos/x/y\n") == [1]
+    assert mod.violations(f'gb_warn "{_IDIOM}"\ngh api --slurp --jq . repos/x\n') == [2]
+
+
+def test_a_redirection_is_not_a_flag() -> None:
+    # `>` and its target are a file_redirect sibling of the command, never an
+    # argument — so the sanctioned capture stays clean even when the redirect
+    # target's own text looks flag-shaped.
+    assert mod.violations('gh api "$R" --paginate --slurp >"$out"\n') == []
+    assert mod.violations('gh api "$R" --paginate --slurp >-q.json\n') == []
+
+
+def test_a_downstream_command_keeps_its_own_flags() -> None:
+    # Each pipeline stage is its own `command` node, so a `jq -t`/`column -t`
+    # after the remedy cannot be read as gh api's `--template`.
+    text = 'gh api --paginate --slurp "$R" | jq -r . | column -t\n'
+    assert mod.violations(text) == []
+    # Positive marker: moving the same `-t` onto the gh api call does fire.
+    assert mod.violations('gh api --paginate --slurp -t "{{.x}}" "$R"\n') == [1]
+
+
+def test_annotation_is_read_from_the_widest_span_starting_on_a_line() -> None:
+    """Two flagged calls can begin on the same physical line with different
+    extents; the annotation lookup must cover the WIDER one, or an opt-out on the
+    continued call's own second line would be missed."""
+    text = 'gh api "$A" --slurp && gh api "$B" --slurp \\\n  --jq .\n'
+    assert mod.violations(text) == [1]
+    annotated = text.replace("--jq .", "--jq . # allow-gh-slurp-jq: reason")
+    assert mod.violations(annotated) == []
+
+
+def test_main_routes_workflow_yaml_to_run_blocks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A `.github/workflows` YAML path has each inline `run:` block scanned as
+    shell and is reported at the STEP's line, not the line inside the block."""
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    bad = workflows / "ci.yaml"
+    bad.write_text(
+        "jobs:\n"
+        "  a:\n"
+        "    steps:\n"
+        "      - run: echo hello\n"
+        "      - name: slurp\n"
+        "        run: |\n"
+        '          gh api "repos/$R" --slurp --jq .\n',
+        encoding="utf-8",
+    )
+    assert mod.main([str(bad)]) == 1
+    assert f"{bad}:5: `gh api --slurp` is rejected" in capsys.readouterr().err
+
+
+def test_main_skips_non_workflow_yaml(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A YAML file outside `.github/{workflows,actions}` is not shell, so it is
+    not scanned — its `gh api` text is data in some other tool's config."""
+    other = tmp_path / "config.yaml"
+    other.write_text("note: gh api --slurp --jq . is rejected\n", encoding="utf-8")
+    assert mod.main([str(other)]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_main_fails_loudly_on_pathological_input(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An input the grammar refuses to parse safely is a LOUD failure, never a
+    silent pass — skipping it would false-green the input an adversary controls."""
+    huge = tmp_path / "huge.sh"
+    huge.write_text("true " + "| true " * 3000 + "\n", encoding="utf-8")
+    assert mod.main([str(huge)]) == 1
+    assert "pipe bytes" in capsys.readouterr().err
+
+
 def test_own_shell_tree_is_clean() -> None:
     """Dogfood gate: no shell file in this repo carries an impossible gh api call.
     Non-vacuous because the file list is asserted non-empty."""
@@ -239,3 +346,47 @@ def test_own_shell_tree_is_clean() -> None:
         text = (REPO_ROOT / rel).read_text(encoding="utf-8", errors="replace")
         offenders += [f"{rel}:{n}" for n in mod.violations(text)]
     assert offenders == [], f"impossible gh api --slurp calls: {offenders}"
+
+
+# ── recall: gh reached through a variable ───────────────────────────────
+@pytest.mark.parametrize(
+    "src",
+    [
+        'GH=gh\n$GH api repos/o/r/issues --slurp --jq ".[]"\n',
+        'GH=gh\n${GH} api repos/o/r/issues --slurp --jq ".[]"\n',
+        'GH="gh"\n"$GH" api repos/o/r/issues --slurp\n',
+        "GH=/usr/local/bin/gh\n$GH api repos/o/r/issues --slurp --template x\n",
+    ],
+)
+def test_gh_through_a_literal_alias_is_flagged(src: str) -> None:
+    """The source fixes the command word, so the call is judged as the gh call
+    it is — reported at the line the call is written on."""
+    assert mod.violations(src) == [2]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # the value is not gh
+        'GH=hub\n$GH api repos/o/r --slurp --jq ".[]"\n',
+        # the source does not fix the value at all
+        'GH=$(command -v gh)\n$GH api repos/o/r --slurp --jq ".[]"\n',
+        'GH="${GH_BIN}"\n$GH api repos/o/r --slurp --jq ".[]"\n',
+        # one non-literal assignment anywhere drops the name, even beside a
+        # literal `gh` one
+        'GH=gh\nGH=$OTHER\n$GH api repos/o/r --slurp --jq ".[]"\n',
+        # a name never assigned in this file is not an alias
+        '$GH api repos/o/r --slurp --jq ".[]"\n',
+        # a token that merely CONTAINS the expansion is a different word
+        'GH=gh\n"$GH-wrapper" api repos/o/r --slurp --jq ".[]"\n',
+        # the alias resolves, and the flag combination is a legal one
+        "GH=gh\n$GH api repos/o/r --paginate --slurp\n",
+    ],
+)
+def test_gh_alias_precision(src: str) -> None:
+    assert mod.violations(src) == []
+
+
+def test_gh_alias_opt_out_is_honored() -> None:
+    src = 'GH=gh\n$GH api repos/o/r --slurp --jq ".[]"  # allow-gh-slurp-jq: pinned upstream\n'
+    assert mod.violations(src) == []

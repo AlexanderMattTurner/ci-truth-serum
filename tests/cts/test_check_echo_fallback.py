@@ -3,7 +3,10 @@
 (inside command substitutions, and as unaborted bare statements).
 
 Drives ``violations()`` for the rules and ``main()`` for the argv/exit-code
-contract.
+contract. The detector reads the bash grammar, so the cases below pin the
+STRUCTURAL verdicts a text scan gets wrong: the idiom quoted inside a message
+string, written in a heredoc body, or captured only to be handed to another
+command is not executed code that fakes a value.
 """
 
 import pytest
@@ -96,3 +99,127 @@ def test_main_clean_file_exits_zero(tmp_path) -> None:
     p = tmp_path / "s.sh"
     p.write_text('cmd || { echo "failed" >&2; exit 1; }\n')
     assert mod.main([str(p)]) == 0
+
+
+def test_main_reports_pathological_input_loudly(tmp_path, capsys) -> None:
+    """An input the grammar refuses to parse fails the check, never passes it: a
+    silent skip would false-green exactly the file an adversary controls."""
+    p = tmp_path / "s.sh"
+    p.write_text("cmd " + "| cat " * 3000 + "\n")
+    assert mod.main([str(p)]) == 1
+    assert "pipe bytes" in capsys.readouterr().err
+
+
+# ── a printing command's ARGUMENT is text, whatever the command is called ──
+@pytest.mark.parametrize(
+    "printer", ["gb_warn", "log_warn", "notice", "my::report", "echo"]
+)
+def test_idiom_quoted_in_a_message_string_is_not_code(printer: str) -> None:
+    """A `string` argument holds no commands, so the printing command needs no
+    enumeration — which is the point, since a project's own logger names are
+    unenumerable."""
+    assert mod.violations(f'{printer} "cmd || echo failed fakes a value"\n') == []
+
+
+def test_the_same_idiom_outside_the_message_string_still_fires() -> None:
+    """Positive marker for the case above: the string is what excuses it, not the
+    words inside it."""
+    assert mod.violations('gb_warn "msg"\ncmd || echo "failed"\n') == [2]
+
+
+# ── a heredoc body is data ────────────────────────────────────────────────
+@pytest.mark.parametrize("delimiter", ["'EOF'", '"EOF"', "\\EOF"])
+def test_idiom_in_a_quoted_heredoc_body_is_not_code(delimiter: str) -> None:
+    """A quoted delimiter makes the body literal data — bash expands nothing in
+    it, so the text is written to the file as written."""
+    src = f'cat <<{delimiter} > doc.txt\nv=$(cmd || echo "error")\nEOF\n'
+    assert mod.violations(src) == []
+
+
+def test_unquoted_heredoc_body_expands_so_the_fallback_still_fires() -> None:
+    """Positive marker AND a verdict the grammar earns: with an UNQUOTED
+    delimiter bash really runs the substitution and the fallback text lands in
+    the file, so the body is code."""
+    src = 'cat <<EOF > doc.txt\nv=$(cmd || echo "error")\nEOF\n'
+    assert mod.violations(src) == [2]
+
+
+def test_the_same_idiom_after_the_heredoc_still_fires() -> None:
+    """Positive marker: the heredoc excuses only its own body."""
+    src = 'cat <<\'EOF\' > doc.txt\nv=$(cmd || echo "error")\nEOF\nv=$(cmd || echo "error")\n'
+    assert mod.violations(src) == [4]
+
+
+# ── a captured value in another command's argv is that command's business ──
+@pytest.mark.parametrize(
+    "src",
+    [
+        # argument of a printing command, whatever it is named
+        'echo "usage: v=$(cmd || echo fallback)"\n',
+        'gb_warn "current: $(cmd || echo unknown)"\n',
+        # a process substitution named as an argument, read by another program
+        "diff <(cmd || echo x) file\n",
+    ],
+)
+def test_capture_that_becomes_an_argument_is_not_flagged(src: str) -> None:
+    assert mod.violations(src) == []
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # kept by the script
+        'v="$(cmd || echo x)"\n',
+        "export V=$(cmd || echo x)\n",
+        # branched on by the script
+        "if [[ $(cmd || echo yes) == yes ]]; then :; fi\n",
+        # run as a command name
+        "$(cmd || echo x) --flag\n",
+        # funnelled as data: the shell's own read captures it, and a here-string
+        # is a parser's stdin
+        "read -r v < <(cmd || echo x)\n",
+        'jq . <<< "$(cmd || echo {})"\n',
+        # only the OUTER capture is the script's own value; the inner one is an
+        # argument of the echo that prints it
+        'v=$(cmd || echo "$(inner || echo deep)")\n',
+    ],
+)
+def test_capture_the_script_itself_takes_is_flagged(src: str) -> None:
+    assert mod.violations(src) == [1]
+
+
+# ── stderr redirects and aborts, read off the grammar ─────────────────────
+@pytest.mark.parametrize(
+    "src",
+    [
+        'cmd || echo "x" 1>&2\n',
+        'cmd || echo "x" >& 2\n',
+        'cmd || echo "x" > /dev/stderr\n',
+        'cmd || echo "x" >> /dev/stderr\n',
+        # narrated on stderr, then the statement continues
+        'cmd || echo "x" >&2 || true\n',
+        # the redirect sits on the enclosing block, so it still applies
+        '{ cmd || echo "x"; } >&2\n',
+        '( cmd || echo "x" ) >&2\n',
+    ],
+)
+def test_stderr_spellings_are_not_flagged(src: str) -> None:
+    assert mod.violations(src) == []
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        'cmd || echo "x" && exit 1\n',
+        'cmd || echo "x"; exit 1\n',
+        "f() { cmd || echo x; return 1; }\n",
+    ],
+)
+def test_bare_form_that_aborts_is_not_flagged(src: str) -> None:
+    assert mod.violations(src) == []
+
+
+def test_abort_on_a_later_line_does_not_excuse_the_fallback() -> None:
+    """The abort must belong to the fallback's own statement or line — a bare
+    `exit` further down the file recovers nothing at the failure site."""
+    assert mod.violations('cmd || echo "x"\nexit 1\n') == [1]

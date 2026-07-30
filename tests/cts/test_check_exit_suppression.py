@@ -4,7 +4,6 @@ unjustified exit-status suppression (`|| true` / `|| :`).
 Drives `violations()` directly so each rule is asserted in isolation.
 """
 
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +27,8 @@ mod = load_hook("check_exit_suppression.py", "check_exit_suppression")
         # `|| :` is the same no-op suppressor as `|| true`
         "reap_volumes || :",
         # a suppressor glued to a following metacharacter (no trailing space) must
-        # still fire — the old `(?:\s|;|$)` boundary missed `|| true&` / `|| :;`.
+        # still fire: the `&` / `;` terminates the list, so `true` is the whole
+        # right operand.
         "cleanup || true&",
         "cleanup || true;next_cmd",
         "cleanup || :;next_cmd",
@@ -41,9 +41,8 @@ def test_fires_on_output_kept_suppression(line: str) -> None:
 @pytest.mark.parametrize(
     "line",
     [
-        # a longer command NAMED true.../: ... is not the `true`/`:` builtin, so the
-        # `(?![\w-])` boundary must NOT fire on it (negative control for the glued
-        # boundary — pairs with the positives above).
+        # a longer command NAMED true... is not the `true`/`:` builtin, so it must
+        # NOT fire (negative control for the glued-metacharacter positives above).
         "run_thing || truelove",
         "run_thing || true-ish",
     ],
@@ -147,17 +146,17 @@ def test_multiline_process_substitution_capture_is_not_flagged() -> None:
 
 
 def test_suppression_after_a_closed_multiline_capture_still_fires() -> None:
-    # The substitution-aware join must END when the capture closes: a real `|| true`
-    # on a later line is still flagged, at its own physical line — the join must not
-    # swallow everything after an opening `$(`.
+    # The capture ENDS at its closing paren: a real `|| true` on a later line is
+    # still flagged, at its own physical line — an opening `$(` must not swallow
+    # everything after it.
     text = "out=$(\n  gen\n)\nreal_cmd || true\n"
     assert mod.violations(text) == [4]
 
 
 def test_escaped_backtick_does_not_mask_a_real_suppression() -> None:
-    # An escaped backtick (`\``) is a literal, not a substitution delimiter, so it must
-    # not flip the backtick-parity check and hide the real `|| true` after it. Under
-    # the old `count("`") % 2` logic this suppression was silently missed.
+    # An escaped backtick (`\``) is a literal, not a substitution delimiter, so the
+    # `|| true` after it is at statement level, not inside a capture — a
+    # backtick-parity count read it as captured and missed the suppression.
     text = "val=foo\\`bar ; cleanup || true\n"
     assert mod.violations(text) == [1]
 
@@ -321,10 +320,149 @@ def test_a_non_git_command_keeps_the_output_discard_allowance() -> None:
 
 
 def test_every_declared_mutating_verb_is_actually_refused() -> None:
-    """Iterate the pattern's own verb list rather than restating it: a verb added
-    to the regex and then misspelled would otherwise pass unnoticed."""
-    verbs = re.findall(r"[a-z][a-z-]+", mod._GIT_MUTATION.pattern.split("(?:")[-1])
+    """Iterate the lint's own verb list rather than restating it: a verb added to
+    the set and then misspelled would otherwise pass unnoticed."""
+    verbs = sorted(mod._GIT_MUTATION_VERBS)
     assert len(verbs) >= 10
     for verb in verbs:
         line = f"git {verb} --flag >/dev/null || true"
         assert mod.violations(line + "\n") == [1], verb
+
+
+# ── The grammar decides what is code: strings and heredoc bodies are not ──────
+#
+# The suppressor is a `||` list node whose right operand is the `true`/`:` builtin,
+# so text that merely SPELLS one is never a finding. This is what retired the
+# lint's enumerated "commands that only print" excuse list — a project's own logger
+# names are unenumerable, and a string argument is never code whatever prints it.
+@pytest.mark.parametrize(
+    "text",
+    [
+        # an arbitrary project logger, in neither this lint's nor _linecheck's list
+        'gb_warn "do not write cmd || true here"',
+        "gb_warn 'do not write cmd || true here'",
+        'cg_note "cmd || true is banned"',
+        'some_house_specific_logger "cmd || :"',
+        # the suppressor is an argument of a command that does something else
+        'grep -n "|| true" -- "$file"',
+        'printf "%s\\n" "cmd || true"',
+        # a `;` / `|` / `&&` inside a string separates nothing, so the surrounding
+        # command is unchanged — here one whose output IS discarded
+        'foo >/dev/null "a; b" || true',
+        'foo >/dev/null "a | b" || true',
+        'foo >/dev/null "a && b" || true',
+        # a git MUTATION named inside a string is text: the command being suppressed
+        # is `printer`, which keeps the output-discard allowance
+        'printer >/dev/null "git merge x" || true',
+        # heredoc bodies are data, quoted and unquoted alike
+        "cat <<'EOF' > doc.txt\nrun cmd || true here\nEOF\n",
+        "cat <<EOF > doc.txt\nrun $cmd || true here\nEOF\n",
+        # a command substitution nested in an argument is still a value capture
+        'foo "$(bar || true)"',
+    ],
+)
+def test_text_that_only_spells_a_suppressor_does_not_fire(text: str) -> None:
+    assert mod.violations(text) == []
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # POSITIVE MARKERS pairing with the negatives above: the same shapes with the
+        # suppressor as real code still fire, so those cases prove the grammar
+        # distinction and not a detector that stopped firing at all.
+        ('gb_warn "do not write cmd || true here"\nreal_cleanup || true\n', [2]),
+        (
+            "cat <<'EOF' > doc.txt\nrun cmd || true here\nEOF\nreal_cleanup || true\n",
+            [4],
+        ),
+        # a redirect spelled INSIDE a string is not a redirect, so the output is
+        # still on the terminal and the allowance does not apply (the text scan this
+        # replaced read the quoted `2>/dev/null` as a real discard and missed this)
+        ('foo "2>/dev/null" || true', [1]),
+        # the capture allowance is decided from the substitution node, not from an
+        # unbalanced `$(` to the left: this one is CLOSED before the suppressor
+        ('foo "$(bar)" || true', [1]),
+        # a discard on the FIRST branch does not excuse the last one, whose status is
+        # the one being suppressed
+        ("a >/dev/null && b || true", [1]),
+        # …nor does one belonging to a command NESTED under the suppressed one: the
+        # allowance needs a redirect on the suppressed command itself
+        ("diff <(a >/dev/null) <(b) || true", [1]),
+        ("{ a >/dev/null; b; } || true", [1]),
+    ],
+)
+def test_real_suppressions_still_fire(text: str, expected: list[int]) -> None:
+    assert mod.violations(text) == expected
+
+
+def test_pathological_input_fails_loudly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An input the grammar refuses to parse (tree-sitter-bash allocates
+    quadratically on chained pipelines) is reported and exits 1 — never skipped as
+    a silent no-findings pass — and the paths beside it are still checked."""
+    pathological = tmp_path / "huge.sh"
+    pathological.write_text("cmd " + "| cmd " * 3000 + "\n", encoding="utf-8")
+    with pytest.raises(mod.PathologicalInputError):
+        mod.violations(pathological.read_text(encoding="utf-8"))
+    bad = tmp_path / "bad.sh"
+    bad.write_text("teardown || true\n", encoding="utf-8")
+    assert mod.main([str(pathological), str(bad)]) == 1
+    err = capsys.readouterr().err
+    assert "pipe bytes" in err
+    assert f"{bad}:1: exit status suppressed" in err
+
+
+# ── recall: a shell's own `-c` body is a script, not a datum ────────────
+@pytest.mark.parametrize(
+    "text",
+    [
+        'bash -c "cleanup || true"',
+        "sh -c 'cleanup || true'",
+        "dash -c 'cleanup || true'",
+        "bash -ec 'cleanup || true'",
+    ],
+)
+def test_suppression_inside_a_shell_c_body_is_flagged(text: str) -> None:
+    assert mod.violations(text + "\n") == [1]
+
+
+def test_multiline_shell_c_body_reports_the_enclosing_file_line() -> None:
+    """A finding on the body's third line lands on the file line that carries it,
+    which is where the reader writes the annotation."""
+    src = 'echo start\nbash -c "\n  setup\n  cleanup || true\n"\n'
+    assert mod.violations(src) == [4]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # every allowance the outer rules grant holds one quoting layer down
+        "bash -c 'cleanup >/dev/null || true'",
+        "bash -c 'v=$(cmd) || true'",
+        # a capture around the whole call is the outer exemption, and the body
+        # must not report through it
+        "out=$(bash -c 'cleanup || true')",
+        # the annotation is read off the enclosing file's line
+        "bash -c 'cleanup || true'  # allow-exit-suppress: best-effort reaper",
+        # not a shell, so the argument is a datum this lint cannot read as code
+        "docker run img 'cleanup || true'",
+        # a body carrying an escape is NOT the script bash runs, so it is skipped
+        # rather than guessed at
+        'bash -c "printf \\"x\\"; cleanup || true"',
+        # `-c` with no quoted body names no script
+        "bash -c $script",
+        # a `|| true` in an argument that is not the `-c` body is still data
+        "bash script.sh 'cleanup || true'",
+        # the body is the argument IMMEDIATELY after `-c`; a later one is a
+        # positional for the script, not the script
+        "bash -c script.sh 'cleanup || true'",
+        # the shell must BE the command word: behind a wrapper the same tokens
+        # can equally be a printer's arguments (`echo bash -c "x || true"`), and
+        # the grammar cannot tell those apart
+        'timeout 5 bash -c "cleanup || true"',
+    ],
+)
+def test_shell_c_body_precision(text: str) -> None:
+    assert mod.violations(text + "\n") == []

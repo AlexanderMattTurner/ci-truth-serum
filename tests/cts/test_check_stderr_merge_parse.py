@@ -59,6 +59,17 @@ def test_capture_then_arithmetic_is_flagged() -> None:
     assert _lines(src) == [2]
 
 
+def test_capture_and_use_on_one_line_is_flagged() -> None:
+    """A `;` separates two commands without starting a new line, so the read is
+    governed by the capture beside it — the grammar sees both."""
+    assert _lines('out=$(tool 2>&1); echo "$out" | grep x\n') == [1]
+
+
+def test_same_line_reassignment_supersedes_the_merged_capture() -> None:
+    src = 'out=$(tool 2>&1); out=$(clean_tool); echo "$out" | grep x\n'
+    assert _lines(src) == []
+
+
 def test_use_beyond_ten_lines_is_not_flagged() -> None:
     src = "out=$(tool 2>&1)\n" + ":\n" * 11 + 'echo "$out" | grep x\n'
     assert _lines(src) == []
@@ -96,6 +107,52 @@ def test_diagnostic_corpus_yields_zero_findings(src: str) -> None:
     assert _lines(src) == []
 
 
+# ── text that only DEPICTS the idiom is not code ─────────────────────────
+# The grammar rewrite's reason for existing: each of these carries the banned
+# idiom verbatim, and none of them runs it as a value.
+@pytest.mark.parametrize(
+    "src",
+    [
+        # interpolated into a message a command prints — the substitution's
+        # output is spliced between literal text, not taken as a value
+        'gb_warn "v=$(cmd 2>&1 | tail -1) parses noise"\n',
+        'echo "version: $(cmd 2>&1 | tail -1)"\n',
+        # single quotes: no substitution at all, just characters
+        "gb_warn 'v=$(cmd 2>&1 | tail -1)'\n",
+        # a quoted-delimiter heredoc body is data written to a file
+        "cat <<'EOF' > doc.txt\nv=$(cmd 2>&1 | tail -1)\nEOF\n",
+        # `2>&1` as the literal text of an argument, not a redirection
+        "grep -F '2>&1 | tail -1' notes.md | head -1\n",
+        # capture whose EXIT STATUS is what the script branches on: the merge
+        # feeds the failure path, so the success-path read is not the defect
+        'if ! h=$(curl -sSf -I url 2>&1); then\n  echo "$h" >&2\n  exit 1\nfi\n'
+        'echo "$h" | grep -qi "^x-scopes:"\n',
+        'h=$(curl -sSf -I url 2>&1) || exit 1\necho "$h" | grep -qi "^x-scopes:"\n',
+    ],
+)
+def test_depicted_or_guarded_idiom_yields_zero_findings(src: str) -> None:
+    assert _lines(src) == []
+
+
+@pytest.mark.parametrize(
+    ("src", "expected"),
+    [
+        # The incident in the module docstring: an npm stderr warning merged into
+        # "the version". The positive marker for the whole rewrite.
+        ("v=$(npm view pkg version 2>&1 | tail -1)\n", [1]),
+        # An UNQUOTED heredoc delimiter really does expand its body, so the same
+        # idiom there is executed code — the twin that proves the quoted-heredoc
+        # case above is not passing vacuously.
+        ("cat <<EOF > doc.txt\nv=$(cmd 2>&1 | tail -1)\nEOF\n", [2]),
+        # The twin of the exit-status-tested cases: the same read of the same
+        # merged capture, written as a plain statement, still fires.
+        ('h=$(curl -sSf -I url 2>&1)\necho "$h" | grep -qi "^x-scopes:"\n', [2]),
+    ],
+)
+def test_executed_idiom_still_fires(src: str, expected: list[int]) -> None:
+    assert _lines(src) == expected
+
+
 # ── opt-out ──────────────────────────────────────────────────────────────
 def test_opt_out_on_flagged_line() -> None:
     assert _lines("v=$(cmd 2>&1 | tail -1) # stderr-merge-ok: sentinel\n") == []
@@ -105,6 +162,18 @@ def test_opt_out_on_line_above() -> None:
     assert (
         _lines("# stderr-merge-ok: merged on purpose\nv=$(cmd 2>&1 | tail -1)\n") == []
     )
+
+
+def test_opt_out_on_a_later_physical_line_of_the_flagged_command() -> None:
+    """The annotation is accepted on ANY physical line of the command it
+    excuses — the grammar reports one node for a `\\`-continued command, so the
+    line the reader annotates need not be the one the finding names."""
+    src = (
+        "status=$(curl -s -o /dev/null \\\n"
+        '  -w "%{http_code}" 2>&1 |\n'
+        "  tail -1) # stderr-merge-ok: the code IS the whole value\n"
+    )
+    assert _lines(src) == []
 
 
 def test_opt_out_on_assignment_covers_later_use() -> None:
@@ -141,3 +210,46 @@ def test_main_clean_files_pass(tmp_path) -> None:
     p = tmp_path / "s.sh"
     p.write_text('out=$(cmd 2>&1)\necho "$out"\n')
     assert mod.main([str(p)]) == 0
+
+
+# ── recall: `|&`, bash's shorthand for `2>&1 |` ─────────────────────────
+@pytest.mark.parametrize(
+    "line",
+    [
+        "v=$(npm view pkg version |& tail -1)",
+        "n=$(make build |& grep -c error)",
+        "w=$(tool |& sort | head -1)",
+        'echo "$(tool |& grep ok)"',
+    ],
+)
+def test_merge_pipe_into_parser_is_flagged(line: str) -> None:
+    """`cmd |& parser` is defined as `cmd 2>&1 | parser`, so it merges the same
+    two streams into the same parser and is the same defect."""
+    assert _lines(line + "\n") == [1]
+
+
+def test_merge_pipe_capture_read_later_is_flagged() -> None:
+    src = 'out=$(npm view pkg |& cat)\nv=$(echo "$out" | tail -1)\n'
+    assert _lines(src) == [2]
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        # a plain pipe merges nothing, whatever it feeds
+        "v=$(cmd | tail -1)\n",
+        # `|&` into a non-parser is a diagnostic capture, exactly as `2>&1` is
+        "v=$(cmd |& cat)\n",
+        # the operator written as argument text is data, not a pipe
+        'gb_warn "never write cmd |& tail -1"\n',
+        # …and so is a `|&` inside a quoted-delimiter heredoc body
+        "cat <<'EOF'\nv=$(cmd |& tail -1)\nEOF\n",
+    ],
+)
+def test_merge_pipe_precision(src: str) -> None:
+    assert _lines(src) == []
+
+
+def test_merge_pipe_opt_out_is_honored() -> None:
+    src = "v=$(cmd |& tail -1)  # stderr-merge-ok: the tool prints its version on stderr\n"
+    assert _lines(src) == []

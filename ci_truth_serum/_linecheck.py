@@ -1,12 +1,14 @@
 """Shared machinery for the line-oriented pre-commit lints under this directory.
 
-The four ``check_{exit_suppression,stderr_suppression,pinned_downloads,
-pinned_base_images}`` scripts each scan a list of paths given on argv, read
+The ``check_{stderr_suppression,pinned_base_images}`` scripts each scan a list of
+paths given on argv, read
 each file as UTF-8 (skipping anything unreadable), run a per-script detector over
 the text, and print ``<path>:<lineno>: <message>`` to stderr for every hit —
 returning 1 if any fired. Only the detector and the message differ; the read
 loop, the skip-on-OSError/UnicodeDecodeError, the print loop, and the exit code
-are identical, and live here.
+are identical, and live here. A lint that parses the bash grammar owns its own
+read loop instead, because ``run_line_checks`` cannot surface
+``PathologicalInputError`` as a per-path failure.
 
 The workflow lints (``check_pr_paths``, ``check_workflow_pipefail``,
 ``check_inline_run_length``, ``check_always_reporter``) share a byte-identical

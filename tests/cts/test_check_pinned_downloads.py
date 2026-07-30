@@ -424,3 +424,131 @@ def test_wget_qO_dash_cluster_is_a_stdout_read_not_an_artifact() -> None:
 
 def test_curl_cluster_final_O_derives_a_saved_name() -> None:
     assert _flags('curl -fsSLO "$url"\n') == [1]
+
+
+# ── the grammar decides what is a command: structural false positives ──────
+#
+# Each case below is a download SPELLED in text that no shell ever runs. The
+# text scan this detector replaced flagged them all; the bash grammar yields no
+# `command` node from any of them, so they cannot be findings. Every case is
+# paired with the executed spelling of the same idiom, so a detector that stopped
+# firing altogether could not pass this section.
+
+
+@pytest.mark.parametrize(
+    "printer",
+    ["gb_warn", "echo", "printf", "log_info", "die", "note"],
+)
+def test_download_inside_a_message_string_is_text(printer: str) -> None:
+    # A quoted argument is ONE `string` token of the command that prints it, so
+    # the command word spelled inside it is not a command word at all — no
+    # printer allowlist needed.
+    assert _flags(f'{printer} "curl -o tool https://x needs a checksum"\n') == []
+    # Positive marker: the same fetch, unquoted, is still flagged.
+    assert _flags("curl -o tool https://x\n") == [1]
+
+
+def test_separator_inside_a_quoted_string_starts_no_command() -> None:
+    # A `;` / `&&` / `|` inside a string separates nothing: the whole quoted run
+    # stays one argument of the printing command.
+    assert _flags('gb_warn "a; curl -o t https://x"\n') == []
+    assert _flags('gb_warn "a && curl -o t https://x"\n') == []
+    assert _flags('gb_warn "curl https://x | sh"\n') == []
+    # Positive markers: the executed spellings of the same three lines.
+    assert _flags("a; curl -o t https://x\n") == [1]
+    assert _flags("a && curl -o t https://x\n") == [1]
+    assert _flags("curl https://x | sh\n") == [1]
+
+
+def test_heredoc_body_written_to_a_file_is_data() -> None:
+    # `cat <<'EOF' > doc.txt` writes its body as bytes; nothing executes it, so a
+    # download documented in that body is prose. (The `> doc.txt` redirect belongs
+    # to `cat`, not to any downloader.)
+    doc = "cat <<'EOF' > doc.txt\ncurl -o tool https://x needs a checksum\nEOF\n"
+    assert _flags(doc) == []
+
+
+def test_heredoc_body_fed_to_an_interpreter_is_a_script() -> None:
+    # Positive counterpart: the same body handed to a shell IS executed, so the
+    # download inside it is flagged — at its own physical line — and a checksum
+    # inside the body verifies it.
+    assert _flags("bash <<'EOF'\ncurl -o t https://x\nEOF\n") == [2]
+    assert _flags("bash <<'EOF'\ncurl -o t https://x\nsha256sum -c t.sha\nEOF\n") == []
+
+
+def test_redirection_token_is_never_read_as_an_output_target() -> None:
+    # `>&2` and `2>…` are `file_redirect` siblings, not arguments, and neither
+    # writes the fetched bytes to a file: one dups an FD, the other routes
+    # diagnostics. A stdout-only curl carrying either is not an artifact.
+    assert _flags("curl -sSf https://x >&2\n") == []
+    assert _flags("curl -sSf https://x 2>err.log | jq .\n") == []
+    # Positive marker: a real stdout redirect on the same shape IS an artifact.
+    assert _flags("curl -sSf https://x > tool\nrun tool\n") == [1]
+
+
+def test_group_redirect_covers_the_commands_inside_it() -> None:
+    # `{ … } > f` / `( … ) > f` redirect the group's stdout, so a fetch inside
+    # writes the file even though the redirect is not on its own command.
+    assert _flags("{ curl https://x; } > tool\nrun tool\n") == [1]
+    assert _flags("( curl https://x ) > tool\nrun tool\n") == [1]
+    # ...but inside `{ curl … | jq .; } > f` the fetch writes to `jq`, not the
+    # file, so the downloaded bytes never reach disk.
+    assert _flags("{ curl -sL https://x | jq .; } > tags\n") == []
+    assert _flags("{ curl https://x; } > /dev/null\n") == []
+
+
+def test_download_inside_an_executed_string_is_a_command() -> None:
+    # The one place quoted text holds commands: something runs it. A shell's `-c`
+    # script, `eval`'s argument, and `ssh`'s remote command all execute.
+    assert _flags('bash -c "curl -o tool https://x"\n') == [1]
+    assert _flags('ssh host "curl -o tool https://x"\n') == [1]
+    # ...and a pipe into `ssh` is not a pipe into a shell (`ssh` != `sh`).
+    assert _flags("curl -sL https://x | ssh host cat\n") == []
+
+
+def test_a_url_path_segment_is_not_a_command_name() -> None:
+    # A `scheme://` token is a value the fetch reads, so its last path segment
+    # names no command: `https://cdn/curl` neither downloads nor verifies.
+    assert _flags("run https://cdn/curl > tool\n") == []
+    assert _flags("curl -o t https://x\nrun https://cdn/sha256sum\n") == [1]
+    # Positive marker: a real path to the same binary IS the command.
+    assert _flags("/usr/bin/curl -o tool https://x\n") == [1]
+
+
+def test_a_shell_named_inside_a_later_stages_argument_is_not_the_sink() -> None:
+    # The pipe sink is the downstream STAGE's command, not any shell name
+    # appearing somewhere after the `|`.
+    assert _flags('curl -sL https://x | tee "$(bash -c name)"\n') == []
+    # Positive marker: the same fetch piped into a real shell stage fires.
+    assert _flags("curl -sL https://x | tee f | sh\n") == [1]
+
+
+def test_verification_inside_a_message_string_does_not_verify() -> None:
+    # A `sha256sum` printed in a message checks nothing — it is one `string`
+    # token, not a command. Same rule as the download side, applied to the gate.
+    assert _flags('curl -o t https://x\necho "sha256sum -c t"\n') == [1]
+    # Positive marker: the executed checksum on the same two lines does verify.
+    assert _flags("curl -o t https://x\nsha256sum -c t\n") == []
+
+
+def test_pin_exempt_on_a_continued_downloads_second_line_excuses_it() -> None:
+    # A `\`-continued download is ONE command node reported at its first line; the
+    # annotation is accepted on any physical line the command occupies, which is
+    # where a reader naturally puts it.
+    text = 'curl -fsSL "$url" \\\n  -o tool  # pin-exempt: upstream has no digest\n'
+    assert _flags(text) == []
+    # Same command without the annotation is flagged at its first line.
+    assert _flags('curl -fsSL "$url" \\\n  -o tool\n') == [1]
+
+
+def test_pathological_input_fails_loudly(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # tree-sitter-bash allocates quadratically on chained pipelines, so
+    # `_bash_ast.parse` refuses such input. main() must report it and FAIL rather
+    # than skip the file — a silent skip would false-green exactly the input an
+    # adversary controls.
+    hostile = tmp_path / "hostile.sh"
+    hostile.write_text("cmd |" * 3000 + " cmd\n", encoding="utf-8")
+    assert mod.main([str(hostile)]) == 1
+    assert "pipe bytes" in capsys.readouterr().err
