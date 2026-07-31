@@ -23,8 +23,9 @@ Applies to ``pytest.mark.skipif(…)`` and ``pytest.importorskip(…)`` in Pytho
 test files (`test_*.py` / `*_test.py` / files under a `tests/` dir); non-test
 Python files are never scanned.
 
-Opt out with `# toolchain-skip-ok: <reason>` on the call's first line or the
-line above. Invoked by pre-commit with the staged Python files as arguments.
+Opt out with `# toolchain-skip-ok: <reason>` on ANY physical line of the call —
+the reason belongs beside the condition it explains, which in a multi-line
+`@pytest.mark.skipif(` sits below the reported line — or on the line above it. Invoked by pre-commit with the staged Python files as arguments.
 """
 
 import ast
@@ -116,18 +117,24 @@ def violations(text: str) -> list[int]:
     """1-based line numbers of skipif/importorskip calls whose condition does
     binary discovery without a CI guard."""
     physical = lines(text)
+    # A call's whole span, not just its first line: the reason for a skip belongs
+    # beside the CONDITION it explains, and a `@pytest.mark.skipif(` opening a
+    # multi-line call puts that condition several lines below the reported one.
+    # Accepting the annotation only there (or above it) would demand the comment
+    # sit above the decorator, describing a condition the reader cannot yet see —
+    # the same span rule `check_pinned_downloads` gives `pin-exempt`.
     hits = {
-        node.lineno
+        (node.lineno, node.end_lineno or node.lineno)
         for tree in trees(text)
         for node in ast.walk(tree)
         if _is_skip_call(node) and _is_unguarded(node)
     }
     return sorted(
-        lineno
-        for lineno in hits
-        if lineno <= len(physical)
-        and not annotated(physical[lineno - 1], OPT_OUT)
-        and not (lineno >= 2 and annotated(physical[lineno - 2], OPT_OUT))
+        start
+        for start, end in hits
+        if start <= len(physical)
+        and not any(annotated(line, OPT_OUT) for line in physical[start - 1 : end])
+        and not (start >= 2 and annotated(physical[start - 2], OPT_OUT))
     )
 
 

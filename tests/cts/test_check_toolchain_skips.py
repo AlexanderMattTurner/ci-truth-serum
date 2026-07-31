@@ -154,3 +154,56 @@ def test_main_clean_file_exits_zero(tmp_path) -> None:
     p = tmp_path / "test_a.py"
     p.write_text("def test_x():\n    assert True\n")
     assert mod.main([str(p)]) == 0
+
+
+def test_optout_inside_a_multiline_call_is_honoured() -> None:
+    """The real shape: a decorator opening on one line, its condition and the
+    comment explaining it several lines down. Accepting the annotation only on
+    the reported line would force the reason above the decorator, where it
+    describes a condition the reader has not reached yet."""
+    src = (
+        "import shutil, sys\n"
+        "import pytest\n"
+        "@pytest.mark.skipif(\n"
+        "    # toolchain-skip-ok: flock(1) is absent on macOS, which is why the\n"
+        "    # mkdir arm exists; on Linux CI a missing flock still fails loudly.\n"
+        '    shutil.which("flock") is None and sys.platform != "linux",\n'
+        '    reason="only exercised where flock(1) exists",\n'
+        ")\n"
+        "def test_x():\n"
+        "    pass\n"
+    )
+    assert mod.violations(src) == []
+
+
+def test_a_multiline_call_with_no_optout_still_fires() -> None:
+    # The same shape without the annotation must still be reported, at the line
+    # the call opens on — otherwise the span widening would mute the whole class.
+    src = (
+        "import shutil\n"
+        "import pytest\n"
+        "@pytest.mark.skipif(\n"
+        '    shutil.which("flock") is None,\n'
+        '    reason="needs flock",\n'
+        ")\n"
+        "def test_x():\n"
+        "    pass\n"
+    )
+    assert mod.violations(src) == [3]
+
+
+def test_an_optout_below_the_call_does_not_reach_back() -> None:
+    # The span ends where the call ends: a comment on the next statement is not
+    # this skip's reason, so widening must not swallow it.
+    src = (
+        "import shutil\n"
+        "import pytest\n"
+        "@pytest.mark.skipif(\n"
+        '    shutil.which("flock") is None,\n'
+        '    reason="needs flock",\n'
+        ")\n"
+        "def test_x():\n"
+        "    # toolchain-skip-ok: belongs to nothing above it\n"
+        "    pass\n"
+    )
+    assert mod.violations(src) == [3]
