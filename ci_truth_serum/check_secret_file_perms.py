@@ -47,8 +47,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
+    command_words,
     iter_nodes,
+    node_text,
     parse,
+    unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotation_re,
@@ -86,10 +89,6 @@ _WRAPPERS = frozenset({"sudo", "doas", "command", "env", "exec", "nice", "time"}
 # Flags that consume the following token as their value, so it is not a path.
 _VALUE_FLAGS = frozenset({"-m", "--mode", "-o", "--owner", "-g", "--group", "-t"})
 
-# Child types of a `command` that carry an argument value.
-_ARGUMENT_TYPES = frozenset(
-    {"word", "string", "raw_string", "concatenation", "number", "simple_expansion"}
-)
 # Redirect operators that OPEN a file: `>` truncates, `>>` appends, `&>`/`&>>`
 # send both streams to it. `>&` is a descriptor dup (`2>&1`) and opens nothing.
 _WRITE_OPERATORS = frozenset({">", ">>", "&>", "&>>"})
@@ -97,26 +96,10 @@ _WRITE_OPERATORS = frozenset({">", ">>", "&>", "&>>"})
 _ANNOTATION_RE = annotation_re(OPT_OUT)
 
 
-def _text(node) -> str:
-    return node.text.decode("utf-8", "replace")
-
-
-def _unquote(raw: str) -> str:
-    """A quoted token's literal text, for comparing a create's target against a
-    chmod's (`"$dir/token"` and `$dir/token` name the same file)."""
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-        return raw[1:-1]
-    return raw.strip("\"'")
-
-
 def _words(command) -> list[str]:
     """COMMAND's name followed by its argument words, wrapper prefixes and
     environment assignments stripped, so the first entry is the program run."""
-    words = [
-        _text(child)
-        for child in command.children
-        if child.type == "command_name" or child.type in _ARGUMENT_TYPES
-    ]
+    words = command_words(command)
     while words and (words[0].rsplit("/", 1)[-1] in _WRAPPERS or "=" in words[0]):
         words = words[1:]
     return words
@@ -158,7 +141,7 @@ def _redirect_target(redirect) -> str | None:
     )
     if index is None or index + 1 >= len(children):
         return None
-    return _unquote(_text(children[index + 1]))
+    return unquote(node_text(children[index + 1]))
 
 
 def _install_targets(words: list[str]) -> list[str]:
@@ -197,7 +180,7 @@ def _creates(root) -> list[tuple[object, list[str]]]:
             raw = _install_targets(words)
         else:
             continue
-        targets = [_unquote(t) for t in raw if _SECRET_RE.search(t)]
+        targets = [unquote(t) for t in raw if _SECRET_RE.search(t)]
         if targets:
             found.append((command, targets))
     return found
@@ -212,7 +195,7 @@ def _chmod_targets(command) -> list[str]:
     positionals = _positionals(words)[1:]
     if not positionals or not _PRIVATE_MODE_RE.match(positionals[0]):
         return []
-    return [_unquote(target) for target in positionals[1:]]
+    return [unquote(target) for target in positionals[1:]]
 
 
 def _is_private_umask(command) -> bool:

@@ -62,7 +62,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
+    command_name,
     iter_nodes,
+    node_text,
     parse,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -105,19 +107,6 @@ _REDIRECT_SCOPES = _JOINED_STATEMENT | {"compound_statement", "subshell"}
 _ABORTS = frozenset({"exit", "return"})
 
 
-def _text(node) -> str:
-    return node.text.decode("utf-8", "replace")
-
-
-def _command_name(command) -> str:
-    """A `command` node's name (`echo`), or "" when it has none (a bare
-    assignment prefix)."""
-    for child in command.children:
-        if child.type == "command_name":
-            return _text(child)
-    return ""
-
-
 def _fallbacks(root):
     """(list node, fallback command) for every `cmd || echo/printf …` under ROOT.
 
@@ -128,7 +117,7 @@ def _fallbacks(root):
             if (
                 operator.type == "||"
                 and right.type == "command"
-                and _command_name(right) in _FALLBACK_COMMANDS
+                and command_name(right) in _FALLBACK_COMMANDS
             ):
                 yield node, right
 
@@ -159,7 +148,7 @@ def _writes_to_stderr(fallback) -> bool:
     target descriptor is 2 (`>&2`, `1>&2`, `>& 2`), or a write to
     `/dev/stderr`."""
     for redirect in _applied_redirects(fallback):
-        parts = [_text(child).strip() for child in redirect.children]
+        parts = [node_text(child).strip() for child in redirect.children]
         if ">&" in parts and parts[-1] == "2":
             return True
         if "/dev/stderr" in parts:
@@ -204,7 +193,7 @@ def _aborts_after(fallback) -> bool:
             if not one_statement and sibling.start_point[0] != line:
                 continue
             for command in iter_nodes(sibling, "command"):
-                if _command_name(command) in _ABORTS and (
+                if command_name(command) in _ABORTS and (
                     one_statement or command.start_point[0] == line
                 ):
                     return True

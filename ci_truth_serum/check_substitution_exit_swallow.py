@@ -45,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
+    command_words,
     iter_nodes,
     parse,
 )
@@ -78,27 +79,13 @@ _CONSUMER_COMMANDS = frozenset({"read", "mapfile", "readarray"})
 # them leaves the stages themselves.
 _OPERATORS = frozenset({"||", "&&", "|", "|&", ";", ";;", "&", "\n"})
 
-# Child types of a `command` that carry an argument value — everything else under
-# it (`file_redirect`, a `variable_assignment` prefix) is not an argument.
-_ARGUMENT_TYPES = frozenset(
-    {"word", "string", "raw_string", "concatenation", "number", "simple_expansion"}
-)
-
 _ALLOW_WITH_REASON = annotation_re(OPT_OUT)
-
-
-def _text(node) -> str:
-    return node.text.decode("utf-8", "replace")
 
 
 def _program(command) -> str:
     """The program COMMAND runs, as a bare name: wrapper prefixes stripped
     (`command jq …`) and the leading path dropped (`/usr/bin/jq` → `jq`)."""
-    words = [
-        _text(child)
-        for child in command.children
-        if child.type == "command_name" or child.type in _ARGUMENT_TYPES
-    ]
+    words = command_words(command)
     while len(words) > 1 and words[0].rsplit("/", 1)[-1] in _PREFIXES:
         words = words[1:]
     return words[0].rsplit("/", 1)[-1] if words else ""

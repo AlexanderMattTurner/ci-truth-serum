@@ -8,6 +8,12 @@ substitution, or a heredoc all desynced the quote state and hid (or invented) a
 pipe. This module hands both lints a REAL bash grammar instead, so what the lint
 sees is what bash would run.
 
+It also owns the node-reading helpers every shell lint needs once it is on the
+grammar. Each is one decision about what the grammar means — which children of a
+`command` are really its arguments, what a command's name is when it runs no
+program — and a lint holding its own copy of that decision is a lint answering a
+structural question differently from its siblings, silently. One copy, here.
+
 Fails LOUD when the grammar bindings are absent: a shell lint that silently
 degrades to "no findings" on a missing dependency would be exactly the false
 green this pack exists to catch, so the ImportError propagates rather than being
@@ -104,6 +110,88 @@ def iter_nodes(node: Node, *types: str):
             yield current
         # Reverse so children are popped left-to-right → pre-order, source order.
         stack.extend(reversed(current.children))
+
+
+# Child types of a `command` that carry an argument VALUE. A `file_redirect`, a
+# `variable_assignment` prefix and heredoc plumbing are the children this leaves
+# out on purpose — that exclusion is what keeps a `>&2` out of an argument list.
+#
+# The substitution types (`command_substitution`, `process_substitution`,
+# `arithmetic_expansion`) are absent, so a bare `$(pwd)` argument is not in the
+# list either. That is the set the lints have always used, and each of them is a
+# separate judgement about whether a value only the shell can compute should be
+# read as an argument at all; widening it is a behaviour change, not a spelling.
+ARGUMENT_TYPES = frozenset(
+    {
+        "word",
+        "string",
+        "raw_string",
+        "concatenation",
+        "number",
+        "simple_expansion",
+        "expansion",
+    }
+)
+
+
+def node_text(node: Node) -> str:
+    """NODE's source text, decoded from the bytes tree-sitter indexes."""
+    return node.text.decode("utf-8", "replace")
+
+
+def unquote(raw: str) -> str:
+    """RAW with one layer of matching surrounding quotes removed (`'/dev/null'` →
+    `/dev/null`), so a quoted token compares equal to its bare spelling."""
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+    return raw
+
+
+def command_name(node: Node) -> str | None:
+    """The command word of NODE, or None when NODE is not a `command` at all.
+
+    The type check is here because callers reach this one while WALKING (a `||`
+    operand that may be a pipeline, a sibling statement); `command_arguments` and
+    `command_words` take a `command` they already have and so do not repeat it.
+
+    A `command` that runs no program (`FOO=1 >out`, all prefix and redirect) still
+    carries a ZERO-WIDTH `command_name` in the grammar, so this returns `""` there:
+    a name that matches nothing, which is the right answer, rather than None."""
+    if node.type != "command":
+        return None
+    for child in node.children:
+        if child.type == "command_name":
+            return node_text(child)
+    return None
+
+
+def command_arguments(command: Node) -> list[Node]:
+    """A `command` node's name and argument nodes, in order.
+
+    The name is yielded as its CHILDREN, so a name the shell assembles
+    (`"$tool"`, `bin/foo`) is read at the same granularity as an argument. Every
+    non-argument child is skipped, so only real arguments can be read as a flag, a
+    package spec, or an output target."""
+    args: list[Node] = []
+    for child in command.children:
+        if child.type == "command_name":
+            args.extend(child.children)
+        elif child.type in ARGUMENT_TYPES:
+            args.append(child)
+    return args
+
+
+def command_words(command: Node) -> list[str]:
+    """COMMAND's name followed by its argument words, as written.
+
+    The name stays ONE word here, unlike `command_arguments`, which is what a
+    caller wants when it is about to strip wrapper prefixes (`sudo`, `command`,
+    `env`) off the front and read the program name off the head."""
+    return [
+        node_text(child)
+        for child in command.children
+        if child.type == "command_name" or child.type in ARGUMENT_TYPES
+    ]
 
 
 # Every character `str.splitlines()` treats as a line boundary. A comment blanked

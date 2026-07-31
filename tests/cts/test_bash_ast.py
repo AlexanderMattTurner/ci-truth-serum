@@ -1,10 +1,16 @@
 """Example-based tests (mutation oracle) for ci_truth_serum/_bash_ast.py — the shared
-tree-sitter-bash wrapper the two shell lints parse through.
+tree-sitter-bash wrapper every shell lint parses through.
 
-Pins the exact contract of ``parse`` and ``iter_nodes``: a real bash tree, node
-type filtering, and document (pre-order, source) ordering. The property/fuzz
-invariants live in ``test_fuzz_bash_ast.py``; this suite is the per-module oracle
-the mutation gate runs, so every assertion is exact.
+Pins the exact contract of ``parse`` and ``iter_nodes`` (a real bash tree, node
+type filtering, document pre-order ordering) and of the node-reading helpers the
+lints share — ``node_text``, ``unquote``, ``command_name``, ``command_arguments``,
+``command_words`` and the ``ARGUMENT_TYPES`` set the last two read. Each answers
+one structural question for every lint at once, so a wrong answer here is wrong
+in eleven modules: these assertions are what makes such a change loud instead of
+a silently moved verdict.
+
+The property/fuzz invariants live in ``test_fuzz_bash_ast.py``; this suite is the
+per-module oracle the mutation gate runs, so every assertion is exact.
 """
 
 import pytest
@@ -142,3 +148,107 @@ def test_strip_comments_leaves_hash_inside_quotes_and_words() -> None:
     # quoted string or a word is code and is left untouched.
     assert bash_ast.strip_comments('curl -o "a#b" url\n') == 'curl -o "a#b" url\n'
     assert bash_ast.strip_comments("echo x#y\n") == "echo x#y\n"
+
+
+def _command(script: str):
+    """The first `command` node in SCRIPT."""
+    return next(bash_ast.iter_nodes(bash_ast.parse(script), "command"))
+
+
+def test_node_text_decodes_multibyte_source() -> None:
+    # Byte offsets are tree-sitter's currency; the decode must return characters.
+    assert bash_ast.node_text(_command("echo café ☃")) == "echo café ☃"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("'/dev/null'", "/dev/null"),
+        ('"/dev/null"', "/dev/null"),
+        ("/dev/null", "/dev/null"),
+        ("''", ""),
+        ('""', ""),
+        # Unbalanced or mismatched quotes are left alone: stripping one side would
+        # invent a token the shell never sees.
+        ('"/dev/null', '"/dev/null'),
+        ("'/dev/null\"", "'/dev/null\""),
+        ('"', '"'),
+        ("", ""),
+    ],
+)
+def test_unquote_removes_exactly_one_matched_pair(raw: str, expected: str) -> None:
+    assert bash_ast.unquote(raw) == expected
+
+
+def test_command_name_reads_the_program_word() -> None:
+    assert bash_ast.command_name(_command("FOO=1 curl -o out url")) == "curl"
+
+
+def test_command_name_is_none_off_a_command() -> None:
+    # Callers hand this arbitrary nodes; a non-command must answer None, not raise.
+    assert bash_ast.command_name(bash_ast.parse("a | b")) is None
+
+
+def test_command_name_of_a_prefix_only_command_is_empty() -> None:
+    # `FOO=1 >out` runs no program: the grammar still emits a zero-width
+    # `command_name`, and "" is a name that matches no command list.
+    assert bash_ast.command_name(_command("FOO=1 >out")) == ""
+
+
+def test_command_arguments_drops_redirects_and_assignments() -> None:
+    # The whole point: a `>&2` is a sibling of the arguments, not one of them, so it
+    # can never be read as a package name, a flag, or an output target.
+    args = bash_ast.command_arguments(_command('FOO=1 curl -o out.tgz "$URL" >&2'))
+    assert [bash_ast.node_text(a) for a in args] == [
+        "curl",
+        "-o",
+        "out.tgz",
+        '"$URL"',
+    ]
+
+
+def test_command_arguments_keeps_a_braced_expansion() -> None:
+    # `${PKG}` is an `expansion` node — an argument value like any other. A set that
+    # omitted it would silently shorten every caller's argument list.
+    args = bash_ast.command_arguments(_command("pip install ${PKG} ruff"))
+    assert [bash_ast.node_text(a) for a in args] == [
+        "pip",
+        "install",
+        "${PKG}",
+        "ruff",
+    ]
+
+
+def test_command_arguments_splits_a_computed_command_name() -> None:
+    # A name the shell assembles is yielded as its children, so a caller reads it at
+    # the same granularity as an argument rather than as one opaque `command_name`.
+    args = bash_ast.command_arguments(_command('"$tool" run'))
+    assert [(a.type, bash_ast.node_text(a)) for a in args] == [
+        ("string", '"$tool"'),
+        ("word", "run"),
+    ]
+
+
+def test_command_words_keeps_the_name_as_one_word() -> None:
+    # The contrast with `command_arguments`: a caller stripping wrapper prefixes
+    # needs the program name at the head as a single word, not split into children.
+    assert bash_ast.command_words(_command('sudo "$tool" -o out >&2')) == [
+        "sudo",
+        '"$tool"',
+        "-o",
+        "out",
+    ]
+
+
+def test_command_arguments_of_a_prefix_only_command() -> None:
+    # `FOO=1 >out` runs no program. The grammar still gives its `command_name` one
+    # zero-width `word` child — a name that matches nothing — so unwrapping the name
+    # into its children needs no empty-children fallback.
+    args = bash_ast.command_arguments(_command("FOO=1 >out"))
+    assert [(a.type, bash_ast.node_text(a)) for a in args] == [("word", "")]
+
+
+def test_command_words_of_a_prefix_only_command() -> None:
+    # The zero-width name surfaces as an empty word rather than an empty list, so a
+    # caller reading the program off `words[0]` gets a name matching nothing.
+    assert bash_ast.command_words(_command("FOO=1 >out")) == [""]

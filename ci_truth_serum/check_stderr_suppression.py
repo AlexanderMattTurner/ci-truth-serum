@@ -37,9 +37,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ARGUMENT_TYPES,
     PathologicalInputError,
+    command_words,
     iter_nodes,
+    node_text,
     parse,
+    unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
@@ -88,28 +92,12 @@ _VALUE_FLAGS = frozenset(
     }
 )
 
-# Child types of a `command` that carry an argument value.
-_ARGUMENT_TYPES = frozenset(
-    {"word", "string", "raw_string", "concatenation", "number", "simple_expansion"}
-)
-
 # The operator of a redirect that WRITES a stream to a file: `>` truncates, `>>`
 # appends, `&>`/`&>>` send both stdout and stderr. `>&` is a descriptor DUP
 # (`2>&1`), which points a stream at another stream rather than at a file.
 _WRITE_OPERATORS = frozenset({">", ">>"})
 _BOTH_OPERATORS = frozenset({"&>", "&>>"})
 _DUP_OPERATOR = ">&"
-
-
-def _text(node) -> str:
-    return node.text.decode("utf-8", "replace")
-
-
-def _unquote(raw: str) -> str:
-    """A quoted token's literal text (`"/dev/null"` → `/dev/null`)."""
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-        return raw[1:-1]
-    return raw
 
 
 def _redirect_parts(redirect) -> tuple[str | None, str, str]:
@@ -122,7 +110,7 @@ def _redirect_parts(redirect) -> tuple[str | None, str, str]:
     arguments."""
     children = redirect.children
     descriptor = next(
-        (_text(c) for c in children if c.type == "file_descriptor"),
+        (node_text(c) for c in children if c.type == "file_descriptor"),
         None,
     )
     index = next(
@@ -137,7 +125,7 @@ def _redirect_parts(redirect) -> tuple[str | None, str, str]:
     )
     if index is None or index + 1 >= len(children):
         return descriptor, "", ""
-    return descriptor, children[index].type, _unquote(_text(children[index + 1]))
+    return descriptor, children[index].type, unquote(node_text(children[index + 1]))
 
 
 def _suppresses_stderr(redirects: list) -> bool:
@@ -217,15 +205,6 @@ def _is_launch(positionals: list[str]) -> bool:
     return rest[0] == "build"
 
 
-def _words(command) -> list[str]:
-    """COMMAND's name followed by its argument words, as written."""
-    return [
-        _text(child)
-        for child in command.children
-        if child.type == "command_name" or child.type in _ARGUMENT_TYPES
-    ]
-
-
 def _array_values(root) -> dict[str, list[str]]:
     """Every array variable in ROOT mapped to its elements, so a command invoked
     through one — ``DC=(docker compose -f x.yml)`` then ``"${DC[@]}" up`` — is
@@ -234,12 +213,13 @@ def _array_values(root) -> dict[str, list[str]]:
     arrays: dict[str, list[str]] = {}
     for assignment in iter_nodes(root, "variable_assignment"):
         name = next(
-            (_text(c) for c in assignment.children if c.type == "variable_name"), None
+            (node_text(c) for c in assignment.children if c.type == "variable_name"),
+            None,
         )
         array = next((c for c in assignment.children if c.type == "array"), None)
         if name is not None and array is not None:
             arrays[name] = [
-                _text(c) for c in array.children if c.type in _ARGUMENT_TYPES
+                node_text(c) for c in array.children if c.type in ARGUMENT_TYPES
             ]
     return arrays
 
@@ -247,7 +227,7 @@ def _array_values(root) -> dict[str, list[str]]:
 def _command_words(command, arrays: dict[str, list[str]]) -> list[str]:
     """COMMAND's words, with an array's elements expanded in place of the
     ``"${DC[@]}"`` that names it."""
-    words = _words(command)
+    words = command_words(command)
     if not words:
         return words
     expanded = next(
