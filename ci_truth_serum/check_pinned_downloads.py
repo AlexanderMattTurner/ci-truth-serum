@@ -203,7 +203,14 @@ def _redirects_to_file(command) -> bool:
     Redirections belong to the enclosing `redirected_statement`, never to the
     command's argument list — which is why a `>&2` cannot be read as an output
     file here. A group that redirects as a whole (`{ curl …; } > f`) covers the
-    commands inside it, so the search climbs the grouping nodes."""
+    commands inside it, so the search climbs the grouping nodes.
+
+    A `list` is the exception among those groups, and the reason the climb checks
+    POSITION: tree-sitter parses `a && curl … > f` as one `redirected_statement`
+    wrapping the whole list, but bash gives `> f` to the LAST branch alone.
+    Crediting every branch instead makes an earlier one look like it saved a file
+    — which, with a package named `curl` in an `apt-get install` list, is enough
+    to manufacture a download that never happened."""
     node = command
     while node.parent is not None:
         parent = node.parent
@@ -214,6 +221,8 @@ def _redirects_to_file(command) -> bool:
                 if child.type == "file_redirect"
             )
         if parent.type not in _REDIRECT_WRAPPERS:
+            return False
+        if parent.type == "list" and node != parent.named_children[-1]:
             return False
         node = parent
     return False

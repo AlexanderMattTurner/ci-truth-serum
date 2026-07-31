@@ -552,3 +552,43 @@ def test_pathological_input_fails_loudly(
     hostile.write_text("cmd |" * 3000 + " cmd\n", encoding="utf-8")
     assert mod.main([str(hostile)]) == 1
     assert "pipe bytes" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        # A later branch's redirect belongs to that branch alone. Without this,
+        # `curl` sitting in the package list makes the install look like a fetch
+        # that saved a file, and the real download two branches later is then
+        # squeezed out of its own verification window.
+        ("apt-get install -y ca-certificates curl && echo hi > /s\n", []),
+        # The same shape where the redirect IS on the download: still reported.
+        ("true && curl -fsSL https://x/k > /k\n", [1]),
+        ("true && curl -fsSL https://x/k > /k && sha256sum -c /s\n", []),
+        # A group redirects every command inside it, so the climb must not treat
+        # these like a `list` — both stay reported.
+        ("{ curl -fsSL https://x/k; } > /k\n", [1]),
+        ("( curl -fsSL https://x/k ) > /k\n", [1]),
+    ],
+)
+def test_a_list_redirect_belongs_to_its_last_branch_only(
+    script: str, expected: list[int]
+) -> None:
+    assert mod.violations(script) == expected
+
+
+def test_an_install_list_naming_curl_is_not_a_download() -> None:
+    """The shape that reached a consumer: one `RUN` whose first branch installs a
+    package called `curl`, whose fourth fetches a key, and whose sixth checksums
+    it. Every branch sits under one redirected `list`, so crediting the redirect
+    to all of them reported the install line and hid the verification from the
+    fetch that needed it."""
+    script = (
+        "RUN apt-get install -y --no-install-recommends ca-certificates curl && \\\n"
+        "    curl -fsSL https://cli.github.com/packages/keyring.gpg \\\n"
+        "      -o /etc/apt/keyrings/keyring.gpg && \\\n"
+        '    echo "abc  /etc/apt/keyrings/keyring.gpg" \\\n'
+        "      > /tmp/k.sha256 && \\\n"
+        "    sha256sum -c /tmp/k.sha256\n"
+    )
+    assert mod.violations(script) == []
