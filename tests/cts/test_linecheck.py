@@ -658,3 +658,22 @@ def test_comment_body_extraction(line: str, expected: str | None) -> None:
 )
 def test_is_python_source(path: str, is_python: bool) -> None:
     assert lc.is_python_source(path) is is_python
+
+
+# ── the window includes the line directly above, comment-only or not ─────
+def test_annotation_window_always_includes_the_line_directly_above() -> None:
+    """A reason often rides a code line that opens the construct below it —
+    `if  # pin-exempt: …` above a `curl`. Walking only comment-ONLY lines stops
+    at that line, which silently narrowed the window in a real tree."""
+    lines = ["if  # pin-exempt: inert JSON data", "  curl -fsSL -o x url", "then"]
+    assert 1 in lc.annotation_window(lines, 2)
+
+
+def test_annotation_window_spans_a_wrapped_comment_block() -> None:
+    lines = ["# tok: a reason that", "# wraps onto a second line", "code()"]
+    assert lc.annotation_window(lines, 3) == [1, 2, 3]
+
+
+def test_annotation_window_stops_at_a_blank_line() -> None:
+    lines = ["# tok: about something else", "", "code()"]
+    assert lc.annotation_window(lines, 3) == [2, 3]
