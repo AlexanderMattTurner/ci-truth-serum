@@ -68,7 +68,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
 )
 
 OPT_OUT = "echo-fallback-ok"
@@ -229,9 +229,7 @@ def violations(text: str) -> list[int]:
 
     hits = []
     for start, end in sorted(widest.items()):
-        if any(annotated(line, OPT_OUT) for line in raw[start - 1 : end]) or (
-            start >= 2 and annotated(raw[start - 2], OPT_OUT)
-        ):
+        if annotated_near(raw, start, OPT_OUT, span_end=end):
             continue
         hits.append(start)
     return hits

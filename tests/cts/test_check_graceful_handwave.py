@@ -85,8 +85,19 @@ def test_allow_annotation_same_line_and_line_above() -> None:
     assert mod.violations(above, prose=True) == []
 
 
-def test_stale_annotation_two_lines_above_does_not_count() -> None:
+def test_an_annotation_anywhere_in_the_comment_block_above_counts() -> None:
+    """The reason may wrap, and a wrapped reason pushes the token line further
+    from what it excuses. One annotation therefore covers its own unbroken
+    comment block — the pack's single placement rule (``annotation_window``)."""
     text = "# allow-graceful: reason\n#\n# a graceful fallback"
+    assert mod.violations(text, prose=False) == []
+
+
+def test_a_detached_annotation_does_not_reach_a_later_comment() -> None:
+    """The bound on the rule above: the block must be UNBROKEN, so an
+    annotation written about something else cannot drift down. Non-vacuity —
+    the same two lines with no blank between them are clean (asserted above)."""
+    text = "# allow-graceful: reason\n\n# a graceful fallback"
     assert mod.violations(text, prose=False) == [3]
 
 

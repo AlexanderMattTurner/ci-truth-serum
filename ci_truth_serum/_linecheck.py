@@ -166,6 +166,38 @@ def comment_block_above(lines: list[str], lineno: int) -> range:
     return range(start, lineno)
 
 
+def annotation_window(
+    lines: list[str], start: int, end: int | None = None
+) -> list[int]:
+    """The 1-based lines that may carry the opt-out for a construct spanning
+    START..END (1-based, inclusive; END defaults to START).
+
+    **This is the pack's ONE answer to "where may the reason go".** Every check
+    asks it, so an author learns the rule once instead of per hook. What a check
+    still owns is its SPAN, which is genuinely per-language and cannot be
+    shared: a shell logical line, a Python call node, a single comment line. It
+    passes that span here and this decides the rest.
+
+    The window is the span itself plus the unbroken comment block directly above
+    it. A reason is prose, prose wraps, and an author who explains WHY over two
+    lines means the same thing as one who fits it on one. Before this was one
+    definition, the pack held roughly twenty open-coded ones — some accepting
+    the line above, some the whole span, some only the flagged line — so the
+    same annotation was honoured by one check and rejected by its neighbour.
+
+    Widening is bounded, not a fail-open: the token must still sit in a real
+    comment and still carry a reason (``annotation_re``), and the block stops at
+    the first line that is not a comment. A blank line therefore ends it, so an
+    annotation written about something else cannot drift down onto a later
+    construct.
+    """
+    end = start if end is None else end
+    span = range(start, min(end, len(lines)) + 1)
+    return [
+        n for n in (*comment_block_above(lines, start), *span) if 1 <= n <= len(lines)
+    ]
+
+
 def annotated_near(
     lines: list[str],
     lineno: int,
@@ -173,26 +205,12 @@ def annotated_near(
     require_reason: bool = True,
     span_end: int | None = None,
 ) -> bool:
-    """True when TOKEN annotates the construct reported at 1-based LINENO.
-
-    Three placements count, and they are the three an author actually writes:
-    the construct's own line, any line of the comment block directly above it
-    (see ``comment_block_above``), and — when SPAN_END is given — any line
-    inside the construct's own source span, which is where a reason next to the
-    condition it excuses ends up.
-
-    Widening this is not a fail-open. Every placement still requires the token
-    to sit in a real comment and to carry a reason (``annotation_re``), and
-    every placement is still scoped to this construct. What it removes is a
-    check that reads the author's intent correctly and rejects it over the
-    line it was typed on.
-    """
-    if lineno > len(lines):
-        return False
-    candidates = [lineno, *comment_block_above(lines, lineno)]
-    if span_end is not None:
-        candidates += list(range(lineno, min(span_end, len(lines)) + 1))
-    return any(annotated(lines[n - 1], token, require_reason) for n in candidates)
+    """True when TOKEN annotates the construct at 1-based LINENO (see
+    ``annotation_window``, which owns the placement rule)."""
+    return any(
+        annotated(lines[n - 1], token, require_reason)
+        for n in annotation_window(lines, lineno, span_end)
+    )
 
 
 # A line that ends in a backslash, a pipe, or a boolean operator is continued on

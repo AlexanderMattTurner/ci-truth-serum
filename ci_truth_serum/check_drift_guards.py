@@ -73,6 +73,7 @@ from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     text_comments,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    annotated_near,
     annotation_re,
     is_test_path,
 )
@@ -99,7 +100,8 @@ _MARKER = "drift_guard"
 # The non-Python opt-out: a comment `drift-guard-ok: <reason>` with a non-empty
 # reason. (The bare token `drift-guard` inside it also matches _GUARD_RE, but the
 # annotation check runs first, so an annotation line never flags itself.)
-_ALLOW_MARKER = annotation_re("drift-guard-ok")
+_ALLOW_TOKEN = "drift-guard-ok"
+_ALLOW_MARKER = annotation_re(_ALLOW_TOKEN)
 
 # The Python structural opt-out: `# not-a-drift-guard: <reason>` clears a
 # STRUCTURAL hit (a genuine collection-equality unit test), with a non-empty
@@ -393,9 +395,7 @@ def text_violations(
         comments = text_comments(text)
     hits: list[tuple[int, str]] = []
     for i, line in enumerate(lines):
-        if _ALLOW_MARKER.search(line):
-            continue
-        if i > 0 and _ALLOW_MARKER.search(lines[i - 1]):
+        if annotated_near(lines, i + 1, _ALLOW_TOKEN):
             continue
         body = comments.get(i + 1)
         match = _GUARD_RE.search(line)

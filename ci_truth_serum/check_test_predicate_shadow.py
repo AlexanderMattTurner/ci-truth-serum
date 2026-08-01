@@ -56,7 +56,7 @@ from tree_sitter import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
     is_test_path,
     tracked_shell_files,
 )
@@ -227,7 +227,7 @@ def find_shadowed(test_paths: list[str], predicates: dict[str, str]) -> list[Sha
             continue
         lines = text.splitlines()
         for name, lineno in function_definitions(text):
-            if name not in predicates or annotated(lines[lineno - 1], OPT_OUT):
+            if name not in predicates or annotated_near(lines, lineno, OPT_OUT):
                 continue
             hits.append(Shadow(path, lineno, name, predicates[name]))
     return sorted(hits)

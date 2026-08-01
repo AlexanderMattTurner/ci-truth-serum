@@ -50,7 +50,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
     run_line_checks,
 )
 
@@ -179,10 +179,7 @@ def violations(text: str) -> list[int]:
             if _producer_is_bounded(stages[idx - 1]):
                 continue
             lineno = stage.start_point[0] + 1
-            raw = physical[lineno - 1] if lineno - 1 < len(physical) else ""
-            if annotated(raw, _ALLOW):
-                continue
-            if lineno >= 2 and annotated(physical[lineno - 2], _ALLOW):
+            if annotated_near(physical, lineno, _ALLOW):
                 continue
             hits.add(lineno)
     return sorted(hits)
