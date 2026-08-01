@@ -141,6 +141,60 @@ def annotated(line: str, token: str, require_reason: bool = True) -> bool:
     return bool(annotation_re(token, require_reason).search(line))
 
 
+# A line whose first non-blank character opens a comment in one of the languages
+# this pack reads. Used only to walk the run of comment lines attached to a
+# construct — never to decide whether a `#` inside code is a comment, which is
+# the structural question `_comments` answers with each language's own grammar.
+_COMMENT_ONLY = re.compile(r"^[ \t]*(?:#|//|/\*|\*(?!/)|<!--)")
+
+
+def comment_block_above(lines: list[str], lineno: int) -> range:
+    """The 1-based line numbers of the unbroken run of comment-only lines that
+    sits directly above 1-based LINENO.
+
+    A construct's reason is written as prose, and prose wraps. Stopping at the
+    single line above would accept a one-line reason and reject the same reason
+    split over two, so an author who explains WHY at any length is told to
+    reformat rather than to explain. The run stops at the first line that is not
+    a comment, so the block belongs to this construct and not to the one before
+    it. A blank line ends the run too: a comment separated by whitespace reads
+    as narration about the section, not about this line.
+    """
+    start = lineno
+    while start >= 2 and _COMMENT_ONLY.match(lines[start - 2]):
+        start -= 1
+    return range(start, lineno)
+
+
+def annotated_near(
+    lines: list[str],
+    lineno: int,
+    token: str,
+    require_reason: bool = True,
+    span_end: int | None = None,
+) -> bool:
+    """True when TOKEN annotates the construct reported at 1-based LINENO.
+
+    Three placements count, and they are the three an author actually writes:
+    the construct's own line, any line of the comment block directly above it
+    (see ``comment_block_above``), and — when SPAN_END is given — any line
+    inside the construct's own source span, which is where a reason next to the
+    condition it excuses ends up.
+
+    Widening this is not a fail-open. Every placement still requires the token
+    to sit in a real comment and to carry a reason (``annotation_re``), and
+    every placement is still scoped to this construct. What it removes is a
+    check that reads the author's intent correctly and rejects it over the
+    line it was typed on.
+    """
+    if lineno > len(lines):
+        return False
+    candidates = [lineno, *comment_block_above(lines, lineno)]
+    if span_end is not None:
+        candidates += list(range(lineno, min(span_end, len(lines)) + 1))
+    return any(annotated(lines[n - 1], token, require_reason) for n in candidates)
+
+
 # A line that ends in a backslash, a pipe, or a boolean operator is continued on
 # the next line by the shell — join them so a command (and its `$(…)` / redirects)
 # spanning lines is analyzed whole, not mis-split mid-capture.

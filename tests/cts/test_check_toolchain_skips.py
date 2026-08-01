@@ -154,3 +154,56 @@ def test_main_clean_file_exits_zero(tmp_path) -> None:
     p = tmp_path / "test_a.py"
     p.write_text("def test_x():\n    assert True\n")
     assert mod.main([str(p)]) == 0
+
+
+# ── where the reason may sit ─────────────────────────────────────────────
+# A reason is prose, and prose wraps. Pinning the annotation to one exact line
+# rejects the same reason split over two, so an author who explains WHY is told
+# to reformat. These pin the three placements an author actually writes.
+_GATE = 'shutil.which("flock") is None and sys.platform != "linux"'
+
+
+def _skip_call(annotation_above: str = "", annotation_inside: str = "") -> str:
+    inside = f"    {annotation_inside}\n" if annotation_inside else ""
+    above = f"{annotation_above}\n" if annotation_above else ""
+    return f"{above}@pytest.mark.skipif(\n{inside}    {_GATE},\n    reason='r',\n)\ndef test_x():\n    pass\n"
+
+
+def test_unannotated_call_is_still_flagged() -> None:
+    # Non-vacuity for every case below: the same call with no annotation fails.
+    assert mod.violations(_skip_call()) != []
+
+
+def test_annotation_on_the_line_directly_above_counts() -> None:
+    assert (
+        mod.violations(_skip_call(above := "# toolchain-skip-ok: macOS has no flock"))
+        == []
+    )
+    assert above  # the fixture really carried the token
+
+
+def test_a_wrapped_reason_above_the_call_counts() -> None:
+    # The friction this removes: the token line is now TWO lines up, because the
+    # reason it carries wrapped onto a continuation line.
+    wrapped = (
+        "# toolchain-skip-ok: macOS has no flock(1), which is the whole reason\n"
+        "# the mkdir arm exists; on Linux a missing one still fails loudly."
+    )
+    assert mod.violations(_skip_call(wrapped)) == []
+
+
+def test_annotation_inside_the_call_counts() -> None:
+    # Beside the condition it excuses — where the reason is most informative.
+    inside = "# toolchain-skip-ok: macOS has no flock(1); Linux still fails loudly"
+    assert mod.violations(_skip_call(annotation_inside=inside)) == []
+
+
+def test_a_detached_annotation_does_not_reach_the_call() -> None:
+    # The block above must be UNBROKEN: a blank line ends it, so an annotation
+    # written for something else cannot drift down and excuse this call.
+    detached = "# toolchain-skip-ok: written about something else\n"
+    assert mod.violations(detached + "\n" + _skip_call()) != []
+
+
+def test_an_annotation_below_the_call_does_not_count() -> None:
+    assert mod.violations(_skip_call() + "# toolchain-skip-ok: too late") != []
