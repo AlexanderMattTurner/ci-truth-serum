@@ -193,9 +193,13 @@ def annotation_window(
     """
     end = start if end is None else end
     span = range(start, min(end, len(lines)) + 1)
-    return [
-        n for n in (*comment_block_above(lines, start), *span) if 1 <= n <= len(lines)
-    ]
+    # The line DIRECTLY above always counts, whether or not it is comment-only.
+    # A trailing comment on a code line is where a reason goes when the construct
+    # opens on the line before it (`if  # pin-exempt: …` above a `curl`), and
+    # `comment_block_above` stops at that line because it carries code.
+    direct = [start - 1] if start >= 2 else []
+    candidates = {*comment_block_above(lines, start), *direct, *span}
+    return sorted(n for n in candidates if 1 <= n <= len(lines))
 
 
 def annotated_near(
