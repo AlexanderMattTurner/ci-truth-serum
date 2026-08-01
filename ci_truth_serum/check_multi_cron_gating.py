@@ -17,19 +17,27 @@ For a multi-cron workflow, three obligations:
   1. no job `if:` may gate on the bare event-name test — a schedule-gated
      job names its cron (`github.event.schedule == '13 5 * * 1'`). The
      event-name test beside a named cron is redundant but harmless, so it is
-     flagged only when the `if:` names no declared cron at all;
+     flagged only when the `if:` names no declared cron at all. A gate that
+     compares `github.event.schedule` to a cron the file does NOT declare is
+     its own finding: the job never fires on it, which is usually a typo;
   2. every declared cron must be answered by some job — named in a gated
      job's `if:`, or covered by a job that runs on every fire (see 3).
      At-least-once, not exactly-once: two jobs answering one cron, and one
      job naming several crons, are both legitimate;
-  3. a job with no `if:` runs on every cron. It must carry
-     `# multi-cron-ok: <reason>` on its key line or a direct-child line —
-     the reason is REQUIRED, and a negative placeholder ("n/a") does not
-     count, because the reason is the only thing a reviewer can check.
+  3. a job that runs on every cron must carry `# multi-cron-ok: <reason>`
+     on its key line or a direct-child line — the reason is REQUIRED, and a
+     negative placeholder ("n/a") does not count, because the reason is the
+     only thing a reviewer can check. "Runs on every cron" means: no `if:`
+     (or a vacuous `if: always()` / `if: true`) and no `needs:`. A job
+     whose only gate is `needs:` inherits its dependencies' gating — GitHub
+     skips a job whose needed job was skipped — so it is exempt, and it
+     answers no cron of its own. `if: always()` defeats that inheritance,
+     so it counts as running on every cron even beside `needs:`.
 
 The `if:` expressions are GitHub expression syntax, not YAML, so they are
 inspected as strings, narrowly: a job "names" a cron when the cron appears
-as a quoted literal in its `if:`, and the bare event-name test is recognized
+as a quoted literal in its `if:` outside a `!=` comparison (a negated cron
+is the one the job excludes), and the bare event-name test is recognized
 as an `==` between `github.event_name` and the literal `schedule` (either
 operand order, either quote style).
 
@@ -51,6 +59,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     _classification_text,
     _job_blocks,
     is_placeholder_reason,
+    unwrap_expression,
     workflow_triggers,
 )
 
@@ -70,17 +79,54 @@ _BARE_SCHEDULE = re.compile(
     r"|['\"]schedule['\"]\s*==\s*github\.event_name"
 )
 
+# A `github.event.schedule == '<literal>'` comparison, either operand order.
+# What it captures is checked against the DECLARED crons: an equality against
+# a cron the file never declares is a gate that can never fire.
+_SCHEDULE_EQ = re.compile(
+    r"github\.event\.schedule\s*==\s*(?P<q>['\"])(?P<lit>[^'\"]*)(?P=q)"
+    r"|(?P<q2>['\"])(?P<lit2>[^'\"]*)(?P=q2)\s*==\s*github\.event\.schedule"
+)
+
 # An annotation READER (it extracts the reason so a placeholder can be
 # rejected), not a boolean opt-out predicate — the value grammar is this
-# module's own, like `# gate-deps: <paths>`.
-_MARKER_READER = re.compile(rf"#\s*{MARKER}\s*:\s*(?P<reason>[^\r\n]*)$")
+# module's own, like `# gate-deps: <paths>`. The lead mirrors
+# `_linecheck.annotation_re`: the token may follow the `#` directly or after
+# same-line comment text whose last character cannot belong to a token, so a
+# longer slug (`# not-multi-cron-ok:`) never satisfies this marker.
+_MARKER_READER = re.compile(
+    rf"#(?:[^\r\n]*[^\w\r\n-])?{MARKER}\s*:\s*(?P<reason>[^\r\n]*)$"
+)
 
 
 def _names(expr: str, cron: str) -> bool:
     """True when the `if:` expression EXPR names CRON: the cron appears as a
-    quoted literal, whatever the surrounding comparison — so a
-    `contains(fromJSON(...), github.event.schedule)` shape still counts."""
-    return f"'{cron}'" in expr or f'"{cron}"' in expr
+    quoted literal outside a `!=` comparison. The comparison shape is
+    otherwise unconstrained, so `contains(fromJSON(...))` counts — but a
+    negated occurrence names the cron the job EXCLUDES, never coverage."""
+    for quote in ("'", '"'):
+        literal = f"{quote}{cron}{quote}"
+        start = 0
+        while (idx := expr.find(literal, start)) != -1:
+            start = idx + 1
+            before = expr[:idx].rstrip()
+            after = expr[idx + len(literal) :].lstrip()
+            if before.endswith("!=") or after.startswith("!="):
+                continue
+            return True
+    return False
+
+
+def _phantom_literals(expr: str, declared: set[str]) -> list[str]:
+    """The literals EXPR compares `github.event.schedule` equal to that are
+    not in DECLARED — each is a gate that can never fire, usually a typo."""
+    literals = []
+    for match in _SCHEDULE_EQ.finditer(expr):
+        lit = match.group("lit")
+        if lit is None:
+            lit = match.group("lit2")
+        if lit not in declared and lit not in literals:
+            literals.append(lit)
+    return literals
 
 
 def _marker_state(scoped_lines: str) -> tuple[bool, str | None]:
@@ -90,15 +136,17 @@ def _marker_state(scoped_lines: str) -> tuple[bool, str | None]:
     marker is present but its reason is a negative placeholder — the reason is
     the entire point of the marker, because it is the only thing a reviewer
     can actually check."""
+    details = []
     for line in scoped_lines.splitlines():
         match = _MARKER_READER.search(line)
         if not match:
             continue
         reason = match.group("reason").strip().lstrip("#").strip()
-        if is_placeholder_reason(reason):
-            detail = f"states only {reason!r}" if reason else "carries no reason"
-            return True, detail
-        return True, None
+        if not is_placeholder_reason(reason):
+            return True, None
+        details.append(f"states only {reason!r}" if reason else "carries no reason")
+    if details:
+        return True, details[0]
     return False, None
 
 
@@ -130,8 +178,11 @@ def violations(text: str) -> list[tuple[int, str]]:
         for entry in schedule
         if isinstance(entry, dict) and "cron" in entry
     ]
-    if len(crons) < 2:
-        return []  # one cron: `github.event_name == 'schedule'` is unambiguous
+    declared = {cron for cron, _ in crons}
+    if len(declared) < 2:
+        # One distinct cron (however many times listed): the bare
+        # `github.event_name == 'schedule'` gate is unambiguous.
+        return []
     jobs = doc.get("jobs")
     if not isinstance(jobs, dict):
         return []
@@ -143,31 +194,51 @@ def violations(text: str) -> list[tuple[int, str]]:
     for name, cfg in jobs.items():
         if name == "__line__" or not isinstance(cfg, dict):
             continue
-        line = blocks.get(str(name), (1, ""))[0]
-        if cfg.get("if") is not None:
-            expr = str(cfg["if"])
-            named = {cron for cron, _ in crons if _names(expr, cron)}
+        block = blocks.get(str(name))
+        line = block[0] if block else 1
+        expr = None if cfg.get("if") is None else unwrap_expression(cfg["if"])
+        # `always()` and `true` gate nothing, so those jobs are judged as
+        # ungated rather than credited with an `if:` they don't really have.
+        if expr is not None and expr.lower() not in ("always()", "true"):
+            named = {cron for cron in declared if _names(expr, cron)}
             answered |= named
+            for phantom in _phantom_literals(expr, declared):
+                found.append(
+                    (
+                        line,
+                        f"job '{name}' compares `github.event.schedule` to "
+                        f"'{phantom}', a cron this workflow does not declare — "
+                        "the comparison can never be true, so the job never "
+                        "fires on it. Declare that cron, or fix the "
+                        "comparison to one of the declared crons.",
+                    )
+                )
             if not named and _BARE_SCHEDULE.search(expr):
                 # This gate accepts every schedule fire, so it answers every
                 # cron — in exactly the undifferentiated way flagged here.
-                answered.update(cron for cron, _ in crons)
+                answered |= declared
                 found.append(
                     (
                         line,
                         f"job '{name}' gates on `github.event_name == "
                         f"'schedule'` alone, but this workflow declares "
-                        f"{len(crons)} crons and GitHub starts every "
+                        f"{len(declared)} crons and GitHub starts every "
                         "schedule-eligible job on EVERY cron fire — this job "
                         "runs for all of them. Name the cron(s) it answers to "
                         f"instead: `github.event.schedule == '{example}'`.",
                     )
                 )
             continue
-        # No `if:` — every cron fire starts this job; whether that is
-        # deliberate is what the marker records.
-        answered.update(cron for cron, _ in crons)
-        block = blocks.get(str(name))
+        if (expr is None or expr.lower() == "true") and cfg.get("needs"):
+            # A `needs:`-gated job runs only when its needed jobs ran (GitHub
+            # skips it when a dependency was skipped, and a plain `if:` has
+            # success() implied), so their gates decide which crons reach it
+            # and it answers none of its own. `always()` defeats that
+            # inheritance, which is why it does not take this exit.
+            continue
+        # This job starts on EVERY cron fire; whether that is deliberate is
+        # what the marker records.
+        answered |= declared
         present, detail = _marker_state(_classification_text(block[1]) if block else "")
         if detail:
             found.append(
@@ -183,8 +254,9 @@ def violations(text: str) -> list[tuple[int, str]]:
             found.append(
                 (
                     line,
-                    f"job '{name}' has no `if:` in a workflow with "
-                    f"{len(crons)} crons, so every one of them starts it. "
+                    f"job '{name}' has no cron-distinguishing `if:` in a "
+                    f"workflow with {len(declared)} crons, so every one of "
+                    "them starts it. "
                     "Gate it on the cron(s) it answers to (`if: "
                     f"github.event.schedule == '{example}'`), or annotate "
                     f"`# {MARKER}: <reason>` on the job if it genuinely "
@@ -192,18 +264,21 @@ def violations(text: str) -> list[tuple[int, str]]:
                 )
             )
 
+    reported: set[str] = set()
     for cron, cron_line in crons:
-        if cron not in answered:
-            found.append(
-                (
-                    cron_line,
-                    f"cron '{cron}' is declared but no job's `if:` names it — "
-                    "it fires and starts none of the schedule-gated jobs, a "
-                    "schedule nobody answers to. Gate a job on "
-                    f"`github.event.schedule == '{cron}'`, or delete the cron.",
-                )
+        if cron in answered or cron in reported:
+            continue
+        reported.add(cron)
+        found.append(
+            (
+                cron_line,
+                f"cron '{cron}' is declared but no job's `if:` names it — "
+                "it fires and starts none of the schedule-gated jobs, a "
+                "schedule nobody answers to. Gate a job on "
+                f"`github.event.schedule == '{cron}'`, or delete the cron.",
             )
-    return found
+        )
+    return sorted(found)
 
 
 def workflow_files() -> list[Path]:

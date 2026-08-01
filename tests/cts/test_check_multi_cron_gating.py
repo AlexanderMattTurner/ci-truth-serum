@@ -248,6 +248,181 @@ def test_a_flagged_job_does_not_also_cascade_per_cron_findings():
     assert len(cmg.violations(text)) == 1
 
 
+def test_marker_after_other_comment_text_counts():
+    text = _workflow(
+        [CRON_A, CRON_B],
+        [
+            ("eval", None, "# nightly refresh — multi-cron-ok: warms a shared cache"),
+            ("weekly", _named(CRON_B), None),
+        ],
+    )
+    assert cmg.violations(text) == []
+
+
+def test_a_longer_slug_containing_the_token_is_not_the_marker():
+    text = _workflow(
+        [CRON_A, CRON_B],
+        [
+            ("eval", None, "# not-multi-cron-ok: this is a different annotation"),
+            ("weekly", _named(CRON_B), None),
+        ],
+    )
+    assert len(cmg.violations(text)) == 1
+
+
+def test_a_reasoned_marker_wins_over_a_placeholder_on_another_line():
+    text = textwrap.dedent(
+        f"""\
+        on:
+          schedule:
+            - cron: "{CRON_A}"
+            - cron: "{CRON_B}"
+        jobs:
+          eval:  # multi-cron-ok: n/a
+            # multi-cron-ok: a metrics roll-up every schedule should refresh
+            runs-on: ubuntu-latest
+            steps:
+              - run: make
+          weekly:
+            if: {_named(CRON_B)}
+            runs-on: ubuntu-latest
+            steps:
+              - run: make
+        """
+    )
+    assert cmg.violations(text) == []
+
+
+# ── needs: gating is inherited, not run-on-every ─────────────────────────
+def _needs_workflow(needs_if: str = "") -> str:
+    """Two gated jobs and a fan-in `report` job gated only by `needs:`."""
+    if_line = f"    if: {needs_if}\n" if needs_if else ""
+    return (
+        "on:\n"
+        "  schedule:\n"
+        f'    - cron: "{CRON_A}"\n'
+        f'    - cron: "{CRON_B}"\n'
+        "jobs:\n"
+        "  weekly:\n"
+        f"    if: {_named(CRON_A)}\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: make\n"
+        "  monthly:\n"
+        f"    if: {_named(CRON_B)}\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: make\n"
+        "  report:\n"
+        "    needs: [weekly, monthly]\n"
+        f"{if_line}"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: make\n"
+    )
+
+
+def test_a_needs_gated_fan_in_job_needs_no_marker():
+    # GitHub skips a job whose needed job was skipped, so `report` inherits
+    # its dependencies' gating and is not a run-on-every-cron job.
+    assert cmg.violations(_needs_workflow()) == []
+
+
+def test_a_needs_gated_job_answers_no_cron():
+    # Non-vacuity for the inheritance rule's other half: `b` runs only when
+    # `a` ran, so it must not silently mark the second cron as answered.
+    text = textwrap.dedent(
+        f"""\
+        on:
+          schedule:
+            - cron: "{CRON_A}"
+            - cron: "{CRON_B}"
+        jobs:
+          a:
+            if: {_named(CRON_A)}
+            runs-on: ubuntu-latest
+            steps:
+              - run: make
+          b:
+            needs: a
+            runs-on: ubuntu-latest
+            steps:
+              - run: make
+        """
+    )
+    found = cmg.violations(text)
+    assert len(found) == 1
+    assert f"cron '{CRON_B}'" in found[0][1]
+
+
+def test_always_defeats_needs_inheritance():
+    # `if: always()` runs the job even when its needs were skipped, so the
+    # fan-in exemption does not apply and the marker obligation returns.
+    found = cmg.violations(_needs_workflow(needs_if="always()"))
+    assert len(found) == 1
+    assert "'report'" in found[0][1]
+
+
+# ── vacuous gates count as ungated ───────────────────────────────────────
+@pytest.mark.parametrize("expr", ["always()", "${{ always() }}", "true"])
+def test_a_vacuous_gate_is_judged_as_ungated(expr):
+    text = _workflow(
+        [CRON_A, CRON_B],
+        [("eval", expr, None), ("weekly", _named(CRON_B), None)],
+    )
+    found = cmg.violations(text)
+    assert len(found) == 1
+    assert "multi-cron-ok" in found[0][1]
+
+
+def test_a_vacuous_gate_passes_with_a_reasoned_marker():
+    text = _workflow(
+        [CRON_A, CRON_B],
+        [
+            ("eval", "always()", "# multi-cron-ok: a roll-up every schedule wants"),
+            ("weekly", _named(CRON_B), None),
+        ],
+    )
+    assert cmg.violations(text) == []
+
+
+# ── negated and phantom cron literals ────────────────────────────────────
+def test_a_negated_cron_comparison_does_not_name_that_cron():
+    # `!= CRON_A` names the cron the job EXCLUDES; crediting it would mark
+    # the one cron this job never runs on as covered.
+    text = _workflow(
+        [CRON_A, CRON_B],
+        [("eval", f"github.event.schedule != '{CRON_A}'", None)],
+    )
+    messages = [msg for _, msg in cmg.violations(text)]
+    assert len(messages) == 2
+    assert any(f"cron '{CRON_A}'" in msg for msg in messages)
+    assert any(f"cron '{CRON_B}'" in msg for msg in messages)
+
+
+def test_an_undeclared_cron_literal_is_a_finding_on_the_job():
+    # The typo case: the gate compares against a cron the file never
+    # declares, so the job is permanently dead on schedule fires.
+    text = _workflow(
+        [CRON_A, CRON_B],
+        [
+            ("weekly", _named(CRON_A), None),
+            ("eval", "github.event.schedule == '0 6 * * 2'", None),
+        ],
+    )
+    messages = [msg for _, msg in cmg.violations(text)]
+    assert len(messages) == 2
+    assert any("'eval'" in msg and "'0 6 * * 2'" in msg for msg in messages)
+    assert any(f"cron '{CRON_B}'" in msg for msg in messages)
+
+
+def test_a_duplicated_cron_is_still_a_single_schedule():
+    # Two listings of one expression give a job nothing to distinguish, so
+    # the file stays exempt like any single-cron workflow.
+    text = _workflow([CRON_A, CRON_A], [("eval", None, None)])
+    assert cmg.violations(text) == []
+
+
 # ── scope: only multi-cron workflow files ────────────────────────────────
 @pytest.mark.parametrize(
     "on_block",
@@ -316,6 +491,9 @@ _FRAGMENTS = [
     "on: null\n",
     "jobs: {}\n",
     "jobs:\n  a:\n    if: github.event_name == 'schedule'\n",
+    "jobs:\n  a:\n    needs: b\n",
+    "jobs:\n  a:\n    if: always()\n    needs: [b, c]\n",
+    "jobs:\n  a:\n    if: true\n",
     "jobs:\n  a: notamapping\n",
     "jobs: []\n",
     "[]\n",
