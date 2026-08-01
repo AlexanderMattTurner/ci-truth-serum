@@ -33,7 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
     is_test_path,
 )
 from _py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -116,18 +116,20 @@ def violations(text: str) -> list[int]:
     """1-based line numbers of skipif/importorskip calls whose condition does
     binary discovery without a CI guard."""
     physical = lines(text)
-    hits = {
-        node.lineno
+    # Each flagged call's own last line: a reason written beside the condition it
+    # excuses lives inside this span, which is where authors put it.
+    _ends = {
+        node.lineno: (node.end_lineno or node.lineno)
         for tree in trees(text)
         for node in ast.walk(tree)
         if _is_skip_call(node) and _is_unguarded(node)
     }
+    hits = set(_ends)
     return sorted(
         lineno
         for lineno in hits
         if lineno <= len(physical)
-        and not annotated(physical[lineno - 1], OPT_OUT)
-        and not (lineno >= 2 and annotated(physical[lineno - 2], OPT_OUT))
+        and not annotated_near(physical, lineno, OPT_OUT, span_end=_ends.get(lineno))
     )
 
 
