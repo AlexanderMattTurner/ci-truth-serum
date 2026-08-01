@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import annotated_near  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import strip_yaml_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -76,9 +76,7 @@ def violations(text: str) -> list[int]:
             continue
         if not (_TOKEN_KEY.match(bare) and _FALLBACK.search(bare)):
             continue
-        if annotated(line, OPT_OUT) or (
-            idx >= 1 and annotated(lines[idx - 1], OPT_OUT)
-        ):
+        if annotated_near(lines, idx + 1, OPT_OUT):
             continue
         hits.append(idx + 1)
     return hits

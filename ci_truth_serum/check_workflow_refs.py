@@ -82,7 +82,7 @@ from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     text_comments,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
 )
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -220,9 +220,7 @@ def violations(
         cited = _dangling(target, workflows, tracked, in_dot_github)
         if cited is None:
             continue
-        if annotated(raw, _ALLOW) or (
-            lineno >= 2 and annotated(lines[lineno - 2], _ALLOW)
-        ):
+        if annotated_near(lines, lineno, _ALLOW):
             continue
         hits.append((lineno, cited))
     return hits

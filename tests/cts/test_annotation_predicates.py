@@ -175,3 +175,48 @@ def test_the_required_reason_may_not_be_borrowed_from_the_next_line() -> None:
     # Non-vacuity: the same block WITH a same-line reason does suppress, so the
     # assertions above fail on the borrowed reason, not on the fixture's shape.
     assert lc.annotated(f"    # {token}: vendored\n    - run: echo hi\n", token)
+
+
+# ── the WINDOW is SSOT too, not just the matcher ─────────────────────────
+# The matcher above answers "is this line annotated". The window answers "which
+# lines may carry it", and the pack held ~20 open-coded answers: some accepted
+# the line above, some a whole span, some only the flagged line. The same
+# annotation was then honoured by one check and rejected by its neighbour, and
+# an author could not learn the rule once. `annotation_window` is the one
+# answer; reaching for a neighbouring line by hand is how that drifts back.
+_HANDROLLED_WINDOW = re.compile(
+    r"\bannotated\(\s*[\w.]+\[[^\]]*[-+]\s*\d+\s*\]",
+)
+
+
+def _handrolled_windows(src: str) -> list[int]:
+    return [
+        lineno
+        for lineno, line in enumerate(src.splitlines(), 1)
+        if _HANDROLLED_WINDOW.search(line)
+    ]
+
+
+def test_no_hook_hand_rolls_the_annotation_window() -> None:
+    offenders = {
+        name: lines
+        for name, src in _hook_sources().items()
+        if (lines := _handrolled_windows(src))
+    }
+    assert offenders == {}, (
+        "these reach for a neighbouring line by hand instead of asking "
+        f"_linecheck.annotation_window (via annotated_near): {offenders}"
+    )
+
+
+def test_the_handrolled_window_detector_actually_matches() -> None:
+    """Non-vacuity: the detector recognizes the spellings this pack shipped, and
+    stays silent on a same-line check, which is not a window at all."""
+    assert _handrolled_windows("if annotated(lines[lineno - 2], _ALLOW):") == [1]
+    assert _handrolled_windows("start >= 2 and annotated(raw[start - 2], OPT_OUT)") == [
+        1
+    ]
+    assert _handrolled_windows("annotated(physical[lineno - 1], OPT_OUT)") == [1]
+    # Sanctioned: a bare line, a loop variable, and the shared helper.
+    assert _handrolled_windows("if annotated(line, OPT_OUT):") == []
+    assert _handrolled_windows("annotated_near(lines, lineno, OPT_OUT)") == []

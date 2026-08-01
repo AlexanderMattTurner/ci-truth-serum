@@ -66,7 +66,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
 )
 
 OPT_OUT = "pin-exempt"
@@ -417,9 +417,7 @@ def violations(text: str) -> list[int]:
     starts = sorted(widest)
     hits = []
     for index, start in enumerate(starts):
-        if any(
-            annotated(physical, OPT_OUT) for physical in raw[start - 1 : widest[start]]
-        ) or (start >= 2 and annotated(raw[start - 2], OPT_OUT)):
+        if annotated_near(raw, start, OPT_OUT, span_end=widest[start]):
             continue
         # Each download must carry its OWN check: the scan reaches _WINDOW lines
         # past it and stops before the next download, so one checksum can't cover

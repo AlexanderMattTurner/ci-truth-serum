@@ -44,7 +44,7 @@ from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     text_comments,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
 )
 
 _WORD_RE = re.compile(r"\bgraceful(?:ly)?\b", re.IGNORECASE)
@@ -81,9 +81,7 @@ def violations(
         target = raw if prose else comments.get(lineno)
         if target is None or not _WORD_RE.search(target):
             continue
-        if annotated(raw, _ALLOW) or (
-            lineno >= 2 and annotated(lines[lineno - 2], _ALLOW)
-        ):
+        if annotated_near(lines, lineno, _ALLOW):
             continue
         hits.append(lineno)
     return hits

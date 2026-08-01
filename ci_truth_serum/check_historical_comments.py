@@ -39,7 +39,7 @@ from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     text_comments,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
     run_source_checks,
 )
 
@@ -85,10 +85,7 @@ def violations(text: str, comments: dict[int, str] | None = None) -> list[int]:
         body = comments.get(lineno)
         if body is None or not _MARKER_RE.search(body):
             continue
-        if annotated(raw, _ALLOW):
-            continue
-        # The annotation may sit on the line immediately above the comment.
-        if lineno >= 2 and annotated(physical[lineno - 2], _ALLOW):
+        if annotated_near(physical, lineno, _ALLOW):
             continue
         hits.append(lineno)
     return hits

@@ -75,7 +75,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
     run_line_checks,
 )
 
@@ -366,9 +366,7 @@ def violations(text: str) -> list[int]:
         widest[start] = max(widest.get(start, end), end)
     hits = []
     for start, end in sorted(widest.items()):
-        if any(annotated(physical, OPT_OUT) for physical in raw[start - 1 : end]) or (
-            start >= 2 and annotated(raw[start - 2], OPT_OUT)
-        ):
+        if annotated_near(raw, start, OPT_OUT, span_end=end):
             continue
         hits.append(start)
     return hits
