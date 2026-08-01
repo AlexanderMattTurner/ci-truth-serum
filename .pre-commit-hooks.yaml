@@ -497,6 +497,16 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-multi-cron-gating
+  name: "extra: every job in a multi-cron workflow must name its cron"
+  description: GitHub starts every schedule-eligible job on EVERY cron fire, so in a file with two or more crons a job gated on the bare `github.event_name == 'schedule'` (or on nothing) runs for all of them — the observed cost was a paid eval on a schedule nobody asked for, billed silently. Single-cron workflows are exempt.
+  entry: python -m ci_truth_serum.check_multi_cron_gating
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
 - id: check-toolchain-skips
   name: "extra: pytest skips gated on binary discovery must fail (not skip) in CI"
   description: A which()-gated skipif silently zeroes the guarded coverage on a runner missing the tool; demand a CI env guard in the condition.
