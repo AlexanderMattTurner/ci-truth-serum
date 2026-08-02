@@ -68,6 +68,7 @@ Neither is executed code, so a finding is a false positive:
 | `check_substitution_exit_swallow` | no                        | no                      |
 | `check_secret_file_perms`         | no                        | no                      |
 | `check_drift_guards`              | no                        | no                      |
+| `check_argument_exit_swallow`     | no                        | no                      |
 
 The top five fired on one or both probes and were rewritten on the grammar, which
 removed the class rather than the instance. **Every lint in the table now parses**;
@@ -94,6 +95,16 @@ onto the bash grammar before landing. Note which half moved — only "where does
 comment start", the structural question. Judging the PROSE inside that comment
 stays a regex, because English has no grammar here to parse; that is the
 carve-out above, not a second thing to fix.
+
+`check_argument_exit_swallow` is the tenth row and the first one that was written
+on the grammar from the start. It asks three structural questions, and a text
+scan answers each one wrong: is this substitution an ARGUMENT or the right-hand
+side of an assignment (`command` child versus `variable_assignment` child — the
+whole line between this rule and SC2155); is this word the command's NAME or an
+argument (`"$(get_tool)" --flag` is a computed program, not a swallowed
+argument); and is this call executed at all (a call quoted inside a `gb_warn`
+message, or written into a heredoc body, is text). Both probes were run against
+it before it landed, and its suite pins both verdicts.
 
 ## The rule is not about bash
 
