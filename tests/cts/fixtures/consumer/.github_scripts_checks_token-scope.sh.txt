@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# Verify the template-sync token has the 'workflow' scope. Only enforceable for
-# classic PATs; fine-grained PATs and GITHUB_TOKEN don't expose scopes in the
-# API response header.
-#
-# Inputs (env):
-#   TOKEN  GitHub token to inspect
-
 set -euo pipefail
 
-: "${TOKEN:?TOKEN must be set}"
 
 # Capture stderr so a network error gets surfaced instead of silently producing
 # an empty $HEADERS (which would misclassify a classic PAT as fine-grained).

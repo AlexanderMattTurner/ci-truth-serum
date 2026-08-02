@@ -7,11 +7,16 @@ CODE PEOPLE WROTE, which is the only place an over-fire shows up.
 
 The corpus is real shell at named commits:
 
-* `fixtures/consumer/*.txt` — files from AlexanderMattTurner/agent-glovebox. Two are
+* `fixtures/consumer/*.txt` — shell from AlexanderMattTurner/agent-glovebox. One is
   `sbx-kit/image/lib/create-users.sh` at the commit that shipped the defect
-  (`d9992573`) and at the commit that fixed it (`d744f9be`); the other eight are every
-  file in that tree at `dbf665e` whose verdict this change moves. They carry a `.txt`
-  suffix so this repo's own shell hooks do not lint another project's tree.
+  (`d9992573`), byte for byte through line 486, where the hook it writes ends. Only its
+  tail is dropped, because the claim about it is an exact line number (366). The other eight are
+  EXCERPTS of every file in that tree at `dbf665e` whose verdict this change moves:
+  each keeps the file's shebang, its `set -o pipefail` line, and the blank-line-bounded
+  block around each moved verdict, which is what the divergence depends on. Whole files
+  would be 1402 lines to reach 12 of them. Line numbers therefore differ from the
+  originals, and no assertion here uses one. They carry a `.txt` suffix so this repo's
+  own shell hooks do not lint another project's tree.
 * this repo's own tracked shell files.
 * the tree named by `CTS_CONSUMER_TREE`, when the variable is set.
 

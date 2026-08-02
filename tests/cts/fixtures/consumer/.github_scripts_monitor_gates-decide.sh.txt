@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
+set -eo pipefail
+
+#!/usr/bin/env bash
 # Compute the monitor-gate verdicts (perf/armor/stub/live by path diff;
 # eval/heldout/sabotage by PR-title keyword) and write them to GITHUB_OUTPUT.
 # Env: BASE_SHA HEAD_SHA PR_TITLE PERF_REGEX ARMOR_REGEX STUB_REGEX LIVE_REGEX SCREEN_REGEX
-set -eo pipefail
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # No PR context (push to main / workflow_dispatch) means there is no
 # base/head to diff and no PR title to scan — run every gate, matching

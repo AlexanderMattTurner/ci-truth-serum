@@ -40,7 +40,9 @@ def _tested(pipeline: str) -> list[int]:
 # PostToolUse hook out of a `<<'HOOK'` heredoc. Inside that hook, an entire agent tool
 # result reached `printf '%s' "$input" | grep -qiE '<network-failure signatures>'` under
 # `set -uo pipefail`, so a large result exited 141 and the `!` read it as "no signature".
-# Both fixtures are the real file, byte for byte, at the two commits.
+# The fixture is that file at `d9992573`, byte for byte through the end of the hook it
+# writes (line 486). Only the tail beyond that is dropped, so every line number up to
+# and including 366 is the real file's.
 def test_flags_the_consumer_defect_at_the_shipping_commit() -> None:
     """The bad commit's line 366 is the `printf '%s' "$input" | grep -qiE …` line
     inside the generated hook. Reaching it needs all three gaps closed: the heredoc
@@ -54,11 +56,18 @@ def test_flags_the_consumer_defect_at_the_shipping_commit() -> None:
 
 
 def test_consumer_here_string_fix_is_clean() -> None:
-    """The next commit replaced the pipe with a here-string, which is the remedy."""
-    text = (CONSUMER_FIXTURES / "create-users-d744f9be.sh.txt").read_text(
+    """Commit `d744f9be` replaced that pipe with a here-string, which is the remedy.
+    Applying that one edit to the fixture clears the finding, so the check reports the
+    defect and not merely the file."""
+    text = (CONSUMER_FIXTURES / "create-users-d9992573.sh.txt").read_text(
         encoding="utf-8"
     )
-    assert mod.violations(text) == []
+    lines = text.splitlines()
+    pipe, pattern = lines[365].split(" | grep -qiE ", maxsplit=1)
+    producer = pipe.removeprefix("if ! ")
+    assert producer == '''printf '%s' "$input"''', producer
+    lines[365] = f'if ! grep -qiE {pattern.removesuffix("; then")} <<<"$input"; then'
+    assert mod.violations("\n".join(lines) + "\n") == []
 
 
 # --- gap 1: the bounded-producer exemption needs LITERAL arguments ---------------
