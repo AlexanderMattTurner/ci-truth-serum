@@ -36,16 +36,14 @@ jobs:
       issues: write # open/close the release-failure tracking issue (see the final steps)
     steps:
       - name: Checkout
-        # The org PAT, because GITHUB_TOKEN cannot open the release PR: this
+        # The org PAT, because GITHUB_TOKEN cannot open the release PR. This
         # organization keeps "Allow GitHub Actions to create and approve pull
-        # requests" off, so `gh pr create` fails with "GitHub Actions is not
-        # permitted to create or approve pull requests". A PAT acts as its owner
-        # account, which that setting does not restrict, and the PR it opens also
-        # starts the PR checks a GITHUB_TOKEN PR never triggers. This workflow
-        # still pushes only a NEW branch, never the default branch, so it needs no
-        # ruleset bypass. Credentials stay persisted so cut_release's branch push
-        # authenticates. GITHUB_TOKEN remains the fallback for a fork, where there
-        # is no release to cut.
+        # requests" off, so `gh pr create` under GITHUB_TOKEN fails. A PAT acts as
+        # its owner account, which that setting does not restrict, and the PR it
+        # opens starts the PR checks a GITHUB_TOKEN PR never triggers. The push is
+        # still a NEW branch, never the default branch, so no ruleset bypass is
+        # involved. Credentials stay persisted for cut_release's branch push.
+        # GITHUB_TOKEN is the fallback for a fork, which cuts no release.
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0 # zizmor: ignore[artipacked]
         with:
           # Full history so the release branch shares a merge-base with the default
