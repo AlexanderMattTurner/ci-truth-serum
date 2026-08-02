@@ -29,5 +29,7 @@ Only add a fragment for a **user-facing** change (new flag/command, changed
 default, altered security boundary, fixed bug a user could hit). Internal churn
 (test refactors, CI plumbing, comment edits) gets none—same rule as before.
 
+A **version pin bump gets no fragment**. This covers an action SHA pin, a `rev:` in `.pre-commit-config.yaml`, and a CI tool pin in `.github/requirements-ci.txt`. A consumer of this pack reads the checks, not the versions this repo builds them on. The release-readiness run counts pending fragments to decide whether a release is due, so a fragment for each pin bump argues for a release that ships no new behavior. Add a fragment only when the bump changes what a check does.
+
 `pre-commit` validates fragment names and rejects empties; preview the assembled
 result with `node scripts/assemble-changelog.mjs --draft`.
