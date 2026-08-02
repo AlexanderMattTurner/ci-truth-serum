@@ -61,6 +61,7 @@ FUZZ_REQUIRED = {
     "check_inline_run_length": "analyze",
     "check_always_reporter": "check_file",
     "check_required_reporter": "check_file",
+    "check_required_event_closure": "check_file",
     "check_concurrency": "check_file",
     "check_static_concurrency": "check_file",
     "check_cancellable_required_check": "check_file",

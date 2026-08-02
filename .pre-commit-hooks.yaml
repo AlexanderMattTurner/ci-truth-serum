@@ -176,6 +176,16 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-required-event-closure
+  name: "opinionated: every job a required check needs must run on every event it gates"
+  description: GitHub counts a skipped check run as a satisfied required check. A needed job that skips on a gating event turns the check green with no work done.
+  entry: python -m ci_truth_serum.check_required_event_closure
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 - id: check-inline-run-length
   name: "opinionated: enforce externalizing oversized inline run blocks"
   description: Long inline run shell is invisible to shellcheck/shfmt/shellharden.

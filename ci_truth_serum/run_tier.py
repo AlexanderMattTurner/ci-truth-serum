@@ -81,6 +81,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_job_timeout", WORKFLOW),
         ("check_always_reporter", WORKFLOW),
         ("check_required_reporter", WORKFLOW),
+        ("check_required_event_closure", WORKFLOW),
         ("check_inline_run_length", WORKFLOW),
         ("check_concurrency", WORKFLOW),
         ("check_static_concurrency", WORKFLOW),

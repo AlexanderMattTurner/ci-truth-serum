@@ -23,6 +23,9 @@ from tests._helpers import load_hook
 
 always_reporter = load_hook("check_always_reporter.py", "fuzz_always_reporter")
 required_reporter = load_hook("check_required_reporter.py", "fuzz_required_reporter")
+required_event_closure = load_hook(
+    "check_required_event_closure.py", "fuzz_required_event_closure"
+)
 concurrency = load_hook("check_concurrency.py", "fuzz_concurrency")
 static_concurrency = load_hook("check_static_concurrency.py", "fuzz_static_concurrency")
 cancellable_required_check = load_hook(
@@ -54,6 +57,7 @@ unscoped_tool_grant = load_hook(
 WORKFLOW_CHECKS = [
     ("check_always_reporter", always_reporter.check_file, False),
     ("check_required_reporter", required_reporter.check_file, True),
+    ("check_required_event_closure", required_event_closure.check_file, True),
     ("check_concurrency", concurrency.check_file, True),
     ("check_static_concurrency", static_concurrency.check_file, False),
     ("check_cancellable_required_check", cancellable_required_check.check_file, False),
