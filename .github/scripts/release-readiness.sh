@@ -6,9 +6,10 @@
 # section on a fresh `auto-release/vX.Y.Z` branch, then opens a `release`-labelled
 # pull request for that branch. It never pushes to the default branch and needs no
 # ruleset-bypass credential — the release lands only when a human merges the PR,
-# and tag-release.yaml then fires on that merge and cuts the vX.Y.Z tag. The PR
-# rides the job's GITHUB_TOKEN (contents:write for the branch push, pull-requests:
-# write for the PR). release-prep.yaml is the parallel HUMAN path (a maintainer
+# and tag-release.yaml then fires on that merge and cuts the vX.Y.Z tag. The push
+# and the PR ride GH_TOKEN, which the workflow fills from the org PAT: the
+# organization refuses a pull request opened by GITHUB_TOKEN.
+# release-prep.yaml is the parallel HUMAN path (a maintainer
 # labels a hand-made PR); the shared `release` label means an already-open release
 # PR — human or auto — makes this path stand down so the two never collide, and
 # because this path's own PR carries that label, the next scheduled run also stands
@@ -33,7 +34,7 @@ source "$ROOT/bin/lib/release-model-call.bash"
 # them and the run still completes on the deterministic floor when every rung is
 # missing or rejected, so demanding any one of them up front would abort a run
 # that a later rung — or no credential at all — could have finished.
-: "${GH_TOKEN:?GH_TOKEN is not set. The workflow must pass github.token.}"
+: "${GH_TOKEN:?GH_TOKEN is not set. The workflow must pass the org PAT or github.token.}"
 
 ASSEMBLE_CHANGELOG="${ASSEMBLE_CHANGELOG:-$ROOT/scripts/assemble-changelog.mjs}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
@@ -201,8 +202,7 @@ echo "Decision: should_release=$SHOULD_RELEASE bump=$BUMP candidate=v$CANDIDATE"
 # changelog.d/ fragments into a dated CHANGELOG section on a fresh
 # `auto-release/vX.Y.Z` branch, push that branch (an ordinary push — never the
 # default branch, so no ruleset bypass), and open a `release`-labelled PR. A human
-# merges it; tag-release.yaml fires on that merge and cuts the vX.Y.Z tag. The
-# branch push and PR creation both ride the job's GITHUB_TOKEN.
+# merges it; tag-release.yaml fires on that merge and cuts the vX.Y.Z tag.
 cut_release() {
   local others release_date pr_branch
 
@@ -277,6 +277,10 @@ fs.writeFileSync(process.argv[1], JSON.stringify(pkg, null, 2) + "\n");
 
 > $RATIONALE"); then
     echo "Error: pushed '$pr_branch' but failed to open the release PR." >&2
+    echo "       When gh reports 'GitHub Actions is not permitted to create or approve" >&2
+    echo "       pull requests', GH_TOKEN fell back to GITHUB_TOKEN. Set the" >&2
+    echo "       TEMPLATE_SYNC_TOKEN_ORG secret, or turn on the organization setting" >&2
+    echo "       'Allow GitHub Actions to create and approve pull requests'." >&2
     exit 1
   fi
 
