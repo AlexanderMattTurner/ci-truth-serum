@@ -1,0 +1,39 @@
+#!/bin/bash
+set -uo pipefail
+# shellcheck source=lib/msg.bash disable=SC1091
+# shellcheck disable=SC2154  # _now/_n/_w are the trap body's own loop-local vars, assigned inside it
+
+
+for ((round = 1; round <= ROUNDS; round++)); do
+  _purge_template
+  ws="$(_make_ws)" || die "could not create a throwaway git workspace for round $round."
+  WORKSPACES+=("$ws")
+  out="$WORKDIR/round-$round.out"
+  rc=0
+  (
+    cd "$ws" || exit 1
+    env \
+      GLOVEBOX_EXIT_AT_HANDOVER=1 \
+      _GLOVEBOX_NO_PREWARM=1 \
+      GLOVEBOX_WORKSPACE="$ws" \
+      "$LAUNCHER"
+  ) >"$out" 2>&1 || rc=$?
+  if grep -qE "verify-layers: (MISSING|manifest .* is missing)|docker/sbx-releases#366" "$out"; then
+    KEEP_LOGS=1
+    gb_error "round $round REPRODUCED the layer drop (launch rc=$rc) — the gate's report:"
+    grep -E "verify-layers:|#366" "$out" >&2
+    gb_error "full round log kept at: $out"
+    exit 1
+  fi
+  if ((rc != 0)); then
+    # A launch that failed for any OTHER reason proves nothing about the
+    # snapshotter — fail loud rather than certifying the drop absent off a
+    # launch that never booted.
+    gb_error "round $round failed (rc=$rc) WITHOUT the layer-drop signature — fix the launch before trusting this probe. Log tail:"
+    tail -n 40 "$out" >&2
+    exit 1
+  fi
+  gb_info "round $round: reload onto the cached chain verified clean."
+done
+
+gb_info "no layer drop in $ROUNDS rounds on sbx $(sbx version 2>/dev/null | head -n1 || echo '?') — the #366 signature did not reproduce at this count."
