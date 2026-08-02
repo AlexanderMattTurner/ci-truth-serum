@@ -71,6 +71,28 @@ def test_consumer_here_string_fix_is_clean() -> None:
     assert mod.violations("\n".join(lines) + "\n") == []
 
 
+# --- real consumer shell, one extract per gap ------------------------------------
+# Each is verbatim within the range it keeps, from AlexanderMattTurner/agent-glovebox at
+# `dbf665e`. Unit cases pin each rule on shell written to exercise it; these pin the same
+# rules on shell somebody wrote for another purpose, which is where an over-fire shows
+# up. The gap-2 extract has its own test above, which also checks the flagged line's
+# text.
+@pytest.mark.parametrize(
+    ("fixture", "expected"),
+    [
+        # `printf '%s' "$err" | grep -qi … && return 0` in a sourced lib
+        ("bin_lib_docker-probe.bash.txt", [27]),
+        # `$(sbx version | head -n1 || echo '?')` — a widened reader, marker removed
+        ("bin_probe-sbx-erofs-layer-drop.bash.txt", [39]),
+    ],
+)
+def test_verdicts_on_real_consumer_shell(fixture: str, expected: list[int]) -> None:
+    assert (
+        mod.violations((CONSUMER_FIXTURES / fixture).read_text(encoding="utf-8"))
+        == expected
+    )
+
+
 # --- gap 1: the bounded-producer exemption needs LITERAL arguments ---------------
 @pytest.mark.parametrize("producer", sorted(mod._BOUNDED_PRODUCERS))
 def test_every_bounded_producer_keeps_its_exemption_on_a_literal(producer: str) -> None:
