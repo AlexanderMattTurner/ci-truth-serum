@@ -53,6 +53,7 @@ FUZZ_REQUIRED = {
     "check_folded_scalar_comment": "violations",
     "check_gh_slurp_jq": "violations",
     "check_substitution_exit_swallow": "violations",
+    "check_argument_exit_swallow": "violations",
     "check_pinned_downloads": "violations",
     "check_pinned_base_images": "violations",
     "check_versionless_install": "violations",

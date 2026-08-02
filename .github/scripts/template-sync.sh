@@ -328,7 +328,13 @@ if [[ -s "${CONFLICT_FILES}" ]]; then
     printf '\n\n_Conflict report truncated at %d KB. Every conflicted file is listed in .template-sync-conflicts._\n' "$((max_report_bytes / 1000))" >>"${capped}"
     mv "${capped}" "${CONFLICT_REPORT}"
   fi
-  emit_multiline_output "conflict_report" "$(cat "${CONFLICT_REPORT}")"
+  # Read the report into a variable FIRST. A plain assignment reports the
+  # substitution's own exit status, so an unreadable report stops the script
+  # under `set -e`; as an argument to `emit_multiline_output` the same failure
+  # is discarded, and the step would publish an empty conflict report as if the
+  # sync had found nothing to say.
+  conflict_report="$(cat "${CONFLICT_REPORT}")"
+  emit_multiline_output "conflict_report" "${conflict_report}"
   echo "Template updates available for: ${conflicts}" >.template-sync-conflicts
 else
   echo "has_conflicts=false" >>"${GITHUB_OUTPUT}"

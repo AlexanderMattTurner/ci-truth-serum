@@ -46,6 +46,13 @@
   language: python
   types: [shell]
 
+- id: check-argument-exit-swallow
+  name: "honesty: ban a command substitution passed as an argument to a local function"
+  description: '`f "$(cmd)"` discards cmd''s exit status, so `set -e` never stops the script. This is SC2155 one step over, and shellcheck does not report it.'
+  entry: python -m ci_truth_serum.check_argument_exit_swallow
+  language: python
+  types: [shell]
+
 - id: check-pr-paths
   name: "honesty: ban paths/branches filters on pull_request triggers"
   description: A paths or branches filter strands a required check at "Expected — Waiting" forever.

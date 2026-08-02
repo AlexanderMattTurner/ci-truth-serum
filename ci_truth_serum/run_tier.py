@@ -64,6 +64,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_exit_suppression", SHELL),
         ("check_stderr_suppression", SHELL),
         ("check_substitution_exit_swallow", SHELL),
+        ("check_argument_exit_swallow", SHELL),
         ("check_pipefail_grep_pipe", SHELL),
         ("check_folded_scalar_comment", WORKFLOW),
         ("check_gh_slurp_jq", SHELL_OR_WORKFLOW_YAML),

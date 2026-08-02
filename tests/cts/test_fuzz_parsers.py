@@ -33,6 +33,9 @@ pipefail_grep_pipe = load_hook("check_pipefail_grep_pipe.py", "fuzz_pipefail_gre
 substitution_exit_swallow = load_hook(
     "check_substitution_exit_swallow.py", "fuzz_substitution_exit_swallow"
 )
+argument_exit_swallow = load_hook(
+    "check_argument_exit_swallow.py", "fuzz_argument_exit_swallow"
+)
 pinned_downloads = load_hook("check_pinned_downloads.py", "fuzz_pinned_downloads")
 pinned_base_images = load_hook("check_pinned_base_images.py", "fuzz_pinned_base_images")
 versionless_install = load_hook(
@@ -54,6 +57,7 @@ LINE_DETECTORS = {
     "check_stderr_suppression": stderr_suppression.violations,
     "check_pipefail_grep_pipe": pipefail_grep_pipe.violations,
     "check_substitution_exit_swallow": substitution_exit_swallow.violations,
+    "check_argument_exit_swallow": argument_exit_swallow.violations,
     "check_pinned_downloads": pinned_downloads.violations,
     "check_pinned_base_images": pinned_base_images.violations,
     "check_versionless_install": versionless_install.violations,
@@ -116,6 +120,12 @@ _INTERESTING_TOKENS = [
     "# allow-stdio-swap: x",
     "# allow-no-pipefail: x",
     "# allow-substitution-exit: x",
+    "# allow-argument-exit: x",
+    "set -e",
+    "set -euo pipefail",
+    "helper() { :; }",
+    'helper "$(risky)"',
+    'source "${SCRIPT_DIR}/lib.sh"',
     "gh api --slurp --jq . repos/x/y",
     "gh api --paginate --slurp repos/x/y",
     "gh api repos/x/y --slurp \\",
