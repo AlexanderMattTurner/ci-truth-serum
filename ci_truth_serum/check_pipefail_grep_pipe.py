@@ -50,12 +50,19 @@ not a shape this pack has met.
 The script is parsed with tree-sitter-bash (the shared ``_bash_ast`` grammar), so
 what the lint sees is what bash would run: a pipeline wrapped across physical lines
 is ONE pipeline node, and a reader name inside a string or a comment is text.
-Pipefail must be IN EFFECT where the pipeline runs: the first ``set -o pipefail``
-command must precede the pipeline in source order. A pipeline inside a function
-body is gated on pipefail being set anywhere in the file, since the body runs at
-call time. A sourced bash library (no shebang, declaring ``# shellcheck
-shell=bash``) inherits its strict-mode callers' pipefail, so it is treated as
-pipefail-scoped from its first byte.
+Pipefail must be IN EFFECT where the pipeline runs: the first ``set`` command that
+turns it on must precede the pipeline in source order, and that command is read off
+the grammar (``_enables_pipefail``), so a printed string cannot arm the check. A
+pipeline inside a function body is gated on pipefail being set anywhere in the file,
+since the body runs at call time. A sourced bash library (no shebang, declaring
+``# shellcheck shell=bash``) inherits its strict-mode callers' pipefail, so it is
+treated as pipefail-scoped from its first byte.
+
+ONE REGEX ANSWERS A GRAMMAR QUESTION, and it is a deliberate exception. A ``sed``
+script is a language of its own, not shell, so the bash grammar cannot say where its
+commands begin. No ``tree-sitter-sed`` package exists to ask instead, so ``_SED_QUIT``
+matches the quit command by position in the script text. The script itself still
+arrives as a word from the AST, so only its INSIDE is scanned by text.
 
 LIMITATION: the reader set is the external programs this lint can name. A stage
 that is a shell function, or an interpreter running a script that returns early
@@ -75,6 +82,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
+    command_words,
     iter_nodes,
     node_text,
     parse,
@@ -84,13 +92,6 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     annotated_near,
     run_line_checks,
 )
-
-# pipefail turned ON: `set` then a short-flag cluster ending in `o` whose option-argument
-# is `pipefail` (`set -o pipefail`, `set -euo pipefail`, `set -Eeuo pipefail`, `set -eo
-# pipefail -o errexit`). `set +o pipefail` (disable) has `+`, not `-`, so it never
-# matches. Applied only to real `command` nodes from the bash AST, so a "pipefail"
-# mention in a comment or heredoc body can never arm the check.
-_PIPEFAIL_ON = re.compile(r"\bset\b\s+-[A-Za-z]*o\b[^;&|]*\bpipefail\b")
 
 # A sourced bash library carries no shebang and declares `# shellcheck shell=bash`. By
 # convention such a lib is sourced into strict-mode callers and must NOT re-set shell
@@ -168,6 +169,31 @@ _SED_QUIT = re.compile(
         (?:[;}}\n]|$)""",
     re.VERBOSE,
 )
+
+
+def _enables_pipefail(node) -> bool:
+    """True when NODE is a `set` command that turns pipefail ON.
+
+    Read off the grammar, not the command's text. bash gives `-o` its option name in
+    the NEXT word, so this asks for a short-flag cluster ending in `o` (`-o`, `-euo`,
+    `-Eeuo`) followed by the word `pipefail`. `set +o pipefail` DISABLES it and starts
+    with `+`, so it never matches.
+
+    The text scan this replaces read a `command` node's whole source, which meant an
+    ARGUMENT could arm the check: `echo "set -euo pipefail"` prints a string and
+    changes no shell option, and every pipeline after it was judged as though pipefail
+    were on. Whether a token is a command word or a string a command prints is a
+    structural question, and only the grammar answers it."""
+    if _command_name(node) != "set":
+        return False
+    words = [unquote(w) for w in command_words(node)[1:]]
+    return any(
+        word.startswith("-")
+        and not word.startswith("--")
+        and word.endswith("o")
+        and words[index + 1] == "pipefail"
+        for index, word in enumerate(words[:-1])
+    )
 
 
 def _command_name(node) -> str | None:
@@ -333,7 +359,7 @@ def _pipefail_start(text: str, root) -> int | None:
     starts = [
         node.start_byte
         for node in iter_nodes(root, "command")
-        if _PIPEFAIL_ON.search(node_text(node))
+        if _enables_pipefail(node)
     ]
     return min(starts) if starts else None
 

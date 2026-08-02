@@ -1,46 +1,9 @@
-#!/usr/bin/env python3
-"""Ban ``producer | grep -q`` under ``set -o pipefail`` — the SIGPIPE false-negative trap.
+"""FROZEN copy of ci_truth_serum/check_pipefail_grep_pipe.py as it stood before the
+three-gap fix, for the differential in tests/cts/test_pipefail_grep_pipe_migration.py.
 
-``grep -q`` exits 0 the instant it sees the FIRST match and closes its stdin. A producer
-still writing to the pipe then dies with ``SIGPIPE`` (exit 141), and ``pipefail`` surfaces
-that 141 as the pipeline's status — so a genuine MATCH is read as NO-MATCH. It is
-load-dependent: it only bites when the producer is still writing after grep exits (output
-larger than the ~64 KiB pipe buffer), so it passes every small-input test and fires in
-production. The failure is silent and dangerous: a teardown check that verifies a secret
-was removed (``secret_store ls | grep -q "$name"``) can report a still-present credential
-as gone the moment the listing outgrows the buffer.
-
-The fix is to capture the producer into a variable and feed grep a here-string, so grep's
-early exit closes a pipe with no writer behind it::
-
-    out="$(producer)"
-    if grep -q PATTERN <<<"$out"; then …
-
-This flags a pipeline that feeds a producer into ``grep`` with a quiet option (``-q`` in
-any short-flag cluster, or ``--quiet``/``--silent``) while pipefail is in effect. A
-here-string (``grep -q … <<<"$var"``) has no pipe and is NOT flagged — it is the
-remediation.
-
-The script is parsed with tree-sitter-bash (the shared ``_bash_ast`` grammar), so what
-the lint sees is what bash would run: a pipeline wrapped across physical lines (trailing
-``|`` / backslash continuations) is ONE pipeline node, and a ``|`` inside a string,
-comment, or heredoc body is data, never a pipe. Pipefail must actually be IN EFFECT
-where the pipeline runs: the first ``set -o pipefail`` command must precede the pipeline
-in source order — a ``set -o pipefail`` after the pipe (or in dead code below it) does
-not protect it, so it does not clear it. A pipeline inside a function body is gated on
-pipefail being set anywhere in the file, since the body runs at call time, after a later
-``set -o pipefail`` has executed. A sourced bash library (no shebang, declaring
-``# shellcheck shell=bash``) inherits its strict-mode callers' pipefail, so it is
-treated as pipefail-scoped from its first byte.
-
-A producer that is a bounded shell builtin — ``echo``/``printf``/``:`` emitting an
-already-materialized string — is exempt: its single bounded write practically never
-outruns the pipe buffer, and flagging every ``echo "$x" | grep -q`` would drown the real
-signal (streaming external commands, functions, ``git``/``find``/``docker``). A
-genuinely-safe non-builtin producer (output provably tiny/bounded) opts out with a
-same-line or immediately-preceding-line ``# pipefail-grep-ok: <reason>``.
-
-Invoked by pre-commit with the staged shell files as arguments.
+Its decision code is verbatim. Only the module docstring and the `main()`/`__main__`
+CLI tail are dropped, because the differential calls `violations()`, `_is_quiet_grep()`
+and `_producer_is_bounded()` and nothing else. Delete this file with that test.
 """
 
 import re
@@ -51,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
-    run_line_checks,
 )
 
 # pipefail turned ON: `set` then a short-flag cluster ending in `o` whose option-argument
@@ -183,19 +145,3 @@ def violations(text: str) -> list[int]:
                 continue
             hits.add(lineno)
     return sorted(hits)
-
-
-def main(argv: list[str]) -> int:
-    return run_line_checks(
-        argv,
-        violations,
-        "`producer | grep -q` under `set -o pipefail`: grep's early exit SIGPIPEs the "
-        "still-writing producer, and pipefail surfaces exit 141 so a MATCH reads as "
-        'NO-MATCH. Capture first, then here-string: `out="$(producer)"; grep -q PAT '
-        '<<<"$out"`, or annotate `# pipefail-grep-ok: <reason>` when the producer output '
-        "is provably tiny.",
-    )
-
-
-if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))

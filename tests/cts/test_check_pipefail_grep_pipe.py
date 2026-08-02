@@ -40,19 +40,20 @@ def _tested(pipeline: str) -> list[int]:
 # PostToolUse hook out of a `<<'HOOK'` heredoc. Inside that hook, an entire agent tool
 # result reached `printf '%s' "$input" | grep -qiE '<network-failure signatures>'` under
 # `set -uo pipefail`, so a large result exited 141 and the `!` read it as "no signature".
-# The fixture is that file at `d9992573`, byte for byte through the end of the hook it
-# writes (line 486). Only the tail beyond that is dropped, so every line number up to
-# and including 366 is the real file's.
+# The fixture is that file's `deny-annotate.sh` hook at `d9992573`, verbatim from the
+# heredoc opener to the `fi` after the defect, under the file's own first two lines.
+# The defect sits at line 366 of the real file and at line 38 of this 41-line extract.
 def test_flags_the_consumer_defect_at_the_shipping_commit() -> None:
-    """The bad commit's line 366 is the `printf '%s' "$input" | grep -qiE …` line
-    inside the generated hook. Reaching it needs all three gaps closed: the heredoc
+    """Line 38 of the extract is line 366 of the real file: the
+    `printf '%s' "$input" | grep -qiE …` line inside the generated hook. Reaching it needs all three gaps closed: the heredoc
     descent to see the line at all, the literal-argument rule to deny `printf` its
     bounded exemption, and the pipeline's `!` to count as reading the status."""
     text = (CONSUMER_FIXTURES / "create-users-d9992573.sh.txt").read_text(
         encoding="utf-8"
     )
-    assert mod.violations(text) == [366]
-    assert "grep -qiE" in text.splitlines()[365]
+    assert mod.violations(text) == [38]
+    flagged = text.splitlines()[37]
+    assert flagged.startswith("""if ! printf '%s' "$input" | grep -qiE """), flagged
 
 
 def test_consumer_here_string_fix_is_clean() -> None:
@@ -63,32 +64,25 @@ def test_consumer_here_string_fix_is_clean() -> None:
         encoding="utf-8"
     )
     lines = text.splitlines()
-    pipe, pattern = lines[365].split(" | grep -qiE ", maxsplit=1)
+    pipe, pattern = lines[37].split(" | grep -qiE ", maxsplit=1)
     producer = pipe.removeprefix("if ! ")
     assert producer == '''printf '%s' "$input"''', producer
-    lines[365] = f'if ! grep -qiE {pattern.removesuffix("; then")} <<<"$input"; then'
+    lines[37] = f'if ! grep -qiE {pattern.removesuffix("; then")} <<<"$input"; then'
     assert mod.violations("\n".join(lines) + "\n") == []
 
 
 # --- gap 1: the bounded-producer exemption needs LITERAL arguments ---------------
 @pytest.mark.parametrize("producer", sorted(mod._BOUNDED_PRODUCERS))
-def test_bounded_producer_with_literal_arguments_is_exempt(producer: str) -> None:
+def test_every_bounded_producer_keeps_its_exemption_on_a_literal(producer: str) -> None:
     """A builtin writing an already-materialized literal cannot outrun the 64 KiB pipe
-    buffer, so it keeps its exemption. Driven from `_BOUNDED_PRODUCERS`."""
+    buffer. Driven from `_BOUNDED_PRODUCERS`, so dropping a member reds."""
     assert _tested(f"{producer} hello | grep -q x") == []
-
-
-@pytest.mark.parametrize("producer", sorted(mod._BOUNDED_PRODUCERS - {":"}))
-def test_bounded_producer_with_an_expanding_argument_is_flagged(producer: str) -> None:
-    """An argument the shell expands has no size the source can bound: `printf '%s'
-    "$input"` writes as many bytes as `$input` holds. This is the defect that shipped."""
-    assert _tested(f'{producer} "$input" | grep -q x') == [2]
 
 
 @pytest.mark.parametrize(
     "producer",
     [
-        'printf "%s" "$input"',  # a double-quoted expansion
+        'printf "%s" "$input"',  # a double-quoted expansion — the shape that shipped
         "printf %s $input",  # an unquoted expansion
         "echo ${input}",  # a braced expansion
         'echo "$(cat)"',  # a command substitution
@@ -96,21 +90,17 @@ def test_bounded_producer_with_an_expanding_argument_is_flagged(producer: str) -
         'printf "%s" "${input:-}"',  # an expansion with a default
     ],
 )
-def test_every_expanding_argument_shape_denies_the_exemption(producer: str) -> None:
+def test_an_expanding_argument_denies_the_exemption(producer: str) -> None:
+    """An argument the shell expands has no size the source can bound: `printf '%s'
+    "$input"` writes as many bytes as `$input` holds."""
     assert _tested(f"{producer} | grep -q x") == [2]
 
 
 @pytest.mark.parametrize(
     "producer",
-    [
-        "echo hello",
-        "printf '%s\\n' done",
-        'printf "%s" literal',
-        "echo one two three",
-        ":",
-    ],
+    ["printf '%s\\n' done", 'printf "%s" literal', "echo one two three", ":"],
 )
-def test_every_literal_argument_shape_keeps_the_exemption(producer: str) -> None:
+def test_more_literal_argument_shapes_keep_the_exemption(producer: str) -> None:
     assert _tested(f"{producer} | grep -q x") == []
 
 
@@ -474,6 +464,26 @@ def test_non_pipefail_file_is_not_flagged() -> None:
 )
 def test_each_pipefail_spelling_enables_the_gate(setline: str) -> None:
     assert mod.violations(f"#!/bin/bash\n{setline}\n! producer | grep -qF x\n") == [3]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # a command that PRINTS the arming text changes no shell option
+        'echo "set -euo pipefail"',
+        "printf '%s\\n' 'set -o pipefail'",
+        # the words are there but not as one `set` command
+        "set -eu; other -o pipefail",
+        # a `set` that names a different option
+        "set -o errexit",
+        # the option name is not the next word
+        "set -o noglob pipefail",
+    ],
+)
+def test_only_a_real_set_command_arms_the_gate(line: str) -> None:
+    """`_enables_pipefail` reads the grammar, so an argument cannot arm the check. The
+    text scan this replaced saw the whole command's source and armed on all of these."""
+    assert mod.violations(f"#!/bin/bash\n{line}\nif p | grep -q x; then :; fi\n") == []
 
 
 def test_disabling_pipefail_still_flags_when_never_enabled() -> None:

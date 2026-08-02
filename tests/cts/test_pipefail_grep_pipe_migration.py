@@ -7,16 +7,16 @@ CODE PEOPLE WROTE, which is the only place an over-fire shows up.
 
 The corpus is real shell at named commits:
 
-* `fixtures/consumer/*.txt` — shell from AlexanderMattTurner/agent-glovebox. One is
-  `sbx-kit/image/lib/create-users.sh` at the commit that shipped the defect
-  (`d9992573`), byte for byte through line 486, where the hook it writes ends. Only its
-  tail is dropped, because the claim about it is an exact line number (366). The other eight are
-  EXCERPTS of every file in that tree at `dbf665e` whose verdict this change moves:
-  each keeps the file's shebang, its `set -o pipefail` line, and the blank-line-bounded
-  block around each moved verdict, which is what the divergence depends on. Whole files
-  would be 1402 lines to reach 12 of them. Line numbers therefore differ from the
-  originals, and no assertion here uses one. They carry a `.txt` suffix so this repo's
-  own shell hooks do not lint another project's tree.
+* `fixtures/consumer/*.txt` — three pieces of shell from
+  AlexanderMattTurner/agent-glovebox, one per widening cause, each verbatim within the
+  range it keeps. `create-users-d9992573` is the generated hook that carried the defect,
+  from its heredoc opener to the `fi` after it. The other two are the blocks around a
+  moved verdict in `bin/lib/docker-probe.bash` and `bin/probe-sbx-erofs-layer-drop.bash`
+  at `dbf665e`. Line numbers therefore differ from the originals. The whole corpus was
+  10 files and 3058 lines, and 12 of its 13 divergences shared one cause, so those
+  copies bought one fact each. Set `CTS_CONSUMER_TREE` to sweep a real checkout
+  instead. They carry a `.txt` suffix so this repo's own shell hooks do not lint
+  another project's tree.
 * this repo's own tracked shell files.
 * the tree named by `CTS_CONSUMER_TREE`, when the variable is set.
 
@@ -187,12 +187,13 @@ def test_the_change_only_widens_over_this_corpus(divergences) -> None:
 
 
 def test_the_shipped_defect_is_the_headline_divergence(divergences) -> None:
-    """The one line this whole change exists for: `create-users.sh` line 366 at
-    `d9992573`, invisible to the old check because it lived inside a generated hook AND
-    because its `printf '%s' "$input"` producer looked bounded."""
+    """The one line this whole change exists for: line 366 of `create-users.sh` at
+    `d9992573`, which is line 38 of the extract. The old check missed it because it sat
+    inside a generated hook AND because its `printf '%s' "$input"` producer looked
+    bounded."""
     entry = [
         (line, causes)
         for path, line, new_only, causes in divergences
         if path.name.startswith("create-users-d9992573") and new_only
     ]
-    assert entry == [(366, {_GAP_2})]
+    assert entry == [(38, {_GAP_2})]
