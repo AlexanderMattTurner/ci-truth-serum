@@ -56,6 +56,7 @@ Use the `/pr-creation` skill. For contributions to others’ repos, before writi
 - Shell scripts: the shellcheck hook enforces `require-double-brackets` (SC2292)—use `[[ ]]` over `[ ]` in bash/ksh.
 - **Iterating word-split command output under the shared `shellharden` + `shellcheck` hooks**: don’t write `for x in $(cmd)` — `shellharden` auto-quotes `$(cmd)`, killing the split, and `shellcheck` then fails with `SC2066`. Don’t reach for `mapfile`/`readarray` if the script must run on macOS bash 3.2 (it’s bash 4+). Use a portable `while IFS= read -r line; do arr+=("$line"); done < <(cmd)` array, consumed as `"${arr[@]}"`.
 - **Escape every metacharacter class in a single pass when embedding text into a shell/DSL.** Chained `.replace()` calls where a later pass can re-touch an earlier pass’s inserted escape character are the classic source of CodeQL’s _incomplete string escaping_ findings.
+- **Pass a FUNCTION as the replacement to `String.replace`/`replaceAll` and `re.sub`, never a string you built.** Both calls read the replacement as a pattern before they insert it: JavaScript expands `$$`, `$&`, `` $` ``, `$'` and `$1`; Python expands `\1` and `\g<name>`. A function replacer inserts its return value verbatim — `replace(marker, () => insert)`, `re.sub(pattern, lambda _: insert, text)`. A literal you can read in full is fine. The `check-replacement-expansion` hook enforces this; annotate a deliberate case with `allow-replacement-expansion: <reason>`.
 
 ## Self-Critique Loop
 

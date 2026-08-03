@@ -48,6 +48,9 @@ REFERENCING_TEXT = "referencing_text"
 # phrase pass. Its file class is therefore Python plus the JS/TS/shell suites that
 # carry copies-agree tests but no @pytest.mark.
 DRIFT = "drift"
+# check_replacement_expansion reads a call's argument list in two languages, so it
+# takes the source files of both: JS/TS (including JSX/TSX) and Python.
+JS_OR_PYTHON = "js_or_python"
 
 # The file classes whose `#`/`//` comments the comment lints can read, and the
 # prose classes scanned line-by-line.
@@ -101,6 +104,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
     ],
     "extras": [
         ("check_unnamed_regex_groups", PYTHON),
+        ("check_replacement_expansion", JS_OR_PYTHON),
         ("check_global_stdio_swap", PYTHON),
         ("check_claude_model", WORKFLOW),
         ("check_drift_guards", DRIFT),
@@ -144,6 +148,8 @@ def matches(path: str, kind: str) -> bool:
         return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS))
     if kind == REFERENCING_TEXT:
         return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS | {"yaml"}))
+    if kind == JS_OR_PYTHON:
+        return bool(tags & {"python", "javascript", "jsx", "ts", "tsx"})
     if kind == DRIFT:
         return bool(tags & {"python", "javascript", "ts", "shell"})
     return False

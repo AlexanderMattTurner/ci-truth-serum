@@ -145,12 +145,16 @@ export function releaseChangelog({
   }
   const section = `## [${version}] - ${date}`;
   const body = renderBody(fragments);
+  // The replacement is a FUNCTION, never a string: `String.prototype.replace`
+  // expands `$$`, `$&`, "$`", `$'` and `$1` in a replacement string, and a
+  // fragment is arbitrary prose that can contain any of them. A fragment that
+  // quotes a shell `$'…'` string makes `$'` mean "the text after the marker",
+  // which splices the whole rest of CHANGELOG.md into the new section. A
+  // function replacer inserts its return value verbatim.
+  const insert = `${RELEASE_MARKER}\n\n${section}\n\n${body}`;
   writeFileSync(
     path,
-    changelog.replace(
-      RELEASE_MARKER,
-      `${RELEASE_MARKER}\n\n${section}\n\n${body}`,
-    ),
+    changelog.replace(RELEASE_MARKER, () => insert),
   );
   for (const frag of fragments) rmSync(join(dir, frag.name));
   return {

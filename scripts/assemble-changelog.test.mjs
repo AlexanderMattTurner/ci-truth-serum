@@ -220,6 +220,29 @@ describe("releaseChangelog", () => {
     );
   });
 
+  it("inserts fragment text with `$` substitution patterns verbatim", () => {
+    // Every pattern `String.prototype.replace` expands in a replacement string.
+    // `$'` is the damaging one: it stands for the text after the match, so it
+    // copies the rest of CHANGELOG.md into the middle of the new section.
+    const entry =
+      "- a `$'…'` ANSI-C string, `$&`, a backtick pair \"$`\", `$$` and `$1`";
+    const path = changelog();
+    frag("1.fixed.md", entry);
+    releaseChangelog({ cwd, version: "0.5.0", date: "2026-06-14" });
+
+    const out = readFileSync(path, "utf8");
+    assert.ok(out.includes(entry), "fragment text survives byte for byte");
+    assert.equal(
+      out.match(/## \[0\.4\.0\]/g).length,
+      1,
+      "the prior release is not duplicated into the new section",
+    );
+    assert.match(
+      out,
+      /## \[0\.5\.0\] - 2026-06-14\n\n### Fixed\n\n- a `\$'…'`[^\n]*\n\n## \[0\.4\.0\]/,
+    );
+  });
+
   it("honors explicit fragmentsDir and changelogPath overrides", () => {
     const altDir = join(cwd, "frags");
     mkdirSync(altDir);
