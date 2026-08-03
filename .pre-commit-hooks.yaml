@@ -361,6 +361,23 @@
   language: python
   types: [python]
 
+- id: check-replacement-expansion
+  name: "extra: ban an assembled string as a replace() replacement"
+  description: replace() and re.sub() re-parse the replacement for substitution patterns, so a built string that holds $& or \g<0> rewrites the output; pass a function replacer.
+  entry: python -m ci_truth_serum.check_replacement_expansion
+  language: python
+  types_or: [javascript, jsx, ts, tsx, python]
+  # The grammar bindings answer "is this argument the replacement, and does this
+  # template interpolate?" — questions about the tree, not about the text.
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
+
 - id: check-global-stdio-swap
   name: "extra: ban reassigning sys.stdin/stdout/stderr in source Python"
   description: Swapping process-global streams is not thread-safe under concurrency.

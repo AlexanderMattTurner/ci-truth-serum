@@ -121,3 +121,51 @@ def name_of(node: ast.AST) -> str | None:
         prefix = name_of(node.value)
         return f"{prefix}.{node.attr}" if prefix else None
     return None
+
+
+def re_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
+    """How TREE's module reaches ``re``, so an aliased import cannot hide a call.
+
+    Returns (module_names, func_names). ``module_names`` are the local names bound
+    to the module itself (``import re`` -> ``re``; ``import re as x`` -> ``x``).
+    ``func_names`` maps a locally-bound name to the ``re`` function it names
+    (``from re import compile`` -> ``compile: compile``; ``... import sub as s``
+    -> ``s: sub``). Bare ``re`` is always a module name, so a file that calls
+    ``re.sub`` with no visible ``import re`` is still inspected.
+
+    Shared by every lint that matches ``re.*`` calls: one resolver means two lints
+    cannot disagree about which spellings count.
+    """
+    module_names = {"re"}
+    func_names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "re":
+                    module_names.add(alias.asname or "re")
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "re" and node.level == 0:
+                for alias in node.names:
+                    func_names[alias.asname or alias.name] = alias.name
+    return module_names, func_names
+
+
+def re_call_target(
+    func: ast.expr,
+    module_names: set[str],
+    func_names: dict[str, str],
+    wanted: frozenset[str],
+) -> str | None:
+    """The ``re`` function FUNC invokes, when it is one of WANTED, else None.
+
+    Both spellings: the attribute form (``re.sub``, or an alias ``x.sub`` where
+    ``x`` is bound to the module) and the bare-name form (``sub`` imported with
+    ``from re import sub``)."""
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        if func.value.id in module_names and func.attr in wanted:
+            return func.attr
+    elif isinstance(func, ast.Name):
+        mapped = func_names.get(func.id)
+        if mapped in wanted:
+            return mapped
+    return None
