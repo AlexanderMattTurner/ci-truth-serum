@@ -321,6 +321,29 @@ release-canary --pkgbuild aur/PKGBUILD   # a non-default PKGBUILD location
 
 Run it as a post-release workflow step. It then catches two failures the same day rather than at the next release. The first is a publish that died after tagging. The second is a tag push that returned 403 after publishing.
 
+### Apply: find the failures nothing reported with startup-failure-scan
+
+`startup-failure-scan` names the workflows whose runs failed before any job started. GitHub creates a run for a workflow file it cannot load. The run completes, it carries a failure, and it holds zero jobs. Every route that reports a failure needs a job, so this one route reaches nobody:
+
+- a notifier that watches through `on.workflow_run` reports per job, and this run has none to name;
+- an `if: always()` reporter is itself a job, so it never runs, and a required check waits at `Expected — Waiting` instead of turning red;
+- the pre-commit lints in this pack cannot see the file either, because the YAML that a parser accepts is a larger set than the YAML that the Actions loader accepts.
+
+The tool reads run history, so it needs the API and a token. It is not a pre-commit lint, and no tier aggregate runs it. Run it from a weekly health job:
+
+```bash
+pip install "git+https://github.com/AlexanderMattTurner/ci-truth-serum@v1.0.0"
+
+GH_TOKEN=<token-with-actions:read> startup-failure-scan --repo owner/name
+startup-failure-scan --repo owner/name --window-days 14 --format markdown
+```
+
+The scan reads the whole window for each workflow, and not the newest page of it. That matters on a busy repo: a workflow that runs 100 times a day puts 700 runs in a 7-day window, and a scan that read only the first 100 would answer about the last day while the report said a week. It exits non-zero when it finds anything; pass `--report-only` for a job that only publishes the report. `--format markdown` prints a table to paste into a tracking issue. This repo runs the scan every Monday; copy `.github/workflows/startup-failure-scan.yaml` for the whole job, which needs only the `actions: read` permission.
+
+The cost is one request for each 100 completed runs, plus one for each failing run that did not conclude `startup_failure`. A successful run costs nothing. The Actions API stops paginating at 1000 items, so one workflow costs at most 10 listings. A workflow busier than that is the one case the scan cannot read in full, and the report names it and marks its count as a floor.
+
+**The obvious version of this scan reports every repo healthy.** A run that failed to load concludes `startup_failure`, and not `failure`. The `status=` filter on the runs listing matches the conclusion, so `status=failure` never returns one. This tool asks for `status=completed` and classifies each conclusion itself. It leaves out `cancelled` and `skipped`, because a run cancelled in the queue also holds zero jobs and is not a broken file.
+
 ## It complements other tools, it does not replace them
 
 ci-truth-serum enforces policy gaps. Keep running the tools it does not

@@ -1,0 +1,59 @@
+name: Startup failure scan
+
+# Weekly sensor for the one failure shape nothing else in this repo reports: a
+# workflow file the Actions loader rejects. GitHub still creates a run for it,
+# the run still completes with a failure, and the run holds zero jobs.
+#
+# Zero jobs is what makes it invisible. `build-publish-notify.yaml` watches
+# through `on.workflow_run` and reports the job that failed, so a run with no
+# jobs gives it nothing to name. An `if: always()` reporter is a job too, so it
+# never runs, and a required check that depends on it waits at
+# `Expected — Waiting` instead of turning red. The pre-commit lints cannot see
+# it either: the file the loader rejects is a file PyYAML parses happily.
+#
+# `startup-failure-scan` reads run history through the API and names the
+# workflows this happened to. It reads the whole window for each workflow, so a
+# breakage that was fixed earlier in the week is still reported.
+#
+# This workflow cannot report its own startup failure. Nothing can — that is the
+# class. A file change here therefore needs the same review as any other
+# workflow file, and the next scheduled run is what proves the file still loads.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC, one hour after the mutation run
+  workflow_dispatch:
+
+concurrency:
+  # Keyed per ref so a dispatch during a scheduled run does not cancel a report
+  # that is already half-written.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan for runs that started no job
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The runs and jobs listings the scan reads.
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup base environment
+        uses: ./.github/actions/setup-base-env
+
+      # The report goes to the run summary whatever the verdict, and the exit
+      # status decides whether the run is red. Writing the summary first is what
+      # makes a red run explain itself without opening a log.
+      - name: Scan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/startup-failure-scan.sh "${{ github.repository }}"
