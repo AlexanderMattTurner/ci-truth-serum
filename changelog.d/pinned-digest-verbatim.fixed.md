@@ -1,0 +1,1 @@
+- `check-pinned-base-images --fix` now inserts a resolved digest with a function replacer. The digest is text a remote registry sent, and `re.sub` expands `\1` and `\g<name>` in a replacement string, so a hostile digest could rewrite the `FROM` line it pins.

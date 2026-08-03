@@ -204,6 +204,19 @@ def test_fix_text_pins_unpinned(before: str, after: str) -> None:
     assert unfixed == []
 
 
+def test_fix_text_inserts_a_registry_digest_verbatim() -> None:
+    """A digest is remote text, and `re.sub` expands `\\1` / `\\g<name>` in a
+    replacement STRING. The pin must survive one byte for byte."""
+    hostile = "sha256:\\g<0>\\1"
+
+    def resolve(image: str) -> str:
+        return hostile
+
+    new_text, fixed, unfixed = mod.fix_text("FROM node:22\n", resolve=resolve)
+    assert new_text == f"FROM node:22@{hostile}\n"
+    assert fixed == [1] and unfixed == []
+
+
 def test_fix_text_leaves_scratch_stage_and_pinned_untouched() -> None:
     def fail(image: str) -> str:  # must never be called for a non-violation line
         raise AssertionError(f"resolver hit for {image!r}")

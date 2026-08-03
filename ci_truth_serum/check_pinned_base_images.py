@@ -239,7 +239,12 @@ def _pin_from_line(line: str, resolve: Callable[[str], str]) -> str | None:
         return None
     image = tokens[0]
     pinned = f"{image.split('@', 1)[0]}@{resolve(image)}"
-    new_rest = re.sub(rf"(?<!\S){re.escape(image)}(?!\S)", pinned, rest, count=1)
+    # A function replacer, so the digest is inserted verbatim. `resolve` returns
+    # what a remote registry sent, and `re.sub` expands `\1` / `\g<name>` in a
+    # replacement STRING — a digest carrying one would rewrite the FROM line.
+    new_rest = re.sub(
+        rf"(?<!\S){re.escape(image)}(?!\S)", lambda _: pinned, rest, count=1
+    )
     return line[: m.start("rest")] + new_rest
 
 
