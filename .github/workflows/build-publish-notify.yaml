@@ -11,9 +11,11 @@ name: CI failure notify
 # missing from the list fails silently forever. Regenerate the block from that
 # hook's output rather than editing it by hand.
 #
-# The notification is a no-op unless the GH_NTFY_SUBJECT secret is set, so a repo
-# that has not opted in is unaffected. Set GH_NTFY_URL to target a self-hosted
-# ntfy server (defaults to https://ntfy.sh).
+# The notification does nothing unless the GH_NTFY_SUBJECT secret is set, and a
+# repo that has not opted in never goes red for it. That run does carry a
+# `::warning::` annotation which says the failure notified nobody, because a
+# green notifier run is otherwise no evidence that an alert arrived. Set
+# GH_NTFY_URL to target a self-hosted ntfy server (defaults to https://ntfy.sh).
 #
 # The dangerous-triggers finding targets workflows that check out or execute the
 # triggering ref's code with write credentials; this one checks out only its own
