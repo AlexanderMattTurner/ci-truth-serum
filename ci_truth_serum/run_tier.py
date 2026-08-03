@@ -101,6 +101,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_pin_comment_truth", WORKFLOW),
         ("check_stderr_merge_parse", SHELL_OR_WORKFLOW_YAML),
         ("check_echo_fallback", SHELL),
+        ("check_bare_return_status", SHELL),
     ],
     "extras": [
         ("check_unnamed_regex_groups", PYTHON),

@@ -7,8 +7,9 @@ result (the same contract as the sibling fuzz suites).
 Covered here: check_token_fallback, check_workflow_secret_names,
 check_provenance_repo_url (URL normalization), check_pin_comment_truth,
 check_stderr_merge_parse, check_echo_fallback, check_case_default,
-check_soft_timeout, check_lockstep_pins, check_cron_comment,
-check_toolchain_skips, and release_canary's changelog/semver parsing.
+check_soft_timeout, check_bare_return_status, check_lockstep_pins,
+check_cron_comment, check_toolchain_skips, and release_canary's
+changelog/semver parsing.
 """
 
 from hypothesis import given
@@ -26,6 +27,7 @@ stderr_merge = load_hook("check_stderr_merge_parse.py", "fuzz_check_stderr_merge
 echo_fallback = load_hook("check_echo_fallback.py", "fuzz_check_echo_fallback")
 case_default = load_hook("check_case_default.py", "fuzz_check_case_default")
 soft_timeout = load_hook("check_soft_timeout.py", "fuzz_check_soft_timeout")
+bare_return = load_hook("check_bare_return_status.py", "fuzz_check_bare_return_status")
 lockstep = load_hook("check_lockstep_pins.py", "fuzz_check_lockstep_pins")
 cron_comment = load_hook("check_cron_comment.py", "fuzz_check_cron_comment")
 toolchain = load_hook("check_toolchain_skips.py", "fuzz_check_toolchain_skips")
@@ -78,6 +80,16 @@ _TOKENS = [
     'pytest.mark.skipif(shutil.which("jq") is None, reason="r")',
     'pytest.mark.skipif(shutil.which("x") is None and not os.environ.get("CI"), reason="r")',
     "# toolchain-skip-ok: local helper",
+    '[[ -n "$x" ]] && return',
+    '[[ -n "$x" ]] || return',
+    "cmd || return",
+    "(( n > 0 )) || return",
+    "! is_ready || return",
+    "cmd && exit",
+    "return 0",
+    "# allow-bare-return: the caller wants 0",
+    "f() {",
+    "}",
     "## [1.2.3] - 2026-01-01",
     "## Unreleased",
     "1.10.0",
@@ -110,6 +122,7 @@ _LINE_DETECTORS = [
     ("check_echo_fallback", echo_fallback.violations),
     ("check_case_default", case_default.violations),
     ("check_soft_timeout", soft_timeout.violations),
+    ("check_bare_return_status", bare_return.violations),
     ("check_cron_comment", cron_comment.violations),
     ("check_toolchain_skips", toolchain.violations),
 ]
