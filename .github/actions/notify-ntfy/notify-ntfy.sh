@@ -3,23 +3,16 @@
 # instance) when a build or publish workflow fails. Invoked by the notify-ntfy
 # composite action.
 #
-# An unset topic does not fail the run. A repo that did not configure the
-# GH_NTFY_SUBJECT secret must not have the notifier redden its runs. Delivery is
-# best-effort for the same reason: the caller runs this only for a workflow that
-# already failed, and a dead ntfy server must not add a second red.
-#
-# Both paths notify nobody, so each one writes a `::warning::` annotation. The
-# run then shows on its own summary that the alert did not arrive. A line on
-# stderr leaves that fact in a log nobody opens.
+# An unset topic is a silent success: a repo that has not configured the
+# GH_NTFY_SUBJECT secret must not have the notifier redden its runs. Delivery
+# itself is best-effort — a failed POST warns but still exits 0, because the
+# caller invokes this only for an already-failed workflow and a dead ntfy server
+# must not add a second, confusing red.
 set -euo pipefail
 
 topic="${NTFY_TOPIC:-}"
 if [[ -z "$topic" ]]; then
-  # A `::warning::` is what makes this visible. The exit status stays 0, so a repo
-  # that never opted in still does not go red — but the run now carries an
-  # annotation saying the failure reached nobody, instead of leaving that fact on
-  # a stderr line in a log nobody opens.
-  echo "::warning title=ntfy is not configured::GH_NTFY_SUBJECT is unset, so this failure notified nobody."
+  echo "notify-ntfy: GH_NTFY_SUBJECT is unset; skipping notification." >&2
   exit 0
 fi
 
@@ -53,9 +46,6 @@ if curl "${curl_args[@]}"; then
   echo "notify-ntfy: notification sent to ${base_url}/<topic>."
 else
   rc=$?
-  # Same reasoning as the unset topic above, and the same outcome for the reader:
-  # nobody was notified. A dead ntfy server still must not add a second red, so
-  # the exit status stays 0 and the annotation carries the news.
-  echo "::warning title=ntfy delivery failed::curl exited ${rc} for ${base_url}/<topic>, so this failure notified nobody."
+  echo "notify-ntfy: delivery to ${base_url}/<topic> failed (curl rc=${rc}); continuing." >&2
 fi
 exit 0
