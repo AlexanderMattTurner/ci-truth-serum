@@ -33,6 +33,10 @@ sync-required-checks = "ci_truth_serum.sync_required_checks:main"
 # and the changelog's top dated heading all agree (its `npm view` call is the
 # only network touch). Not a pre-commit lint and not in any tier aggregate.
 release-canary = "ci_truth_serum.release_canary:main"
+# Run-history sensor: name the workflows whose runs failed before any job
+# started, the one failure shape no static read of the tree can find. Not a
+# pre-commit lint and not in any tier aggregate.
+startup-failure-scan = "ci_truth_serum.startup_failure_scan:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-xdist", "ruff", "hypothesis>=6"]

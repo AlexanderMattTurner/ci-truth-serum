@@ -110,7 +110,15 @@ FUZZ_REQUIRED = {
 # ``_version`` is not a hook at all: it hands the build backend this repo's own
 # package.json version, and a malformed first-party manifest must crash the build
 # rather than be tolerated, so it has no untrusted-input surface to fuzz.
-_NON_PARSER_HOOKS = {"run_tier", "sync_required_checks", "__init__", "_version"}
+# Orchestrators, not input parsers: each drives the GitHub REST API or dispatches
+# other hooks, so there is no attacker-shaped text for a property to fuzz.
+_NON_PARSER_HOOKS = {
+    "run_tier",
+    "sync_required_checks",
+    "startup_failure_scan",
+    "__init__",
+    "_version",
+}
 
 
 def _strip_comments(source: str) -> str:

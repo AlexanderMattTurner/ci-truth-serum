@@ -30,6 +30,7 @@ on: # zizmor: ignore[dangerous-triggers]
       - "Mutation testing"
       - "Node tests"
       - "Release readiness check"
+      - "Startup failure scan"
       - "Sync from Template"
       - "Sync required status checks"
       - "Tag release (post-merge)"
