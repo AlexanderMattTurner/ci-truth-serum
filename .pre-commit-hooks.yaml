@@ -53,6 +53,14 @@
   language: python
   types: [shell]
 
+- id: check-soft-timeout
+  name: "honesty: ban a `timeout` bound with no SIGKILL escalation"
+  description: "`timeout 60 cmd` sends only SIGTERM, which the command can ignore; it then outlives the bound and the wait it was supposed to end goes on."
+  entry: python -m ci_truth_serum.check_soft_timeout
+  language: python
+  additional_dependencies: [tree-sitter, tree-sitter-bash]
+  types: [shell]
+
 - id: check-pr-paths
   name: "honesty: ban paths/branches filters on pull_request triggers"
   description: A paths or branches filter strands a required check at "Expected — Waiting" forever.

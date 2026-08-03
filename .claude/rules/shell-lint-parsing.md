@@ -69,6 +69,7 @@ Neither is executed code, so a finding is a false positive:
 | `check_secret_file_perms`         | no                        | no                      |
 | `check_drift_guards`              | no                        | no                      |
 | `check_argument_exit_swallow`     | no                        | no                      |
+| `check_soft_timeout`              | no                        | no                      |
 
 The top five fired on one or both probes and were rewritten on the grammar, which
 removed the class rather than the instance. **Every lint in the table now parses**;
@@ -105,6 +106,21 @@ argument (`"$(get_tool)" --flag` is a computed program, not a swallowed
 argument); and is this call executed at all (a call quoted inside a `gb_warn`
 message, or written into a heredoc body, is text). Both probes were run against
 it before it landed, and its suite pins both verdicts.
+
+`check_soft_timeout` is the eleventh row and the second one written on the grammar
+from the start. It asks three structural questions. Is this word a command, or a
+word inside a sentence a command prints (`gb_warn "raise the timeout 60 seconds"`
+holds no words at all, and a printing command's arguments are text)? Is this
+`timeout` the command word, or an argument of another launcher
+(`sbx exec box -- timeout 60 cmd` bounds a program the sandbox starts)? Is this
+token an argument or a redirection (`timeout 60 cmd >&2` — a word scan that kept
+the `>&2` would read it as the bounded command)? A fourth shape is the reason the
+lint exists: `run=(timeout 600)` is a `variable_assignment` whose value is an
+`array`, so there is no command named `timeout` in the tree. A sweep of
+`agent-glovebox` that searched for the COMMAND found 22 sites and missed 9, and
+two of the nine were live defects — a hung package install and a stranded kill
+switch. Both probes were run against it before it landed, and its suite pins both
+verdicts.
 
 ## The rule is not about bash
 
