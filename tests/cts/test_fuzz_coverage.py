@@ -89,6 +89,7 @@ FUZZ_REQUIRED = {
     "check_stderr_merge_parse": "violations",
     "check_echo_fallback": "violations",
     "check_case_default": "violations",
+    "check_soft_timeout": "violations",
     "check_lockstep_pins": "check_pair",
     "check_cron_comment": "violations",
     "check_cron_alert_coverage": "violations",

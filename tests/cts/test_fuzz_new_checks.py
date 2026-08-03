@@ -7,8 +7,8 @@ result (the same contract as the sibling fuzz suites).
 Covered here: check_token_fallback, check_workflow_secret_names,
 check_provenance_repo_url (URL normalization), check_pin_comment_truth,
 check_stderr_merge_parse, check_echo_fallback, check_case_default,
-check_lockstep_pins, check_cron_comment, check_toolchain_skips, and
-release_canary's changelog/semver parsing.
+check_soft_timeout, check_lockstep_pins, check_cron_comment,
+check_toolchain_skips, and release_canary's changelog/semver parsing.
 """
 
 from hypothesis import given
@@ -25,6 +25,7 @@ pin_comment = load_hook("check_pin_comment_truth.py", "fuzz_check_pin_comment_tr
 stderr_merge = load_hook("check_stderr_merge_parse.py", "fuzz_check_stderr_merge_parse")
 echo_fallback = load_hook("check_echo_fallback.py", "fuzz_check_echo_fallback")
 case_default = load_hook("check_case_default.py", "fuzz_check_case_default")
+soft_timeout = load_hook("check_soft_timeout.py", "fuzz_check_soft_timeout")
 lockstep = load_hook("check_lockstep_pins.py", "fuzz_check_lockstep_pins")
 cron_comment = load_hook("check_cron_comment.py", "fuzz_check_cron_comment")
 toolchain = load_hook("check_toolchain_skips.py", "fuzz_check_toolchain_skips")
@@ -63,6 +64,13 @@ _TOKENS = [
     "  : ;;",
     "esac",
     "# case-default-ok: two values",
+    "timeout 60 cmd",
+    "timeout -k 10 60 cmd",
+    'timeout --kill-after=10 "$CAP" cmd',
+    "timeout -s KILL 60 cmd",
+    "run=(timeout 600)",
+    "sudo timeout 300 apt-get update",
+    "# allow-soft-timeout: dpkg holds SIGTERM",
     '- cron: "0 6 * * 1"',
     "# daily",
     "# every 15 minutes",
@@ -101,6 +109,7 @@ _LINE_DETECTORS = [
     ("check_stderr_merge_parse", stderr_merge.violations),
     ("check_echo_fallback", echo_fallback.violations),
     ("check_case_default", case_default.violations),
+    ("check_soft_timeout", soft_timeout.violations),
     ("check_cron_comment", cron_comment.violations),
     ("check_toolchain_skips", toolchain.violations),
 ]
