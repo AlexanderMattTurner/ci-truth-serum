@@ -12,6 +12,7 @@ API for `status=failure`, which is the shape of the bug it exists to find.
 """
 
 import json
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -145,7 +146,7 @@ def test_startup_failure_is_not_reachable_through_a_status_failure_filter():
 
 def test_the_runs_listing_asks_for_completed_not_for_failure(api):
     fake = api(FakeApi(workflows=[], runs={1: ([], 0)}))
-    mod.list_completed_runs(REPO, 1, SINCE, 100, TOKEN)
+    mod.list_completed_runs(REPO, 1, SINCE, TOKEN)
     url = fake.urls[0]
     assert "status=completed" in url
     assert "status=failure" not in url
@@ -195,7 +196,7 @@ def scan_fixture() -> FakeApi:
             workflow(2, "Tests", ".github/workflows/tests.yaml"),
         ],
         runs={
-            1: ([run(11, "startup_failure", "2026-08-01T09:00:00Z")], 597),
+            1: ([run(11, "startup_failure", "2026-08-01T09:00:00Z")], 1),
             2: ([run(21, "success"), run(22, "failure")], 2),
         },
         jobs={22: 4},
@@ -204,44 +205,41 @@ def scan_fixture() -> FakeApi:
 
 def test_scan_reports_only_the_workflow_that_never_started(api):
     api(scan_fixture())
-    findings = mod.scan(REPO, SINCE, 100, TOKEN)
+    findings = mod.scan(REPO, SINCE, TOKEN)
     assert [f.path for f in findings] == [".github/workflows/lint.yaml"]
     assert findings[0].name == "Lint"
     assert findings[0].newest == "2026-08-01T09:00:00Z"
 
 
-def test_a_partly_read_window_is_reported_as_a_floor(api):
+def test_a_window_read_in_full_carries_no_floor_note(api):
     api(scan_fixture())
-    finding = mod.scan(REPO, SINCE, 100, TOKEN)[0]
-    # 597 runs in the window, 1 read: the count below is a floor, not a total.
-    assert finding.truncated is True
-    report = mod.render([finding], 7, 100, markdown=False)
-    assert "read 1 of 597" in report
+    finding = mod.scan(REPO, SINCE, TOKEN)[0]
+    assert finding.truncated is False
+    assert "floor" not in mod.render([finding], 7, markdown=False)
 
 
-def test_a_fully_read_window_carries_no_floor_note():
+def test_a_workflow_past_the_api_ceiling_is_reported_as_a_floor():
+    # The scan reads the whole window, so the only thing that can shorten it is
+    # the API's own pagination ceiling. The count is then a floor, and the report
+    # must say which workflow it could not finish.
     finding = mod.Finding(
         name="Lint",
         path=".github/workflows/lint.yaml",
         runs=[run(11, "startup_failure")],
-        scanned=3,
-        total=3,
+        scanned=mod.MAX_ITEMS,
+        total=7000,
     )
-    assert finding.truncated is False
-    assert "floor" not in mod.render([finding], 7, 100, markdown=False)
+    assert finding.truncated is True
+    report = mod.render([finding], 7, markdown=False)
+    assert "read 1000 of 7000" in report
+    assert "floor" in report
 
 
-def test_the_clean_report_says_nothing_failed():
-    assert "No workflow failed" in mod.render([], 7, 100, markdown=False)
-    assert "No workflow failed" in mod.render([], 7, 100, markdown=True)
-
-
-def test_the_clean_report_states_the_scope_it_actually_read():
-    # A clean answer about the newest 25 runs is not a clean answer about the
-    # window. The report must say which one it gives, or it over-claims.
-    report = mod.render([], 7, 25, markdown=False)
-    assert "newest 25 completed runs" in report
-    assert "last 7 days" in report
+def test_the_clean_report_says_nothing_failed_over_the_whole_window():
+    for markdown in (False, True):
+        report = mod.render([], 7, markdown=markdown)
+        assert "No workflow failed" in report
+        assert "last 7 days" in report
 
 
 def test_the_markdown_report_is_a_table_row_per_workflow():
@@ -252,7 +250,7 @@ def test_the_markdown_report_is_a_table_row_per_workflow():
         scanned=1,
         total=1,
     )
-    report = mod.render([finding], 7, 100, markdown=True)
+    report = mod.render([finding], 7, markdown=True)
     assert (
         "| Lint | `.github/workflows/lint.yaml` | 1 | 2026-08-01T09:00:00Z |" in report
     )
@@ -266,7 +264,7 @@ def test_a_nameless_workflow_falls_back_to_its_path(api):
             runs={1: ([run(11, "startup_failure")], 1)},
         )
     )
-    assert mod.scan(REPO, SINCE, 100, TOKEN)[0].name == ".github/workflows/anon.yaml"
+    assert mod.scan(REPO, SINCE, TOKEN)[0].name == ".github/workflows/anon.yaml"
 
 
 # ─── window arithmetic ───────────────────────────────────────────────────────
@@ -337,11 +335,51 @@ def test_main_rejects_a_window_that_covers_nothing(token_env, days):
         mod.main(["--repo", REPO, "--window-days", days])
 
 
-@pytest.mark.parametrize("limit", ["0", "101"])
-def test_main_rejects_a_per_workflow_limit_one_listing_cannot_serve(token_env, limit):
-    # 101 would silently read 100 and report the window as fully scanned.
-    with pytest.raises(SystemExit, match="between 1 and 100"):
-        mod.main(["--repo", REPO, "--runs-per-workflow", limit])
+# ─── pagination ──────────────────────────────────────────────────────────────
+
+
+class PagedRuns(FakeApi):
+    """A workflow with TOTAL completed runs, served 100 to a page."""
+
+    def __init__(self, total: int):
+        super().__init__()
+        self.total = total
+
+    def __call__(self, url: str, token: str) -> dict:
+        self.urls.append(url)
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        page = int(query["page"][0])
+        start = (page - 1) * mod.PAGE_SIZE
+        batch = [
+            run(start + i, "success")
+            for i in range(min(mod.PAGE_SIZE, max(0, self.total - start)))
+        ]
+        return {"total_count": self.total, "workflow_runs": batch}
+
+
+def test_the_runs_listing_reads_the_whole_window_not_one_page(api):
+    # 700 runs is a workflow at 100 a day over a week. Reading one page would
+    # answer about the newest day and report it as the week.
+    fake = api(PagedRuns(700))
+    runs, total = mod.list_completed_runs(REPO, 1, SINCE, TOKEN)
+    assert (len(runs), total) == (700, 700)
+    assert len(fake.urls) == 7
+
+
+def test_pagination_stops_at_the_api_ceiling(api):
+    # The listing keeps serving full pages past 1000, so without the ceiling the
+    # loop would run until the API cut it off — or forever.
+    fake = api(PagedRuns(7000))
+    runs, total = mod.list_completed_runs(REPO, 1, SINCE, TOKEN)
+    assert (len(runs), total) == (mod.MAX_ITEMS, 7000)
+    assert len(fake.urls) == mod.MAX_ITEMS // mod.PAGE_SIZE
+
+
+def test_a_short_final_page_ends_the_read_without_an_extra_request(api):
+    fake = api(PagedRuns(150))
+    runs, _ = mod.list_completed_runs(REPO, 1, SINCE, TOKEN)
+    assert len(runs) == 150
+    assert len(fake.urls) == 2
 
 
 # ─── the request itself ──────────────────────────────────────────────────────
@@ -382,7 +420,7 @@ def test_an_api_error_propagates_instead_of_reporting_a_clean_repo(monkeypatch):
 
     monkeypatch.setattr(mod, "github_request", boom)
     with pytest.raises(urllib.request.URLError):
-        mod.scan(REPO, SINCE, 100, TOKEN)
+        mod.scan(REPO, SINCE, TOKEN)
 
 
 def test_the_created_filter_is_url_encoded():

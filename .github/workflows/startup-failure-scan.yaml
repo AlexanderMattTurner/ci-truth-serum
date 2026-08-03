@@ -12,8 +12,8 @@ name: Startup failure scan
 # it either: the file the loader rejects is a file PyYAML parses happily.
 #
 # `startup-failure-scan` reads run history through the API and names the
-# workflows this happened to. It spends one run listing per workflow, so its
-# cost tracks the number of workflows and not the number of runs.
+# workflows this happened to. It reads the whole window for each workflow, so a
+# breakage that was fixed earlier in the week is still reported.
 #
 # This workflow cannot report its own startup failure. Nothing can — that is the
 # class. A file change here therefore needs the same review as any other

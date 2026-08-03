@@ -338,9 +338,9 @@ GH_TOKEN=<token-with-actions:read> startup-failure-scan --repo owner/name
 startup-failure-scan --repo owner/name --window-days 14 --format markdown
 ```
 
-The scan spends one run listing per workflow, so its cost tracks the number of workflows and not the number of runs. It exits non-zero when it finds anything; pass `--report-only` for a job that only publishes the report. `--format markdown` prints a table to paste into a tracking issue. This repo runs the scan every Monday; copy `.github/workflows/startup-failure-scan.yaml` for the whole job, which needs only the `actions: read` permission.
+The scan reads the whole window for each workflow, and not the newest page of it. That matters on a busy repo: a workflow that runs 100 times a day puts 700 runs in a 7-day window, and a scan that read only the first 100 would answer about the last day while the report said a week. It exits non-zero when it finds anything; pass `--report-only` for a job that only publishes the report. `--format markdown` prints a table to paste into a tracking issue. This repo runs the scan every Monday; copy `.github/workflows/startup-failure-scan.yaml` for the whole job, which needs only the `actions: read` permission.
 
-A clean report states the scope it read. The scan reads the newest runs of each workflow, so it answers about those runs and never claims the whole window. When a workflow with a finding ran more times than the scan read, the report marks the count as a floor.
+The cost is one request for each 100 completed runs, plus one for each failing run that did not conclude `startup_failure`. A successful run costs nothing. The Actions API stops paginating at 1000 items, so one workflow costs at most 10 listings. A workflow busier than that is the one case the scan cannot read in full, and the report names it and marks its count as a floor.
 
 **The obvious version of this scan reports every repo healthy.** A run that failed to load concludes `startup_failure`, and not `failure`. The `status=` filter on the runs listing matches the conclusion, so `status=failure` never returns one. This tool asks for `status=completed` and classifies each conclusion itself. It leaves out `cancelled` and `skipped`, because a run cancelled in the queue also holds zero jobs and is not a broken file.
 
