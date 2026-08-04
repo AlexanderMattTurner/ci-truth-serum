@@ -3,23 +3,19 @@
 
 const fs = require("fs");
 
-const DEFAULT_PHONE_HOME_DIR = "/tmp/phone-home";
+const PHONE_HOME_DIR = "/tmp/phone-home";
 
 /**
  * Submit extracted lessons as an issue on the template repository.
  *
- * Reads lessons.txt from $PHONE_HOME_DIR (default /tmp/phone-home) — the same
- * directory phone-home-extract.js wrote it to.
- *
  * Called by the phone-home workflow via actions/github-script.
  * Expects PR_TITLE, PR_URL, SOURCE_REPO, and TEMPLATE_REPO env vars.
  *
- * @param {object}  params
- * @param {{ rest: { issues: { create(p: object): Promise<{data: {html_url: string, number: number}}>; addLabels(p: object): Promise<void> } } }} params.github
+ * @param {object} params
+ * @param {object} params.github - Authenticated Octokit client
  */
 module.exports = async ({ github }) => {
-  const phoneHomeDir = process.env.PHONE_HOME_DIR || DEFAULT_PHONE_HOME_DIR;
-  const lessons = fs.readFileSync(`${phoneHomeDir}/lessons.txt`, "utf8");
+  const lessons = fs.readFileSync(`${PHONE_HOME_DIR}/lessons.txt`, "utf8");
   const prTitle = process.env.PR_TITLE;
   const prUrl = process.env.PR_URL;
   const repo = process.env.SOURCE_REPO;
@@ -29,6 +25,32 @@ module.exports = async ({ github }) => {
     throw new Error(
       "Missing required env vars: PR_TITLE, PR_URL, SOURCE_REPO, TEMPLATE_REPO must all be set",
     );
+  }
+
+  const title = `[phone-home] ${prTitle}`;
+  const [templateOwner, templateRepoName] = templateRepo.split("/");
+
+  // A job re-run (e.g. after a transient createLabel/addLabels failure) would
+  // otherwise re-submit the same PR's lessons as a second, duplicate issue —
+  // dedup on open issues with the same title before creating a new one.
+  try {
+    const openIssues = await github.paginate(github.rest.issues.listForRepo, {
+      owner: templateOwner,
+      repo: templateRepoName,
+      state: "open",
+      labels: "phone-home",
+      per_page: 100,
+    });
+    const existing = openIssues.find(
+      (issue) => !issue.pull_request && issue.title === title,
+    );
+    if (existing) {
+      console.log(`Issue already exists for this PR: ${existing.html_url}`);
+      return;
+    }
+  } catch (error) {
+    console.log(`Could not check for an existing issue: ${error.message}`);
+    console.log("This is expected if TEMPLATE_SYNC_TOKEN is not configured.");
   }
 
   const issueBody = [
@@ -45,13 +67,12 @@ module.exports = async ({ github }) => {
     `*Automatically submitted by the phone-home workflow from \`${repo}\`.*`,
   ].join("\n");
 
-  const [templateOwner, templateRepoName] = templateRepo.split("/");
   let issue;
   try {
     issue = await github.rest.issues.create({
       owner: templateOwner,
       repo: templateRepoName,
-      title: `[phone-home] ${prTitle}`,
+      title,
       body: issueBody,
     });
     console.log(`Created issue on template repo: ${issue.data.html_url}`);

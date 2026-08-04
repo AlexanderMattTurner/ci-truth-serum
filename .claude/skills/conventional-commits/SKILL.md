@@ -8,27 +8,27 @@ description: >
   Also activate when task instructions say to commit when done.
 ---
 
-# Conventional Commits Skill
+# Conventional Commits Skill
 
 ## Workflow
 
-### 1. Review Changes
+### 1. Review Changes
 
-Run in parallel: `git status`, `git diff`, `git diff --cached`, `git log --oneline -5`
+Run in parallel: `git status`, `git diff`, `git diff --cached`, `git log --oneline -5`
 
-### 2. Stage Files
+### 2. Stage Files
 
-Stage by name—never `git add -A` or `git add .`. Skip secrets (`.env`, credentials). If changes span unrelated areas, ask user whether to split into multiple commits.
+Stage by name rather than reaching for `git add -A`/`git add .` reflexively — but stage the COMPLETE set of files you intend to commit, because a partial stage is what exposes unstaged edits to the lint-staged stash hazard (`CLAUDE.md` → Git Workflow). Skip secrets (`.env`, credentials). If changes span unrelated areas, ask user whether to split into multiple commits.
 
 ### 3. Commit
 
 Format: `<type>(<optional scope>): <imperative lowercase description>`
 
 - Allowed types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`, `style`, `perf`, `build`
-- Under 72 chars, no trailing period
+- Under 72 chars, no trailing period
 - Add `!` for breaking changes: `feat!: remove legacy API`
 - Optional body (blank line after subject) for the **why**
-- Use HEREDOC for multi-line messages:
+- Use HEREDOC for multi-line messages:
 
 ```bash
 git commit -m "$(cat <<'EOF'
@@ -41,4 +41,8 @@ EOF
 
 ### 4. Verify
 
-If commitlint rejects the message, fix and create a **new** commit (don’t amend). Confirm hash and message to the user.
+If commitlint rejects the message, fix and create a **new** commit (don’t amend). Confirm hash and message to the user.
+
+## Watch the clock
+
+**Time every `git commit` and `git push`, and say so when one drags past ~60s.** Run them so the elapsed time lands in the tool output — `start=$SECONDS; git push -u origin <branch>; echo "elapsed=$((SECONDS - start))s"`. A slow git call is otherwise invisible: the tool result reads identically at 3s and at 4 minutes, so a minutes-long stall gets absorbed into "committed and pushed" and nobody learns the hook suite has rotted. Over the threshold, report the command, the elapsed seconds, and the cause you **diagnosed** — "git was slow" is not a diagnosis. A repeat offender is a defect to root-cause, exactly like a CI flake.

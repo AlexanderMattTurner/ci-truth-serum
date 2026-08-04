@@ -5,8 +5,8 @@ whether the in-flight tool call is a self-repair edit on a hook file.
 
 Reads the PreToolUse JSON from stdin and prints two lines: tool_name,
 then the absolute file path (or an empty line if none). On any parse
-failure, exits 0 with empty output so safe-launch falls through to the
-fail-safe "ask" default.
+failure, or if the parsed JSON is not an object, exits 0 with empty
+output so safe-launch falls through to the fail-safe "ask" default.
 """
 
 import json
@@ -22,9 +22,16 @@ def main() -> int:
         data = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, ValueError):
         return 0
+    if not isinstance(data, dict):
+        return 0
     name = data.get("tool_name", "") or ""
     tool_input = data.get("tool_input", {}) or {}
     path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+    # MultiEdit carries an array of edits; use the first entry's file_path.
+    if not path and name == "MultiEdit":
+        edits = tool_input.get("edits") or []
+        if edits and isinstance(edits, list) and isinstance(edits[0], dict):
+            path = edits[0].get("file_path") or ""
     if path and not os.path.isabs(path):
         path = os.path.join(project_dir, path)
     print(name)
