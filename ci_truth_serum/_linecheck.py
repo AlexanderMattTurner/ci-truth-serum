@@ -307,6 +307,16 @@ def run_line_checks(
     return run_source_checks(argv, lambda text, _path: find_violations(text), message)
 
 
+# This module is loaded BY PATH (the check scripts, and tests/_helpers.load_hook),
+# so a sibling import needs this directory on the path first — the same prelude
+# every check script carries.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    UnparseableShellError,
+    assert_parseable,
+)
+
+
 def run_source_checks(
     argv: list[str],
     find_violations: Callable[[str, str], list[int]],
@@ -329,6 +339,12 @@ def run_source_checks(
     one argument *is* the exact artifact under test: an unparseable workflow
     there is reported as a violation, since "no findings" would be a false-green
     on the very file being verified.
+
+    A file the GRAMMAR cannot read gets that same treatment, and for the same
+    reason: `UnparseableShellError` says the detector never saw the constructs it
+    matches on, so its empty result is not a pass. Reporting it here rather than
+    letting it escape keeps one unparsed line from failing a whole pre-commit run
+    with a traceback, while still refusing to call the file clean.
     """
     status = 0
     for path in argv:
@@ -337,7 +353,15 @@ def run_source_checks(
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
             continue
-        for lineno in find_violations(text, path):
+        try:
+            if is_shell_source(path, text.split("\n", 1)[0]):
+                assert_parseable(text)
+            hits = find_violations(text, path)
+        except UnparseableShellError as err:
+            print(f"{path}: {err}", file=sys.stderr)
+            status = 1
+            continue
+        for lineno in hits:
             print(f"{path}:{lineno}: {message}", file=sys.stderr)
             status = 1
     return status
