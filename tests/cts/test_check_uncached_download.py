@@ -47,6 +47,7 @@ def _messages(path: Path) -> list[str]:
         ("uv tool install pre-commit==4.6.1", "pre-commit==4.6.1"),
         ("npm install -g @anthropic-ai/claude-code@2.1.201", "claude-code@2.1.201"),
         ("npm install --prefix /tmp/j '@jazzer.js/core@4.0.0'", "core@4.0.0"),
+        ("yarn global add pre-commit@4.6.1", "pre-commit@4.6.1"),
         (
             "curl -fsSL -o t https://github.com/o/r/releases/download/v2.12.0/t",
             "releases/download/v2.12.0/t",
@@ -63,6 +64,7 @@ def _messages(path: Path) -> list[str]:
         "uv-tool",
         "npm-global",
         "npm-prefix",
+        "yarn-global",
         "curl",
         "curl-var",
         "sudo-curl",
@@ -153,6 +155,10 @@ def test_a_setup_action_with_caching_off_does_not_exempt_the_job(tmp_path):
         "npm install -g prettier@latest",
         "docker pull ubuntu:24.04",
         "curl -fsSL -o t https://example.com/latest/t",
+        'curl -O "https://host/${GITHUB_SHA}/tool"',
+        'curl -O "https://host/${GITHUB_REF_NAME}/tool"',
+        'curl -O "https://host/${RUNNER_ARCH_REF}/tool"',
+        "yarn add pre-commit@4.6.1",
         "npm install",
         "pip install -r requirements.txt",
         "echo 'pip install ruff==0.14.0'",
@@ -165,6 +171,10 @@ def test_a_setup_action_with_caching_off_does_not_exempt_the_job(tmp_path):
         "npm-latest",
         "docker-pull",
         "unpinned-url",
+        "github-sha-url",
+        "github-ref-url",
+        "runner-var-url",
+        "yarn-local-add",
         "local-npm-install",
         "requirements-file",
         "inside-a-message",
@@ -173,9 +183,11 @@ def test_a_setup_action_with_caching_off_does_not_exempt_the_job(tmp_path):
 )
 def test_what_this_lint_leaves_alone(tmp_path, script):
     """An unpinned download has no stable cache key, so flagging it would be an
-    unfixable finding — check-versionless-install owns that class. A local `npm
-    install` records its pins in package.json. A string a command prints, and a
-    comment, are not commands at all."""
+    unfixable finding — check-versionless-install owns that class. A local `npm`
+    or `yarn` install records its pins in package.json. A URL built from the
+    runner's own $GITHUB_SHA / $GITHUB_REF_NAME changes on every run, so no cache
+    key could track it either. A string a command prints, and a comment, are not
+    commands at all."""
     assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
 
 

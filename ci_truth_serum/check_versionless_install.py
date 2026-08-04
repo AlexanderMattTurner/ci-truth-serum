@@ -195,7 +195,28 @@ _NOT_A_REGISTRY_SPEC = re.compile(
     r"|\.(?:whl|deb|tar\.gz|tgz|tar\.bz2|zip)$"
 )
 
-_GLOBAL_FLAG = re.compile(r"^(?:-\w*g\w*|--global)$")
+# PROBLEM CLASS — "does this Node install write somewhere a lockfile covers?"
+# A local `npm install` records its range in package.json, so the version is
+# pinned there and a cache keyed on the lockfile already covers it. An install
+# that lands anywhere else pins nowhere and caches nowhere. Two checks ask this
+# same question — this one about the pin, check_uncached_download about the
+# cache — so both ask it HERE, of one definition.
+_GLOBAL_FLAG = re.compile(r"^(?:-\w*g\w*|--global|--prefix)$")
+
+
+def writes_outside_the_lockfile(tokens: list[str], index: int) -> bool:
+    """True when the Node install at TOKENS[INDEX] lands outside the project tree.
+
+    Two spellings say so, and they sit on opposite sides of the install verb: a
+    flag among the install's own arguments (`-g`, `--global`, `--prefix <dir>`),
+    and the `global` SUBCOMMAND WORD, which comes BEFORE the verb
+    (`yarn global add pkg`) and so is invisible to a scan that reads only the
+    arguments after it.
+    """
+    return "global" in tokens[:index] or any(
+        _GLOBAL_FLAG.match(token) for token in tokens[index:]
+    )
+
 
 # The shells whose `-c` argument is a script, and the commands whose arguments are
 # code by definition. A string reached this way is parsed as its own script — the
@@ -331,12 +352,9 @@ def _install_spans(root) -> list[tuple[int, int]]:
             continue
         family, index = found
         rest = args[index:]
-        # Only a GLOBAL Node install pins nowhere; a local one records its range in
-        # package.json. `yarn global add` says so in the command words themselves.
-        if family == NODE and not (
-            "global" in tokens[:index]
-            or any(_GLOBAL_FLAG.match(token) for token in tokens[index:])
-        ):
+        # Only an out-of-tree Node install pins nowhere; a local one records its
+        # range in package.json.
+        if family == NODE and not writes_outside_the_lockfile(tokens, index):
             continue
         if spec_scan(rest, family)[1]:
             spans.append((command.start_point[0] + 1, command.end_point[0] + 1))

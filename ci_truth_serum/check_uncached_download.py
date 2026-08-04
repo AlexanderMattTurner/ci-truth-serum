@@ -72,6 +72,7 @@ from check_versionless_install import (  # noqa: E402,I001  # pylint: disable=wr
     NODE,
     _find_install,
     spec_scan,
+    writes_outside_the_lockfile,
 )
 
 REPO_ROOT = Path.cwd()
@@ -107,16 +108,19 @@ _ALWAYS_CACHING_ACTIONS = ("Swatinem/rust-cache",)
 # download has no stable cache key and this lint must leave it alone.
 _FLOATING = re.compile(r"[=@](?:latest|next|stable|\*|main|master)$", re.IGNORECASE)
 
-# A node install writes outside the workspace — and therefore pins nowhere a
-# lockfile would cover — when it is global or aimed at its own prefix.
-_OUT_OF_TREE_NODE = re.compile(r"^(?:-\w*g\w*|--global|--prefix)$")
-
 _DOWNLOADERS = frozenset({"curl", "wget"})
 # A URL whose path carries a concrete release: a `v1.2.3` style segment, or a
 # shell variable whose NAME says it holds one. Without that the fetch resolves to
 # whatever the host serves today, which no cache key can track.
+#
+# GITHUB_* and RUNNER_* are excluded because they are the runner's OWN context
+# variables, and the ones whose names end in REF or SHA hold a different value on
+# every run — $GITHUB_SHA is this commit, $GITHUB_REF_NAME is this branch. A URL
+# built from one changes per run, so a cache keyed on it could never restore, and
+# flagging it would contradict the "not a version" exclusion above.
 _PINNED_URL = re.compile(
-    r"^https?://.*(?:/v?\d+\.\d+[\w.+-]*/|\$\{?\w*(?:VERSION|RELEASE|TAG|REF|SHA)\w*)",
+    r"^https?://.*(?:/v?\d+\.\d+[\w.+-]*/"
+    r"|\$\{?(?!(?:GITHUB|RUNNER)_)\w*(?:VERSION|RELEASE|TAG|REF|SHA)\w*)",
     re.IGNORECASE,
 )
 
@@ -163,7 +167,7 @@ def _pinned_install(tokens: list[str], args: list) -> list[str]:
     if not invocation:
         return []
     family, index = invocation
-    if family == NODE and not any(_OUT_OF_TREE_NODE.match(t) for t in tokens[index:]):
+    if family == NODE and not writes_outside_the_lockfile(tokens, index):
         return []  # a local install is covered by the lockfile and setup-node's cache
     pinned, unpinned = spec_scan(args[index:], family)
     if unpinned:
