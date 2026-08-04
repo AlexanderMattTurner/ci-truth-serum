@@ -242,7 +242,7 @@ jobs:
           claude_args: >-
             --effort medium
             --setting-sources user
-            --allowedTools "Read,Grep,Glob,Write"
+            --allowedTools "Read(./**),Read(/${{ runner.temp }}/pr-input/**),Edit(/${{ runner.temp }}/pr-input/review.json)"
             --add-dir "${{ runner.temp }}/pr-input"
           prompt: |
             You are the automated reviewer for PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
@@ -421,7 +421,7 @@ jobs:
           model: claude-sonnet-5
           claude_args: >-
             --setting-sources user
-            --allowedTools "Read,Grep,Glob,Write"
+            --allowedTools "Read(./**),Read(/${{ runner.temp }}/pr-input/**),Edit(/${{ runner.temp }}/pr-input/merge-review.md)"
             --add-dir "${{ runner.temp }}/pr-input"
           prompt: |
             You are the merge-delta reviewer for PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
@@ -563,7 +563,7 @@ jobs:
           model: claude-haiku-4-5-20251001
           claude_args: >-
             --setting-sources user
-            --allowedTools "Read,Grep,Glob,Write"
+            --allowedTools "Read(./**),Read(/${{ runner.temp }}/pr-input/**),Edit(/${{ runner.temp }}/pr-input/verdicts.json)"
             --add-dir "${{ runner.temp }}/pr-input"
           prompt: |
             You are the review-thread resolver for PR #${{ github.event.pull_request.number }} in ${{ github.repository }}.
