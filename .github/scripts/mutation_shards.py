@@ -23,11 +23,18 @@ automatically gets its own shard — and, because every shard's oracle is
 ``test_<module>.py``, a module without that suite fails expansion loudly rather
 than shipping an unmutated-or-untested slice.
 
+Each shard also carries a ``hash`` of its own inputs, which the workflow uses as
+the exact cache key for the shard's cosmic-ray session (see ``shard_inputs``).
+That is what makes the run incremental: a push re-runs the shards for the
+modules it touched and restores the verdicts of the rest.
+
 Usage:
     python .github/scripts/mutation_shards.py              # print shard matrix JSON
     python .github/scripts/mutation_shards.py --write-config <id>  # write cosmic-ray.shard.toml
 """
 
+import ast
+import hashlib
 import json
 import math
 import sys
@@ -52,6 +59,30 @@ TEST_DIR = "tests/cts"
 # cap a module is a single shard whose id is the bare module stem.
 SPLIT_EVERY_LINES = 150
 
+# Files every shard's oracle loads whichever module it mutates: the pytest
+# conftest, the shared test helpers, and the fixture tree the example suites
+# read. A change to any of them can change a mutant's verdict, so they are
+# inputs to every shard's hash.
+SHARED_TEST_INPUTS = (
+    "tests/__init__.py",
+    "tests/conftest.py",
+    "tests/_helpers.py",
+    f"{TEST_DIR}/__init__.py",
+)
+SHARED_TEST_DIRS = (f"{TEST_DIR}/fixtures",)
+# The harness a shard runs through: the config every shard config derives from,
+# the interpreter and dependency pins the oracle runs under, and the two scripts
+# that plan and execute a shard. A change to any of them can change what a
+# mutant does, so it must invalidate every session.
+HARNESS_INPUTS = (
+    CONFIG,
+    "pyproject.toml",
+    "uv.lock",
+    ".python-version",
+    ".github/scripts/mutation_shards.py",
+    ".github/scripts/run-mutation-shard.sh",
+)
+
 
 def _base_config(repo_root: Path) -> dict:
     return tomllib.loads((repo_root / CONFIG).read_text(encoding="utf-8"))
@@ -65,6 +96,96 @@ def _test_file(stem: str) -> str:
     return f"{TEST_DIR}/test_{stem.lstrip('_')}.py"
 
 
+def _direct_dependencies(repo_root: Path, module: str) -> set[str]:
+    """The package's own modules that MODULE imports.
+
+    A check module reaches its shared helpers as ``from _linecheck import …``
+    after putting its own directory on ``sys.path``, so an imported top-level
+    name is a local dependency exactly when a sibling ``.py`` of that name
+    exists. Every other imported name is a third-party or stdlib package, whose
+    version the dependency pins in ``HARNESS_INPUTS`` already cover.
+    """
+    package = Path(module).parent
+    tree = ast.parse((repo_root / module).read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                names.add(node.module.split(".")[0])
+        elif isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+    return {
+        str(package / f"{name}.py")
+        for name in names
+        if (repo_root / package / f"{name}.py").is_file()
+    }
+
+
+def _dependency_closure(repo_root: Path, module: str) -> set[str]:
+    """MODULE and every package module it transitively imports.
+
+    A mutant's verdict depends on the code its oracle actually executes, so the
+    shared helpers a check imports are inputs to that check's shard as much as
+    the check itself. Taking the closure rather than the whole package is what
+    keeps a change to one check from invalidating the other 80 shards.
+    """
+    seen = {module}
+    stack = [module]
+    while stack:
+        for dependency in sorted(_direct_dependencies(repo_root, stack.pop())):
+            if dependency not in seen:
+                seen.add(dependency)
+                stack.append(dependency)
+    return seen
+
+
+def shard_inputs(repo_root: Path, shard: dict) -> list[str]:
+    """Every file whose content can change one of SHARD's mutant verdicts.
+
+    This is the safety property behind the session cache: a cosmic-ray session
+    records a verdict per mutant and cannot re-validate one, so reusing a
+    session is sound only when nothing the run depended on has moved. The list
+    is therefore deliberately over-inclusive at the edges — the whole fixture
+    tree, the dependency lock — because a missing input scores a stale verdict
+    as current, while a needless one only costs a re-run.
+    """
+    paths = set(_dependency_closure(repo_root, shard["module"]))
+    paths.add(shard["tests"])
+    paths.update(SHARED_TEST_INPUTS)
+    paths.update(HARNESS_INPUTS)
+    for directory in SHARED_TEST_DIRS:
+        paths.update(
+            str(path.relative_to(repo_root))
+            for path in (repo_root / directory).rglob("*")
+            if path.is_file() and "__pycache__" not in path.parts
+        )
+    return sorted(path for path in paths if (repo_root / path).is_file())
+
+
+def shard_hash(
+    repo_root: Path, shard: dict, digests: dict[str, bytes] | None = None
+) -> str:
+    """A content digest of SHARD's inputs, used as its session cache key.
+
+    Two runs share a session only when they would compute the same verdicts.
+    DIGESTS memoizes per-file hashes across the shards of one expansion; pass
+    None for a fresh read of the tree.
+    """
+    if digests is None:
+        digests = {}
+    digest = hashlib.sha256()
+    # The generated config carries the mutated module, the scoped test command,
+    # the timeout and the operator filter; index/total carry the mutant slice.
+    digest.update(shard_config_toml(repo_root, shard).encode("utf-8"))
+    digest.update(f"\0slice {shard['index']}/{shard['total']}\0".encode("utf-8"))
+    for path in shard_inputs(repo_root, shard):
+        if path not in digests:
+            digests[path] = hashlib.sha256((repo_root / path).read_bytes()).digest()
+        digest.update(path.encode("utf-8"))
+        digest.update(digests[path])
+    return digest.hexdigest()[:16]
+
+
 def expand_shards(repo_root: Path) -> list[dict]:
     """The mutation shard matrix, id-sorted.
 
@@ -74,7 +195,8 @@ def expand_shards(repo_root: Path) -> list[dict]:
     total=1}``; a larger module is split into ``ceil(lines / SPLIT_EVERY_LINES)``
     sub-shards ``{id=f"{stem}-{k+1}", index=k, total=N}`` that each mutate the
     whole module but run a disjoint ``rowid % N == index`` slice of its mutants.
-    Each shard also carries the ``tests`` oracle it runs. Raises if a module's
+    Each shard also carries the ``tests`` oracle it runs and the ``hash`` of its
+    inputs, which the workflow uses as its session cache key. Raises if a module's
     ``test_<module>.py`` oracle is missing — a new hook must bring the suite its
     shard will run, or expansion fails loud rather than gate on an empty slice.
     """
@@ -108,6 +230,9 @@ def expand_shards(repo_root: Path) -> list[dict]:
             )
     if not shards:
         raise ValueError(f"no mutable modules found under {package}/ in {CONFIG}")
+    digests: dict[str, bytes] = {}
+    for shard in shards:
+        shard["hash"] = shard_hash(repo_root, shard, digests)
     return sorted(shards, key=lambda s: s["id"])
 
 
