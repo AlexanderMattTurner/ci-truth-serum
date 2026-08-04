@@ -35,7 +35,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import annotated_near  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import annotated_near, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _py_ast import lines, name_of, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -138,4 +138,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))

@@ -29,6 +29,25 @@ def set_remote(sandbox: Path, url: str) -> None:
     subprocess.run(["git", "remote", "add", "origin", url], cwd=sandbox, check=True)
 
 
+def sourced_value(env_file: Path, name: str) -> str | None:
+    """The value NAME holds after bash sources ENV_FILE, or None when unset.
+
+    Reading the value rather than the emitted TEXT is what keeps this honest
+    about the contract. The hook quotes with bash's own `${value@Q}`, so the
+    exact line is one of several correct spellings, and a value carrying a quote
+    or a `$` needs that quoting to survive. Callers depend on the value the line
+    sets, so the test sources the file the way a session does and reads it back.
+    """
+    probe = (
+        f'unset {name}; source "{env_file}" >/dev/null 2>&1; '
+        f'if [[ -v {name} ]]; then printf "S%s" "${name}"; else printf "U"; fi'
+    )
+    out = subprocess.run(
+        ["bash", "-c", probe], capture_output=True, text=True, check=True
+    ).stdout
+    return None if out == "U" else out[1:]
+
+
 def run_session_setup(
     sandbox: Path,
     *,
@@ -44,6 +63,13 @@ def run_session_setup(
             "CLAUDE_PROJECT_DIR": str(sandbox),
             "CLAUDE_ENV_FILE": str(env_file),
             "GH_TOKEN": "fake",
+            # The script reads the origin URL with `git remote get-url`, which
+            # applies any `url.<base>.insteadOf` rewrite the ambient git config
+            # carries. A developer machine or agent sandbox that proxies GitHub
+            # then hands the script a URL no test ever set, so the remote each
+            # case installs is the remote the script must see.
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
         }
     )
     if extra_env:
@@ -84,15 +110,7 @@ def test_gh_repo_extraction(
     assert result.returncode == 0, (
         f"session-setup.sh exited {result.returncode}\nstderr: {result.stderr}"
     )
-    exports = [
-        line
-        for line in env_file.read_text().splitlines()
-        if line.startswith("export GH_REPO=")
-    ]
-    if expected is None:
-        assert exports == [], f"expected no GH_REPO export, got: {exports}"
-    else:
-        assert exports == [f'export GH_REPO="{expected}"']
+    assert sourced_value(env_file, "GH_REPO") == expected
 
 
 def test_preserves_pre_set_gh_repo(sandbox: Path) -> None:
@@ -104,9 +122,4 @@ def test_preserves_pre_set_gh_repo(sandbox: Path) -> None:
         scrub=("CLAUDE_CODE_BASE_REF",),
     )
     assert result.returncode == 0, result.stderr
-    exports = [
-        line
-        for line in env_file.read_text().splitlines()
-        if line.startswith("export GH_REPO=")
-    ]
-    assert exports == []
+    assert sourced_value(env_file, "GH_REPO") is None

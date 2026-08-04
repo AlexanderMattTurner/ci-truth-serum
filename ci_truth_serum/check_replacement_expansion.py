@@ -50,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # reason `_comments` reaches into `_bash_ast` for it.
 from _bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import annotated_near, is_python_source, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import annotated_near, is_python_source, run_file_cli, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _py_ast import lines, name_of, re_bindings, re_call_target, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-replacement-expansion"
@@ -301,4 +301,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))
