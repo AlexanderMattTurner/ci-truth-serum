@@ -66,6 +66,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     annotated,
     LineLoader,
     MESSAGE_PREFIX,
+    workflow_files,
     _job_blocks,
 )
 from check_versionless_install import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -301,8 +302,10 @@ def main() -> int:
     total = 0
     # Only workflows are entry points: a composite action has no cache scope of its
     # own, so it is judged inside each job that uses it, where `flatten` reaches it.
-    files = sorted(WORKFLOWS_DIR.glob("*.yaml")) + sorted(WORKFLOWS_DIR.glob("*.yml"))
-    for path in files:
+    # `actions_dir` stays None for that reason. The shared discovery says so on
+    # stderr when it finds no workflow, which keeps an unscanned tree apart from a
+    # real pass — both exit 0.
+    for path in workflow_files(WORKFLOWS_DIR):
         rel = path.relative_to(REPO_ROOT)
         try:
             findings = check_file(path)
