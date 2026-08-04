@@ -10,6 +10,8 @@ These cases pin the two halves: `parse` stays permissive for the callers that
 legitimately hand it non-bash, and the whole-file path refuses.
 """
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -80,6 +82,38 @@ def test_a_parseable_shell_file_is_unaffected(
     )
     assert status == 1
     assert str(script) + ":2: msg" in capsys.readouterr().err
+
+
+GRAMMAR_HIDDEN = """
+import importlib.util, sys
+
+class Hide:
+    def find_spec(self, name, path=None, target=None):
+        if name.startswith("tree_sitter"):
+            raise ImportError("hidden for this probe: " + name)
+        return None
+
+sys.meta_path.insert(0, Hide())
+spec = importlib.util.spec_from_file_location("probe_linecheck", {path!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.run_source_checks([{yaml!r}], lambda t, p: [], "msg"))
+"""
+
+
+def test_the_driver_loads_and_runs_without_the_bash_grammar(tmp_path: Path) -> None:
+    """About fifty checks import `_linecheck`, and most read YAML or Python and
+    are handed no shell. A module-scope grammar import puts `tree_sitter_bash`
+    in every one of their pre-commit environments, and each one without it dies
+    on import — which is how two hooks broke in CI."""
+    doc = tmp_path / "w.yaml"
+    doc.write_text("on: push\njobs: {}\n", encoding="utf-8")
+    probe = GRAMMAR_HIDDEN.format(path=linecheck.__file__, yaml=str(doc))
+    done = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == "0"
 
 
 def test_a_non_shell_file_is_never_parse_checked(
