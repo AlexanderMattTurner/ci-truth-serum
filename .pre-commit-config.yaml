@@ -142,7 +142,13 @@ repos:
         language: python
         additional_dependencies: ["zizmor==1.25.2"]
         pass_filenames: false
-        args: [".github/"]
+        # --no-online-audits: the online rules ask api.github.com for advisories
+        # and refs. A sandboxed or repo-scoped session gets 403 there, so the
+        # hook failed on a network answer instead of on the tree, and a commit
+        # or a push could not complete. The online rules still run on every PR:
+        # .github/workflows/zizmor.yaml audits the same .github/ directory from
+        # a runner that reaches the API.
+        args: [".github/", "--no-online-audits"]
         files: ^\.github/
 
       - id: validate-config
