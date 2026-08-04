@@ -26,7 +26,7 @@ jobs:
     steps:
       - name: Checkout
         # Credentials stay persisted: tag-release.sh pushes the tag with them.
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0 # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           # Need HEAD~1 to detect a version change in this push.
           fetch-depth: 2

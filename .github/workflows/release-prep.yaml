@@ -29,7 +29,7 @@ jobs:
     steps:
       - name: Checkout PR branch
         # Credentials stay persisted: release-prep.sh pushes the bump commit with them.
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0 # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0

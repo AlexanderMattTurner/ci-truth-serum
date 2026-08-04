@@ -44,7 +44,7 @@ jobs:
         # still a NEW branch, never the default branch, so no ruleset bypass is
         # involved. Credentials stay persisted for cut_release's branch push.
         # GITHUB_TOKEN is the fallback for a fork, which cuts no release.
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0 # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           # Full history so the release branch shares a merge-base with the default
           # branch and the PR shows only the release commit.

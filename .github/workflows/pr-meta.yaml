@@ -129,7 +129,7 @@ jobs:
       # persist-credentials stays on (artipacked ignored): this job uploads no
       # artifacts, so no token can leak into one, and the script needs the token
       # to `git fetch` a possibly-orphaned pre-push SHA from a private repo.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0 # zizmor: ignore[artipacked]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
       - name: Check the push dropped no prior commit
