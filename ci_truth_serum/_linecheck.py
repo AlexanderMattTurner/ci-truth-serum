@@ -30,6 +30,15 @@ from pathlib import Path
 
 import yaml
 
+# This module is loaded BY PATH (the check scripts, and tests/_helpers.load_hook),
+# so a sibling import needs this directory on the path first — the same prelude
+# every check script carries.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    UnparseableShellError,
+    assert_parseable,
+)
+
 # Lines whose first word only prints text — a command quoted inside them is an
 # example or hint, not executed code. Shared by the stderr- and download-pinning
 # checks; check_exit_suppression extends it (it also excuses status helpers).
@@ -305,16 +314,6 @@ def run_line_checks(
     line-oriented lints do; a lint that must pick a parser (see ``_comments``)
     needs the path and calls the two-argument form directly."""
     return run_source_checks(argv, lambda text, _path: find_violations(text), message)
-
-
-# This module is loaded BY PATH (the check scripts, and tests/_helpers.load_hook),
-# so a sibling import needs this directory on the path first — the same prelude
-# every check script carries.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    UnparseableShellError,
-    assert_parseable,
-)
 
 
 def run_source_checks(
