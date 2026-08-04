@@ -90,6 +90,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
     ],
     "2": [
         ("check_job_timeout", WORKFLOW),
+        ("check_uncached_download", WORKFLOW),
         ("check_always_reporter", WORKFLOW),
         ("check_required_reporter", WORKFLOW),
         ("check_required_event_closure", WORKFLOW),
