@@ -33,6 +33,11 @@ on: # zizmor: ignore[dangerous-triggers]
       - Sync from Template
       - Validate config
       - zizmor
+      - CI
+      - Mutation testing
+      - Release readiness check
+      - Startup failure scan
+      - Tag release (post-merge)
 
 concurrency:
   # Keyed per triggering workflow so failures of different workflows never
