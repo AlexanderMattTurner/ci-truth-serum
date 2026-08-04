@@ -32,6 +32,33 @@ class PathologicalInputError(ValueError):
     would false-green exactly the input an adversary controls."""
 
 
+class UnparseableShellError(ValueError):
+    """Raised when the grammar could not parse a file, so no lint over it can
+    claim the file is clean.
+
+    PROBLEM CLASS — a checker that cannot read its input reports the same empty
+    result as a checker that read it and found nothing. tree-sitter never raises
+    on malformed input; it recovers locally into `ERROR` nodes and keeps going,
+    and the recovery is NOT local in effect: one unparsed construct drops the
+    nodes a detector matches on for the rest of the file. Measured on
+    tree-sitter-bash 0.25.1, a single `${x%]*}` on line 2 made
+    `check_exit_suppression` miss a `|| true` on line 3 that it reports on line
+    3 of an otherwise identical file.
+
+    This refusal is what stops that empty result from reading as a pass. It is
+    the rule `_linecheck.run_source_checks` already states for an unparseable
+    YAML workflow — "no findings" is a false-green on the very file under test —
+    applied to shell, which had been the exception.
+
+    Known collapse triggers in tree-sitter-bash 0.25.1, each with a
+    behaviour-identical spelling that parses:
+      * `${x%]*}` / `${x%%]*}` — quote the bracket: `${x%"]"*}`.
+      * `$((10#$x))`, `((8#$m & 8#77))` — a base prefix inside arithmetic; hold
+        the value in a variable first, or drop the explicit base.
+      * `[^]]` written inline in `[[ =~ ]]` — hold the regex in a variable.
+    """
+
+
 # tree-sitter-bash's GLR machinery allocates roughly QUADRATICALLY in the number
 # of chained pipeline stages: 5k `cmd |` stages cost ~330 MB, 20k cost ~3.3 GB,
 # 50k exhaust a 16 GB host (measured via resource.ru_maxrss on tree-sitter-bash
@@ -97,6 +124,50 @@ def parse(script: str) -> Node:
             "pipeline chain to lint it."
         )
     return _parser().parse(_neutralize_supplementary(script).encode("utf-8")).root_node
+
+
+def assert_parseable(script: str) -> None:
+    r"""Raise `UnparseableShellError` when the grammar cannot read SCRIPT.
+
+    Call this only where a lint claims a whole FILE of real shell is clean.
+    `parse` itself stays permissive on purpose, because two callers legitimately
+    hand it text the bash grammar cannot read and must not be refused: a
+    fragment taken out of its file (a `cat <<EOF` opener, a trailing `\`
+    continuation), and a workflow `run:` block carrying `${{ … }}`, which is
+    GitHub Actions syntax rather than bash.
+    """
+    root = parse(script)
+    if root.has_error:
+        raise UnparseableShellError(
+            f"the bash grammar could not parse this file (first unparsed "
+            f"construct near line {_first_error_line(root)}), so no lint over it "
+            "can report the file clean. See UnparseableShellError for the known "
+            "triggers and their behaviour-identical rewrites."
+        )
+
+
+def _first_error_line(root: Node) -> int:
+    """1-based line of the earliest ERROR or missing node, for the refusal
+    message — the one construct a reader has to rewrite."""
+    rows = [
+        node.start_point[0] + 1
+        for node in iter_nodes(root, "ERROR")
+        if node.type == "ERROR"
+    ]
+    missing = [node.start_point[0] + 1 for node in _walk_missing(root)]
+    return min(rows + missing, default=1)
+
+
+def _walk_missing(node: Node):
+    """Every `is_missing` descendant: tree-sitter marks an omitted token that way
+    rather than as an ERROR node, so a scan for ERROR alone can find nothing on a
+    tree that `has_error` reports as broken."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.is_missing:
+            yield current
+        stack.extend(current.children)
 
 
 def iter_nodes(node: Node, *types: str):
