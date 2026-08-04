@@ -74,10 +74,10 @@ New file `tests/cts/test_check_<slug>.py`.
 
 ## 7. Dogfood before you commit
 
-Run the check over this whole tree and over `tests/cts/fixtures/consumer`:
+Run the check over every file this tree holds that the hook declares it reads, and over `tests/cts/fixtures/consumer`. Build the globs from the `files:` and `types:` you wrote in step 5. A shell-only glob under a hook that also reads YAML scans the wrong half of the tree, and then reports a clean count for files it never opened.
 
 ```bash
-uv run python -m ci_truth_serum.check_<slug> $(git ls-files '*.sh' '*.bash')
+uv run python -m ci_truth_serum.check_<slug> $(git ls-files '<globs from your files: and types:>') tests/cts/fixtures/consumer/*
 uv run pre-commit run check-<slug> --all-files
 ```
 
