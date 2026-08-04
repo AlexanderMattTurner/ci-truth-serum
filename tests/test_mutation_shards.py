@@ -90,7 +90,7 @@ def test_total_matches_line_count_ceiling() -> None:
         assert s["total"] == max(1, math.ceil(lines / mod.SPLIT_EVERY_LINES))
 
 
-# ── the oracle-file convention ─────────────────────────────────────────────
+# ── the oracle-file convention ────────────────────────────────────
 @pytest.mark.parametrize(
     "stem,expected",
     [
@@ -104,7 +104,7 @@ def test_test_file_convention(stem: str, expected: str) -> None:
     assert mod._test_file(stem) == expected
 
 
-# ── fail-loud on a hostile / incomplete tree ───────────────────────────────
+# ── fail-loud on a hostile / incomplete tree ──────────────────────────
 def _write_min_repo(root: Path, *, modules: list[str], tests: list[str]) -> None:
     (root / "ci_truth_serum").mkdir()
     (root / "tests" / "cts").mkdir(parents=True)
@@ -159,18 +159,144 @@ def test_large_module_splits_into_line_capped_sub_shards(tmp_path: Path) -> None
     small = [
         s for s in mod.expand_shards(tmp_path) if s["module"].endswith("check_small.py")
     ]
-    assert small == [
-        {
-            "id": "check_small",
-            "module": "ci_truth_serum/check_small.py",
-            "tests": "tests/cts/test_check_small.py",
-            "index": 0,
-            "total": 1,
-        }
-    ]
+    assert len(small) == 1
+    assert {k: v for k, v in small[0].items() if k != "hash"} == {
+        "id": "check_small",
+        "module": "ci_truth_serum/check_small.py",
+        "tests": "tests/cts/test_check_small.py",
+        "index": 0,
+        "total": 1,
+    }
 
 
-# ── the generated per-shard config ─────────────────────────────────────────
+# ── the shard hash: the safety property behind the session cache ───────────
+#
+# The workflow reuses a shard's cosmic-ray session whenever the hash is
+# unchanged, and cosmic-ray cannot re-validate a recorded verdict. So the hash
+# must move for every file that can change a verdict — that is the property
+# these drive — while staying still for the files that cannot, which is the only
+# reason the cache saves anything.
+def _write_hashable_repo(root: Path) -> None:
+    """A minimal tree carrying the shared and harness files a shard hash reads.
+
+    ``check_a`` imports ``shared``; ``check_b`` imports nothing. That split is
+    what lets a test tell a per-module hash apart from a whole-package one.
+    """
+    _write_min_repo(
+        root,
+        modules=["check_a.py", "check_b.py", "shared.py"],
+        tests=["test_check_a.py", "test_check_b.py", "test_shared.py"],
+    )
+    (root / "ci_truth_serum" / "check_a.py").write_text("from shared import helper\n")
+    (root / "ci_truth_serum" / "shared.py").write_text("helper = 1\n")
+    (root / ".github" / "scripts").mkdir(parents=True)
+    (root / "tests" / "cts" / "fixtures" / "consumer").mkdir(parents=True)
+    for path, text in {
+        "tests/__init__.py": "",
+        "tests/conftest.py": "# conftest\n",
+        "tests/_helpers.py": "REPO_ROOT = 1\n",
+        "tests/cts/__init__.py": "",
+        "tests/cts/fixtures/consumer/sample.yaml": "on: push\n",
+        "pyproject.toml": "[project]\nname = 'x'\n",
+        "uv.lock": "version = 1\n",
+        ".python-version": "3.12\n",
+        ".github/scripts/mutation_shards.py": "# planner\n",
+        ".github/scripts/run-mutation-shard.sh": "# runner\n",
+    }.items():
+        (root / path).write_text(text)
+
+
+def _hashes(root: Path) -> dict[str, str]:
+    return {s["id"]: s["hash"] for s in mod.expand_shards(root)}
+
+
+def _append(root: Path, path: str) -> None:
+    """Change PATH's bytes without changing what the tree means."""
+    target = root / path
+    target.write_bytes(target.read_bytes() + b"\n# edited\n")
+
+
+def test_hash_is_stable_when_the_tree_does_not_move(tmp_path: Path) -> None:
+    _write_hashable_repo(tmp_path)
+    assert _hashes(tmp_path) == _hashes(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "edited,expected",
+    [
+        # a check module and its oracle reach exactly one shard — the common
+        # pull request, and the whole reason the cache pays off
+        ("ci_truth_serum/check_a.py", {"check_a"}),
+        ("tests/cts/test_check_a.py", {"check_a"}),
+        ("ci_truth_serum/check_b.py", {"check_b"}),
+        # an imported helper reaches its own shard and its importers, and NOT
+        # the module that does not import it
+        ("ci_truth_serum/shared.py", {"shared", "check_a"}),
+    ],
+)
+def test_an_edit_invalidates_exactly_the_shards_that_read_it(
+    tmp_path: Path, edited: str, expected: set[str]
+) -> None:
+    _write_hashable_repo(tmp_path)
+    before = _hashes(tmp_path)
+    _append(tmp_path, edited)
+    after = _hashes(tmp_path)
+    assert {k for k in before if before[k] != after[k]} == expected
+
+
+@pytest.mark.parametrize(
+    "edited",
+    [
+        "tests/conftest.py",
+        "tests/_helpers.py",
+        "tests/cts/fixtures/consumer/sample.yaml",
+        "cosmic-ray.toml",
+        "uv.lock",
+        "pyproject.toml",
+        ".python-version",
+        ".github/scripts/mutation_shards.py",
+        ".github/scripts/run-mutation-shard.sh",
+    ],
+)
+def test_a_shared_or_harness_edit_invalidates_every_shard(
+    tmp_path: Path, edited: str
+) -> None:
+    _write_hashable_repo(tmp_path)
+    before = _hashes(tmp_path)
+    _append(tmp_path, edited)
+    after = _hashes(tmp_path)
+    assert all(before[k] != after[k] for k in before), (
+        f"{edited} left some shard's session reusable: "
+        f"{sorted(k for k in before if before[k] == after[k])}"
+    )
+
+
+def test_sub_shards_of_one_module_get_distinct_hashes() -> None:
+    """Two slices of one module share every input file but run different mutants.
+
+    A shared key would let one slice restore the other's session and report a
+    disjoint set of verdicts as its own.
+    """
+    shards = mod.expand_shards(REPO_ROOT)
+    split = [s for s in shards if s["total"] > 1]
+    assert split, "no split module in the tree to check"
+    assert len({s["hash"] for s in shards}) == len(shards)
+
+
+def test_shard_inputs_carry_the_module_its_oracle_and_the_harness() -> None:
+    module = "ci_truth_serum/check_pipefail_grep_pipe.py"
+    shards = [s for s in mod.expand_shards(REPO_ROOT) if s["module"] == module]
+    assert shards, f"{module} has no shard to inspect"
+    shard = shards[0]
+    inputs = set(mod.shard_inputs(REPO_ROOT, shard))
+    assert shard["module"] in inputs
+    assert shard["tests"] in inputs
+    assert set(mod.HARNESS_INPUTS) <= inputs
+    # every input is a real file, so a hash never silently skips one
+    assert all((REPO_ROOT / path).is_file() for path in inputs)
+
+
+# ── the generated per-shard config ────────────────────────────────
 def test_shard_config_is_valid_single_module_toml() -> None:
     shard = next(
         s
@@ -203,7 +329,7 @@ def test_scoped_test_command_rejects_unexpected_base() -> None:
         mod._scoped_test_command("pytest somewhere/else", "tests/cts/test_x.py")
 
 
-# ── CLI ────────────────────────────────────────────────────────────────────
+# ── CLI ───────────────────────────────────────────────────
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(_SRC), *args],
