@@ -10,6 +10,13 @@ name: Mutation testing
 # Both sides are change-gated via decide-reusable: on a PR they run only when
 # files they depend on changed; a weekly schedule re-checks main.
 #
+# The Python side is also INCREMENTAL. Each shard caches its cosmic-ray session
+# under a key that is a content hash of the shard's own inputs, so a run
+# recomputes a mutant only when something it depends on changed. A second push
+# to a pull request therefore re-runs the shards for the modules that push
+# touched and restores the rest, and the weekly cron seeds the main-scoped
+# caches a first push can read.
+#
 # Gate semantics: a shard fails only when its unmutated baseline is red or
 # cosmic-ray errors — a surviving mutant is a prompt to add a test, not a build
 # break — so "required" here means every shard ran cleanly and reported, not that
@@ -53,6 +60,7 @@ jobs:
           - 'tests/**'
           - 'cosmic-ray.toml'
           - 'pyproject.toml'
+          - 'uv.lock'
           - '.python-version'
           - '.github/scripts/run-mutation.sh'
           - '.github/scripts/run-mutation-shard.sh'
@@ -122,6 +130,20 @@ jobs:
         uses: ./.github/actions/setup-uv
         with:
           install-python: "true"
+
+      # Incremental mutation testing. The key is a content hash of everything
+      # that can change one of this shard's verdicts (mutation_shards.py's
+      # shard_hash), so a hit means the session was computed from this exact
+      # tree and run-mutation-shard.sh resumes it instead of re-running every
+      # mutant. No restore-keys, deliberately: cosmic-ray records a verdict per
+      # mutant and cannot re-validate one, so a near-miss session would score
+      # stale verdicts as current. The weekly cron run seeds these caches on
+      # main, which is the only scope a fresh pull request can read.
+      - name: Restore this shard's cosmic-ray session
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: cr-${{ matrix.shard.id }}.sqlite
+          key: cosmic-ray-${{ matrix.shard.id }}-${{ matrix.shard.hash }}
 
       - name: Run mutation shard
         env:
