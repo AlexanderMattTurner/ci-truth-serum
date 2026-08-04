@@ -380,7 +380,8 @@ main() {
       echo "has_downgrades=true"
       echo "downgrade_files=$downgrade"
     } >>"$GITHUB_OUTPUT"
-    emit_multiline_output "downgrade_report" "$(cat "$DOWNGRADE_REPORT")"
+    downgrade_report=$(cat "$DOWNGRADE_REPORT")
+    emit_multiline_output "downgrade_report" "$downgrade_report"
   else
     echo "has_downgrades=false" >>"$GITHUB_OUTPUT"
   fi
@@ -405,7 +406,8 @@ main() {
       printf '\n\n_Conflict report truncated at %d KB. Every conflicted file is listed in .template-sync-conflicts._\n' "$((max_report_bytes / 1000))" >>"$capped"
       mv "$capped" "$CONFLICT_REPORT"
     fi
-    emit_multiline_output "conflict_report" "$(cat "$CONFLICT_REPORT")"
+    conflict_report=$(cat "$CONFLICT_REPORT")
+    emit_multiline_output "conflict_report" "$conflict_report"
     echo "Template updates available for: $conflicts" >.template-sync-conflicts
   else
     echo "has_conflicts=false" >>"$GITHUB_OUTPUT"

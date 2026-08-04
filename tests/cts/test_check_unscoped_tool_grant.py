@@ -281,6 +281,34 @@ def test_an_annotation_on_the_preceding_line_opts_out(tmp_path, slug, grant):
     assert _verdict(tmp_path, body) == []
 
 
+def test_both_opt_outs_on_separate_comment_lines_above_clear_the_grant(tmp_path):
+    """One grant can trip BOTH classes, and only one annotation fits the single
+    line directly above it. Placement is `annotation_window`'s rule — the grant
+    line plus the whole unbroken comment block above — so both reasons land, each
+    on its own line, and each stays readable prose."""
+    body = (
+        "on:\n  push:\njobs:\n  j:\n    steps:\n"
+        "      # This step installs packages, so it needs a general Bash grant.\n"
+        "      # allow-unscoped-read-grant: bare Bash beside it already reads every path\n"
+        "      # allow-unscoped-write-grant: bare Bash beside it already writes every path\n"
+        '      - run: claude --allowedTools "Bash,Read,Write"\n'
+    )
+    assert _verdict(tmp_path, body) == []
+
+
+def test_a_blank_line_breaks_the_comment_block_and_the_opt_out(tmp_path):
+    """Non-vacuity for the test above: the window stops at the first line that is
+    not a comment. An annotation written about something else therefore stays
+    with it, and does not reach a grant further down the file."""
+    body = (
+        "on:\n  push:\njobs:\n  j:\n    steps:\n"
+        "      # allow-unscoped-read-grant: this reason belongs to something else\n"
+        "\n"
+        '      - run: claude --allowedTools "Read,Edit(./**)"\n'
+    )
+    assert [line for line, _ in _verdict(tmp_path, body)] == [8]
+
+
 def test_an_annotation_inside_a_run_block_scalar_opts_out(tmp_path):
     """In a block scalar the `#` is content, not a YAML comment — the annotation
     must still be read from the source line."""

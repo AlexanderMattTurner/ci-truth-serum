@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Decide whether the PR reviewer (claude-pr-review.yaml) should run for this
-# pull_request_target event, emitting run=true/false AND the model to use to
-# GITHUB_OUTPUT.
+# Decide whether the PR reviewer (claude-review.yaml's `review` job) should run
+# for this pull_request_target event, emitting run=true/false AND the model to
+# use to GITHUB_OUTPUT.
 #
 #   opened / ready_for_review — always review, on Opus: the first, thorough look
 #     at a newly reviewable PR (a normal open, or a draft marked ready).
@@ -101,12 +101,16 @@ fi
 # (`.[][]`) to walk every review across every page, then `last` picks the most
 # recent. A single `.[]` iterates PAGES, so `.user.login`/`.state` index a page
 # ARRAY — jq errors, the `2>/dev/null` swallows it to empty, and the recheck
-# silently never fires (the bug that stranded every held PR). `--slurp` keeps the
-# whole result in one document so `--jq` runs ONCE and emits a single line; bare
-# `--paginate` would run the filter per page and concatenate. A transient API
-# failure yields empty -> no re-review.
-state="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp \
-  --jq "[.[][] | select(.user.login == \"$REVIEWER\")] | last | .state // empty" 2>/dev/null || true)"
+# silently never fires (the bug that stranded every held PR).
+#
+# The filter runs as a SEPARATE jq over the captured document, never as gh's
+# own `--jq`: gh rejects `--slurp` together with `--jq` while parsing its
+# arguments, so that spelling exits 1 before any request and the `|| true` here
+# would turn every run into the same silent no-re-review. A transient API
+# failure yields empty -> no re-review, which is the intended degradation.
+reviews="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp 2>/dev/null || true)"
+state="$(jq -r "[.[][] | select(.user.login == \"$REVIEWER\")] | last | .state // empty" \
+  <<<"${reviews:-[]}" 2>/dev/null || true)"
 if [[ "$state" == "CHANGES_REQUESTED" || "$state" == "COMMENTED" ]]; then
   emit true "outstanding $REVIEWER hold ($state) — re-checking on Haiku" "$HAIKU_MODEL"
 else

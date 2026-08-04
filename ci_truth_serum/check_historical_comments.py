@@ -40,6 +40,7 @@ from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
+    run_file_cli,
     run_source_checks,
 )
 
@@ -101,4 +102,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))

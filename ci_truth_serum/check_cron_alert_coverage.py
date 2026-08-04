@@ -81,7 +81,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     LineLoader,
     has_trigger,
     notifier_matcher,
-    WORKFLOW_GLOBS,
+    workflow_files,
 )
 from _failure_routing import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     is_failure_blocked,
@@ -199,10 +199,6 @@ def _schedule_line(text: str) -> int:
     return 1
 
 
-def workflow_files() -> list[Path]:
-    return sorted(p for glob in WORKFLOW_GLOBS for p in WORKFLOWS_DIR.glob(glob))
-
-
 def tree_watched_names(matcher: "re.Pattern[str]") -> set[str]:
     """Every workflow display name the tree's failure notifiers already watch.
 
@@ -213,7 +209,7 @@ def tree_watched_names(matcher: "re.Pattern[str]") -> set[str]:
     `violations` on its own line.
     """
     docs = []
-    for path in workflow_files():
+    for path in workflow_files(WORKFLOWS_DIR):
         try:
             doc = yaml.load(path.read_text(encoding="utf-8"), Loader=LineLoader)
         except yaml.YAMLError:
@@ -247,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     watched = tree_watched_names(matcher)
 
     total = 0
-    for path in workflow_files():
+    for path in workflow_files(WORKFLOWS_DIR):
         rel = path.relative_to(REPO_ROOT)
         found = violations(
             path.read_text(encoding="utf-8"), matcher, require_alert, watched
