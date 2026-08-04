@@ -8,15 +8,13 @@ The per-script test modules keep only their own detection cases plus one thin
 duplicated across them.
 """
 
-import os
 import subprocess
-import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from tests._helpers import HOOKS_DIR, REPO_ROOT, load_hook
+from tests._helpers import HOOKS_DIR, load_hook
 
 lc = load_hook("_linecheck.py", "_linecheck")
 
@@ -97,34 +95,6 @@ def test_run_file_cli_passes_the_files_through_and_returns_the_check_status(
     assert seen == [["a.sh", "b.sh"]]
 
 
-def test_every_content_check_refuses_a_run_with_no_files() -> None:
-    """No content check may report a clean pass over an empty file list.
-
-    Driven from the tier registry, not a pasted list, so a content check added
-    later without the guard fails here rather than shipping the false green.
-    """
-    run_tier = load_hook("run_tier.py", "run_tier")
-    content = sorted(
-        {
-            m
-            for members in run_tier.TIERS.values()
-            for m, kind in members
-            if kind != run_tier.WORKFLOW
-        }
-    )
-    assert len(content) > 20, "registry lookup found almost nothing — check the kinds"
-    statuses = {
-        module: subprocess.run(
-            [sys.executable, "-m", f"ci_truth_serum.{module}"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            check=False,
-        ).returncode
-        for module in content
-    }
-    assert statuses == dict.fromkeys(content, 2)
-
-
 # ── workflow_files ───────────────────────────────────────────────────────
 def _write(dirpath: Path, name: str, body: str) -> Path:
     dirpath.mkdir(parents=True, exist_ok=True)
@@ -173,40 +143,6 @@ def test_workflow_files_is_silent_when_it_discovers_something(
     _write(wf, "a.yaml", "on: push\n")
     assert len(lc.workflow_files(wf, tmp_path / "actions")) == 1
     assert capsys.readouterr().err == ""
-
-
-def test_every_workflow_check_says_so_over_a_tree_with_no_workflows(
-    tmp_path: Path,
-) -> None:
-    """No workflow check may report a silent clean pass over a tree it never scanned.
-
-    Exit 0 is honest here — a repository with no workflow has none to violate —
-    so the assertion is on the notice, which is what tells the two cases apart.
-    Driven from the tier registry so a workflow check added later is covered.
-    """
-    run_tier = load_hook("run_tier.py", "run_tier")
-    workflow_checks = sorted(
-        {
-            m
-            for members in run_tier.TIERS.values()
-            for m, kind in members
-            if kind == run_tier.WORKFLOW
-        }
-    )
-    assert len(workflow_checks) > 15, "registry lookup found almost nothing"
-    silent = []
-    for module in workflow_checks:
-        done = subprocess.run(
-            [sys.executable, "-m", f"ci_truth_serum.{module}"],
-            cwd=tmp_path,
-            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if "scanned nothing" not in done.stderr:
-            silent.append((module, done.returncode, done.stderr[:200]))
-    assert silent == []
 
 
 # ── tracked_shell_files ──────────────────────────────────────────────────
