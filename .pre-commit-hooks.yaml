@@ -345,6 +345,13 @@
   language: python
   types: [shell]
 
+- id: check-bare-return-status
+  name: "opinionated: require an explicit status on a `return` that `&&` or `||` guards"
+  description: A bare `return` hands back the status of the last command that ran, so the operator decides the value. `A && return` is always 0, and `[[ … ]] || return` is always 1.
+  entry: python -m ci_truth_serum.check_bare_return_status
+  language: python
+  types: [shell]
+
 - id: check-lockstep-pins
   name: "opinionated: verify configured twin pins agree (the enforced 'keep in lockstep' comment)"
   description: Each --pair extracts one value from each of two files and fails unless they are equal; zero or multiple matches is a hard error. Config-driven, so it is NOT in the check-tier2 aggregate — enable it standalone with args.

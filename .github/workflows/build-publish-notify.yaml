@@ -1,21 +1,18 @@
-name: CI failure notify
+name: Build/publish failure notify
 
-# Push a phone notification (via ntfy) whenever a workflow fails outside a pull
-# request. A push-to-main or scheduled run has no PR in front of you, so its red
-# lands in an Actions tab nobody opens and rots unseen. PR-triggered failures are
-# excluded: they are already visible on the PR.
+# Push a phone notification (via ntfy) whenever a build or publish workflow
+# fails outside a pull request. Publish/release runs happen on push, tag, or
+# manual dispatch — no PR is in front of you — so a failure there otherwise rots
+# unseen. PR-triggered failures are excluded: they are already visible on the PR.
 #
-# `workflow_run` has no wildcard, so `workflows:` must name every push/schedule
-# workflow in THIS repo by its `name:`. That makes the list a derived copy of the
-# tree, and check-failure-notifier-coverage is its freshness check: a workflow
-# missing from the list fails silently forever. Regenerate the block from that
-# hook's output rather than editing it by hand.
+# `workflow_run` has no wildcard, so `workflows:` must name each build/publish
+# workflow in THIS repo by its `name:`. Downstream repos adjust that list to
+# their own publishers; the notify-ntfy composite action they call is shared
+# (synced from the template), so only this list is repo-specific.
 #
-# The notification does nothing unless the GH_NTFY_SUBJECT secret is set, and a
-# repo that has not opted in never goes red for it. That run does carry a
-# `::warning::` annotation which says the failure notified nobody, because a
-# green notifier run is otherwise no evidence that an alert arrived. Set
-# GH_NTFY_URL to target a self-hosted ntfy server (defaults to https://ntfy.sh).
+# The notification is a no-op unless the GH_NTFY_SUBJECT secret is set, so a repo
+# that has not opted in is unaffected. Set GH_NTFY_URL to target a self-hosted
+# ntfy server (defaults to https://ntfy.sh).
 #
 # The dangerous-triggers finding targets workflows that check out or execute the
 # triggering ref's code with write credentials; this one checks out only its own
@@ -24,21 +21,8 @@ on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     types: [completed]
     workflows:
-      - "CI"
-      - "Format check"
-      - "Gitleaks Secret Scanning"
-      - "Hook lifecycle"
-      - "Lint"
-      - "Mutation testing"
-      - "Node tests"
-      - "Release readiness check"
-      - "Startup failure scan"
-      - "Sync from Template"
-      - "Sync required status checks"
-      - "Tag release (post-merge)"
-      - "Validate config"
-      - "pre-commit"
-      - "zizmor"
+      - Auto version bump and publish
+      - Release canary
 
 concurrency:
   # Keyed per triggering workflow so notifications never queue behind each other;
@@ -51,7 +35,7 @@ permissions:
 
 jobs:
   notify:
-    name: Notify on workflow failure
+    name: Notify on build/publish failure
     if: >-
       github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.event != 'pull_request'
@@ -66,40 +50,11 @@ jobs:
           sparse-checkout: .github/actions/notify-ntfy
           persist-credentials: false
 
-      - name: Grade the alert
-        id: severity
-        env:
-          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
-        run: |
-          set -euo pipefail
-          # Severity is graded, not uniform: an owner who gets every red at
-          # ntfy's max priority learns to swipe all of them away, which costs
-          # exactly the alert that mattered. The release pipeline earns priority
-          # 5 because a break there stops releases shipping and nothing else
-          # surfaces it; every other push/schedule failure is a next-working-day
-          # fix, so it arrives at 3 (ntfy's default, no bypass-DND, no repeat).
-          case "$WORKFLOW_NAME" in
-            "Tag release"* | "Release "*)
-              priority=5
-              tags=rotating_light,rocket
-              ;;
-            *)
-              priority=3
-              tags=warning
-              ;;
-          esac
-          {
-            echo "priority=$priority"
-            echo "tags=$tags"
-          } >>"$GITHUB_OUTPUT"
-
       - name: Notify ntfy
         uses: ./.github/actions/notify-ntfy
         with:
           topic: ${{ secrets.GH_NTFY_SUBJECT }}
           base-url: ${{ secrets.GH_NTFY_URL }}
-          priority: ${{ steps.severity.outputs.priority }}
-          tags: ${{ steps.severity.outputs.tags }}
           title: "${{ github.repository }}: ${{ github.event.workflow_run.name }} failed"
           message: >-
             ${{ github.event.workflow_run.name }} failed on
