@@ -1,18 +1,15 @@
 name: Claude reviewers
 
-# Umbrella for the three automated PR reviewers: the Opus first-pass reviewer
-# (claude-pr-review.yaml), the Sonnet merge-delta reviewer
-# (claude-merge-delta-review.yaml), and the Haiku review-thread resolver
-# (claude-review-thread-resolve.yaml). Each was its own file; they are
-# consolidated here to cut the per-PR workflow fan-out on a shared, capped runner
+# Umbrella for the three automated PR reviewers: the Opus first-pass reviewer,
+# the Sonnet merge-delta reviewer, and the Haiku review-thread resolver. One file
+# holds all three to cut the per-PR workflow fan-out on a shared, capped runner
 # pool. Every job stays self-contained and carries its own SECURITY header,
-# `permissions:`, base-only checkout posture, and `if:` guards verbatim — nothing
-# about the trust boundary changed in the move. All three run on the reviewers'
-# shared pull_request_target trigger (the union of the three source triggers) with
-# a base-only checkout and a least-privilege token, and each is guarded by
-# `github.event.action` so it fires on exactly the events its source workflow
-# fired on. Concurrency is declared PER JOB (never workflow-level), keeping each
-# source workflow's own group name so the jobs never cancel one another.
+# `permissions:`, base-only checkout posture, and `if:` guards. All three run on
+# one shared pull_request_target trigger with a base-only checkout and a
+# least-privilege token, and each is guarded by `github.event.action` so it fires
+# on exactly the events it needs. Concurrency is declared PER JOB (never
+# workflow-level), under a distinct group name per job, so the jobs never cancel
+# one another.
 #
 # The merge-conflict auto-resolver stays a SEPARATE file
 # (auto-resolve-conflicts.yaml): it checks out the PR HEAD to merge into it, and
@@ -35,7 +32,7 @@ permissions: {}
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
-  # Claude PR review (Opus first pass) — from claude-pr-review.yaml
+  # Claude PR review (Opus first pass)
   #
   # Auto-review every incoming PR — including PRs from forks/outside contributors
   # — with Claude, using the CLAUDE_CODE_OAUTH_TOKEN secret (with a fallback).
@@ -327,7 +324,7 @@ jobs:
         run: bash .github/scripts/auto-approve-skipped-pr.sh
 
   # ────────────────────────────────────────────────────────────────────────────
-  # Claude merge-delta review (Sonnet) — from claude-merge-delta-review.yaml
+  # Claude merge-delta review (Sonnet)
   #
   # A dedicated Sonnet reviewer for a PR's hand-authored MERGE-RESOLUTION deltas
   # (`git show --remerge-diff`) — the one channel through which a conflict
@@ -445,7 +442,7 @@ jobs:
         run: bash .github/scripts/post-merge-delta-review.sh
 
   # ────────────────────────────────────────────────────────────────────────────
-  # Claude review-thread resolver (Haiku) — from claude-review-thread-resolve.yaml
+  # Claude review-thread resolver (Haiku)
   #
   # On every push to a PR, check whether the new commits addressed the STILL-OPEN
   # review comments the Claude reviewer (the review job) left, using a cheap
