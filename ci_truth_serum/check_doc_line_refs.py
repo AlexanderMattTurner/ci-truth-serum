@@ -34,6 +34,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
 # A source path immediately followed by :line or :line-range. The extension gate
 # is what keeps ports (`localhost:8080`), timestamps (`10:00:00`) and IPs
 # (`172.30.0.2`) out — none carries a source extension before the colon.
@@ -114,4 +117,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))

@@ -29,6 +29,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     concurrency_line,
     job_concurrency_line,
     opted_out,
+    workflow_files,
 )
 
 OPT_OUT = "cancel-in-progress-not-required"
@@ -87,7 +88,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
 
 def main() -> int:
-    files = sorted(WORKFLOWS_DIR.glob("*.yaml")) + sorted(WORKFLOWS_DIR.glob("*.yml"))
+    files = workflow_files(WORKFLOWS_DIR)
     total = 0
     for path in files:
         rel = path.relative_to(REPO_ROOT)

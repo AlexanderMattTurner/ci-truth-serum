@@ -40,7 +40,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import opted_out  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import opted_out, workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "concurrency-not-required"
 PR_TRIGGERS = ("pull_request", "pull_request_target")
@@ -125,7 +125,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
 
 
 def main() -> int:
-    files = sorted(WORKFLOWS_DIR.glob("*.yaml")) + sorted(WORKFLOWS_DIR.glob("*.yml"))
+    files = workflow_files(WORKFLOWS_DIR)
     total = 0
     for path in files:
         found = check_file(path)

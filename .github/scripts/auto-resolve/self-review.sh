@@ -107,7 +107,7 @@ attempt_claude() {
   local token="$1" prompt_file="$2" log="$3" status=0
   export CLAUDE_CONFIG_DIR="${SELF_REVIEW_DIR}/config"
   mkdir -p "$CLAUDE_CONFIG_DIR"
-  CLAUDE_CODE_OAUTH_TOKEN="$token" timeout "$TIMEOUT_SECONDS" claude \
+  CLAUDE_CODE_OAUTH_TOKEN="$token" timeout --kill-after=30 "$TIMEOUT_SECONDS" claude \
     -p "$(cat "$prompt_file")" \
     --model "$_SELF_REVIEW_MODEL" \
     --setting-sources user \

@@ -83,6 +83,7 @@ from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
+    run_file_cli,
 )
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -252,4 +253,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))

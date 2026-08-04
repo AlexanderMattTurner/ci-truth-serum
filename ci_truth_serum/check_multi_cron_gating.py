@@ -55,11 +55,11 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
-    WORKFLOW_GLOBS,
     _classification_text,
     _job_blocks,
     is_placeholder_reason,
     unwrap_expression,
+    workflow_files,
     workflow_triggers,
 )
 
@@ -281,13 +281,9 @@ def violations(text: str) -> list[tuple[int, str]]:
     return sorted(found)
 
 
-def workflow_files() -> list[Path]:
-    return sorted(p for glob in WORKFLOW_GLOBS for p in WORKFLOWS_DIR.glob(glob))
-
-
 def main() -> int:
     total = 0
-    for path in workflow_files():
+    for path in workflow_files(WORKFLOWS_DIR):
         rel = path.relative_to(REPO_ROOT)
         for line, message in violations(path.read_text(encoding="utf-8")):
             print(f"::error file={rel},line={line}::{message}")

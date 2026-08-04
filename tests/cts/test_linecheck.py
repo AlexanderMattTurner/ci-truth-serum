@@ -8,6 +8,7 @@ The per-script test modules keep only their own detection cases plus one thin
 duplicated across them.
 """
 
+import subprocess
 import textwrap
 from pathlib import Path
 
@@ -72,6 +73,28 @@ def test_run_line_checks_skips_undecodable_bytes(
     assert capsys.readouterr().err == ""
 
 
+# ── run_file_cli ─────────────────────────────────────────────────────────
+def test_run_file_cli_refuses_an_empty_file_list(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc.sys, "argv", ["/x/ci_truth_serum/check_thing.py"])
+    called = []
+    assert lc.run_file_cli(lambda argv: called.append(argv) or 0) == 2
+    assert called == []  # the check never ran, so it cannot have reported a pass
+    err = capsys.readouterr().err
+    assert "check_thing: no files to scan" in err
+    assert "git ls-files -z | xargs -0 python -m ci_truth_serum.check_thing" in err
+
+
+def test_run_file_cli_passes_the_files_through_and_returns_the_check_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lc.sys, "argv", ["check_thing.py", "a.sh", "b.sh"])
+    seen: list[list[str]] = []
+    assert lc.run_file_cli(lambda argv: seen.append(argv) or 1) == 1
+    assert seen == [["a.sh", "b.sh"]]
+
+
 # ── workflow_files ───────────────────────────────────────────────────────
 def _write(dirpath: Path, name: str, body: str) -> Path:
     dirpath.mkdir(parents=True, exist_ok=True)
@@ -103,6 +126,48 @@ def test_workflow_files_skips_absent_actions_dir(tmp_path: Path) -> None:
     assert [p.name for p in lc.workflow_files(wf, tmp_path / "nonexistent")] == [
         "a.yaml"
     ]
+
+
+def test_workflow_files_says_so_when_it_discovers_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert lc.workflow_files(tmp_path / "workflows", tmp_path / "actions") == []
+    err = capsys.readouterr().err
+    assert "this check scanned nothing" in err
+
+
+def test_workflow_files_is_silent_when_it_discovers_something(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wf = tmp_path / "workflows"
+    _write(wf, "a.yaml", "on: push\n")
+    assert len(lc.workflow_files(wf, tmp_path / "actions")) == 1
+    assert capsys.readouterr().err == ""
+
+
+# ── tracked_shell_files ──────────────────────────────────────────────────
+def _git_repo(tmp_path: Path, *files: str) -> Path:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    for name in files:
+        (tmp_path / name).write_text("#!/usr/bin/env bash\ntrue\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def test_tracked_shell_files_says_so_when_the_tree_has_none(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(_git_repo(tmp_path, "notes.md"))
+    assert lc.tracked_shell_files() == []
+    assert "this check scanned nothing" in capsys.readouterr().err
+
+
+def test_tracked_shell_files_is_silent_when_the_tree_has_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(_git_repo(tmp_path, "run.sh"))
+    assert lc.tracked_shell_files() == ["run.sh"]
+    assert capsys.readouterr().err == ""
 
 
 # ── has_decide_gate / has_always_reporter ────────────────────────────────

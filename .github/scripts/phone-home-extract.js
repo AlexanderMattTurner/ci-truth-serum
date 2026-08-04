@@ -4,7 +4,7 @@
 const fs = require("fs");
 
 const MIN_CONTENT_LENGTH = 10;
-const PHONE_HOME_DIR = "/tmp/phone-home";
+const DEFAULT_PHONE_HOME_DIR = "/tmp/phone-home";
 
 // A PR with no template-worthy lesson should OMIT the section entirely, but
 // authors routinely leave a prose disclaimer ("None applicable to an unrelated
@@ -32,6 +32,10 @@ function isNegativeDeclaration(text) {
 /**
  * Extract "Lessons Learned" from a merged PR body, filter noise, and write
  * the cleaned text to a temp file for gitleaks scanning.
+ *
+ * The output directory is $PHONE_HOME_DIR (default /tmp/phone-home); the
+ * workflow sets it so the extract step, the gitleaks scan, and the submit
+ * step all read one value.
  *
  * Called by the phone-home workflow via actions/github-script.
  *
@@ -109,8 +113,9 @@ module.exports = async ({ context, core }) => {
     return;
   }
 
-  fs.mkdirSync(PHONE_HOME_DIR, { recursive: true });
-  fs.writeFileSync(`${PHONE_HOME_DIR}/lessons.txt`, filtered);
+  const phoneHomeDir = process.env.PHONE_HOME_DIR || DEFAULT_PHONE_HOME_DIR;
+  fs.mkdirSync(phoneHomeDir, { recursive: true });
+  fs.writeFileSync(`${phoneHomeDir}/lessons.txt`, filtered);
 
   core.setOutput("has_lessons", "true");
   core.setOutput("pr_title", context.payload.pull_request.title);
