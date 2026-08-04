@@ -76,6 +76,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     annotated_near,
     annotation_re,
     is_test_path,
+    run_file_cli,
 )
 
 # Phrases that express guard INTENT — the author is asserting two sources can't
@@ -448,4 +449,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))

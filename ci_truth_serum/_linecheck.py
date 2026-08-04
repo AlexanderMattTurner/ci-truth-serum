@@ -296,6 +296,36 @@ def comment_body(line: str) -> str | None:
     return line[min(starts) + 1 :] if starts else None
 
 
+def run_file_cli(check_main: Callable[[list[str]], int]) -> int:
+    """The `__main__` body of every check that reads only the files on argv.
+
+    PROBLEM CLASS — a check that scans a list of paths reports a clean pass when
+    it got no paths. Its loop runs zero times and it returns 0, which is the
+    exit code of a real pass, so a caller that forgot the file list reads it as
+    "this repository is clean". That false green is what this pack refuses.
+
+    An empty argv here is never a legitimate run: a content check has nothing to
+    scan without files, unlike a workflow check, which finds its own. So this
+    refuses, with exit code 2 to separate a usage error from the 1 that means
+    violations found, and names the command that scans the whole tree.
+    """
+    argv = sys.argv[1:]
+    if not argv:
+        module = Path(sys.argv[0]).stem
+        print(
+            f"{module}: no files to scan. This check reads only the paths you "
+            "give it, so an empty run would report a clean pass over nothing.",
+            file=sys.stderr,
+        )
+        print(
+            f"  to scan the whole tree: git ls-files -z | xargs -0 python -m "
+            f"ci_truth_serum.{module}",
+            file=sys.stderr,
+        )
+        return 2
+    return check_main(argv)
+
+
 def run_line_checks(
     argv: list[str],
     find_violations: Callable[[str], list[int]],

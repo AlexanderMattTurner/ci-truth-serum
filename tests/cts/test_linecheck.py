@@ -8,12 +8,14 @@ The per-script test modules keep only their own detection cases plus one thin
 duplicated across them.
 """
 
+import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
-from tests._helpers import HOOKS_DIR, load_hook
+from tests._helpers import HOOKS_DIR, REPO_ROOT, load_hook
 
 lc = load_hook("_linecheck.py", "_linecheck")
 
@@ -70,6 +72,56 @@ def test_run_line_checks_skips_undecodable_bytes(
     f.write_bytes(b"\xff\xfe\x00\x01")
     assert lc.run_line_checks([str(f)], _even_lines, "msg") == 0
     assert capsys.readouterr().err == ""
+
+
+# ── run_file_cli ─────────────────────────────────────────────────────────
+def test_run_file_cli_refuses_an_empty_file_list(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(lc.sys, "argv", ["/x/ci_truth_serum/check_thing.py"])
+    called = []
+    assert lc.run_file_cli(lambda argv: called.append(argv) or 0) == 2
+    assert called == []  # the check never ran, so it cannot have reported a pass
+    err = capsys.readouterr().err
+    assert "check_thing: no files to scan" in err
+    assert "git ls-files -z | xargs -0 python -m ci_truth_serum.check_thing" in err
+
+
+def test_run_file_cli_passes_the_files_through_and_returns_the_check_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lc.sys, "argv", ["check_thing.py", "a.sh", "b.sh"])
+    seen: list[list[str]] = []
+    assert lc.run_file_cli(lambda argv: seen.append(argv) or 1) == 1
+    assert seen == [["a.sh", "b.sh"]]
+
+
+def test_every_content_check_refuses_a_run_with_no_files() -> None:
+    """No content check may report a clean pass over an empty file list.
+
+    Driven from the tier registry, not a pasted list, so a content check added
+    later without the guard fails here rather than shipping the false green.
+    """
+    run_tier = load_hook("run_tier.py", "run_tier")
+    content = sorted(
+        {
+            m
+            for members in run_tier.TIERS.values()
+            for m, kind in members
+            if kind != run_tier.WORKFLOW
+        }
+    )
+    assert len(content) > 20, "registry lookup found almost nothing — check the kinds"
+    statuses = {
+        module: subprocess.run(
+            [sys.executable, "-m", f"ci_truth_serum.{module}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            check=False,
+        ).returncode
+        for module in content
+    }
+    assert statuses == dict.fromkeys(content, 2)
 
 
 # ── workflow_files ───────────────────────────────────────────────────────

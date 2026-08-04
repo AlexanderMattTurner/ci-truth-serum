@@ -76,6 +76,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
+    run_file_cli,
     run_line_checks,
 )
 
@@ -388,4 +389,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))

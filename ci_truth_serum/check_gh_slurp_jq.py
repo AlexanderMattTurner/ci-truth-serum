@@ -72,6 +72,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     LineLoader,
     MESSAGE_PREFIX,
     annotation_re,
+    run_file_cli,
 )
 
 OPT_OUT = "allow-gh-slurp-jq"
@@ -283,4 +284,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))
