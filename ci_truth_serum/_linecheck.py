@@ -337,6 +337,34 @@ def run_line_checks(
     return run_source_checks(argv, lambda text, _path: find_violations(text), message)
 
 
+def unparseable_shell_reason(path: str, text: str) -> str | None:
+    """The refusal message when PATH names shell the grammar cannot read, else None.
+
+    The bash grammar is imported HERE rather than at module scope, and only once
+    the path is known to be shell. Around fifty checks import this module, and
+    most of them read YAML or Python and are handed no shell at all; a module-
+    scope import would put `tree_sitter_bash` in every one of their pre-commit
+    environments. A check that IS handed shell still gets the loud ImportError
+    `_bash_ast` raises, so the deferral costs no fail-closed behaviour.
+    """
+    if not is_shell_source(path, text.split("\n", 1)[0]):
+        return None
+    # This module is loaded BY PATH (the check scripts, and tests/_helpers.load_hook),
+    # so a sibling import needs this directory on the path first — the same prelude
+    # every check script carries.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _bash_ast import (  # pylint: disable=import-outside-toplevel
+        UnparseableShellError,
+        assert_parseable,
+    )
+
+    try:
+        assert_parseable(text)
+    except UnparseableShellError as err:
+        return str(err)
+    return None
+
+
 def run_source_checks(
     argv: list[str],
     find_violations: Callable[[str, str], list[int]],
@@ -359,6 +387,12 @@ def run_source_checks(
     one argument *is* the exact artifact under test: an unparseable workflow
     there is reported as a violation, since "no findings" would be a false-green
     on the very file being verified.
+
+    A shell file the GRAMMAR cannot read gets that same treatment, and for the
+    same reason: `unparseable_shell_reason` says the detector never saw the
+    constructs it matches on, so its empty result is not a pass. Reporting it
+    here rather than raising keeps one unparsed line from failing a whole
+    pre-commit run with a traceback, while still refusing to call the file clean.
     """
     status = 0
     for path in argv:
@@ -366,6 +400,11 @@ def run_source_checks(
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
+            continue
+        reason = unparseable_shell_reason(path, text)
+        if reason is not None:
+            print(f"{path}: {reason}", file=sys.stderr)
+            status = 1
             continue
         for lineno in find_violations(text, path):
             print(f"{path}:{lineno}: {message}", file=sys.stderr)

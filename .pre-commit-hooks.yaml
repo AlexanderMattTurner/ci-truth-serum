@@ -221,6 +221,16 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-uncached-download
+  name: "opinionated: require a cache in any job that downloads a pinned tool"
+  description: A job that installs a version-pinned tool with no cache re-downloads identical bytes on every run, and a slow registry turns that cost into a job timeout GitHub reports as "cancelled".
+  entry: python -m ci_truth_serum.check_uncached_download
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 - id: check-concurrency
   name: "opinionated: require explicit cancel-in-progress on concurrency groups"
   description: Missing cancel-in-progress silently defaults to false (queue-don't-cancel).
