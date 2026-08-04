@@ -254,12 +254,19 @@ def _is_pinned(spec: str, family: str) -> bool:
     return False
 
 
-def _unpinned_specs(args: list, family: str) -> list[str]:
-    """Package specs among ARGS that name no version.
+def spec_scan(args: list, family: str) -> tuple[list[str], list[str]]:
+    """(specs that name a version, specs that name none) among ARGS.
 
     Flags and their values are consumed, non-registry specs (paths, URLs, VCS refs)
-    and shell-decided values are skipped, and a constraints/`--spec` flag pins the
-    whole command."""
+    are skipped, and a constraints/`--spec` flag pins the whole command. A spec the
+    shell decides at run time (`"$PKG"`) belongs to neither list unless its text
+    already carries the pin (`"ruff==${RUFF_VERSION}"`), which reads as pinned.
+
+    Both lists matter: this lint reads the unpinned one, and check_uncached_download
+    reads the pinned one — an install is worth caching exactly when its bytes do not
+    change between runs, which is what the pin guarantees.
+    """
+    pinned: list[str] = []
     unpinned: list[str] = []
     skip_next = False
     for node in args:
@@ -270,14 +277,16 @@ def _unpinned_specs(args: list, family: str) -> list[str]:
         if raw.startswith("-"):
             flag = raw.split("=", 1)[0]
             if flag in _PINS_THE_COMMAND[family]:
-                return []
+                return [], []
             skip_next = flag in _VALUE_FLAGS[family] and "=" not in raw
             continue
-        if _is_dynamic(node) or _NOT_A_REGISTRY_SPEC.search(raw):
+        if _NOT_A_REGISTRY_SPEC.search(raw):
             continue
-        if not _is_pinned(raw, family):
+        if _is_pinned(raw, family):
+            pinned.append(raw)
+        elif not _is_dynamic(node):
             unpinned.append(raw)
-    return unpinned
+    return pinned, unpinned
 
 
 def _executed_strings(tokens: list[str], args: list) -> list:
@@ -329,7 +338,7 @@ def _install_spans(root) -> list[tuple[int, int]]:
             or any(_GLOBAL_FLAG.match(token) for token in tokens[index:])
         ):
             continue
-        if _unpinned_specs(rest, family):
+        if spec_scan(rest, family)[1]:
             spans.append((command.start_point[0] + 1, command.end_point[0] + 1))
     return spans
 

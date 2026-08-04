@@ -43,6 +43,9 @@ jobs:
           GITLEAKS_VERSION: "8.30.1"
         run: |
           set -euo pipefail
+          # cache-exempt: this job runs only when a pull request closes with a
+          # lessons section, a few times a week, so a cache would expire between
+          # runs more often than it would be restored.
           curl --proto '=https' -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
             -o /tmp/gitleaks.tar.gz \
             "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
