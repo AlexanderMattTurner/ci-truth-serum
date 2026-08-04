@@ -248,7 +248,7 @@ run_shard() {
   else
     prompt="$(shard_prompt "$file")"
   fi
-  timeout "$SHARD_TIMEOUT_SECONDS" claude \
+  timeout --kill-after=30 "$SHARD_TIMEOUT_SECONDS" claude \
     -p "$prompt" \
     --model "$RESOLVER_MODEL" \
     --setting-sources user \

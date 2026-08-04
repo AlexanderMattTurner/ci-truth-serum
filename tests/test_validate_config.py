@@ -113,14 +113,15 @@ def test_fails_when_settings_missing(tmp_path: Path, copy_script) -> None:
 
 
 def test_fails_when_settings_json_is_malformed(tmp_path: Path, copy_script) -> None:
-    """Corrupted settings.json must be reported as an error for both jq call sites,
-    not silently swallowed."""
+    """Corrupted settings.json must be reported as an error at every jq call site,
+    not silently swallowed. The script reads the file three times: the hook-path
+    check, the safe-launch check, and the matcher-shape check."""
     (tmp_path / ".claude").mkdir(exist_ok=True)
     (tmp_path / ".claude" / "settings.json").write_text("{not valid json}")
     make_hook(tmp_path, ".hooks/pre-commit", executable=True)
     result = run_validator(tmp_path, copy_script)
     assert result.returncode == 1
-    assert (result.stdout + result.stderr).count("could not be parsed") == 2
+    assert (result.stdout + result.stderr).count("could not be parsed") == 3
 
 
 def test_rejects_hook_with_syntax_error(tmp_path: Path, copy_script) -> None:
@@ -148,12 +149,12 @@ def test_rejects_py_hook_with_syntax_error(tmp_path: Path, copy_script) -> None:
     assert "has a python syntax error" in result.stdout + result.stderr
 
 
-def _pretooluse_settings(cmd: str) -> dict:
+def _pretooluse_settings(cmd: str, matcher: str = "Bash") -> dict:
     return {
         "hooks": {
             "PreToolUse": [
                 {
-                    "matcher": "Bash(git push*)",
+                    "matcher": matcher,
                     "hooks": [{"type": "command", "command": cmd}],
                 }
             ]
@@ -182,3 +183,46 @@ def test_pretooluse_with_safe_launch_passes(tmp_path: Path, copy_script) -> None
     result = run_validator(tmp_path, copy_script)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "All checks passed" in result.stdout
+
+
+SAFE_LAUNCH_CMD = (
+    '"$CLAUDE_PROJECT_DIR"/.claude/hooks/safe-launch.sh '
+    '"$CLAUDE_PROJECT_DIR"/.claude/hooks/pre-push-check.sh'
+)
+
+
+def _run_with_matcher(tmp_path: Path, copy_script, matcher: str):
+    """Drive the validator over a settings.json whose only defect can be MATCHER.
+
+    The command is correctly wrapped and both hook files exist, so checks 1-3
+    pass and the exit status isolates the matcher-shape check."""
+    write_settings(tmp_path, _pretooluse_settings(SAFE_LAUNCH_CMD, matcher))
+    make_hook(tmp_path, ".claude/hooks/safe-launch.sh")
+    make_hook(tmp_path, ".claude/hooks/pre-push-check.sh")
+    return run_validator(tmp_path, copy_script)
+
+
+@pytest.mark.parametrize(
+    "matcher",
+    ["Bash(git push*)", "Read(//tmp/**)", "WebFetch(domain:example.com)"],
+)
+def test_a_matcher_shaped_like_a_permission_rule_is_rejected(
+    tmp_path: Path, copy_script, matcher: str
+) -> None:
+    """`matcher` filters on the tool NAME only. A permission-rule value like
+    `Bash(git push*)` is tested against the literal name "Bash", never matches,
+    and so disables the whole hook without any error — the silent failure this
+    check exists to make loud."""
+    result = _run_with_matcher(tmp_path, copy_script, matcher)
+    assert result.returncode == 1
+    assert "command-content syntax" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("matcher", ["Bash", "Edit|Write", "*", ".*", ""])
+def test_a_tool_name_matcher_is_accepted(
+    tmp_path: Path, copy_script, matcher: str
+) -> None:
+    """Non-vacuity for the test above: every shape a matcher is actually allowed
+    to take must survive the check, or it would redden ordinary configs."""
+    result = _run_with_matcher(tmp_path, copy_script, matcher)
+    assert result.returncode == 0, result.stdout + result.stderr
