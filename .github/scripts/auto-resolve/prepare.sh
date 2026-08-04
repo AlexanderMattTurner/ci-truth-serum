@@ -306,7 +306,7 @@ if [[ ${#structural_candidates[@]} -gt 0 ]]; then
     # marker-absence test alone accepts an empty result — and this loop would
     # then overwrite the conflicted file with nothing, stage it, and drop it
     # from the model's list. Silent data loss, reported as a structural solve.
-    if timeout 60 "$mergiraf_bin" solve -p "./${f}" >"$mergiraf_scratch/solved" 2>"$mergiraf_scratch/log" &&
+    if timeout --kill-after=5 60 "$mergiraf_bin" solve -p "./${f}" >"$mergiraf_scratch/solved" 2>"$mergiraf_scratch/log" &&
       [[ -s "$mergiraf_scratch/solved" ]] &&
       ! grep -q '^<<<<<<<' "$mergiraf_scratch/solved"; then
       cat "$mergiraf_scratch/solved" >"$f"

@@ -118,19 +118,14 @@ def test_check_file_syntax_error_returns_empty(tmp_path: Path) -> None:
 def test_main_returns_one_on_violation(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bad = tmp_path / "bad.py"
     bad.write_text("import re\nre.match('(x)', s)\n", encoding="utf-8")
-    monkeypatch.setattr(mod.sys, "argv", ["check_unnamed_regex_groups.py", str(bad)])
-    assert mod.main() == 1
+    assert mod.main([str(bad)]) == 1
     assert "unnamed capture group" in capsys.readouterr().out
 
 
-def test_main_returns_zero_when_clean(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_returns_zero_when_clean(tmp_path: Path) -> None:
     good = tmp_path / "good.py"
     good.write_text("import re\nre.match('(?P<x>y)', s)\n", encoding="utf-8")
-    monkeypatch.setattr(mod.sys, "argv", ["check_unnamed_regex_groups.py", str(good)])
-    assert mod.main() == 0
+    assert mod.main([str(good)]) == 0

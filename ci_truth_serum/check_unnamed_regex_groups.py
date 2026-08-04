@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _linecheck import run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _py_ast import re_bindings, re_call_target  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 _RE_FUNCS = frozenset(
@@ -73,9 +74,9 @@ def check_file(path: Path) -> list[tuple[int, str]]:
     return errors
 
 
-def main() -> int:
+def main(argv: list[str]) -> int:
     rc = 0
-    for arg in sys.argv[1:]:
+    for arg in argv:
         path = Path(arg)
         for lineno, pattern in check_file(path):
             print(
@@ -87,4 +88,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(run_file_cli(main))

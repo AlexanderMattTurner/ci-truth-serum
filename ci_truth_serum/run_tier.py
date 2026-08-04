@@ -12,6 +12,12 @@ and the content lints receive only the committed files of their kind (shell /
 python / Dockerfile), classified with ``identify`` — the same library pre-commit
 uses for its own ``types:`` filtering.
 
+A content lint with no file of its kind cannot run, and the run says so on
+stderr, naming each one. Pre-commit always passes the changed files, so this
+reports on a commit that touches only one language. It also catches the hand
+run: ``run_tier 1`` with no arguments still runs every workflow lint and exits
+0, which without the note reads as a clean tier rather than a partial one.
+
 Three hooks are intentionally NOT aggregated, each enabled on its own:
 ``check-symlinks`` is a ``language: script`` shell hook, not a Python module, so
 it cannot run inside this Python aggregate; ``check-lockstep-pins`` is
@@ -156,18 +162,22 @@ def matches(path: str, kind: str) -> bool:
     return False
 
 
-def run_member(module: str, kind: str, files: list[str]) -> int:
-    """Run one member check as its own subprocess; return its exit code.
+def selected_files(kind: str, files: list[str]) -> list[str] | None:
+    """The file arguments a KIND member receives, or None when it cannot run.
 
-    A content lint with no committed file of its kind has nothing to do, so it is
-    skipped; a workflow lint always runs (it self-discovers, ignoring `files`).
+    A workflow lint self-discovers `.github/*` and ignores FILES, so it always
+    runs and takes no arguments. A content lint reads only what it is given, so
+    with no committed file of its kind it has nothing to scan. The caller must be
+    able to tell that case from a pass — they are the same exit code, and a run
+    that reports one as the other is the false green this pack exists to refuse.
     """
     if kind == WORKFLOW:
-        argv = []
-    else:
-        argv = [f for f in files if matches(f, kind)]
-        if not argv:
-            return 0
+        return []
+    return [f for f in files if matches(f, kind)] or None
+
+
+def run_check(module: str, argv: list[str]) -> int:
+    """Run one member check as its own subprocess; return its exit code."""
     return subprocess.run(
         [sys.executable, "-m", f"ci_truth_serum.{module}", *argv], check=False
     ).returncode
@@ -210,11 +220,35 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     rc = 0
+    unscanned: list[str] = []
     for module, kind in TIERS[tier]:
         if module in skips:
             continue
-        if run_member(module, kind, files):
+        argv = selected_files(kind, files)
+        if argv is None:
+            unscanned.append(module)
+            continue
+        if run_check(module, argv):
             rc = 1
+
+    # A member that never ran and a member that passed leave the same exit code.
+    # This note is what separates them: a hand run with no file arguments runs
+    # every workflow lint, reports 0, and reads as a clean tier without it.
+    if unscanned:
+        print(
+            f"note: these tier {tier} checks did not run, because no file of "
+            f"their kind was passed: {', '.join(unscanned)}",
+            file=sys.stderr,
+        )
+        # Only an empty file list has this remedy. When the caller DID pass
+        # files, the checks above sat out because the repository holds no file
+        # of their kind, and re-running over the whole tree changes nothing.
+        if not files:
+            print(
+                "  to scan the whole tree: git ls-files -z | xargs -0 python -m "
+                f"ci_truth_serum.run_tier {tier}",
+                file=sys.stderr,
+            )
     return rc
 
 

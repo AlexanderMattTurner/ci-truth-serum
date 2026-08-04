@@ -3,10 +3,13 @@
 
 const fs = require("fs");
 
-const PHONE_HOME_DIR = "/tmp/phone-home";
+const DEFAULT_PHONE_HOME_DIR = "/tmp/phone-home";
 
 /**
  * Submit extracted lessons as an issue on the template repository.
+ *
+ * Reads lessons.txt from $PHONE_HOME_DIR (default /tmp/phone-home) — the same
+ * directory the extract step wrote it to.
  *
  * Called by the phone-home workflow via actions/github-script.
  * Expects PR_TITLE, PR_URL, SOURCE_REPO, and TEMPLATE_REPO env vars.
@@ -15,7 +18,8 @@ const PHONE_HOME_DIR = "/tmp/phone-home";
  * @param {object} params.github - Authenticated Octokit client
  */
 module.exports = async ({ github }) => {
-  const lessons = fs.readFileSync(`${PHONE_HOME_DIR}/lessons.txt`, "utf8");
+  const phoneHomeDir = process.env.PHONE_HOME_DIR || DEFAULT_PHONE_HOME_DIR;
+  const lessons = fs.readFileSync(`${phoneHomeDir}/lessons.txt`, "utf8");
   const prTitle = process.env.PR_TITLE;
   const prUrl = process.env.PR_URL;
   const repo = process.env.SOURCE_REPO;

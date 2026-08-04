@@ -55,6 +55,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    run_file_cli,
     tracked_shell_files,
 )
 
@@ -457,8 +458,7 @@ def violations(text: str) -> list[tuple[int, str]]:
     return found
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
+def main(argv: list[str]) -> int:
     files = (
         tracked_shell_files()
         if "--all" in argv
@@ -478,4 +478,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(run_file_cli(main))

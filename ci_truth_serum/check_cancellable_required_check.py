@@ -44,6 +44,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     group_is_per_ref,
     opted_out,
     required_check_contexts,
+    workflow_files,
 )
 
 OPT_OUT = "cancellable-required-check-ok"
@@ -135,7 +136,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
 
 
 def main() -> int:
-    files = sorted(WORKFLOWS_DIR.glob("*.yaml")) + sorted(WORKFLOWS_DIR.glob("*.yml"))
+    files = workflow_files(WORKFLOWS_DIR)
     total = 0
     for path in files:
         found = check_file(path)

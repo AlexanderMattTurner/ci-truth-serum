@@ -81,6 +81,7 @@ from _bash_ast import (  # pylint: disable=wrong-import-position
 )
 from _linecheck import (  # pylint: disable=wrong-import-position
     annotated_near,
+    run_file_cli,
     tracked_shell_files,
 )
 
@@ -349,4 +350,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))

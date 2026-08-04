@@ -122,6 +122,10 @@ webi_install_if_missing shfmt shfmt@3
 webi_install_if_missing gh gh@2
 webi_install_if_missing jq jq@1.7
 if ! command -v shellcheck &>/dev/null && is_root; then
+  # pin-exempt: an apt version pin names a distro-specific build (2.5.0-1build1)
+  # that the archive drops at the next point release, so the pin turns a working
+  # install into a hard failure on a base-image bump. The three webi installs
+  # above pin because their upstream keeps every version reachable.
   { apt-get update -qq && apt-get install -y -qq shellcheck; } || warn "Failed to install shellcheck"
 fi
 
