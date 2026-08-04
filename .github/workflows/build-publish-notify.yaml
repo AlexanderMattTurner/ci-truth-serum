@@ -53,6 +53,11 @@ jobs:
       - name: Notify ntfy
         uses: ./.github/actions/notify-ntfy
         with:
+          # 4 (high), not the action's default 5 (max). ntfy's max bypasses
+          # do-not-disturb, which this earns only for something users feel right
+          # now. A failed build or publish means the release did not go out;
+          # nothing already shipped is broken, so it can wait for the morning.
+          priority: "4"
           topic: ${{ secrets.GH_NTFY_SUBJECT }}
           base-url: ${{ secrets.GH_NTFY_URL }}
           title: "${{ github.repository }}: ${{ github.event.workflow_run.name }} failed"

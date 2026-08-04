@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
+    run_file_cli,
     run_line_checks,
 )
 
@@ -89,4 +90,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))

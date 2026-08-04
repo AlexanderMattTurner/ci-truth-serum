@@ -58,6 +58,7 @@ from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wr
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     is_test_path,
+    run_file_cli,
     tracked_shell_files,
 )
 
@@ -257,8 +258,7 @@ def scan_targets(argv: list[str]) -> tuple[list[str], list[str]]:
     return [path for path in passed if is_test_path(path)], production
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
+def main(argv: list[str]) -> int:
     test_paths, production = scan_targets(argv)
     if not test_paths:
         return 0  # nothing test-side in view can violate
@@ -277,4 +277,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(run_file_cli(main))

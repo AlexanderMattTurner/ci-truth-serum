@@ -1,0 +1,1 @@
+- The mutation shards for `_linecheck.py` no longer run out of time. A module's mutation oracle is its own test file, re-run once for every mutant, so a test that spawns 50 subprocesses costs 50 spawns per mutant. The two registry-wide contract tests that do this now live in `tests/cts/test_empty_scan_contract.py`, which is nobody's oracle. The shard budget is unchanged.

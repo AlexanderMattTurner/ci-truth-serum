@@ -145,7 +145,15 @@ def check_repo(repo_root: Path) -> list[str]:
     """Every provenance-URL violation for the repo, as printable messages."""
     origin = origin_repo(repo_root)
     if origin is None:
-        return []  # nothing to compare against — a repo without an origin remote
+        # Nothing to compare against, so no violation can exist and this returns
+        # clean. Say so: this empty result and a real pass are the same output,
+        # and the caller cannot otherwise tell the check never got to run.
+        print(
+            f"note: {repo_root} has no `origin` remote to compare against — "
+            "this check scanned nothing.",
+            file=sys.stderr,
+        )
+        return []
 
     found: list[str] = []
     pkg_url = package_json_repo_url(repo_root)

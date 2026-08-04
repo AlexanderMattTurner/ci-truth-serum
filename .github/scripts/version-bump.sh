@@ -96,7 +96,8 @@ elif grep -q "E404" "$NPM_VIEW_ERR"; then
   CURRENT_VERSION="0.0.0"
 else
   log "Error: npm view failed for '$PACKAGE_NAME' (not a 404 for an unpublished package):"
-  log "$(cat "$NPM_VIEW_ERR")"
+  npm_view_err=$(cat "$NPM_VIEW_ERR")
+  log "$npm_view_err"
   exit 1
 fi
 # `npm view` can print nothing on a success exit (never-published package) or

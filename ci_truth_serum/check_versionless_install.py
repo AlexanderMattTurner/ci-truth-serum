@@ -80,9 +80,10 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated_near,
     LineLoader,
     MESSAGE_PREFIX,
+    annotated_near,
+    run_file_cli,
 )
 
 OPT_OUT = "pin-exempt"
@@ -415,8 +416,7 @@ def _run_scripts(path: Path) -> list[tuple[int, str]]:
     return scripts
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
+def main(argv: list[str]) -> int:
     status = 0
     for arg in argv:
         path = Path(arg)
@@ -447,4 +447,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(run_file_cli(main))

@@ -6,9 +6,10 @@ Two layers:
     `.pre-commit-hooks.yaml` (every Python check sits in exactly the tier its
     name prefix declares; only `check-symlinks`, a shell hook, is unaggregated),
     so a newly added hook can't silently escape its tier; and
-  * functional tests of `matches`/`run_member`/`main` (file routing, the
-    skip-when-no-files-of-kind path, exit-code aggregation, the usage guard),
-    driven through a real subprocess against a tmp repo.
+  * functional tests of `matches`/`selected_files`/`run_check`/`main` (file
+    routing, the report naming the members that had no file to scan, exit-code
+    aggregation, the usage guard), driven through a real subprocess against a
+    tmp repo.
 """
 
 from pathlib import Path
@@ -176,25 +177,31 @@ def test_matches_prose_or_commented_code_accepts_prose(tmp_path):
     assert rt.matches(str(p), rt.PROSE_OR_COMMENTED_CODE) is False
 
 
-# ── run_member ────────────────────────────────────────────────────────────
-def test_run_member_skips_content_lint_with_no_matching_files(tmp_path, monkeypatch):
-    # A python file given to a SHELL member → no shell files → skipped (rc 0),
-    # and no subprocess is spawned.
-    called = False
-
-    def _boom(*a, **k):
-        nonlocal called
-        called = True
-        raise AssertionError("subprocess should not run")
-
-    monkeypatch.setattr(rt.subprocess, "run", _boom)
+# ── selected_files / run_check ────────────────────────────────────────────
+def test_a_content_lint_with_no_file_of_its_kind_cannot_run(tmp_path):
+    """None, not an empty list: the caller must tell 'nothing to scan' from a
+    pass, because both would otherwise be exit 0."""
     p = tmp_path / "m.py"
     p.write_text("x = 1\n")
-    assert rt.run_member("check_exit_suppression", rt.SHELL, [str(p)]) == 0
-    assert called is False
+    assert rt.selected_files(rt.SHELL, [str(p)]) is None
 
 
-def test_run_member_workflow_ignores_files_and_runs(monkeypatch):
+def test_a_content_lint_receives_only_the_files_of_its_kind(tmp_path):
+    py = tmp_path / "m.py"
+    py.write_text("x = 1\n")
+    sh = tmp_path / "s.sh"
+    sh.write_text("#!/usr/bin/env bash\necho hi\n")
+    assert rt.selected_files(rt.SHELL, [str(py), str(sh)]) == [str(sh)]
+
+
+def test_a_workflow_lint_ignores_the_files_and_still_runs():
+    """It self-discovers `.github/*`, so it takes no arguments and is never the
+    skipped case, whatever the commit touched."""
+    assert rt.selected_files(rt.WORKFLOW, ["ignored.py"]) == []
+    assert rt.selected_files(rt.WORKFLOW, []) == []
+
+
+def test_run_check_spawns_the_module_with_its_files(monkeypatch):
     captured = {}
 
     class _Done:
@@ -205,9 +212,16 @@ def test_run_member_workflow_ignores_files_and_runs(monkeypatch):
         return _Done()
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
-    assert rt.run_member("check_pr_paths", rt.WORKFLOW, ["ignored.py"]) == 0
-    # WORKFLOW members get no file args appended — just `-m hooks.<module>`.
+    assert rt.run_check("check_pr_paths", []) == 0
     assert captured["cmd"][1:] == ["-m", "ci_truth_serum.check_pr_paths"]
+
+
+def test_run_check_reports_the_module_exit_code(monkeypatch):
+    class _Done:
+        returncode = 1
+
+    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
+    assert rt.run_check("check_pr_paths", []) == 1
 
 
 # ── main ──────────────────────────────────────────────────────────────────
@@ -273,6 +287,78 @@ def test_main_tier1_flags_a_real_violation(tmp_path, monkeypatch):
     repo = _tmp_repo_with_pr_paths_violation(tmp_path)
     monkeypatch.chdir(repo)
     assert rt.main(["1"]) == 1
+
+
+def test_a_hand_run_with_no_files_says_which_checks_did_not_run(
+    tmp_path, monkeypatch, capsys
+):
+    """The failure this note exists to prevent. `run_tier 1` with no arguments
+    runs every workflow lint and exits 0, so the run reads as a clean tier while
+    every content lint sat out. The note is the only thing that says otherwise."""
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "ok.yaml").write_text(
+        "name: x\non:\n  push:\n    branches: [main]\n  pull_request:\njobs: {}\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    assert rt.main(["1"]) == 0
+    err = capsys.readouterr().err
+    assert "did not run" in err
+    # Names each one, so the reader can see the shell lints are the gap.
+    assert "check_exit_suppression" in err
+    assert "check_pinned_base_images" in err
+    # A workflow lint DID run, so it must not appear in the unscanned list.
+    assert "check_pr_paths" not in err
+    # The command that scans the whole tree, which is the remedy.
+    assert "git ls-files -z | xargs -0" in err
+
+
+def test_the_whole_tree_remedy_is_absent_when_files_were_passed(
+    tmp_path, monkeypatch, capsys
+):
+    """A repository with no Dockerfile leaves the Dockerfile lint unscanned even
+    on a whole-tree run. Naming it is right; telling the caller to scan the whole
+    tree is not, because that is what they just did."""
+    monkeypatch.setattr(
+        rt,
+        "TIERS",
+        {"1": [("check_pinned_base_images", rt.DOCKERFILE)]},
+    )
+    py = tmp_path / "m.py"
+    py.write_text("x = 1\n")
+    assert rt.main(["1", str(py)]) == 0
+    err = capsys.readouterr().err
+    assert "check_pinned_base_images" in err
+    assert "git ls-files" not in err
+
+
+def test_a_run_that_scans_every_member_prints_no_note(monkeypatch, capsys):
+    """Non-vacuity for the note: it must be absent when nothing sat out, or it
+    would be noise on every run and get ignored."""
+    monkeypatch.setattr(rt, "TIERS", {"1": [("check_pr_paths", rt.WORKFLOW)]})
+
+    class _Done:
+        returncode = 0
+
+    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
+    assert rt.main(["1"]) == 0
+    assert "did not run" not in capsys.readouterr().err
+
+
+def test_a_skipped_member_is_not_reported_as_unscanned(monkeypatch, capsys):
+    """`--skip` is the caller's own choice, already visible in their command, so
+    listing it as unscanned would bury the members they did not choose."""
+    monkeypatch.setattr(
+        rt,
+        "TIERS",
+        {"1": [("check_pr_paths", rt.WORKFLOW), ("check_exit_suppression", rt.SHELL)]},
+    )
+
+    class _Done:
+        returncode = 0
+
+    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
+    assert rt.main(["1", "--skip", "check_exit_suppression"]) == 0
+    assert "did not run" not in capsys.readouterr().err
 
 
 def test_main_tier1_passes_on_clean_repo(tmp_path, monkeypatch):

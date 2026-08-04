@@ -79,10 +79,10 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    has_trigger,
     LineLoader,
+    has_trigger,
     notifier_matcher,
-    WORKFLOW_GLOBS,
+    workflow_files,
 )
 from _failure_routing import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     is_notifier,
@@ -168,10 +168,6 @@ def corrected_block(names: set[str]) -> str:
     return "\n".join(lines)
 
 
-def workflow_files() -> list[Path]:
-    return sorted(p for glob in WORKFLOW_GLOBS for p in WORKFLOWS_DIR.glob(glob))
-
-
 def load_workflows() -> tuple[list[tuple[Path, dict, str]], list[str]]:
     """(path, parsed mapping, source text) for every readable workflow, plus one
     message per file the parser rejected.
@@ -185,7 +181,7 @@ def load_workflows() -> tuple[list[tuple[Path, dict, str]], list[str]]:
     """
     docs: list[tuple[Path, dict, str]] = []
     errors: list[str] = []
-    for path in workflow_files():
+    for path in workflow_files(WORKFLOWS_DIR):
         rel = path.relative_to(REPO_ROOT)
         text = path.read_text()
         try:
