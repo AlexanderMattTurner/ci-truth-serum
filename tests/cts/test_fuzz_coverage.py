@@ -74,6 +74,7 @@ FUZZ_REQUIRED = {
     "check_pr_paths": "check_file",
     "check_claude_model": "check_file",
     "check_path_gate_deps": "check_file",
+    "check_reusable_permissions": "check_file",
     "check_failure_notifier_coverage": "check_repo",
     "check_unnamed_regex_groups": "check_file",
     "check_drift_guards": "violations",

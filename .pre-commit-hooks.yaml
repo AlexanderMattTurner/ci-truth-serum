@@ -283,6 +283,19 @@
   # files:-filtered hook would never re-check. The scan is cheap (YAML + regex).
   always_run: true
 
+- id: check-reusable-permissions
+  name: "opinionated: a caller must grant every permission its reusable workflow needs"
+  description: A permission added to a shared workflow, with no matching change in its callers, fails every calling run at start. The error names the callee, not the caller. Both sides are static YAML, so the check compares them.
+  entry: python -m ci_truth_serum.check_reusable_permissions
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  # The requirement lives in the CALLEE, so a caller can break with no edit of
+  # its own. That is still covered here: the callee is a workflow file too, and
+  # the hook rescans every workflow whenever any one of them is staged.
+  files: ^\.github/workflows/
+  types: [yaml]
+
 - id: check-failure-notifier-coverage
   name: "opinionated: keep the failure notifier's workflow_run list in sync with the tree"
   description: workflow_run has no wildcard, so the notifier's workflows list is a derived copy; a stale copy silently drops failure notifications. The notifier is discovered by shape (on.workflow_run plus a notification sink), whatever the file is called, and no discoverable notifier is a failure rather than a green nothing verified.

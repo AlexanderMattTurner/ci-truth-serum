@@ -44,6 +44,9 @@ externalized_markers = load_hook(
     "check_externalized_markers.py", "fuzz_externalized_markers"
 )
 path_gate_deps = load_hook("check_path_gate_deps.py", "fuzz_path_gate_deps")
+reusable_permissions = load_hook(
+    "check_reusable_permissions.py", "fuzz_reusable_permissions"
+)
 job_timeout = load_hook("check_job_timeout.py", "fuzz_job_timeout")
 uncached_download = load_hook("check_uncached_download.py", "fuzz_uncached_download")
 trusted_base = load_hook("check_trusted_base.py", "fuzz_trusted_base")
@@ -69,6 +72,7 @@ WORKFLOW_CHECKS = [
     ("check_claude_model", claude_model.check_file, True),
     ("check_externalized_markers", externalized_markers.check_file, True),
     ("check_path_gate_deps", path_gate_deps.check_file, True),
+    ("check_reusable_permissions", reusable_permissions.check_file, True),
     ("check_job_timeout", job_timeout.check_file, True),
     ("check_uncached_download", uncached_download.check_file, True),
     ("check_trusted_base", trusted_base.check_file, True),
@@ -102,6 +106,19 @@ _WORKFLOW_FRAGMENTS = [
     ),
     "permissions:\n  contents: read\n",
     "jobs:\n  decide:\n    uses: ./.github/workflows/decide-reusable.yaml\n",
+    # Reusable-call permission shapes: a job-level grant, the `-all` keywords,
+    # and the per-job opt-out (check_reusable_permissions).
+    (
+        "jobs:\n  decide:\n    permissions:\n      contents: read\n"
+        "      pull-requests: read\n"
+        "    uses: ./.github/workflows/decide-reusable.yaml\n"
+    ),
+    "permissions: write-all\n",
+    "permissions: read-all\n",
+    (
+        "jobs:\n  decide:  # reusable-permissions-ok: the scope is unused here\n"
+        "    uses: ./.github/workflows/decide-reusable.yaml\n"
+    ),
     "jobs:\n  build:\n    if: needs.decide.outputs.run == 'true'\n    steps: []\n",
     "jobs:\n  report:\n    if: always()\n    needs: [decide]\n",
     "jobs:\n  report: # required-check: true\n    if: always()\n",
