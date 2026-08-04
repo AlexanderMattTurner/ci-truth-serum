@@ -30,7 +30,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import _job_blocks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import _job_blocks, workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
@@ -99,7 +99,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
 
 def main() -> int:
-    files = sorted(WORKFLOWS_DIR.glob("*.yaml")) + sorted(WORKFLOWS_DIR.glob("*.yml"))
+    files = workflow_files(WORKFLOWS_DIR)
     total = 0
     for path in files:
         rel = path.relative_to(REPO_ROOT)

@@ -59,9 +59,9 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    WORKFLOW_GLOBS,
     LineLoader as _LineLoader,
     _job_blocks,
+    workflow_files,
 )
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -388,14 +388,10 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     return analyze(doc, text, _read_repo_file)
 
 
-def workflow_files() -> list[Path]:
-    # Workflows only: composite actions have no jobs, so no decide gates.
-    return sorted(p for glob in WORKFLOW_GLOBS for p in WORKFLOWS_DIR.glob(glob))
-
-
 def main() -> int:
     total = 0
-    for path in workflow_files():
+    # Workflows only: composite actions have no jobs, so no decide gates.
+    for path in workflow_files(WORKFLOWS_DIR):
         rel = path.relative_to(REPO_ROOT)
         for line, message in check_file(path):
             loc = f"file={rel},line={line}" if line else f"file={rel}"

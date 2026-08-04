@@ -68,7 +68,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
+    annotated_near,
     strip_yaml_comments,
     workflow_files as _workflow_files,
 )
@@ -156,17 +156,18 @@ def _inert_message(tool: str) -> str:
 
 
 def _opted_out(source_lines: list[str], index: int, token: str) -> bool:
-    """True when the annotation TOKEN (with a reason) sits on the grant's own
-    source line or the one directly above it.
+    """True when the annotation TOKEN (with a reason) annotates the grant.
+
+    Placement is `annotation_window`'s call, not this check's: the grant line
+    plus the unbroken comment block above it. One grant can trip BOTH the read
+    and the write class, and only one annotation fits the single line directly
+    above, so a narrower window leaves such a grant with no way to opt out of
+    both at once.
 
     Reads the ORIGINAL lines, not the comment-stripped scan text: the annotation
     lives in a comment, which is exactly what the scan text has blanked out.
     """
-    return any(
-        annotated(source_lines[i], token)
-        for i in (index, index - 1)
-        if 0 <= i < len(source_lines)
-    )
+    return annotated_near(source_lines, index + 1, token)
 
 
 def findings(text: str) -> list[tuple[int, str]]:

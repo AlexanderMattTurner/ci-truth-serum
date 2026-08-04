@@ -1,15 +1,17 @@
 name: Claude reviewers
 
-# Umbrella for the three automated PR reviewers: the Opus first-pass reviewer,
-# the Sonnet merge-delta reviewer, and the Haiku review-thread resolver. One file
-# holds all three to cut the per-PR workflow fan-out on a shared, capped runner
-# pool. Every job stays self-contained and carries its own SECURITY header,
-# `permissions:`, base-only checkout posture, and `if:` guards. All three run on
-# one shared pull_request_target trigger with a base-only checkout and a
-# least-privilege token, and each is guarded by `github.event.action` so it fires
-# on exactly the events it needs. Concurrency is declared PER JOB (never
-# workflow-level), under a distinct group name per job, so the jobs never cancel
-# one another.
+# Umbrella for the three automated PR reviewers: the Opus first-pass reviewer
+# (the `review` job, gated by `decide`), the Sonnet merge-delta reviewer (the
+# `merge_delta_review` job), and the Haiku review-thread resolver (the
+# `thread_resolve` job). One file holds all three to cut the per-PR workflow
+# fan-out on a shared, capped runner pool. Every job stays self-contained and
+# carries its own SECURITY header, `permissions:`, base-only checkout posture,
+# and `if:` guards. All three run on the reviewers' shared pull_request_target
+# trigger (the union of the three event sets) with a base-only checkout and a
+# least-privilege token. Each job is guarded by `github.event.action`, so it
+# fires on exactly its own event set. Concurrency is declared PER JOB (never
+# workflow-level), and each job holds its own group name so the jobs never
+# cancel one another.
 #
 # The merge-conflict auto-resolver stays a SEPARATE file
 # (auto-resolve-conflicts.yaml): it checks out the PR HEAD to merge into it, and
@@ -32,7 +34,7 @@ permissions: {}
 
 jobs:
   # ────────────────────────────────────────────────────────────────────────────
-  # Claude PR review (Opus first pass)
+  # Claude PR review (Opus first pass) — the `decide` and `review` jobs
   #
   # Auto-review every incoming PR — including PRs from forks/outside contributors
   # — with Claude, using the CLAUDE_CODE_OAUTH_TOKEN secret (with a fallback).
@@ -231,10 +233,17 @@ jobs:
           # Claude only ANALYZES here — it reads the pre-sanitized files and WRITES
           # its findings to review.json; the next step posts it. --setting-sources
           # user loads ONLY user-level settings, so this repo's OWN project .claude
-          # hooks and deny rules do not apply to the reviewer in CI. --add-dir
-          # grants read+write to the sanitized-input dir under runner.temp
-          # (Claude Code sandboxes reads and writes outside the checked-out
-          # workspace).
+          # hooks and deny rules do not apply to the reviewer in CI.
+          #
+          # Every file tool carries its path, and that is what confines this step.
+          # A bare `Read` or `Write` is a WHOLE-TOOL grant that the CLI applies
+          # after the per-path check and overrides it with, so an --add-dir beside
+          # one suppresses prompts instead of confining anything: the reviewer
+          # could read /proc/self/environ and the artifact JWT, and overwrite any
+          # file in the checkout, including a script a later credentialed step
+          # runs. An absolute path needs TWO leading slashes, which is the extra
+          # `/` before runner.temp. One Read rule governs Read, Grep and Glob; one
+          # Edit rule governs Edit, Write, MultiEdit and NotebookEdit.
           model: ${{ needs.decide.outputs.model || 'claude-opus-4-8' }}
           claude_args: >-
             --effort medium
@@ -324,7 +333,7 @@ jobs:
         run: bash .github/scripts/auto-approve-skipped-pr.sh
 
   # ────────────────────────────────────────────────────────────────────────────
-  # Claude merge-delta review (Sonnet)
+  # Claude merge-delta review (Sonnet) — the `merge_delta_review` job
   #
   # A dedicated Sonnet reviewer for a PR's hand-authored MERGE-RESOLUTION deltas
   # (`git show --remerge-diff`) — the one channel through which a conflict
@@ -416,6 +425,8 @@ jobs:
           # sanitized data-only input).
           allowed_non_write_users: "*"
           model: claude-sonnet-5
+          # Scoped for the reason the first-pass reviewer's grant spells out: a
+          # bare Read or Write overrides the per-path check --add-dir relies on.
           claude_args: >-
             --setting-sources user
             --allowedTools "Read(./**),Read(/${{ runner.temp }}/pr-input/**),Edit(/${{ runner.temp }}/pr-input/merge-review.md)"
@@ -442,7 +453,7 @@ jobs:
         run: bash .github/scripts/post-merge-delta-review.sh
 
   # ────────────────────────────────────────────────────────────────────────────
-  # Claude review-thread resolver (Haiku)
+  # Claude review-thread resolver (Haiku) — the `thread_resolve` job
   #
   # On every push to a PR, check whether the new commits addressed the STILL-OPEN
   # review comments the Claude reviewer (the review job) left, using a cheap
@@ -558,6 +569,8 @@ jobs:
           # Haiku is enough for a per-thread yes/no "does the diff address this?"
           # judgement — far cheaper than the Opus reviewer that raises the concerns.
           model: claude-haiku-4-5-20251001
+          # Scoped for the reason the first-pass reviewer's grant spells out: a
+          # bare Read or Write overrides the per-path check --add-dir relies on.
           claude_args: >-
             --setting-sources user
             --allowedTools "Read(./**),Read(/${{ runner.temp }}/pr-input/**),Edit(/${{ runner.temp }}/pr-input/verdicts.json)"

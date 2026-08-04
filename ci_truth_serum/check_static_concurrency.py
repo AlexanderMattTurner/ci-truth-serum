@@ -33,6 +33,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     has_always_reporter,
     has_decide_gate,
     opted_out,
+    workflow_files,
 )
 
 OPT_OUT = "static-concurrency-ok"
@@ -88,7 +89,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
 
 
 def main() -> int:
-    files = sorted(WORKFLOWS_DIR.glob("*.yaml")) + sorted(WORKFLOWS_DIR.glob("*.yml"))
+    files = workflow_files(WORKFLOWS_DIR)
     total = 0
     for path in files:
         found = check_file(path)

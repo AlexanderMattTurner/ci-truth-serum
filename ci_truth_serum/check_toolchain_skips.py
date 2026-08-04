@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     is_test_path,
+    run_file_cli,
 )
 from _py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     lines,
@@ -149,4 +150,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(run_file_cli(main))
