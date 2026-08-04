@@ -457,6 +457,15 @@ def tracked_shell_files() -> list[str]:
             continue
         if is_shell_source(path, first):
             out.append(path)
+    if not out:
+        # Same reason as the empty result in `workflow_files`: a tree with no
+        # tracked shell file gives the caller a clean pass it cannot tell from
+        # a real one.
+        print(
+            "note: no tracked shell file in this repository — "
+            "this check scanned nothing.",
+            file=sys.stderr,
+        )
     return out
 
 

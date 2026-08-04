@@ -209,6 +209,31 @@ def test_every_workflow_check_says_so_over_a_tree_with_no_workflows(
     assert silent == []
 
 
+# ── tracked_shell_files ──────────────────────────────────────────────────
+def _git_repo(tmp_path: Path, *files: str) -> Path:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    for name in files:
+        (tmp_path / name).write_text("#!/usr/bin/env bash\ntrue\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    return tmp_path
+
+
+def test_tracked_shell_files_says_so_when_the_tree_has_none(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(_git_repo(tmp_path, "notes.md"))
+    assert lc.tracked_shell_files() == []
+    assert "this check scanned nothing" in capsys.readouterr().err
+
+
+def test_tracked_shell_files_is_silent_when_the_tree_has_one(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(_git_repo(tmp_path, "run.sh"))
+    assert lc.tracked_shell_files() == ["run.sh"]
+    assert capsys.readouterr().err == ""
+
+
 # ── has_decide_gate / has_always_reporter ────────────────────────────────
 # The required-check-shape probes shared by check_always_reporter and
 # check_concurrency; unit-tested here where they live.
