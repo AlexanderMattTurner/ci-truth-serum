@@ -39,7 +39,7 @@ FUZZ_DIR = REPO_ROOT / "tests" / "cts"
 #     other hooks (each fuzzed on its own); sync_required_checks is network/REST
 #     plumbing whose only parser, required_check_contexts (in _linecheck), IS
 #     fuzzed here.
-#   - check_symlinks.sh: a shell hook, not a Python parser.
+#   - check_absolute_symlinks.sh: a shell hook, not a Python parser.
 FUZZ_REQUIRED = {
     "_bash_ast": "parse",
     "_js_ast": "parse",

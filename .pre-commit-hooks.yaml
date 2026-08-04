@@ -372,10 +372,10 @@
 
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
-- id: check-symlinks
+- id: check-absolute-symlinks
   name: "extra: reject tracked symlinks with absolute targets"
-  description: An absolute-target symlink breaks on every machine but the author's.
-  entry: ci_truth_serum/check_symlinks.sh
+  description: An absolute-target symlink breaks on every machine but the author's. The id is not check-symlinks, which pre-commit-hooks uses for a different rule.
+  entry: ci_truth_serum/check_absolute_symlinks.sh
   language: script
   pass_filenames: false
 
@@ -586,7 +586,7 @@
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
 # picked up with no consumer change. Three checks are not aggregated — enable
-# each on its own: `check-symlinks` (a language:script shell hook),
+# each on its own: `check-absolute-symlinks` (a language:script shell hook),
 # `check-lockstep-pins` (config-driven; it hard-errors without the per-repo
 # --pair args an aggregate cannot supply), and `check-env-symmetry` (needs a
 # per-project --prefix arg an aggregate can't supply). These have no files/types
@@ -608,7 +608,7 @@
 
 - id: check-extras
   name: "aggregate: every Extras (off-theme bonus) Python check"
-  description: Runs the Python extras under one id (check-symlinks, a shell hook, is enabled separately).
+  description: Runs the Python extras under one id (check-absolute-symlinks, a shell hook, is enabled separately).
   entry: python -m ci_truth_serum.run_tier extras
   language: python
   additional_dependencies:
