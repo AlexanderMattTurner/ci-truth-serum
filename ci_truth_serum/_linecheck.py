@@ -460,17 +460,35 @@ def tracked_shell_files() -> list[str]:
     return out
 
 
-def workflow_files(workflows_dir: Path, actions_dir: Path) -> list[Path]:
-    """Every workflow file plus every composite-action definition, path-sorted.
+def workflow_files(workflows_dir: Path, actions_dir: Path | None = None) -> list[Path]:
+    """Every workflow file, path-sorted, plus every composite-action definition
+    when ACTIONS_DIR is given.
+
+    Pass no ACTIONS_DIR for a check whose rule is about workflows alone — a
+    concurrency group or a job timeout means nothing in a composite action.
+    That case is a parameter here rather than a second glob in each caller,
+    because the two differ only in which directories they read.
 
     The dirs are passed in (not read from this module) so a consumer's tests can
     monkeypatch its own ``WORKFLOWS_DIR`` / ``ACTIONS_DIR`` constants and still
     redirect discovery.
+
+    PROBLEM CLASS — a check that scans what it discovers reports a clean pass
+    when it discovers nothing. Exit 0 is true here, unlike the empty argv
+    ``run_file_cli`` refuses: a repository with no workflow really has no
+    workflow to violate. But the caller cannot tell that reading from an empty
+    tree apart from a real pass, so the empty result says so on stderr.
     """
     files = [p for glob in WORKFLOW_GLOBS for p in workflows_dir.glob(glob)]
-    if actions_dir.exists():
+    if actions_dir is not None and actions_dir.exists():
         files += actions_dir.rglob("action.yaml")
         files += actions_dir.rglob("action.yml")
+    if not files:
+        where = f"{workflows_dir}" + (f" or {actions_dir}" if actions_dir else "")
+        print(
+            f"note: no workflow file under {where} — this check scanned nothing.",
+            file=sys.stderr,
+        )
     return sorted(files)
 
 

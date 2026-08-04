@@ -8,6 +8,7 @@ The per-script test modules keep only their own detection cases plus one thin
 duplicated across them.
 """
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -155,6 +156,57 @@ def test_workflow_files_skips_absent_actions_dir(tmp_path: Path) -> None:
     assert [p.name for p in lc.workflow_files(wf, tmp_path / "nonexistent")] == [
         "a.yaml"
     ]
+
+
+def test_workflow_files_says_so_when_it_discovers_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert lc.workflow_files(tmp_path / "workflows", tmp_path / "actions") == []
+    err = capsys.readouterr().err
+    assert "this check scanned nothing" in err
+
+
+def test_workflow_files_is_silent_when_it_discovers_something(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wf = tmp_path / "workflows"
+    _write(wf, "a.yaml", "on: push\n")
+    assert len(lc.workflow_files(wf, tmp_path / "actions")) == 1
+    assert capsys.readouterr().err == ""
+
+
+def test_every_workflow_check_says_so_over_a_tree_with_no_workflows(
+    tmp_path: Path,
+) -> None:
+    """No workflow check may report a silent clean pass over a tree it never scanned.
+
+    Exit 0 is honest here — a repository with no workflow has none to violate —
+    so the assertion is on the notice, which is what tells the two cases apart.
+    Driven from the tier registry so a workflow check added later is covered.
+    """
+    run_tier = load_hook("run_tier.py", "run_tier")
+    workflow_checks = sorted(
+        {
+            m
+            for members in run_tier.TIERS.values()
+            for m, kind in members
+            if kind == run_tier.WORKFLOW
+        }
+    )
+    assert len(workflow_checks) > 15, "registry lookup found almost nothing"
+    silent = []
+    for module in workflow_checks:
+        done = subprocess.run(
+            [sys.executable, "-m", f"ci_truth_serum.{module}"],
+            cwd=tmp_path,
+            env={**os.environ, "PYTHONPATH": str(REPO_ROOT)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if "scanned nothing" not in done.stderr:
+            silent.append((module, done.returncode, done.stderr[:200]))
+    assert silent == []
 
 
 # ── has_decide_gate / has_always_reporter ────────────────────────────────
