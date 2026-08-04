@@ -32,6 +32,9 @@ mod = load_hook("check_versionless_install.py", "check_versionless_install")
         "npm i --global prettier",
         "pnpm add -g @scope/tool",
         "yarn global add typescript",
+        # --prefix lands outside the project tree just as -g does, so package.json
+        # records nothing about the version installed.
+        "npm install --prefix /tmp/tools @scope/tool",
     ],
 )
 def test_versionless_install_is_flagged(line: str) -> None:
@@ -91,6 +94,7 @@ def test_a_redirect_does_not_hide_the_spec() -> None:
         "npm install -g pnpm@11.8.0",
         "pnpm add -g @scope/tool@1.0.0",
         "yarn global add typescript@5.7.2",
+        "npm install --prefix /tmp/tools @scope/tool@1.0.0",
     ],
 )
 def test_pinned_installs_pass(line: str) -> None:

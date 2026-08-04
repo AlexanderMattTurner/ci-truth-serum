@@ -45,6 +45,7 @@ externalized_markers = load_hook(
 )
 path_gate_deps = load_hook("check_path_gate_deps.py", "fuzz_path_gate_deps")
 job_timeout = load_hook("check_job_timeout.py", "fuzz_job_timeout")
+uncached_download = load_hook("check_uncached_download.py", "fuzz_uncached_download")
 trusted_base = load_hook("check_trusted_base.py", "fuzz_trusted_base")
 untrusted_exec = load_hook("check_untrusted_exec.py", "fuzz_untrusted_exec")
 unscoped_tool_grant = load_hook(
@@ -69,6 +70,7 @@ WORKFLOW_CHECKS = [
     ("check_externalized_markers", externalized_markers.check_file, True),
     ("check_path_gate_deps", path_gate_deps.check_file, True),
     ("check_job_timeout", job_timeout.check_file, True),
+    ("check_uncached_download", uncached_download.check_file, True),
     ("check_trusted_base", trusted_base.check_file, True),
     ("check_untrusted_exec", untrusted_exec.check_file, True),
     ("check_unscoped_tool_grant", unscoped_tool_grant.check_file, True),

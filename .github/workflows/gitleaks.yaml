@@ -24,8 +24,24 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # This job runs on every push to every open pull request, and the pinned
+      # version makes the bytes identical every time. Keyed on the version, so
+      # only the first run after a bump contacts the release host.
+      - name: Cache the pinned gitleaks binary
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: gitleaks
+          key: gitleaks-${{ runner.os }}-${{ env.GITLEAKS_VERSION }}
+
       - name: Download pinned gitleaks
         run: |
+          # A restored cache entry is never trusted on its own. The post-job save
+          # runs even when a download failed, so an entry can hold a truncated
+          # binary. Probe what the binary reports, not whether the file is there.
+          if [[ "$(./gitleaks version 2>/dev/null)" == "${GITLEAKS_VERSION}" ]]; then
+            echo "gitleaks ${GITLEAKS_VERSION} restored from cache"
+            exit 0
+          fi
           curl -fsSL --retry 6 --retry-all-errors --retry-delay 15 --connect-timeout 30 \
             -O "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           tar xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" gitleaks
