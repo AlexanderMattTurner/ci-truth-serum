@@ -198,6 +198,111 @@ def test_list_form_trigger_is_clean(tmp_path):
     assert pc.check_file(_write(tmp_path, body)) == []
 
 
+# ── selection: the two routes to "backs a required check" ────────────────────
+
+# A required check declared by the marker alone — no decide gate, no always()
+# reporter. This is the shape agent-glovebox's pr-meta.yaml carries.
+MARKER_ONLY_JOBS = (
+    "jobs:\n"
+    "  gate:  # required-check: true\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps: []\n"
+    "  advisory:\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps: []\n"
+)
+
+
+def _marker_job_group(job: str, group: str) -> str:
+    """MARKER_ONLY_JOBS with a concurrency block inserted into JOB."""
+    key = next(ln for ln in MARKER_ONLY_JOBS.splitlines() if ln.startswith(f"  {job}:"))
+    conc = f"    concurrency:\n      group: {group}\n      cancel-in-progress: true\n"
+    return MARKER_ONLY_JOBS.replace(key + "\n", key + "\n" + conc)
+
+
+def test_marker_only_workflow_level_group_is_an_error(tmp_path):
+    """Selection route 1: the `# required-check: true` marker with no decide gate.
+    The old decide+always() heuristic saw nothing here and passed the file."""
+    body = STORM_TRIGGER + REF_GROUP + MARKER_ONLY_JOBS
+    violations = pc.check_file(_write(tmp_path, body))
+    assert len(violations) == 1
+    line, message = violations[0]
+    assert body.splitlines()[line - 1].startswith("concurrency:")
+    assert "workflow-level" in message
+    assert "'# required-check: true' marker" in message
+
+
+def test_marker_only_marked_job_group_is_an_error(tmp_path):
+    body = STORM_TRIGGER + _marker_job_group("gate", "g-${{ github.head_ref }}")
+    violations = pc.check_file(_write(tmp_path, body))
+    assert len(violations) == 1
+    assert "job 'gate'" in violations[0][1]
+
+
+def test_marker_only_unmarked_job_group_is_clean(tmp_path):
+    """The narrowing: on the marker route only a MARKED job's cancellation posts
+    a required-check status. Flagging an advisory job's group would be the false
+    positive that gets the lint switched off — on agent-glovebox's pr-meta.yaml
+    it would turn 1 true finding into 9."""
+    body = STORM_TRIGGER + _marker_job_group("advisory", "a-${{ github.head_ref }}")
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_marker_only_marked_job_keyed_on_run_id_is_clean(tmp_path):
+    """A group of one cannot cancel a sibling, marked job or not."""
+    body = STORM_TRIGGER + _marker_job_group("gate", "g-${{ github.run_id }}")
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_heuristic_only_route_still_flags(tmp_path):
+    """Selection route 2 unchanged: decide gate + always() reporter, no marker."""
+    body = STORM_TRIGGER + REF_GROUP + REQUIRED_CHECK_JOBS
+    assert "required-check" not in REQUIRED_CHECK_JOBS
+    violations = pc.check_file(_write(tmp_path, body))
+    assert len(violations) == 1
+    assert "decide gate + always() reporter" in violations[0][1]
+
+
+def test_both_routes_judge_every_job(tmp_path):
+    """When the heuristic also holds, the reporter funnels every job's outcome,
+    so an unmarked job's ref-keyed group still reddens the required check."""
+    jobs = REQUIRED_CHECK_JOBS.replace(
+        "  report:\n", "  report:  # required-check: true\n"
+    )
+    key = "  work:\n"
+    jobs = jobs.replace(
+        key,
+        key + "    concurrency:\n      group: w-${{ github.ref }}\n",
+    )
+    violations = pc.check_file(_write(tmp_path, STORM_TRIGGER + jobs))
+    assert len(violations) == 1
+    assert "job 'work'" in violations[0][1]
+    assert "decide gate + always() reporter" in violations[0][1]
+
+
+def test_neither_route_is_clean(tmp_path):
+    """No marker and no decide+always() shape — nothing here gates a merge."""
+    body = (
+        STORM_TRIGGER
+        + REF_GROUP
+        + MARKER_ONLY_JOBS.replace("  # required-check: true", "")
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_marker_buried_in_a_step_does_not_select(tmp_path):
+    """The marker counts only on a job key / direct-child line — the scope rule
+    _marked_jobs owns. A step that prints the token declares nothing."""
+    jobs = (
+        "jobs:\n"
+        "  gate:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        '      - run: "echo # required-check: true"\n'
+    )
+    assert pc.check_file(_write(tmp_path, STORM_TRIGGER + REF_GROUP + jobs)) == []
+
+
 def test_no_required_check_shape_is_clean(tmp_path):
     """Storm types + ref-keyed group but no decide gate / always() reporter —
     e.g. a label-gated release-prep workflow — is not this lint's business."""
