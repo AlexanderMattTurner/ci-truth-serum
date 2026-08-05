@@ -19,8 +19,8 @@ run: ``run_tier 1`` with no arguments still runs every workflow lint and exits
 0, which without the note reads as a clean tier rather than a partial one.
 
 Three hooks are intentionally NOT aggregated, each enabled on its own:
-``check-symlinks`` is a ``language: script`` shell hook, not a Python module, so
-it cannot run inside this Python aggregate; ``check-lockstep-pins`` is
+``check-absolute-symlinks`` is a ``language: script`` shell hook, not a Python
+module, so it cannot run inside this Python aggregate; ``check-lockstep-pins`` is
 config-driven (it does nothing without per-repo ``--pair`` args, and the
 aggregate passes none), so running it here would hard-error every consumer; and
 ``check-env-symmetry`` is a whole-tree scan needing a per-project ``--prefix``

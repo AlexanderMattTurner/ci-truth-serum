@@ -1,1 +1,1 @@
-- `check-tier1` / `check-tier2` / `check-extras` aggregate hooks: enable a whole tier with one id instead of listing each check. A check added to that tier later is picked up with no consumer config change. (`check-symlinks`, a shell hook, stays separately opt-in.)
+- `check-tier1` / `check-tier2` / `check-extras` aggregate hooks: enable a whole tier with one id instead of listing each check. A check added to that tier later is picked up with no consumer config change. (`check-absolute-symlinks`, a shell hook, stays separately opt-in.)

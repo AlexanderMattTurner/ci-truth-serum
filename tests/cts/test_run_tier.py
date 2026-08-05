@@ -4,8 +4,8 @@ consumer enable a whole tier (check-tier1/2/extras) with one id.
 Two layers:
   * a **contract** test pinning the in-code TIERS registry to the live
     `.pre-commit-hooks.yaml` (every Python check sits in exactly the tier its
-    name prefix declares; only `check-symlinks`, a shell hook, is unaggregated),
-    so a newly added hook can't silently escape its tier; and
+    name prefix declares; only `check-absolute-symlinks`, a shell hook, is
+    unaggregated), so a newly added hook can't silently escape its tier; and
   * functional tests of `matches`/`selected_files`/`run_check`/`main` (file
     routing, the report naming the members that had no file to scan, exit-code
     aggregation, the usage guard), driven through a real subprocess against a
@@ -31,11 +31,15 @@ PREFIX_TIER = {
     "extra": "extras",
 }
 # Hooks intentionally left out of every aggregate, each enabled on its own:
-# `check-symlinks` (a language:script shell hook, not a Python module),
+# `check-absolute-symlinks` (a language:script shell hook, not a Python module),
 # `check-lockstep-pins` (config-driven; hard-errors without per-repo `--pair`
 # args), and `check-env-symmetry` (a whole-tree scan needing a per-project
 # `--prefix` arg no aggregate can supply).
-UNAGGREGATED = {"check-symlinks", "check-lockstep-pins", "check-env-symmetry"}
+UNAGGREGATED = {
+    "check-absolute-symlinks",
+    "check-lockstep-pins",
+    "check-env-symmetry",
+}
 
 
 def _python_member_hooks() -> list[dict]:
@@ -62,10 +66,10 @@ def test_registry_covers_every_python_hook_in_its_declared_tier():
 
 
 def test_unaggregated_hooks_exist_and_appear_in_no_tier():
-    # check-symlinks must exist, be a script hook, and appear in no tier;
+    # check-absolute-symlinks must exist, be a script hook, and appear in no tier;
     # check-lockstep-pins and check-env-symmetry must exist, demand their args,
     # and appear in no tier.
-    symlinks = next(h for h in MANIFEST if h["id"] == "check-symlinks")
+    symlinks = next(h for h in MANIFEST if h["id"] == "check-absolute-symlinks")
     assert symlinks["entry"].endswith(".sh") and symlinks["language"] == "script"
     lockstep = next(h for h in MANIFEST if h["id"] == "check-lockstep-pins")
     assert lockstep["entry"] == "python -m ci_truth_serum.check_lockstep_pins"
@@ -75,7 +79,7 @@ def test_unaggregated_hooks_exist_and_appear_in_no_tier():
         "python -m ci_truth_serum.check_env_symmetry"
     )
     all_modules = {mod for members in rt.TIERS.values() for mod, _ in members}
-    assert "check_symlinks" not in all_modules
+    assert "check_absolute_symlinks" not in all_modules
     assert "check_lockstep_pins" not in all_modules
     assert "check_env_symmetry" not in all_modules
 
