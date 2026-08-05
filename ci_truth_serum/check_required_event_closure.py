@@ -41,9 +41,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    REQUIRED_MARKER,
-    _classification_text,
     _job_blocks,
+    _marked_jobs,
     annotated_near,
     unwrap_expression,
     workflow_triggers,
@@ -335,11 +334,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
     blocks = _job_blocks(text)
     lines = text.splitlines()
-    required = [
-        name
-        for name in jobs
-        if REQUIRED_MARKER.search(_classification_text(blocks.get(name, (0, ""))[1]))
-    ]
+    required = _marked_jobs(blocks, jobs)
 
     violations: list[tuple[int | None, str]] = []
     judged: set[str] = set()

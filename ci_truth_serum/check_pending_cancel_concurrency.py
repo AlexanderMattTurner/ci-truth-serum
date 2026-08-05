@@ -20,14 +20,23 @@ in-progress run (current SHA → red), `false` cancels the pending one (also
 current SHA → red). The safe fixes are to drop the group or key it on
 `github.run_id` (a group of one cannot cancel a sibling).
 
-A workflow "backs a required check" when it has both a decide gate and an
-`always()` reporter (the decide-job + reporter architecture) — and BOTH the
-workflow-level `concurrency:` block and every job-level one are checked, since
-the incident groups were per-job. This lint is deliberately scoped to per-ref/
-per-PR groups (the key polarity check_static_concurrency calls safe); a STATIC
-group under the same type storm shares the failure mode but stays that lint's
-territory at the workflow level — a job-level static group is a known handoff
-gap neither lint flags today.
+A workflow "backs a required check" by EITHER of two routes, because a required
+check has two shapes. The decide-job + reporter architecture shows up as a
+decide gate plus an `always()` reporter (the heuristic). A workflow can also
+declare a required check with nothing but a `# required-check: true` marker on
+one job — the mandatory SSOT marker check_required_reporter enforces and
+sync_required_checks reads — and that shape has no decide gate to find. The
+heuristic route judges every job of the workflow; the marker route judges the
+workflow-level block plus the MARKED jobs only, because an advisory job's group
+in a marked workflow reddens no required check.
+
+This lint is deliberately scoped to per-ref/per-PR groups (the key polarity
+check_static_concurrency calls safe). A STATIC group shares the failure mode but
+stays check_static_concurrency's territory at the workflow level, and a STATIC
+job-level group is left unflagged ON PURPOSE: moving a static workflow-level
+group down onto the expensive job is the remedy check_static_concurrency and
+check_cancellable_required_check both prescribe, so a lint that flagged it would
+fire on every application of the blessed fix.
 
 Opt out with "# pending-cancel-ok" for a deliberately-serialized workflow that
 is genuinely never a required check.
@@ -41,6 +50,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _job_blocks,
+    _marked_jobs,
     concurrency_line,
     has_always_reporter,
     has_decide_gate,
@@ -120,11 +130,11 @@ def _ref_keyed(group: object) -> bool:
     return any(key in text for key in PER_REF_KEYS)
 
 
-def _message(storm: set[str]) -> str:
+def _message(storm: set[str], basis: str) -> str:
     types = ", ".join(sorted(storm))
     return (
         "concurrency.group is keyed per-ref/per-PR on a workflow that "
-        "backs a required check (decide gate + always() reporter) AND declares "
+        f"backs a required check ({basis}) AND declares "
         f"pull_request types beyond opened/synchronize/reopened ({types}). Those "
         "types fire extra runs on the SAME head SHA; GitHub holds at most one "
         "running + one pending run per group, so a same-SHA sibling gets "
@@ -168,22 +178,35 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     jobs = doc.get("jobs", {})
     if not isinstance(jobs, dict):
         return []
-    if not (has_decide_gate(jobs) and has_always_reporter(jobs)):
+    blocks = _job_blocks(text)
+    heuristic = has_decide_gate(jobs) and has_always_reporter(jobs)
+    marked = _marked_jobs(blocks, jobs)
+    if not (heuristic or marked):
         return []  # not a required-check shape — a reddened cancel self-describes
+    basis = (
+        "decide gate + always() reporter"
+        if heuristic
+        else "the '# required-check: true' marker"
+    )
 
     violations: list[tuple[int | None, str]] = []
     if _ref_keyed(_group_of(doc.get("concurrency"))):
-        violations.append((concurrency_line(text), f"workflow-level {_message(storm)}"))
+        violations.append(
+            (concurrency_line(text), f"workflow-level {_message(storm, basis)}")
+        )
 
-    blocks = _job_blocks(text)
-    for name, cfg in jobs.items():
+    # The heuristic shape reports through one always() reporter that every job
+    # feeds, so any job's group can redden it. A marker-only workflow has no such
+    # funnel: only a marked job's own cancellation posts a required-check status.
+    judged = jobs if heuristic else {name: jobs[name] for name in marked}
+    for name, cfg in judged.items():
         if not isinstance(cfg, dict):
             continue
         if _ref_keyed(_group_of(cfg.get("concurrency"))):
             block = blocks.get(str(name))
             fallback = block[0] if block else concurrency_line(text)
             line = job_concurrency_line(block, fallback)
-            violations.append((line, f"job '{name}': {_message(storm)}"))
+            violations.append((line, f"job '{name}': {_message(storm, basis)}"))
     return violations
 
 

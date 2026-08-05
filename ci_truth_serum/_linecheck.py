@@ -1014,15 +1014,33 @@ def expand_name(name: str, matrix: dict) -> list[str]:
     return sorted(set(resolved))
 
 
+def _marked_jobs(blocks: dict[str, tuple[int, str]], jobs: dict) -> list[str]:
+    """The keys of JOBS whose block carries a `# required-check: true` marker.
+
+    PROBLEM CLASS — which jobs of this workflow declare a required status check?
+    Every consumer asks it here. The marker counts only on a job's key line or a
+    direct-child line (`_job_blocks` + `_classification_text`), so the same text
+    inside a step body is no classification. A lint that re-scans the blocks
+    itself gets a different subset of that scope rule wrong. Takes the blocks the
+    caller already computed, so no consumer pays a second scan of one file.
+    """
+    return [
+        name
+        for name, cfg in jobs.items()
+        if isinstance(cfg, dict)
+        and REQUIRED_MARKER.search(_classification_text(blocks.get(name, (0, ""))[1]))
+    ]
+
+
 def required_check_contexts(text: str) -> list[str]:
     """Every required-check context declared by one workflow's source.
 
     Scans EVERY job (not only `always()` reporters) for a `# required-check: true`
-    marker on its key/direct-child line, then expands each such job's `name:`
-    across its own `strategy.matrix` into concrete check contexts. This is the set
-    a branch-protection ruleset must require; the reporter lint enforces the
-    stricter obligation that reporters be classified, a superset of what is read
-    here (a cheap always-run linter carries the marker but is no reporter).
+    marker, then expands each such job's `name:` across its own `strategy.matrix`
+    into concrete check contexts. This is the set a branch-protection ruleset must
+    require; the reporter lint enforces the stricter obligation that reporters be
+    classified, a superset of what is read here (a cheap always-run linter carries
+    the marker but is no reporter).
     """
     doc = yaml.safe_load(text)
     if not isinstance(doc, dict):
@@ -1031,14 +1049,9 @@ def required_check_contexts(text: str) -> list[str]:
     if not isinstance(jobs, dict):
         return []
 
-    blocks = _job_blocks(text)
     contexts: list[str] = []
-    for name, cfg in jobs.items():
-        if not isinstance(cfg, dict):
-            continue
-        block = blocks.get(name, (0, ""))[1]
-        if not REQUIRED_MARKER.search(_classification_text(block)):
-            continue
+    for name in _marked_jobs(_job_blocks(text), jobs):
+        cfg = jobs[name]
         matrix = (cfg.get("strategy") or {}).get("matrix") or {}
         contexts += expand_name(str(cfg.get("name", name)), matrix)
     return contexts
