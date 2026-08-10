@@ -586,6 +586,19 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-external-clock-targets
+  name: "extra: every external-clock dispatch-manifest entry must name a fireable workflow"
+  description: A host outside GitHub can fire a repository's sweeps on a clock it owns. The clock reads a manifest of workflow file names and dispatches each. An entry that names a missing workflow, a workflow with no workflow_dispatch trigger, or one with a required default-less input drops every tick with no red mark. Default manifest .github/scheduler/sweeps.txt; override with --manifest PATH.
+  entry: python -m ci_truth_serum.check_external_clock_targets
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  # The manifest names workflows, and a workflow can lose its `workflow_dispatch`
+  # trigger with no edit to the manifest, so the check rescans on any workflow or
+  # manifest change. Reads both .github/workflows and the scheduler manifest.
+  files: ^\.github/(workflows/|scheduler/)
+  types_or: [yaml, text]
+
 - id: check-unused-reusable-input
   name: "extra: a reusable workflow's input must have a caller that passes it"
   description: An input no local job passes is either dead surface or the shared answer nobody wired, and the second grows a duplicate implementation beside it. A reusable workflow that no local job calls is skipped, because its callers may live in another repository.
