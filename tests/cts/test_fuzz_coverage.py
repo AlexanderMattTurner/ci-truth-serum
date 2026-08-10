@@ -35,10 +35,10 @@ FUZZ_DIR = REPO_ROOT / "tests" / "cts"
 # value is the public symbol a fuzz suite must reference.
 #
 # Intentionally EXCLUDED (documented so each omission is a choice, not a miss):
-#   - run_tier, sync_required_checks: orchestrators. run_tier dispatches argv to
-#     other hooks (each fuzzed on its own); sync_required_checks is network/REST
-#     plumbing whose only parser, required_check_contexts (in _linecheck), IS
-#     fuzzed here.
+#   - run_tier, sync_required_checks, sync_merge_queue: orchestrators. run_tier
+#     dispatches argv to other hooks (each fuzzed on its own); the two sync tools
+#     are network/REST plumbing, and the only parser of the first,
+#     required_check_contexts (in _linecheck), IS fuzzed here.
 #   - check_absolute_symlinks.sh: a shell hook, not a Python parser.
 FUZZ_REQUIRED = {
     "_bash_ast": "parse",
@@ -59,6 +59,7 @@ FUZZ_REQUIRED = {
     "check_versionless_install": "violations",
     "check_global_stdio_swap": "violations",
     "check_replacement_expansion": "violations",
+    "check_unpaged_all": "violations",
     "check_workflow_pipefail": "analyze",
     "check_inline_run_length": "analyze",
     "check_always_reporter": "check_file",
