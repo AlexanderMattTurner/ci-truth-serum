@@ -609,6 +609,16 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-workflow-run-branch-filter
+  name: "extra: a workflow_run listener must filter the branches it answers"
+  description: A listener with no branch filter gets a run created for every completion of every watched workflow, on every branch, because its own gate runs after run creation. About 3,000 such no-op runs stalled `merge_group` check dispatch for 7 hours, and every one of them reported success. A filter that narrows nothing (an all-wildcard list, an empty list) is the same finding. Opt out with a reasoned `# unfiltered-listener-ok` marker.
+  entry: python -m ci_truth_serum.check_workflow_run_branch_filter
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
 - id: check-toolchain-skips
   name: "extra: pytest skips gated on binary discovery must fail (not skip) in CI"
   description: A which()-gated skipif silently zeroes the guarded coverage on a runner missing the tool; demand a CI env guard in the condition.

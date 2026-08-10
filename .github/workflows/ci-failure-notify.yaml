@@ -15,6 +15,12 @@ name: CI failure notify
 on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     types: [completed]
+    # The head branch of the run that triggered this one. The job below already
+    # acts only on default-branch runs, so this filter states the same rule one
+    # step earlier: without it GitHub creates a run here for every completion on
+    # every branch, and the gate discards it after the run exists — see
+    # check-workflow-run-branch-filter.
+    branches: [main, master]
     workflows:
       - Auto-resolve merge conflicts
       - Auto version bump and publish
