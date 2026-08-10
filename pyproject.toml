@@ -29,6 +29,10 @@ Homepage = "https://github.com/AlexanderMattTurner/ci-truth-serum"
 # Apply half of check-required-reporter: rewrite a repo's branch-protection
 # ruleset to the required checks the workflow annotations declare.
 sync-required-checks = "ci_truth_serum.sync_required_checks:main"
+# Repair half of a merge queue that stops merging: hold the grouping and the
+# group sizes at values that can merge, and report the states only a human can
+# fix. Not a pre-commit lint and not in any tier aggregate.
+sync-merge-queue = "ci_truth_serum.sync_merge_queue:main"
 # Release verifier: assert the max published npm version, the max v* git tag,
 # and the changelog's top dated heading all agree (its `npm view` call is the
 # only network touch). Not a pre-commit lint and not in any tier aggregate.
