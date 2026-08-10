@@ -114,6 +114,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
     "extras": [
         ("check_unnamed_regex_groups", PYTHON),
         ("check_replacement_expansion", JS_OR_PYTHON),
+        ("check_unpaged_all", JS_OR_PYTHON),
         ("check_global_stdio_swap", PYTHON),
         ("check_claude_model", WORKFLOW),
         ("check_drift_guards", DRIFT),
