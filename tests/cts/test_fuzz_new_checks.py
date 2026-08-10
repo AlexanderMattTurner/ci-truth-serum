@@ -32,6 +32,9 @@ lockstep = load_hook("check_lockstep_pins.py", "fuzz_check_lockstep_pins")
 cron_comment = load_hook("check_cron_comment.py", "fuzz_check_cron_comment")
 toolchain = load_hook("check_toolchain_skips.py", "fuzz_check_toolchain_skips")
 canary = load_hook("release_canary.py", "fuzz_release_canary")
+external_clock = load_hook(
+    "check_external_clock_targets.py", "fuzz_check_external_clock_targets"
+)
 
 _SHA = "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 
@@ -182,6 +185,19 @@ def test_lockstep_check_pair_is_total_with_fixed_regexes(t1: str, t2: str) -> No
 def test_cron_classify_is_total(expr: str) -> None:
     result = cron_comment.classify(expr)
     assert result is None or isinstance(result, str)
+
+
+@given(_text, st.text(max_size=200))
+def test_external_clock_targets_is_total(manifest: str, workflow: str) -> None:
+    n_lines = len(manifest.splitlines())
+    # Two resolvers exercise both arms: every entry missing (404 path), and every
+    # entry present with arbitrary YAML (the parse / trigger / input paths).
+    for resolve in (lambda _n: None, lambda _n, wf=workflow: wf):
+        result = external_clock.violations(manifest, resolve)
+        assert external_clock.violations(manifest, resolve) == result  # deterministic
+        for lineno, message in result:
+            assert 1 <= lineno <= max(n_lines, 1)
+            assert isinstance(message, str) and message
 
 
 @given(_text)

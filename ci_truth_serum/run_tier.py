@@ -127,6 +127,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_case_default", SHELL),
         ("check_cron_comment", WORKFLOW),
         ("check_cron_alert_coverage", WORKFLOW),
+        ("check_external_clock_targets", WORKFLOW),
         ("check_multi_cron_gating", WORKFLOW),
         ("check_unused_reusable_input", WORKFLOW),
         ("check_workflow_run_branch_filter", WORKFLOW),
