@@ -108,6 +108,7 @@ FUZZ_REQUIRED = {
     "check_env_symmetry": "analyze",
     "check_stray_tool_markup": "violations",
     "check_unused_reusable_input": "check_repo",
+    "check_workflow_run_branch_filter": "violations",
     "check_test_predicate_shadow": "pure_predicates",
 }
 

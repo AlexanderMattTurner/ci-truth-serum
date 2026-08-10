@@ -20,6 +20,13 @@ name: Build/publish failure notify
 on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
     types: [completed]
+    # The head branch of the run that triggered this one. Both watched
+    # workflows publish from the default branch (`auto-version` on push to
+    # main/master, `release-canary` on schedule), so any other branch here is a
+    # manual dispatch whose author is already watching it. Without this filter
+    # every completion on every branch creates a run that the job below then
+    # discards — see check-workflow-run-branch-filter.
+    branches: [main, master]
     workflows:
       - Auto version bump and publish
       - Release canary
