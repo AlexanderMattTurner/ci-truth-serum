@@ -569,6 +569,19 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-unused-reusable-input
+  name: "extra: a reusable workflow's input must have a caller that passes it"
+  description: An input no local job passes is either dead surface or the shared answer nobody wired, and the second grows a duplicate implementation beside it. A reusable workflow that no local job calls is skipped, because its callers may live in another repository.
+  entry: python -m ci_truth_serum.check_unused_reusable_input
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  # The `with:` block that uses an input lives in the CALLER, so an input can
+  # fall out of use with no edit to the file declaring it. The hook rescans every
+  # workflow whenever any one of them is staged.
+  files: ^\.github/workflows/
+  types: [yaml]
+
 - id: check-multi-cron-gating
   name: "extra: every job in a multi-cron workflow must name its cron"
   description: GitHub starts every schedule-eligible job on EVERY cron fire, so in a file with two or more crons a job gated on the bare `github.event_name == 'schedule'` (or on nothing) runs for all of them — the observed cost was a paid eval on a schedule nobody asked for, billed silently. Single-cron workflows are exempt.

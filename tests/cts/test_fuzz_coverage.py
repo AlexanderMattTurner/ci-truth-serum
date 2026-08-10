@@ -106,6 +106,7 @@ FUZZ_REQUIRED = {
     "check_unscoped_tool_grant": "check_file",
     "check_env_symmetry": "analyze",
     "check_stray_tool_markup": "violations",
+    "check_unused_reusable_input": "check_repo",
     "check_test_predicate_shadow": "pure_predicates",
 }
 
