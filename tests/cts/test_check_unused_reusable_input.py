@@ -162,7 +162,9 @@ def test_an_input_no_caller_passes_is_reported(tmp_path, monkeypatch):
     path, line, message = found[0]
     assert path.name == "callee.yaml"
     assert line == 5
-    assert "input `alpha` is declared but no job in this repository passes it" in message
+    assert (
+        "input `alpha` is declared but no job in this repository passes it" in message
+    )
 
 
 def test_a_required_input_nothing_passes_says_the_call_could_not_start(
@@ -213,10 +215,10 @@ def test_a_reusable_workflow_no_local_job_calls_is_skipped(tmp_path, monkeypatch
     assert _check(tmp_path, monkeypatch, files) == []
 
 
-def test_a_workflow_that_declares_no_call_inputs_is_not_examined(
-    tmp_path, monkeypatch
-):
-    files = _tree(_caller(), "name: c\non:\n  workflow_call:\njobs:\n  a:\n    steps: []\n")
+def test_a_workflow_that_declares_no_call_inputs_is_not_examined(tmp_path, monkeypatch):
+    files = _tree(
+        _caller(), "name: c\non:\n  workflow_call:\njobs:\n  a:\n    steps: []\n"
+    )
     assert _check(tmp_path, monkeypatch, files) == []
 
 
@@ -259,9 +261,7 @@ def test_an_opt_out_on_a_direct_child_line_suppresses_the_finding(
 def test_an_opt_out_with_no_reason_suppresses_nothing_and_is_reported(
     tmp_path, monkeypatch
 ):
-    callee = _callee(
-        f"      alpha:  # {uri.OPT_OUT}: todo\n        type: string\n"
-    )
+    callee = _callee(f"      alpha:  # {uri.OPT_OUT}: todo\n        type: string\n")
     found = _check(tmp_path, monkeypatch, _tree(_caller(), callee))
     assert len(found) == 1
     assert "states only 'todo'" in found[0][2]
