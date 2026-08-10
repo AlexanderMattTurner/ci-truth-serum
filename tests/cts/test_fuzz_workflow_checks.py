@@ -54,6 +54,9 @@ untrusted_exec = load_hook("check_untrusted_exec.py", "fuzz_untrusted_exec")
 unscoped_tool_grant = load_hook(
     "check_unscoped_tool_grant.py", "fuzz_unscoped_tool_grant"
 )
+unused_reusable_input = load_hook(
+    "check_unused_reusable_input.py", "fuzz_unused_reusable_input"
+)
 
 # Each returns a finding shape; the contract under fuzz is only "no crash, and a
 # well-typed result". `expects_list` distinguishes the list-returning checks from
@@ -145,6 +148,15 @@ _WORKFLOW_FRAGMENTS = [
     ),
     # job-timeout shapes: a job missing timeout-minutes, one that sets it, and a
     # reusable-call job (exempt).
+    # workflow_call input shapes: a plain input, one carrying the opt-out on its
+    # key line, and one with no block under it (check_unused_reusable_input).
+    "on:\n  workflow_call:\n    inputs:\n      alpha:\n        type: string\n",
+    (
+        "on:\n  workflow_call:\n    inputs:\n"
+        "      alpha:  # unused-input-ok: an external repository passes it\n"
+        "        type: string\n"
+    ),
+    "on:\n  workflow_call:\n    inputs:\n      alpha:\n",
     "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n",
     "jobs:\n  build:\n    timeout-minutes: 10\n    steps: []\n",
     "jobs:\n  build:  # allow-no-timeout: watcher\n    steps: []\n",
@@ -283,6 +295,42 @@ def test_workflow_check_files_never_crash(
             monkeypatch.setitem(mod, "ACTIONS_DIR", root / ".github" / "actions")
         result = check(path)
         _result_well_typed(result, expects_list, n_lines)
+
+
+# --- check_unused_reusable_input's repo-level surface ------------------------
+#
+# Its entrypoint is check_repo(dir), not check_file(path): the verdict on a
+# callee's input depends on every OTHER workflow's `with:` blocks, so there is no
+# single-file surface to drive. The generated text is written as the callee, and
+# a fixed caller calls it, so the two-pass walk is reached rather than the
+# no-local-caller skip.
+_CALLER = (
+    "name: caller\non:\n  pull_request:\njobs:\n  gate:\n"
+    "    uses: ./.github/workflows/wf.yaml\n    with:\n      beta: x\n"
+)
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(text=workflow_text())
+def test_unused_reusable_input_check_repo_never_crashes(
+    text: str, tmp_path_factory, monkeypatch
+) -> None:
+    root = tmp_path_factory.mktemp("repo")
+    wf_dir = root / ".github" / "workflows"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / "wf.yaml").write_text(text, encoding="utf-8")
+    (wf_dir / "caller.yaml").write_text(_CALLER, encoding="utf-8")
+    monkeypatch.setattr(unused_reusable_input, "REPO_ROOT", root)
+    monkeypatch.setattr(unused_reusable_input, "WORKFLOWS_DIR", wf_dir)
+
+    found = unused_reusable_input.check_repo(wf_dir)
+    assert found == unused_reusable_input.check_repo(wf_dir)  # deterministic
+    n_lines = len(text.splitlines())
+    for path, line, message in found:
+        assert isinstance(message, str) and message
+        assert isinstance(line, int) and line >= 0
+        if path.name == "wf.yaml" and line:
+            _assert_lineno_in_range(line, n_lines)
 
 
 # --- check_untrusted_exec's own analyzers ------------------------------------
