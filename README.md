@@ -286,6 +286,25 @@ The mutation path needs a token in `GH_TOKEN` or `GITHUB_TOKEN` with
 lint classifies, so the gate and the apply step can never disagree. Pass
 `--ruleset-id` if the repo has more than one branch ruleset.
 
+### Apply: keep a merge queue able to merge
+
+`sync-merge-queue` reads the merge queue rule of the same branch ruleset. A merge queue stops merging when two of its parameters change, and nothing turns red: GitHub builds each group, watches every check pass, and merges none of them. The script repairs those two parameters and leaves every other parameter as a human set it.
+
+- `grouping_strategy` is pinned to `ALLGREEN`. Under `HEADGREEN` an entry merges on another entry's build, so an untested change reaches the branch. Pass `--allow-headgreen` for a repo whose checks re-test the whole group.
+- `max_entries_to_merge` and `max_entries_to_build` must be above zero. A zero lets a group hold no entry at merge time. The repair writes `1`, and any positive size survives.
+
+Three more states stop every merge, and only a human can fix them. The script reports each one and exits non-zero: a ruleset that is not enforced, a queue whose `merge_method` the repo settings forbid, and a ruleset with no always-on bypass for the merge queue app. The queue merges a group by a push outside any pull request, so a bypass scoped to pull requests does not cover it. Pass `--skip-bypass-check` for a repo whose ruleset never refuses that push.
+
+```bash
+# Report what is broken and write nothing:
+GH_TOKEN=<token-with-administration:write> sync-merge-queue --repo owner/name --check
+
+# Repair the two parameters, then read the ruleset back:
+GH_TOKEN=<token-with-administration:write> sync-merge-queue --repo owner/name
+```
+
+Run it on each push to the default branch, beside `sync-required-checks`. A repo whose branch ruleset carries no merge queue rule exits 0 and says so.
+
 ### Config: enforce twin pins with check-lockstep-pins
 
 `check-lockstep-pins` replaces a “keep these in lockstep” comment with a gate.

@@ -120,6 +120,7 @@ FUZZ_REQUIRED = {
 _NON_PARSER_HOOKS = {
     "run_tier",
     "sync_required_checks",
+    "sync_merge_queue",
     "startup_failure_scan",
     "__init__",
     "_version",
