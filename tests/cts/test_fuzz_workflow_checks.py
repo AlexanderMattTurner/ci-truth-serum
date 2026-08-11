@@ -32,6 +32,7 @@ cancellable_required_check = load_hook(
     "check_cancellable_required_check.py", "fuzz_cancellable_required_check"
 )
 frozen_head_sha = load_hook("check_frozen_head_sha.py", "fuzz_frozen_head_sha")
+ready_for_review = load_hook("check_ready_for_review.py", "fuzz_ready_for_review")
 pending_cancel = load_hook(
     "check_pending_cancel_concurrency.py", "fuzz_pending_cancel_concurrency"
 )
@@ -69,6 +70,7 @@ WORKFLOW_CHECKS = [
     ("check_static_concurrency", static_concurrency.check_file, False),
     ("check_cancellable_required_check", cancellable_required_check.check_file, False),
     ("check_frozen_head_sha", frozen_head_sha.check_file, True),
+    ("check_ready_for_review", ready_for_review.check_file, True),
     ("check_pending_cancel_concurrency", pending_cancel.check_file, True),
     ("check_requires_concurrency", requires_concurrency.check_file, False),
     ("check_pr_paths", pr_paths.check_file, False),

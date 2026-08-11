@@ -210,3 +210,138 @@ def test_all_shipped_workflows_pass(monkeypatch, capsys):
     monkeypatch.setattr(fh, "WORKFLOWS_DIR", REPO_ROOT / ".github" / "workflows")
     monkeypatch.setattr(fh, "ACTIONS_DIR", REPO_ROOT / ".github" / "actions")
     assert fh.main() == 0, capsys.readouterr().out
+
+
+# ── the env-indirect route: judged by what SPENDS the variable ────────────────
+#
+# Routing the expression through `env:` is the shape the template-injection lints
+# demand, so the binding alone is not the defect. On a 50-workflow tree 41 of the
+# 45 uses sat under `env:` and none was a defect. These pin the two positions
+# where the frozen value really does mis-scope, and the benign ones beside them.
+
+ENV_BIND = (
+    "        env:\n          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n"
+)
+
+
+def test_env_var_spent_as_a_git_range_endpoint_is_flagged(tmp_path):
+    body = HEADER + "      - run: git diff $HEAD_SHA...HEAD\n" + ENV_BIND
+    result = fh.check_file(_write(tmp_path, body))
+    assert len(result) == 1
+    assert "HEAD_SHA" in result[0][1]
+
+
+def test_braced_env_var_in_a_two_dot_range_is_flagged(tmp_path):
+    body = HEADER + "      - run: git log ${HEAD_SHA}..HEAD\n" + ENV_BIND
+    assert len(fh.check_file(_write(tmp_path, body))) == 1
+
+
+def test_job_level_env_reaches_its_steps(tmp_path):
+    body = (
+        "name: x\non:\n  pull_request:\njobs:\n  build:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    env:\n"
+        "      SHA: ${{ github.event.pull_request.head.sha }}\n"
+        "    steps:\n"
+        "      - run: git diff $SHA...HEAD\n"
+    )
+    assert len(fh.check_file(_write(tmp_path, body))) == 1
+
+
+def test_env_var_spent_as_a_checkout_ref_is_flagged(tmp_path):
+    body = (
+        HEADER
+        + "      - uses: actions/checkout@v4\n"
+        + "        with:\n"
+        + "          ref: ${{ env.HEAD_SHA }}\n"
+        + ENV_BIND
+    )
+    assert len(fh.check_file(_write(tmp_path, body))) == 1
+
+
+def test_benign_env_var_use_is_clean(tmp_path):
+    """Posting a status on the SHA that triggered the run is correct, and it is
+    what most of the 41 measured bindings do."""
+    body = (
+        HEADER
+        + "      - run: gh api repos/o/r/statuses/$HEAD_SHA -f state=success\n"
+        + ENV_BIND
+    )
+    assert fh.check_file(_write(tmp_path, body)) == []
+
+
+def test_range_inside_a_printed_message_is_clean(tmp_path):
+    """The first of the two probes every shell lint survives: the range sits in a
+    string an `echo` prints, so no `git` command carries it."""
+    body = (
+        HEADER
+        + '      - run: echo "run git diff $HEAD_SHA...HEAD to see it"\n'
+        + ENV_BIND
+    )
+    assert fh.check_file(_write(tmp_path, body)) == []
+
+
+def test_range_inside_a_heredoc_body_is_clean(tmp_path):
+    """The second probe: a heredoc body is data written to a file, not shell the
+    runner executes."""
+    body = (
+        HEADER
+        + "      - run: |\n"
+        + "          cat <<'EOF' > doc.txt\n"
+        + "          git diff $HEAD_SHA...HEAD\n"
+        + "          EOF\n"
+        + ENV_BIND
+    )
+    assert fh.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_longer_variable_name_is_not_matched(tmp_path):
+    """`$HEAD_SHA_BASE` is a different variable; matching it would name the wrong
+    binding in the report and flag a range the frozen SHA never reaches."""
+    body = HEADER + "      - run: git diff $HEAD_SHA_BASE...HEAD\n" + ENV_BIND
+    assert fh.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_non_bash_shell_is_not_parsed_as_bash(tmp_path):
+    body = (
+        HEADER
+        + "      - shell: pwsh\n"
+        + "        run: git diff $HEAD_SHA...HEAD\n"
+        + ENV_BIND
+    )
+    assert fh.check_file(_write(tmp_path, body)) == []
+
+
+def test_env_route_honours_the_step_opt_out(tmp_path):
+    body = (
+        HEADER
+        + "      - run: git diff $HEAD_SHA...HEAD\n"
+        + "        env:\n"
+        + "          # frozen-head-ok: the pre-trigger head is the point here\n"
+        + "          HEAD_SHA: ${{ github.event.pull_request.head.sha }}\n"
+    )
+    assert fh.check_file(_write(tmp_path, body)) == []
+
+
+def test_one_step_earns_one_finding(tmp_path):
+    """A step that spends the SHA directly AND through an env var has one edit to
+    make, so it must not be reported twice."""
+    body = (
+        HEADER
+        + "      - run: git diff ${{ github.event.pull_request.head.sha }}...HEAD"
+        + " && git log $HEAD_SHA...HEAD\n"
+        + ENV_BIND
+    )
+    assert len(fh.check_file(_write(tmp_path, body))) == 1
+
+
+def test_a_custom_bash_template_shell_is_still_parsed(tmp_path):
+    """A `shell:` template is still bash. Skipping it would fail open on the one
+    spelling an author writes deliberately."""
+    body = (
+        HEADER
+        + "      - shell: bash --noprofile --norc -eo pipefail {0}\n"
+        + "        run: git diff $HEAD_SHA...HEAD\n"
+        + ENV_BIND
+    )
+    assert len(fh.check_file(_write(tmp_path, body))) == 1

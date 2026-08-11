@@ -72,13 +72,23 @@
   types: [yaml]
 
 - id: check-frozen-head-sha
-  name: "honesty: ban github.event.pull_request.head.sha in run:/with: range/checkout steps"
-  description: The event head SHA is frozen at trigger time; a force-push/autofix-amend mis-scopes a diff range or checks out a stale commit. Derive the head from the checkout.
+  name: "honesty: ban github.event.pull_request.head.sha in a range or a checkout"
+  description: The event head SHA is frozen at trigger time; a force-push/autofix-amend mis-scopes a diff range or checks out a stale commit. Derive the head from the checkout. An env var binding it is judged by what spends it.
   entry: python -m ci_truth_serum.check_frozen_head_sha
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-ready-for-review
+  name: "honesty: a draft-gated workflow must fire on ready_for_review"
+  description: A workflow that skips jobs while the pull request is a draft defers them. ready_for_review is not a default activity type, so the jobs never run and their skipped check runs count as satisfied.
+  entry: python -m ci_truth_serum.check_ready_for_review
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
-  files: ^\.github/(workflows|actions)/
+  files: ^\.github/workflows/
   types: [yaml]
 
 - id: check-pipefail-grep-pipe
