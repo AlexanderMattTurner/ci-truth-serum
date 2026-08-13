@@ -104,10 +104,13 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 OPT_OUT = "allow-exit-suppress"
 
 MESSAGE = (
-    "exit status suppressed with `|| true` while the command's output is kept, or "
-    "on a git command that mutates the worktree/index/history — a real failure "
-    "would vanish, and a later command would read a tree the mutation never "
-    f"produced. Capture the output, or annotate `# {OPT_OUT}: <reason>`."
+    "exit status suppressed with `|| true`, and a real failure would leave no "
+    "trace: either the command's own output is kept while its status is "
+    "dropped; or a git command mutates the worktree/index/history and only its "
+    "status proves the mutation ran; or a captured value comes from a producer "
+    "(`gh api`/`gh graphql`, `jq`/`yq`, `curl -f`) that reports ITS OWN failure "
+    "through that captured output, so the caller reads an error as data. Check "
+    f"the status before trusting the output, or annotate `# {OPT_OUT}: <reason>`."
 )
 
 # The no-op suppressors, as command NAMES rather than a text pattern: a `||` right

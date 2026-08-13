@@ -31,8 +31,38 @@ def test_pin_records_parsing() -> None:
 
 def test_pin_records_opt_out() -> None:
     assert mod.pin_records(
-        f"      - uses: actions/checkout@{SHA_A} # divergent-pin-ok\n"
+        f"      - uses: actions/checkout@{SHA_A} # divergent-pin-ok: pinned early on purpose\n"
     ) == [(1, "actions/checkout", SHA_A, True)]
+
+
+def test_pin_records_opt_out_needs_a_reason() -> None:
+    """A bare `# divergent-pin-ok` with no `: <reason>` does not suppress — the
+    same contract `check_exit_suppression` / `check_substitution_exit_swallow`
+    hold their opt-out tokens to."""
+    assert mod.pin_records(
+        f"      - uses: actions/checkout@{SHA_A} # divergent-pin-ok\n"
+    ) == [(1, "actions/checkout", SHA_A, False)]
+
+
+def test_pin_records_reads_a_quoted_uses_value() -> None:
+    """A quoted `uses:` scalar is still one reference — the YAML parse resolves
+    the quotes away, so this must not silently pass."""
+    assert mod.pin_records(f'      - uses: "actions/checkout@{SHA_A}"\n') == [
+        (1, "actions/checkout", SHA_A, False)
+    ]
+
+
+def test_pin_records_ignores_a_uses_line_inside_a_run_block() -> None:
+    """A `uses:` line typed inside a `run: |` block scalar is DATA a step prints
+    or writes, not a reference GitHub resolves — the YAML parse never descends
+    into a scalar's own text, so this must not be read as a pin."""
+    text = (
+        "      - run: |\n"
+        "          cat > template.yaml <<'EOF'\n"
+        f"            - uses: actions/checkout@{SHA_A}\n"
+        "          EOF\n"
+    )
+    assert mod.pin_records(text) == []
 
 
 def test_non_sha_or_commented_lines_yield_no_record() -> None:
@@ -98,14 +128,26 @@ def test_a_subpath_action_is_its_own_identity() -> None:
     )
 
 
-def test_opted_out_line_is_neither_flagged_nor_a_conflict_source() -> None:
+def test_opted_out_on_every_occurrence_silences_the_group() -> None:
     assert (
         _msgs(
-            f"  - uses: actions/checkout@{SHA_A} # divergent-pin-ok\n"
-            f"  - uses: actions/checkout@{SHA_B} # divergent-pin-ok\n"
+            f"  - uses: actions/checkout@{SHA_A} # divergent-pin-ok: legacy pin, kept on purpose\n"
+            f"  - uses: actions/checkout@{SHA_B} # divergent-pin-ok: legacy pin, kept on purpose\n"
         )
         == []
     )
+
+
+def test_opting_out_one_occurrence_still_flags_the_other() -> None:
+    """Annotating the pin you just bumped must not hide the stale one you forgot
+    — divergence is computed from every occurrence, opted out or not, and only
+    the annotated occurrence's OWN finding is suppressed."""
+    msgs = _msgs(
+        f"  - uses: actions/checkout@{SHA_A} # divergent-pin-ok: this one is intentional\n"
+        f"  - uses: actions/checkout@{SHA_B}\n"
+    )
+    assert len(msgs) == 1
+    assert SHA_B in msgs[0] and "actions/checkout" in msgs[0]
 
 
 def test_unpinned_ref_is_left_to_zizmor() -> None:

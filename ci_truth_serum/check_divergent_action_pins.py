@@ -14,18 +14,33 @@ A `./`-relative action has no upstream release to diverge from and is skipped;
 an unpinned (tag/branch) ref is a different lint's finding and is skipped here
 too, or the same ref would be reported twice.
 
-Opt out with `# divergent-pin-ok` on the line.
+`uses:` is read from a real YAML parse (a composed node tree), not a line
+regex: a `uses:` line inside a `run: |` block scalar is DATA, not a reference,
+and a quoted value (`uses: "actions/checkout@<sha>"`) is still one reference.
+Composing (rather than fully constructing) the document walks only mapping and
+sequence nodes, so a multi-line string's contents are a scalar LEAF the walk
+never descends into — a `uses:` string typed inside one is never visited.
+
+Opt out with a same-line `# divergent-pin-ok: <reason>` — the reason is
+REQUIRED, matching the sibling `check_exit_suppression` /
+`check_substitution_exit_swallow` contract. Opting out ONE occurrence does not
+exempt the action: divergence is still computed from every occurrence (opted
+out or not), so an unannotated stale pin next to an annotated one is still
+reported. Annotating every occurrence of a genuinely deliberate split is what
+silences the group.
 """
 
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from check_pin_comment_truth import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    _USES_SHA,
     ACTIONS_DIR,
     REPO_ROOT,
     WORKFLOWS_DIR,
@@ -33,22 +48,46 @@ from check_pin_comment_truth import (  # noqa: E402,I001  # pylint: disable=wron
 
 OPT_OUT = "divergent-pin-ok"
 
+# A resolved `uses:` scalar naming a SHA-pinned Action: `owner/repo@<40-hex>`,
+# possibly with a `/sub/path` segment. A `./`-relative action (no `/…@` split
+# an upstream release could diverge from) and a tag/branch ref (no 40-hex SHA)
+# both simply fail this match, which is the skip — no separate branch needed.
+_SHA_PIN = re.compile(r"^(?P<ref>[\w.-]+/[\w./-]+)@(?P<sha>[0-9a-f]{40})$")
+
+
+def _iter_uses_nodes(node):
+    """Yield every YAML scalar VALUE node bound to a `uses:` key anywhere under
+    NODE — a composed (not constructed) tree, so a `run: |` block scalar is a
+    leaf this never opens, and a quoted scalar's resolved value is already
+    unquoted."""
+    if isinstance(node, yaml.MappingNode):
+        for key_node, value_node in node.value:
+            if (
+                isinstance(key_node, yaml.ScalarNode)
+                and key_node.value == "uses"
+                and isinstance(value_node, yaml.ScalarNode)
+            ):
+                yield value_node
+            else:
+                yield from _iter_uses_nodes(value_node)
+    elif isinstance(node, yaml.SequenceNode):
+        for child in node.value:
+            yield from _iter_uses_nodes(child)
+
 
 def pin_records(text: str) -> list[tuple[int, str, str, bool]]:
-    """(1-based line, action, sha, opted_out) for every SHA-pinned `uses:` line
-    in TEXT — the same match `check_pin_comment_truth` reads its lines with."""
+    """(1-based line, action, sha, opted_out) for every SHA-pinned `uses:`
+    reference composed from TEXT."""
+    raw = text.splitlines()
     records: list[tuple[int, str, str, bool]] = []
-    for lineno, line in enumerate(text.splitlines(), 1):
-        m = _USES_SHA.match(line)
+    for value_node in _iter_uses_nodes(yaml.compose(text, Loader=yaml.SafeLoader)):
+        m = _SHA_PIN.match(value_node.value)
         if not m:
             continue
+        lineno = value_node.start_mark.line + 1
+        line = raw[lineno - 1] if 0 < lineno <= len(raw) else ""
         records.append(
-            (
-                lineno,
-                m.group("ref"),
-                m.group("sha"),
-                annotated(m.group("rest"), OPT_OUT, require_reason=False),
-            )
+            (lineno, m.group("ref"), m.group("sha"), annotated(line, OPT_OUT))
         )
     return records
 
@@ -56,7 +95,7 @@ def pin_records(text: str) -> list[tuple[int, str, str, bool]]:
 def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
     """(path, line, message) for every divergent pin across TEXTS ((path,
     content) pairs) — divergence is a property of the whole tree, so every
-    reference must be compared against every other one at once."""
+    reference (opted out or not) must be compared against every other one."""
     all_records: list[tuple[str, int, str, str, bool]] = []
     for path, text in texts:
         all_records += [
@@ -65,9 +104,12 @@ def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
         ]
 
     shas_by_action: dict[str, set[str]] = defaultdict(set)
-    for _path, _line, action, sha, opted in all_records:
-        if not opted:
-            shas_by_action[action].add(sha)
+    sites_by_action_sha: dict[tuple[str, str], list[tuple[str, int]]] = defaultdict(
+        list
+    )
+    for path, line, action, sha, _opted in all_records:
+        shas_by_action[action].add(sha)
+        sites_by_action_sha[(action, sha)].append((path, line))
 
     found: list[tuple[str, int, str]] = []
     for path, line, action, sha, opted in all_records:
@@ -75,14 +117,19 @@ def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
             continue
         shas = shas_by_action[action]
         if len(shas) > 1:
-            others = sorted(shas - {sha})
+            elsewhere = sorted(
+                f"{other_path}:{other_line} ({other_sha})"
+                for other_sha in shas - {sha}
+                for other_path, other_line in sites_by_action_sha[(action, other_sha)]
+            )
             found.append(
                 (
                     path,
                     line,
-                    f"divergent pin: `{action}` is pinned to `{sha}` here, and to "
-                    f"{others} elsewhere — converge every call site on one SHA "
-                    f"(or annotate `# {OPT_OUT}` if the split is deliberate).",
+                    f"divergent pin: `{action}` is pinned to `{sha}` here, and "
+                    f"differently at {elsewhere} — converge every call site on "
+                    f"one SHA (or annotate `# {OPT_OUT}: <reason>` on every "
+                    "occurrence if the split is deliberate).",
                 )
             )
     return found
