@@ -474,13 +474,19 @@ def _shell_scripts(root) -> list[tuple[int, str]]:
     return scripts
 
 
-def _suppression_spans(root, row_offset: int = 0) -> list[tuple[int, int]]:
+def _suppression_spans(
+    root, row_offset: int = 0, producer_only: bool = False
+) -> list[tuple[int, int]]:
     """(first line, last line) of every unjustified suppression under ROOT, both
     1-based and shifted by ROW_OFFSET.
 
     The offset is what lets a `sh -c` body be judged by re-parsing it while the
     findings still land on the enclosing file's physical lines — which is where a
-    reader writes the annotation."""
+    reader writes the annotation. With PRODUCER_ONLY, the uncaptured branch
+    (bare `|| true` with output kept, or on a git mutation) is skipped, leaving
+    only the captured-producer class — the narrower rule a consumer scoped to a
+    wider tree, that never carried the uncaptured rule, opts into instead of the
+    full check."""
     spans: list[tuple[int, int]] = []
     for node in iter_nodes(root, "list"):
         # A `list` carries exactly one operator between two operands (a chain nests),
@@ -496,6 +502,8 @@ def _suppression_spans(root, row_offset: int = 0) -> list[tuple[int, int]]:
             if not _is_captured_producer(left):
                 continue  # value capture — empty-on-failure, handled by the caller
         else:
+            if producer_only:
+                continue  # the uncaptured rule is out of scope for this caller
             command, redirects = _suppressed_command(left)
             if any(_discards_output(r) for r in redirects) and not _mutates_git(
                 command
@@ -505,25 +513,26 @@ def _suppression_spans(root, row_offset: int = 0) -> list[tuple[int, int]]:
             (node.start_point[0] + 1 + row_offset, node.end_point[0] + 1 + row_offset)
         )
     for row, script in _shell_scripts(root):
-        spans += _suppression_spans(parse(script), row_offset + row)
+        spans += _suppression_spans(parse(script), row_offset + row, producer_only)
     return spans
 
 
-def violations(text: str) -> list[int]:
+def violations(text: str, producer_only: bool = False) -> list[int]:
     """1-based physical line numbers that suppress an exit status without a
     capture, an output redirect, or an `# allow-exit-suppress:` annotation.
 
     A suppression spanning physical lines is ONE grammar node, reported at the line
     it starts on. The raw physical lines are kept for the opt-out, which by
     definition lives in a comment (accepted on any physical line of the flagged
-    suppression, or the line directly above it)."""
+    suppression, or the line directly above it). See `_suppression_spans` for
+    PRODUCER_ONLY."""
     raw = text.splitlines()
     # One finding per line, carrying the WIDEST span that starts there: two
     # suppressions can begin on the same row (`a || true; b || true`), a line
     # reported twice would be a duplicate finding, and the wider span gives the
     # opt-out lookup every physical line the reader would put it on.
     widest: dict[int, int] = {}
-    for start, end in _suppression_spans(parse(text)):
+    for start, end in _suppression_spans(parse(text), producer_only=producer_only):
         widest[start] = max(widest.get(start, end), end)
     hits = []
     for start, end in sorted(widest.items()):
@@ -537,11 +546,23 @@ def main(argv: list[str]) -> int:
     """Run the detector over ARGV through the shared read/report loop, one path at a
     time so a file the grammar refuses to parse safely fails LOUDLY (naming the
     path, exit 1 — the same posture as check_untrusted_exec) instead of being
-    silently skipped, while every remaining path is still checked."""
+    silently skipped, while every remaining path is still checked.
+
+    `--producer-only` restricts the run to the captured-producer class (see
+    `violations`) — for a consumer that wants that rule alone over a tree wider
+    than it has ever enforced the uncaptured rule on, without adopting the
+    uncaptured rule's findings there too."""
+    producer_only = "--producer-only" in argv
+    paths = [a for a in argv if a != "--producer-only"]
     status = 0
-    for path in argv:
+    for path in paths:
         try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
+            status = max(
+                status,
+                run_line_checks(
+                    [path], lambda text: violations(text, producer_only), MESSAGE
+                ),
+            )
         except PathologicalInputError as err:
             print(f"{path}: {err}", file=sys.stderr)
             status = 1

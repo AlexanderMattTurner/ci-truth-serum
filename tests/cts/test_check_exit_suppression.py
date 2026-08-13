@@ -526,3 +526,39 @@ def test_fires_on_a_suppressed_producer_capture(text: str) -> None:
 )
 def test_clean_producer_captures_do_not_fire(text: str) -> None:
     assert mod.violations(text) == []
+
+
+# ── producer_only: a consumer that wants the captured-producer rule alone,
+# over a tree wider than it has ever enforced the uncaptured rule on ──────────
+def test_producer_only_still_flags_a_captured_producer() -> None:
+    assert mod.violations('v="$(gh api repos/o/r || true)"\n', producer_only=True) == [
+        1
+    ]
+
+
+def test_producer_only_skips_the_uncaptured_rule() -> None:
+    """The uncaptured rule (bare `|| true` with output kept) is what
+    `producer_only` exists to skip — a consumer scoped wider than it has ever
+    checked that rule must not suddenly inherit it."""
+    assert mod.violations("some_teardown_func || true\n", producer_only=True) == []
+
+
+def test_producer_only_skips_the_git_mutation_rule() -> None:
+    assert (
+        mod.violations(
+            'git merge --no-commit --no-ff "$base" >/dev/null || true\n',
+            producer_only=True,
+        )
+        == []
+    )
+
+
+def test_main_producer_only_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "bad.sh"
+    bad.write_text('v="$(jq -r .version pkg.json || true)"\nteardown || true\n')
+    assert mod.main(["--producer-only", str(bad)]) == 1
+    out = capsys.readouterr().err
+    assert f"{bad}:1:" in out
+    assert f"{bad}:2:" not in out
