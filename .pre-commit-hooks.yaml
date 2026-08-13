@@ -363,6 +363,15 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-divergent-action-pins
+  name: "opinionated: keep a SHA-pinned GitHub Action pinned to ONE SHA repo-wide"
+  description: Two references to the same action at different SHAs are both validly pinned, so no per-reference audit sees it — a bump that updated some call sites and missed others.
+  entry: python -m ci_truth_serum.check_divergent_action_pins
+  language: python
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 - id: check-stderr-merge-parse
   name: "opinionated: ban parsing a 2>&1-merged stream (stderr noise becomes data)"
   description: '`v=$(cmd 2>&1 | tail -1)` makes any stderr warning part of "the value"; diagnostic captures (`out=$(cmd 2>&1)` + echo) are never flagged.'

@@ -108,6 +108,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_token_fallback", WORKFLOW),
         ("check_workflow_secret_names", WORKFLOW),
         ("check_pin_comment_truth", WORKFLOW),
+        ("check_divergent_action_pins", WORKFLOW),
         ("check_stderr_merge_parse", SHELL_OR_WORKFLOW_YAML),
         ("check_echo_fallback", SHELL),
         ("check_bare_return_status", SHELL),
