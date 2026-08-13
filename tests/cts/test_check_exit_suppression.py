@@ -493,6 +493,12 @@ def test_shell_c_body_precision(text: str) -> None:
         'v="$(setup; jq -r .version pkg.json)" || true\n',
         # a trailing statement terminator inside the capture
         'v="$(jq -r .version pkg.json;)" || true\n',
+        # `env` is transparent to the wrapped producer, like `command`/`sudo`
+        'v="$(env jq -r .version pkg.json || true)"\n',
+        # `env`'s own flags and NAME=VALUE operands must not be read as the
+        # wrapped command
+        'v="$(env -i FOO=bar jq -r .version pkg.json || true)"\n',
+        'v="$(env --unset=FOO jq -r .version pkg.json || true)"\n',
     ],
 )
 def test_fires_on_a_suppressed_producer_capture(text: str) -> None:
@@ -513,7 +519,14 @@ def test_fires_on_a_suppressed_producer_capture(text: str) -> None:
         # bare `curl` prints the error page as ordinary output
         'b="$(curl -sS -o /dev/null -w "%{http_code}" https://example.test/x || true)"\n',
         'b="$(curl -sS --max-time 5 https://example.test/x || true)"\n',
+        # --fail-early stops curl on the first TRANSFER error; unlike --fail /
+        # --fail-with-body it does not turn an HTTP error into a nonzero exit,
+        # so the response body is still ordinary output, not a producer's
+        # own failure report
+        'b="$(curl --fail-early https://example.test/x || true)"\n',
         'l="$(gh pr list --limit 1 || true)"\n',
+        # `env` with no wrapped command at all is not a producer
+        'v="$(env FOO=bar || true)"\n',
         # a negated capture inverts the status
         'v="$(! jq -r .version pkg.json)" || true\n',
         # same-line opt-out annotation

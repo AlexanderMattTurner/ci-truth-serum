@@ -183,13 +183,43 @@ _GH_SUBCOMMANDS = frozenset({"api", "graphql"})
 # does not read `owner/repo` (from `gh -R owner/repo api …`) as the subcommand.
 _GH_VALUE_FLAGS = frozenset({"-R", "--repo", "--hostname"})
 
-_CURL_FAIL_FLAGS = frozenset({"--fail", "--fail-early", "--fail-with-body"})
+_CURL_FAIL_FLAGS = frozenset({"--fail", "--fail-with-body"})
 
 # Command words that do not bound the program that follows them — the wrapper
 # is transparent to what actually produces the captured output.
 _TRANSPARENT_PREFIXES = frozenset(
     {"time", "command", "builtin", "nohup", "sudo", "exec"}
 )
+
+# `env`'s own flags that consume a separate following argument (`-u NAME`,
+# not `--unset=NAME`) — needed so `_skip_env_prefix` doesn't mistake the value
+# for the wrapped command's name.
+_ENV_VALUE_FLAGS = frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"})
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _skip_env_prefix(words: tuple[str, ...]) -> tuple[str, ...]:
+    """WORDS after `env`'s own flags and `NAME=VALUE` assignment operands —
+    `env -i FOO=bar jq …` leaves `('jq', …)`, matching what the shell actually
+    execs. A bare `--` (env's flag terminator) is consumed too."""
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word == "--":
+            i += 1
+            break
+        if word in _ENV_VALUE_FLAGS:
+            i += 2
+            continue
+        if word.startswith("-") and word != "-":
+            i += 1
+            continue
+        if _ENV_ASSIGNMENT.match(word):
+            i += 1
+            continue
+        break
+    return words[i:]
+
 
 # The tokens a `command_substitution`/`process_substitution` carries as direct
 # children besides its statements: the delimiters, and the terminators that end
@@ -236,7 +266,11 @@ def _is_producer(command) -> bool:
     if not words:
         return False
     name, rest = words[0], words[1:]
-    while name in _TRANSPARENT_PREFIXES and rest:
+    while rest and (name in _TRANSPARENT_PREFIXES or name == "env"):
+        if name == "env":
+            rest = _skip_env_prefix(rest)
+            if not rest:
+                return False
         name, rest = rest[0], rest[1:]
     program = name.rsplit("/", 1)[-1]
     if program in _READERS:
