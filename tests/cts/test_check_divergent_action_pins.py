@@ -156,6 +156,25 @@ def test_unpinned_ref_is_left_to_zizmor() -> None:
     assert _msgs("  - uses: actions/checkout@v4\n") == []
 
 
+def test_unparseable_yaml_is_reported_not_silently_passed() -> None:
+    """A file the YAML parser rejects is a violation at line 1, matching the
+    sibling workflow lints (check_always_reporter &c.) — never a silent clean
+    pass, and never an uncaught exception."""
+    msgs = mod.check_files([("bad.yaml", "  - uses:\n\tfoo: [1,2\n")])
+    assert len(msgs) == 1
+    path, line, message = mod.check_files([("bad.yaml", "  - uses:\n\tfoo: [1,2\n")])[0]
+    assert path == "bad.yaml" and line == 1 and "could not parse as YAML" in message
+
+
+def test_unparseable_file_does_not_block_divergence_in_the_rest() -> None:
+    msgs = _msgs(
+        "\tbroken\n",
+        f"  - uses: actions/checkout@{SHA_A}\n  - uses: actions/checkout@{SHA_B}\n",
+    )
+    assert any("could not parse as YAML" in m for m in msgs)
+    assert any("divergent pin" in m for m in msgs)
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 def _wire(tmp_path, monkeypatch, *files: tuple[str, str]):
     wf = tmp_path / ".github" / "workflows"

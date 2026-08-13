@@ -90,6 +90,7 @@ FUZZ_REQUIRED = {
     "check_workflow_secret_names": "referenced_names",
     "check_provenance_repo_url": "normalize_repo_url",
     "check_pin_comment_truth": "pin_records",
+    "check_divergent_action_pins": "check_files",
     "check_stderr_merge_parse": "violations",
     "check_echo_fallback": "violations",
     "check_case_default": "violations",

@@ -95,12 +95,31 @@ def pin_records(text: str) -> list[tuple[int, str, str, bool]]:
 def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
     """(path, line, message) for every divergent pin across TEXTS ((path,
     content) pairs) — divergence is a property of the whole tree, so every
-    reference (opted out or not) must be compared against every other one."""
+    reference (opted out or not) must be compared against every other one.
+
+    A file that cannot be parsed as YAML is itself reported as a violation
+    (line 1) rather than silently passed as clean — matching the sibling
+    workflow lints (`check_always_reporter` &c.) — and does not stop the
+    remaining files from being checked against each other."""
     all_records: list[tuple[str, int, str, str, bool]] = []
+    parse_errors: list[tuple[str, int, str]] = []
     for path, text in texts:
+        try:
+            records = pin_records(text)
+        except yaml.YAMLError as err:
+            first_line = str(err).partition("\n")[0]
+            parse_errors.append(
+                (
+                    path,
+                    1,
+                    f"could not parse as YAML ({first_line}); cannot check for "
+                    "divergent action pins — fix the syntax (or run actionlint) "
+                    "and re-check.",
+                )
+            )
+            continue
         all_records += [
-            (path, line, action, sha, opted)
-            for line, action, sha, opted in pin_records(text)
+            (path, line, action, sha, opted) for line, action, sha, opted in records
         ]
 
     shas_by_action: dict[str, set[str]] = defaultdict(set)
@@ -132,7 +151,7 @@ def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
                     "occurrence if the split is deliberate).",
                 )
             )
-    return found
+    return parse_errors + found
 
 
 def workflow_files() -> list[Path]:

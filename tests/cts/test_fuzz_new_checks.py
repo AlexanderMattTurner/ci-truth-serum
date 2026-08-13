@@ -6,10 +6,10 @@ result (the same contract as the sibling fuzz suites).
 
 Covered here: check_token_fallback, check_workflow_secret_names,
 check_provenance_repo_url (URL normalization), check_pin_comment_truth,
-check_stderr_merge_parse, check_echo_fallback, check_case_default,
-check_soft_timeout, check_bare_return_status, check_lockstep_pins,
-check_cron_comment, check_toolchain_skips, and release_canary's
-changelog/semver parsing.
+check_divergent_action_pins, check_stderr_merge_parse, check_echo_fallback,
+check_case_default, check_soft_timeout, check_bare_return_status,
+check_lockstep_pins, check_cron_comment, check_toolchain_skips, and
+release_canary's changelog/semver parsing.
 """
 
 from hypothesis import given
@@ -23,6 +23,9 @@ secret_names = load_hook(
 )
 provenance = load_hook("check_provenance_repo_url.py", "fuzz_check_provenance_repo_url")
 pin_comment = load_hook("check_pin_comment_truth.py", "fuzz_check_pin_comment_truth")
+divergent_pins = load_hook(
+    "check_divergent_action_pins.py", "fuzz_check_divergent_action_pins"
+)
 stderr_merge = load_hook("check_stderr_merge_parse.py", "fuzz_check_stderr_merge_parse")
 echo_fallback = load_hook("check_echo_fallback.py", "fuzz_check_echo_fallback")
 case_default = load_hook("check_case_default.py", "fuzz_check_case_default")
@@ -172,6 +175,18 @@ def test_pin_records_and_cross_file_check_are_total(text: str) -> None:
         assert isinstance(opted, bool)
     findings = pin_comment.check_files([("a.yaml", text), ("b.yaml", text)])
     assert all(isinstance(line, int) for _p, line, _m in findings)
+
+
+@given(_text, _text)
+def test_divergent_action_pins_check_files_is_total(t1: str, t2: str) -> None:
+    # A file the YAML parser rejects is a violation (line 1), never a crash and
+    # never a silent pass — check_files owns that recovery, so it is the
+    # fuzzed/registered symbol rather than the lower-level pin_records.
+    findings = divergent_pins.check_files([("a.yaml", t1), ("b.yaml", t2)])
+    for path, line, message in findings:
+        assert path in ("a.yaml", "b.yaml")
+        assert line >= 1
+        assert "divergent pin" in message or "could not parse as YAML" in message
 
 
 @given(_text, _text)
