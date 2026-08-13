@@ -81,7 +81,7 @@ esac
 # the opt-in would silently fail. Capture into a variable (never `gh … | grep`,
 # whose early-exit SIGPIPEs the still-writing gh under pipefail), then match the
 # subject line.
-message="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null || true)"
+message="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' 2>/dev/null || true)" # allow-exit-suppress: a fetch failure yields an empty subject, so the keyword check simply doesn't match — this re-trigger is best-effort, not required
 subject="${message%%$'\n'*}"
 if grep -qiF "$KEYWORD" <<<"$subject"; then
   emit true "$KEYWORD in head commit title" "$OPUS_MODEL"
@@ -108,9 +108,9 @@ fi
 # arguments, so that spelling exits 1 before any request and the `|| true` here
 # would turn every run into the same silent no-re-review. A transient API
 # failure yields empty -> no re-review, which is the intended degradation.
-reviews="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp 2>/dev/null || true)"
+reviews="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp 2>/dev/null || true)" # allow-exit-suppress: a transient API failure yields empty -> no re-review, which is the intended degradation
 state="$(jq -r "[.[][] | select(.user.login == \"$REVIEWER\")] | last | .state // empty" \
-  <<<"${reviews:-[]}" 2>/dev/null || true)"
+  <<<"${reviews:-[]}" 2>/dev/null || true)" # allow-exit-suppress: an empty/unparseable reviews capture yields an empty state, which the caller already treats as no reviewer hold
 if [[ "$state" == "CHANGES_REQUESTED" || "$state" == "COMMENTED" ]]; then
   emit true "outstanding $REVIEWER hold ($state) — re-checking on Haiku" "$HAIKU_MODEL"
 else

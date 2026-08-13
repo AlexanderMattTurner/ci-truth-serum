@@ -150,7 +150,7 @@ anthropic_call() {
 # an exhausted cap in the log rather than as a generic "unreachable".
 _report_rung_failure() {
   local name="$1" code="$2" response_file="$3" msg
-  msg=$(jq -r '.error.message // empty' "$response_file" 2>/dev/null || true) # allow-double-swallow: best-effort parse of an API error body; a non-JSON body falls through to the generic line below
+  msg=$(jq -r '.error.message // empty' "$response_file" 2>/dev/null || true) # allow-double-swallow: best-effort parse of an API error body; a non-JSON body falls through to the generic line below # allow-exit-suppress: same reason — a non-JSON body fails to parse, and the caller already falls back to the generic line below
   if [[ -n "$msg" ]]; then
     echo "Credential $name rejected (HTTP $code): $msg" >&2
   else

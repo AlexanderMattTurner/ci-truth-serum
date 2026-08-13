@@ -466,3 +466,112 @@ def test_multiline_shell_c_body_reports_the_enclosing_file_line() -> None:
 )
 def test_shell_c_body_precision(text: str) -> None:
     assert mod.violations(text + "\n") == []
+
+
+# ── the capture allowance has one exception: a producer that reports its own
+# failure through stdout (`gh api`/`gh graphql`, `jq`/`yq`, `curl -f`) ────────
+@pytest.mark.parametrize(
+    "text",
+    [
+        'm="$(gh api "repos/o/r/commits/$sha" --jq .commit.message || true)"\n',
+        'm="$(gh api repos/o/r/commits/x --jq .commit.message)" || true\n',
+        "m=$(gh api repos/o/r --jq .name 2>/dev/null || true)\n",
+        'd="$(gh graphql -f query=@q.gql || true)"\n',
+        # a global flag whose VALUE would read as the subcommand
+        'd="$(gh -R owner/repo api repos/o/r || true)"\n',
+        'v="$(jq -r .version pkg.json || true)"\n',
+        'v="$(yq -r .version pkg.yaml || true)"\n',
+        # jq as the LAST pipeline stage — the pipe kept its status, `||` drops it
+        'v="$(cat pkg.json | jq -r .version)" || true\n',
+        'b="$(curl -f https://example.test/x || true)"\n',
+        'b="$(curl -fsSL https://example.test/x || true)"\n',
+        'b="$(curl --fail-with-body https://example.test/x || true)"\n',
+        'v="$(jq -r .version pkg.json || :)"\n',
+        'v="$(/usr/bin/jq -r .version pkg.json || true)"\n',
+        'v="$(command jq -r .version pkg.json || true)"\n',
+        # several statements: the substitution reports the LAST one
+        'v="$(setup; jq -r .version pkg.json)" || true\n',
+        # a trailing statement terminator inside the capture
+        'v="$(jq -r .version pkg.json;)" || true\n',
+        # `env` is transparent to the wrapped producer, like `command`/`sudo`
+        'v="$(env jq -r .version pkg.json || true)"\n',
+        # `env`'s own flags and NAME=VALUE operands must not be read as the
+        # wrapped command
+        'v="$(env -i FOO=bar jq -r .version pkg.json || true)"\n',
+        'v="$(env --unset=FOO jq -r .version pkg.json || true)"\n',
+    ],
+)
+def test_fires_on_a_suppressed_producer_capture(text: str) -> None:
+    assert mod.violations(text) == [1]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # the ordinary idiom the capture allowance keeps: an empty-on-failure
+        # capture of a command that is not a producer
+        'f="$(grep -E "^x" list || true)"\n',
+        'r="$(git rev-parse HEAD 2>/dev/null || true)"\n',
+        'd="$(find . -name x || true)"\n',
+        # a NON-final pipeline stage: the pipe dropped the status, not `||`
+        'v="$(jq -r .version pkg.json | head -1 || true)"\n',
+        'h="$(curl -sf https://example.test/x -I | awk "{print $2}" || true)"\n',
+        # bare `curl` prints the error page as ordinary output
+        'b="$(curl -sS -o /dev/null -w "%{http_code}" https://example.test/x || true)"\n',
+        'b="$(curl -sS --max-time 5 https://example.test/x || true)"\n',
+        # --fail-early stops curl on the first TRANSFER error; unlike --fail /
+        # --fail-with-body it does not turn an HTTP error into a nonzero exit,
+        # so the response body is still ordinary output, not a producer's
+        # own failure report
+        'b="$(curl --fail-early https://example.test/x || true)"\n',
+        'l="$(gh pr list --limit 1 || true)"\n',
+        # `env` with no wrapped command at all is not a producer
+        'v="$(env FOO=bar || true)"\n',
+        # a negated capture inverts the status
+        'v="$(! jq -r .version pkg.json)" || true\n',
+        # same-line opt-out annotation
+        'v="$(gh api repos/o/r || true)"  # allow-exit-suppress: probe treats an unreachable API as inconclusive\n',
+        # the two-probe audit (shell-lint-parsing.md): a producer capture spelled
+        # inside a message string or a heredoc body holds no commands at all
+        "gb_warn 'v=\"$(jq -r .version pkg.json || true)\"'\n",
+        "cat <<'EOF' > doc.txt\nv=\"$(jq -r .version pkg.json || true)\"\nEOF\n",
+    ],
+)
+def test_clean_producer_captures_do_not_fire(text: str) -> None:
+    assert mod.violations(text) == []
+
+
+# ── producer_only: a consumer that wants the captured-producer rule alone,
+# over a tree wider than it has ever enforced the uncaptured rule on ──────────
+def test_producer_only_still_flags_a_captured_producer() -> None:
+    assert mod.violations('v="$(gh api repos/o/r || true)"\n', producer_only=True) == [
+        1
+    ]
+
+
+def test_producer_only_skips_the_uncaptured_rule() -> None:
+    """The uncaptured rule (bare `|| true` with output kept) is what
+    `producer_only` exists to skip — a consumer scoped wider than it has ever
+    checked that rule must not suddenly inherit it."""
+    assert mod.violations("some_teardown_func || true\n", producer_only=True) == []
+
+
+def test_producer_only_skips_the_git_mutation_rule() -> None:
+    assert (
+        mod.violations(
+            'git merge --no-commit --no-ff "$base" >/dev/null || true\n',
+            producer_only=True,
+        )
+        == []
+    )
+
+
+def test_main_producer_only_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "bad.sh"
+    bad.write_text('v="$(jq -r .version pkg.json || true)"\nteardown || true\n')
+    assert mod.main(["--producer-only", str(bad)]) == 1
+    out = capsys.readouterr().err
+    assert f"{bad}:1:" in out
+    assert f"{bad}:2:" not in out

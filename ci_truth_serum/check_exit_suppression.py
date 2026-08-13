@@ -50,6 +50,26 @@ double-quoted one carrying no backslash escape. The shell must also BE the
 command word — behind a wrapper (``timeout 5 bash -c '…'``) the same tokens can
 equally be a printing command's arguments, which the grammar cannot tell apart.
 
+The value-capture allowance has ONE exception: a captured command that reports
+its FAILURE through stdout rather than through a non-zero exit alone. ``gh
+api``/``gh graphql`` print the API's JSON error body (or a raw non-JSON error
+page) on stdout for a failure and exit non-zero; ``jq``/``yq`` exit non-zero
+and capture empty, which reads as "the field is absent" rather than "the input
+was not parseable"; ``curl -f`` leaves whatever bytes it already wrote. For
+those, ``out=$(gh api … || true)`` does not make a failure vanish — it makes
+the caller read the error body, or an empty string an error produced, back as
+if it were the real answer. The producer set stays small on purpose: for
+``grep``/``find``/``git rev-parse`` an empty capture on failure is the
+legitimate idiom this tree uses in dozens of places, so only a producer whose
+empty-or-error capture is a silent WRONG answer loses the allowance. Bare
+``curl`` (no ``-f``) keeps it — it prints the error page as ordinary output,
+and a throughput probe may capture that on purpose. The exception applies
+whichever side of the ``||`` the capture sits on, and through a non-final
+statement (``$(setup; jq …)`` reports ``jq``) or the last pipeline stage
+(``$(cat x | jq …)`` reports ``jq``; ``$(jq … | head -1)`` does not — the pipe
+already dropped ``jq``'s status before any ``||`` saw it). A negated capture
+(``$(! jq …)``) reports no single command's status, so it keeps the allowance.
+
 Everything else — ``some_func || true`` with its output intact — must opt out
 with a same-line or immediately-preceding-line ``# allow-exit-suppress: <reason>``
 stating why the failure is safe to ignore (e.g. "best-effort GC reaper; the
@@ -69,6 +89,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     ARGUMENT_TYPES,
     PathologicalInputError,
     command_name,
+    command_words,
     iter_nodes,
     node_text,
     parse,
@@ -83,10 +104,13 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 OPT_OUT = "allow-exit-suppress"
 
 MESSAGE = (
-    "exit status suppressed with `|| true` while the command's output is kept, or "
-    "on a git command that mutates the worktree/index/history — a real failure "
-    "would vanish, and a later command would read a tree the mutation never "
-    f"produced. Capture the output, or annotate `# {OPT_OUT}: <reason>`."
+    "exit status suppressed with `|| true`, and a real failure would leave no "
+    "trace: either the command's own output is kept while its status is "
+    "dropped; or a git command mutates the worktree/index/history and only its "
+    "status proves the mutation ran; or a captured value comes from a producer "
+    "(`gh api`/`gh graphql`, `jq`/`yq`, `curl -f`) that reports ITS OWN failure "
+    "through that captured output, so the caller reads an error as data. Check "
+    f"the status before trusting the output, or annotate `# {OPT_OUT}: <reason>`."
 )
 
 # The no-op suppressors, as command NAMES rather than a text pattern: a `||` right
@@ -146,6 +170,171 @@ _SHELLS = frozenset({"bash", "sh", "dash", "zsh", "ksh", "ash"})
 # `-c`, or a short cluster ending in it (`sh -ec '…'`) — the value-taking short
 # must end its cluster, so the next argument is the script.
 _DASH_C = re.compile(r"^-[A-Za-z]*c$")
+
+# The structured-data readers whose non-zero exit means "your query or your
+# input was wrong" — the same fail-closed pair `check_substitution_exit_swallow`
+# guards.
+_READERS = frozenset({"jq", "yq"})
+
+# The `gh` subcommands that return a server's error as ordinary stdout.
+_GH_SUBCOMMANDS = frozenset({"api", "graphql"})
+
+# `gh`'s global flags whose value is the NEXT token, so the subcommand search
+# does not read `owner/repo` (from `gh -R owner/repo api …`) as the subcommand.
+_GH_VALUE_FLAGS = frozenset({"-R", "--repo", "--hostname"})
+
+_CURL_FAIL_FLAGS = frozenset({"--fail", "--fail-with-body"})
+
+# Command words that do not bound the program that follows them — the wrapper
+# is transparent to what actually produces the captured output.
+_TRANSPARENT_PREFIXES = frozenset(
+    {"time", "command", "builtin", "nohup", "sudo", "exec"}
+)
+
+# `env`'s own flags that consume a separate following argument (`-u NAME`,
+# not `--unset=NAME`) — needed so `_skip_env_prefix` doesn't mistake the value
+# for the wrapped command's name.
+_ENV_VALUE_FLAGS = frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"})
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+
+def _skip_env_prefix(words: tuple[str, ...]) -> tuple[str, ...]:
+    """WORDS after `env`'s own flags and `NAME=VALUE` assignment operands —
+    `env -i FOO=bar jq …` leaves `('jq', …)`, matching what the shell actually
+    execs. A bare `--` (env's flag terminator) is consumed too."""
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word == "--":
+            i += 1
+            break
+        if word in _ENV_VALUE_FLAGS:
+            i += 2
+            continue
+        if word.startswith("-") and word != "-":
+            i += 1
+            continue
+        if _ENV_ASSIGNMENT.match(word):
+            i += 1
+            continue
+        break
+    return words[i:]
+
+
+# The tokens a `command_substitution`/`process_substitution` carries as direct
+# children besides its statements: the delimiters, and the terminators that end
+# a statement inside it (`$(cmd;)`, `$(\n cmd \n)`).
+_SUBSTITUTION_DELIMITERS = frozenset({"$(", ")", "`", "<(", ">("})
+_STATEMENT_TERMINATORS = frozenset({";", "\n"})
+
+
+def _first_operand(words: tuple[str, ...], value_opts: frozenset[str]) -> str | None:
+    """WORDS' first non-option word, skipping flags and the values VALUE_OPTS
+    consume. `None` when WORDS is all options."""
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word in value_opts:
+            i += 2
+            continue
+        if word.startswith("-"):
+            i += 1
+            continue
+        return word
+    return None
+
+
+def _fails_hard(words: tuple[str, ...]) -> bool:
+    """True when WORDS carry curl's `-f`/`--fail`, including the bundled short-flag
+    tail (`-fsSL` == `-f -s -S -L`) a bare `-f` token would miss."""
+    return any(
+        word in _CURL_FAIL_FLAGS
+        or (
+            word.startswith("-")
+            and not word.startswith("--")
+            and word[1:].isalpha()
+            and "f" in word
+        )
+        for word in words
+    )
+
+
+def _is_producer(command) -> bool:
+    """True when COMMAND — a `command` node — is a producer whose failure reports
+    through stdout: `jq`/`yq`, `gh api`/`gh graphql`, or `curl -f`."""
+    words = tuple(command_words(command))
+    if not words:
+        return False
+    name, rest = words[0], words[1:]
+    while rest and (name in _TRANSPARENT_PREFIXES or name == "env"):
+        if name == "env":
+            rest = _skip_env_prefix(rest)
+            if not rest:
+                return False
+        name, rest = rest[0], rest[1:]
+    program = name.rsplit("/", 1)[-1]
+    if program in _READERS:
+        return True
+    if program == "gh":
+        return _first_operand(rest, _GH_VALUE_FLAGS) in _GH_SUBCOMMANDS
+    return program == "curl" and _fails_hard(rest)
+
+
+def _captured_status_source(node):
+    """The one command whose exit status a value capture reports, or None when
+    nothing single does — mirrors `_suppressed_command`'s spine walk, plus the
+    two steps unique to a capture: descending an assignment into its value, and
+    reducing a substitution to its LAST statement (dropping delimiters and the
+    terminators `$(cmd;)`/`$(setup; cmd)` leave as siblings). A negated capture
+    (`$(! cmd)`) inverts its status, so no single command reports it."""
+    while True:
+        if node.type == "variable_assignment":
+            node = node.children[-1]
+            continue
+        if node.type in ("string", "raw_string"):
+            content = [c for c in node.children if c.type not in ('"', "'")]
+            if len(content) != 1:
+                return None
+            node = content[0]
+            continue
+        if node.type in _SUBSTITUTIONS:
+            stmts = [
+                c
+                for c in node.children
+                if c.type not in _SUBSTITUTION_DELIMITERS
+                and c.type not in _STATEMENT_TERMINATORS
+            ]
+            if not stmts:
+                return None
+            node = stmts[-1]
+            continue
+        if node.type == "negated_command":
+            return None
+        operands = _operands(node)
+        if node.type in ("list", "pipeline") and operands:
+            node = operands[-1]
+            continue
+        if node.type == "redirected_statement":
+            body = next(
+                (
+                    c
+                    for c in node.children
+                    if c.type not in ("file_redirect", "heredoc_redirect")
+                ),
+                None,
+            )
+            if body is None:
+                return None
+            node = body
+            continue
+        return node
+
+
+def _is_captured_producer(node) -> bool:
+    """True when the value capture NODE resolves to a producer command whose
+    failure the `|| true` would let through as data."""
+    command = _captured_status_source(node)
+    return command is not None and command.type == "command" and _is_producer(command)
 
 
 def _operands(node) -> list:
@@ -319,13 +508,19 @@ def _shell_scripts(root) -> list[tuple[int, str]]:
     return scripts
 
 
-def _suppression_spans(root, row_offset: int = 0) -> list[tuple[int, int]]:
+def _suppression_spans(
+    root, row_offset: int = 0, producer_only: bool = False
+) -> list[tuple[int, int]]:
     """(first line, last line) of every unjustified suppression under ROOT, both
     1-based and shifted by ROW_OFFSET.
 
     The offset is what lets a `sh -c` body be judged by re-parsing it while the
     findings still land on the enclosing file's physical lines — which is where a
-    reader writes the annotation."""
+    reader writes the annotation. With PRODUCER_ONLY, the uncaptured branch
+    (bare `|| true` with output kept, or on a git mutation) is skipped, leaving
+    only the captured-producer class — the narrower rule a consumer scoped to a
+    wider tree, that never carried the uncaptured rule, opts into instead of the
+    full check."""
     spans: list[tuple[int, int]] = []
     for node in iter_nodes(root, "list"):
         # A `list` carries exactly one operator between two operands (a chain nests),
@@ -336,34 +531,42 @@ def _suppression_spans(root, row_offset: int = 0) -> list[tuple[int, int]]:
         if len(operands) != 2 or not _is_noop(operands[1]):
             continue
         left = operands[0]
-        if _inside_substitution(node) or _is_capture_assignment(left):
-            continue  # value capture — empty-on-failure, handled by the caller
-        command, redirects = _suppressed_command(left)
-        if any(_discards_output(r) for r in redirects) and not _mutates_git(command):
-            continue  # output already discarded — nothing left to surface
+        captured = _inside_substitution(node) or _is_capture_assignment(left)
+        if captured:
+            if not _is_captured_producer(left):
+                continue  # value capture — empty-on-failure, handled by the caller
+        else:
+            if producer_only:
+                continue  # the uncaptured rule is out of scope for this caller
+            command, redirects = _suppressed_command(left)
+            if any(_discards_output(r) for r in redirects) and not _mutates_git(
+                command
+            ):
+                continue  # output already discarded — nothing left to surface
         spans.append(
             (node.start_point[0] + 1 + row_offset, node.end_point[0] + 1 + row_offset)
         )
     for row, script in _shell_scripts(root):
-        spans += _suppression_spans(parse(script), row_offset + row)
+        spans += _suppression_spans(parse(script), row_offset + row, producer_only)
     return spans
 
 
-def violations(text: str) -> list[int]:
+def violations(text: str, producer_only: bool = False) -> list[int]:
     """1-based physical line numbers that suppress an exit status without a
     capture, an output redirect, or an `# allow-exit-suppress:` annotation.
 
     A suppression spanning physical lines is ONE grammar node, reported at the line
     it starts on. The raw physical lines are kept for the opt-out, which by
     definition lives in a comment (accepted on any physical line of the flagged
-    suppression, or the line directly above it)."""
+    suppression, or the line directly above it). See `_suppression_spans` for
+    PRODUCER_ONLY."""
     raw = text.splitlines()
     # One finding per line, carrying the WIDEST span that starts there: two
     # suppressions can begin on the same row (`a || true; b || true`), a line
     # reported twice would be a duplicate finding, and the wider span gives the
     # opt-out lookup every physical line the reader would put it on.
     widest: dict[int, int] = {}
-    for start, end in _suppression_spans(parse(text)):
+    for start, end in _suppression_spans(parse(text), producer_only=producer_only):
         widest[start] = max(widest.get(start, end), end)
     hits = []
     for start, end in sorted(widest.items()):
@@ -377,11 +580,23 @@ def main(argv: list[str]) -> int:
     """Run the detector over ARGV through the shared read/report loop, one path at a
     time so a file the grammar refuses to parse safely fails LOUDLY (naming the
     path, exit 1 — the same posture as check_untrusted_exec) instead of being
-    silently skipped, while every remaining path is still checked."""
+    silently skipped, while every remaining path is still checked.
+
+    `--producer-only` restricts the run to the captured-producer class (see
+    `violations`) — for a consumer that wants that rule alone over a tree wider
+    than it has ever enforced the uncaptured rule on, without adopting the
+    uncaptured rule's findings there too."""
+    producer_only = "--producer-only" in argv
+    paths = [a for a in argv if a != "--producer-only"]
     status = 0
-    for path in argv:
+    for path in paths:
         try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
+            status = max(
+                status,
+                run_line_checks(
+                    [path], lambda text: violations(text, producer_only), MESSAGE
+                ),
+            )
         except PathologicalInputError as err:
             print(f"{path}: {err}", file=sys.stderr)
             status = 1
