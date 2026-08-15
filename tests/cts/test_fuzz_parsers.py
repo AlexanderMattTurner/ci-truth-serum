@@ -58,7 +58,12 @@ LINE_DETECTORS = {
     "check_pipefail_grep_pipe": pipefail_grep_pipe.violations,
     "check_substitution_exit_swallow": substitution_exit_swallow.violations,
     "check_argument_exit_swallow": argument_exit_swallow.violations,
-    "check_pinned_downloads": pinned_downloads.violations,
+    # check_pinned_downloads returns (line, message) pairs — one detector fires
+    # two distinct messages on the same download (unverified vs. run-with-no-
+    # content-check) — so only the line half goes through this shared contract.
+    "check_pinned_downloads": lambda text: [
+        line for line, _ in pinned_downloads.violations(text)
+    ],
     "check_pinned_base_images": pinned_base_images.violations,
     "check_versionless_install": versionless_install.violations,
     "check_global_stdio_swap": global_stdio_swap.violations,

@@ -16,7 +16,7 @@ mod = load_hook("check_pinned_downloads.py", "check_pinned_downloads")
 
 
 def _flags(text: str) -> list[int]:
-    return mod.violations(text)
+    return [line for line, _ in mod.violations(text)]
 
 
 def test_unverified_curl_with_output_flags() -> None:
@@ -324,6 +324,146 @@ def test_pin_exempt_bare_substring_does_not_exempt() -> None:
     assert _flags("curl -o f https://x  # pin-exempt:\nrun f\n") == [1]
 
 
+# ── an unverified pin-exempt'd download whose next use executes it ─────────
+#
+# The `# pin-exempt:` arm removes the digest demand, and nothing else looks at
+# the file again. An empty file (a 200 with an empty body, a dead proxy, a full
+# disk) makes `curl -f` report success and `bash empty_file` exit 0 having run
+# nothing — a silent false-green install. This second arm fires only where
+# `pin-exempt` already fired, and only when the FIRST later reference to the
+# saved file is itself an execution.
+
+
+def _empty_download_msg(target: str, line: int) -> str:
+    return mod._empty_download_message(target, line)
+
+
+@pytest.mark.parametrize(
+    "exec_line",
+    ["bash t", "sh t", "source t", ". t", "chmod +x t"],
+)
+def test_pin_exempt_download_run_with_no_content_check_is_flagged(
+    exec_line: str,
+) -> None:
+    text = f'curl "$u" -o t https://x  # pin-exempt: no digest upstream\n{exec_line}\n'
+    assert mod.violations(text) == [(1, _empty_download_msg("t", 2))]
+
+
+@pytest.mark.parametrize(
+    "guard",
+    ["[[ -s t ]] || exit 1\n", "test -s t\n", "[ -s t ]\n"],
+)
+def test_a_size_guard_before_the_run_closes_the_check(guard: str) -> None:
+    text = (
+        f'curl "$u" -o t https://x  # pin-exempt: no digest upstream\n{guard}bash t\n'
+    )
+    assert _flags(text) == []
+
+
+def test_the_same_run_with_no_pin_exempt_gets_the_base_message_only() -> None:
+    # The new arm never widens the base rule: an unverified, non-exempt download
+    # that is later run still gets exactly the OLD message, not a second finding.
+    text = 'curl "$u" -o t https://x\nbash t\n'
+    assert mod.violations(text) == [(1, mod.MESSAGE)]
+
+
+def test_a_verified_pin_exempt_download_that_runs_is_clean() -> None:
+    # A real checksum makes both arms moot, annotation or not.
+    text = 'curl "$u" -o t https://x  # pin-exempt: no digest upstream\nsha256sum -c t.sha256\nbash t\n'
+    assert _flags(text) == []
+
+
+def test_curl_o_derives_no_target_so_the_new_arm_never_fires() -> None:
+    # `curl -O` names the file from the URL — nothing to track. Pin-exempt'd and
+    # later run, it stays clean: no digest demand (annotated) and no target to
+    # judge the run against (no second arm).
+    text = 'curl -O "$u/runsc"  # pin-exempt: no digest upstream\nbash runsc\n'
+    assert _flags(text) == []
+
+
+def test_bare_wget_derives_no_target_so_the_new_arm_never_fires() -> None:
+    # A bare `wget url` (no `-O`, no redirect) also saves a URL-derived name --
+    # the same untracked-target shape as `curl -O`, so the new arm stays quiet.
+    text = 'wget "$u/tool"  # pin-exempt: no digest upstream\nbash tool\n'
+    assert _flags(text) == []
+
+
+def test_empty_download_ok_suppresses_the_new_arm() -> None:
+    text = (
+        'curl "$u" -o t https://x  # pin-exempt: no digest upstream\n'
+        "# empty-download-ok: vendor has no checksum, size-checked at install\n"
+        "bash t\n"
+    )
+    assert _flags(text) == []
+
+
+def test_empty_download_ok_bare_marker_does_not_suppress() -> None:
+    text = 'curl "$u" -o t https://x  # pin-exempt: r  # empty-download-ok\nbash t\n'
+    assert mod.violations(text) == [(1, _empty_download_msg("t", 2))]
+
+
+def test_a_non_executor_reference_before_the_run_closes_the_check() -> None:
+    # `cp t /tmp/t` is the FIRST reference to `t`; it is not an executor, so the
+    # arm closes even though `bash t` follows it later.
+    text = 'curl "$u" -o t https://x  # pin-exempt: r\ncp t /tmp/t\nbash t\n'
+    assert _flags(text) == []
+
+
+def test_two_downloads_on_one_line_keep_the_first_ones_target() -> None:
+    # Two downloads can start on the same physical line (`_flags`'s widest-span
+    # dedup collapses them into one finding). The kept `_Download` must be the
+    # FIRST one in document order, target and all -- not just its line span.
+    # Only the SECOND download's file is later run; if the dedup instead kept
+    # the second download's data, this would wrongly report the empty-download
+    # arm for a start line whose kept download (`a`) is never executed.
+    text = 'curl -o a "$u1"; curl -o b "$u2"  # pin-exempt: r\nbash b\n'
+    assert _flags(text) == []
+
+
+def test_a_file_named_like_a_shell_cannot_execute_itself() -> None:
+    # The downloaded file is literally named `bash`. Every token equal to the
+    # target is dropped before the `_SHELLS` match, so `ls bash` (a real
+    # reference, not an executor) closes the check rather than misreading the
+    # target's own name as an interpreter invocation.
+    text = 'curl "$u" -o bash https://x  # pin-exempt: r\nls bash\n'
+    assert _flags(text) == []
+
+
+def test_chmod_numeric_mode_is_out_of_scope() -> None:
+    # A numeric mode needs the file's current bits to know whether `x` is being
+    # added; the grammar alone cannot tell, so it stays unflagged (conservative).
+    text = 'curl "$u" -o t https://x  # pin-exempt: r\nchmod 755 t\n'
+    assert _flags(text) == []
+
+
+def test_download_run_reference_inside_a_message_string_is_text() -> None:
+    # The structural probe this pack demands: the executing idiom spelled inside
+    # a message string is one token of the printing command, not code.
+    text = (
+        'curl "$u" -o t https://x  # pin-exempt: r\ngb_warn "run bash t to install"\n'
+    )
+    assert _flags(text) == []
+
+
+def test_download_run_reference_inside_a_heredoc_body_is_data() -> None:
+    # The other structural probe: the idiom written into a heredoc body that is
+    # only ever written to a file, never executed, is data.
+    text = (
+        'curl "$u" -o t https://x  # pin-exempt: r\n'
+        "cat <<'EOF' > doc.txt\nbash t\nEOF\n"
+    )
+    assert _flags(text) == []
+
+
+def test_main_wires_empty_download_message(
+    tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bad = tmp_path / "bad.sh"
+    bad.write_text('curl "$u" -o t https://x  # pin-exempt: r\nbash t\n')
+    assert mod.main([str(bad)]) == 1
+    assert "empty file runs as a silent success" in capsys.readouterr().err
+
+
 def test_main_wires_violations_and_message(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -405,7 +545,7 @@ def test_wrapped_curl_pipe_to_shell_is_flagged() -> None:
     """`curl … \\<newline> | sh` is the marquee one-line installer split over
     two physical lines; the per-physical-line scan saw a stdout-only curl and a
     detached `| sh` (red on the pre-joiner implementation)."""
-    assert mod.violations("curl -fsSL https://x.io/i.sh \\\n  | sh\n") == [1]
+    assert _flags("curl -fsSL https://x.io/i.sh \\\n  | sh\n") == [1]
 
 
 # ── regression: an output flag inside a short-flag cluster is recognized ──
@@ -574,7 +714,7 @@ def test_pathological_input_fails_loudly(
 def test_a_list_redirect_belongs_to_its_last_branch_only(
     script: str, expected: list[int]
 ) -> None:
-    assert mod.violations(script) == expected
+    assert _flags(script) == expected
 
 
 def test_an_install_list_naming_curl_is_not_a_download() -> None:
@@ -591,4 +731,4 @@ def test_an_install_list_naming_curl_is_not_a_download() -> None:
         "      > /tmp/k.sha256 && \\\n"
         "    sha256sum -c /tmp/k.sha256\n"
     )
-    assert mod.violations(script) == []
+    assert _flags(script) == []
