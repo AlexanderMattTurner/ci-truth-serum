@@ -11,51 +11,109 @@ boundary), and that judgement belongs in the open. A guard MUST carry
 
 so review checks the stated reason, not the mere existence of the guard.
 
-A Python guard is detected three ways, because no one of them alone is evadable:
+This check finds a Python guard three ways. No single way is hard to evade, so
+all three run.
 
-  1. INTENT PHRASING — the name or docstring says what it is ("drift guard",
-     "must stay in sync", ...). Honest, but a guard reworded to dodge the
-     phrasing — calling itself an "SSOT-coverage contract" instead — slips
-     straight through. That laundering is the whole failure mode this check
-     exists to stop, so phrasing cannot be the only trigger.
-  1b. LAUNDERED AUTHORITY — a body COMMENT that claims a value is authoritative
-     while admitting it is a copy of one held elsewhere ("SSOT char sets
-     (mirrored from the per-layer suites)"). Neither half is a smell alone, so
-     only the conjunction fires. This is the shape trigger 1 structurally
-     cannot see: a copy relabelled as a source of truth uses none of the drift
-     vocabulary, so the phrasing pass reads it as the sanctioned single-source
-     pattern and passes it.
-  2. COPIES-AGREE STRUCTURE — the test READS an external source (a file/config)
-     and asserts a COLLECTION equality where one side is a hand-maintained copy
-     (an in-source collection literal, or an UPPER_CASE constant / its
-     `.keys()`). That is the mechanical signature of "this hand-kept list must
-     match the live config", and it does not care what the docstring calls the
-     test, so relabeling can't hide it.
+  1. INTENT PHRASING — the name or the docstring says what the test is. It says
+     "drift guard", or "must stay in sync". This route is honest. An author who
+     rewords the guard defeats it. A guard that calls itself an "SSOT-coverage
+     contract" passes this route. That laundering is the failure this check
+     exists to stop, so phrasing cannot be the only route.
+  1b. LAUNDERED AUTHORITY — a body COMMENT calls a value authoritative and also
+     admits the value is a copy of one held elsewhere. An example is "SSOT char
+     sets (mirrored from the per-layer suites)". Each half alone is safe, so only
+     the conjunction fires. Route 1 cannot see this shape. A copy that an author
+     relabels as a source of truth uses no drift words at all, so the phrasing
+     pass reads it as the sanctioned single-source pattern.
+  2. COPIES-AGREE STRUCTURE — the test compares a hand-maintained copy against a
+     value that descends from a source read. A hand-maintained copy is an
+     in-source collection literal, or an UPPER_CASE constant, or a `.keys()` view
+     of one. This is the mechanical signature of "this hand-kept list must match
+     the live config". It ignores what the docstring calls the test, so a new
+     label cannot hide it.
 
-The structural trigger is deliberately NARROW to stay quiet on legitimate tests
-(precision over recall — a noisy guard trains reviewers to ignore it). It fires
-only on read-source + maintained-copy-vs-collection; it does NOT fire on the
-sanctioned single-source form (read one config, assert code handles every entry
-via membership/iteration), nor on an ordinary output-vs-expected unit assertion.
-A structural hit that is a genuine non-guard clears with an explicit, reasoned
-opt-out comment anywhere in the function body:
+Route 2 follows the DATA, not the layout of the file. An earlier version asked
+for a source read and a maintained-copy equality in the SAME function body. Two
+shapes walked past it:
+
+  - the read moved to module scope, to a fixture, or to a read accessor, and the
+    function body then held only the equality;
+  - the equality fanned out over `@pytest.mark.parametrize`, and each case then
+    compared one item instead of the whole collection.
+
+A value is SOURCE-DERIVED when it descends from a source read. The read itself
+qualifies. So do these:
+
+  - a name that holds one;
+  - a `sorted()` or a `set()` of one, and a `.keys()` view of one;
+  - a subscript or an attribute of one;
+  - an EXTRACTION from one, such as `_REV.findall(readme)`. An extraction selects
+    part of a value and computes no new fact about it, so what the test then
+    compares is still the file. The extraction methods are listed one by one.
+
+Every OTHER call ends the descent. That one rule keeps the check off ordinary
+tests: in `assertCountEqual(collect(data), EXPECTED)` the name `collect` is the
+code under test, so its result is not source-derived. A comprehension also ends
+the descent, which keeps the check off the many tests that build a result by
+comprehension and then assert it equals `[]`.
+
+Three bindings carry a source read out of the function that performs it:
+
+  - a module-level assignment whose value is source-derived;
+  - a parameter that names a `@pytest.fixture` in the same file that HANDS BACK a
+    source-derived value, because a fixture supplies the value a test starts
+    from. What the fixture returns decides this, never what its body touches: a
+    fixture that reads a file only to write a copy elsewhere then returns the new
+    directory, and that directory is not the file it read;
+  - a call to a READ ACCESSOR, which is a module-level function whose body is one
+    `return` of a source-derived value. A helper that reads and then transforms
+    is not an accessor. Such a helper is hard to tell apart from the code under
+    test, so it must not carry the read forward.
+
+The fan-out route needs all three of these:
+
+  - the test carries `@pytest.mark.parametrize` whose value list is a
+    hand-maintained copy;
+  - the body asserts an equality;
+  - one side of that equality is a parameter the decorator binds, and the other
+    side is source-derived.
+
+The value list must be a maintained copy, so a fan-out over the LIVE side stays
+quiet. That shape is the sanctioned single-source pattern: read one config, then
+assert the code handles every entry.
+
+Route 2 stays NARROW on purpose, because precision matters more than recall here.
+A noisy guard teaches a reviewer to ignore it. Route 2 passes the sanctioned
+single-source form, and it passes an ordinary output-versus-expected assertion.
+Clear a genuine non-guard with a reasoned opt-out comment. Put it anywhere in the
+function body, on a decorator, or in the comment block directly above:
 
     # not-a-drift-guard: <why this collection equality is not two copies>
 
-Copies-agree tests also live in JavaScript/TypeScript (``*.test.mjs``) and shell
-suites, which carry no ``@pytest.mark``. For those a SIBLING phrase pass runs
-(``text_violations``): any line expressing drift-guard intent must carry a
-same-line or immediately-preceding ``drift-guard-ok: <why a true SSOT is
-infeasible>`` annotation, or it is flagged. The laundered-authority trigger runs
-there too (it needs only a comment, not an AST). That non-Python surface still
-has no STRUCTURAL pass, so a guard that dodges both phrasings slips; a JS-side
-structural pass is the honest follow-up.
+Copies-agree tests also live in JavaScript, in TypeScript (``*.test.mjs``), and
+in shell suites. Those carry no ``@pytest.mark``. A sibling phrase pass covers
+them (``text_violations``). Any line that expresses drift-guard intent must carry
+a ``drift-guard-ok: <why a true SSOT is infeasible>`` annotation. The annotation
+goes on the same line, or on the line above. Route 1b runs there too, because it
+needs only a comment. That surface still has no STRUCTURAL pass, so a guard that
+avoids both phrasings passes. A structural pass for JS is the honest follow-up.
 
 Honest limits, stated so this check is not itself laundered: detection is a
-heuristic, not proof. A copies-agree comparison the AST can't see (a hand-rolled
-element-by-element loop, two module constants compared with no file read, a value
-fetched at runtime) still slips. The triggers close the common cases; they do not
-make laundering impossible.
+heuristic, not proof. These shapes still pass:
+
+  - a comparison the AST cannot see, such as a hand-rolled element-by-element
+    loop;
+  - a set difference asserted empty, such as `assert exported - documented ==
+    set()`. This route must stay quiet there, because the same line is also the
+    sanctioned way to assert that one set covers another;
+  - two module constants compared with no source read at all;
+  - a value fetched at run time;
+  - a fixture that lives in ``conftest.py``, because this check reads one file;
+  - a value built by a comprehension over a source read;
+  - a class attribute that ``setUpClass`` assigns;
+  - a helper more than one hop from the read.
+
+The routes close the common cases. They do not make laundering impossible.
 
 Invoked by pre-commit with the staged Python / JS / TS / shell files as arguments.
 """
@@ -64,6 +122,7 @@ import ast
 import re
 import sys
 import tokenize
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -75,6 +134,7 @@ from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     annotation_re,
+    annotation_window,
     is_test_path,
     run_file_cli,
 )
@@ -151,6 +211,21 @@ def _launders(body: str) -> str | None:
     return None if _NEGATED_RE.search(preceding) else authority.group(0)
 
 
+def _source_span(node: ast.FunctionDef | ast.AsyncFunctionDef) -> range:
+    """Every line NODE occupies, counting its DECORATORS.
+
+    `FunctionDef.lineno` is the `def` line, so a decorator sits ABOVE the node
+    that carries it. A guard fanned out over `@pytest.mark.parametrize` keeps its
+    hand-maintained collection in that decorator, so the case table is where a
+    reviewer writes the opt-out. Starting the span at `def` would ignore it and
+    leave that finding with no way to clear.
+    """
+    start = min(
+        (decorator.lineno for decorator in node.decorator_list), default=node.lineno
+    )
+    return range(start, (node.end_lineno or node.lineno) + 1)
+
+
 def _self_declares(
     node: ast.FunctionDef | ast.AsyncFunctionDef, comments: dict[int, str]
 ) -> bool:
@@ -168,11 +243,11 @@ def _self_declares(
     comment the same words usually describe the code's behaviour ("the guard
     cannot drift into rejecting valid requests").
     """
-    end = node.end_lineno or node.lineno
+    span = _source_span(node)
     return any(
         _launders(body)
         for line, body in comments.items()
-        if node.lineno <= line <= end
+        if line in span
         and not _OPTOUT_RE.search(body)
         and not _ALLOW_MARKER.search(body)
     )
@@ -198,6 +273,16 @@ _COLLECTION_ASSERTS = frozenset(
 # pinned against a *separate source*, typically a file/config read here).
 _SOURCE_READS = frozenset(
     {"read_text", "read_bytes", "read", "load", "loads", "safe_load", "open"}
+)
+
+# Methods that pull a subset OUT of a value without computing a new fact about
+# it. A drift guard routinely reads a doc and then extracts the interesting rows
+# — `_REV.findall(readme)` — and what it compares is still the file's content.
+# Listed explicitly rather than "any call whose argument is source-derived",
+# because that wider rule would also carry the read through `normalize(live)`,
+# where the result belongs to the code under test rather than to the file.
+_EXTRACTIONS = frozenset(
+    {"findall", "finditer", "split", "rsplit", "splitlines", "readlines", "group"}
 )
 
 
@@ -241,26 +326,223 @@ def _is_maintained_copy(node: ast.expr) -> bool:
     return False
 
 
-def _reads_source(node: ast.AST) -> bool:
-    """True when the function body reads an external source (a file/config load).
-    Half of the structural signature — a maintained copy pinned against a
-    separately-read source is the drift guard."""
-    for child in ast.walk(node):
-        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
-            if child.func.attr in _SOURCE_READS:
-                return True
-        if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
-            if child.func.id == "open":
-                return True
+def _is_read_call(node: ast.AST) -> bool:
+    """True when NODE is a call that reads an external source — `p.read_text()`,
+    `yaml.safe_load(...)`, or a bare `open(...)`."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr in _SOURCE_READS
+    return isinstance(func, ast.Name) and func.id == "open"
+
+
+@dataclass(frozen=True)
+class _Sources:
+    """Which spellings in one module denote a source-derived value.
+
+    `names` are names bound to one. `readers` are read accessors — call one and
+    the result is source-derived. `fixtures` are fixtures that hand one back.
+
+    A fixture's name is not merged into `names`, because only a test that takes
+    it as a PARAMETER receives what it supplied. Merging the two would make the
+    bare spelling source-derived in every function that reuses it for something
+    else.
+    """
+
+    names: frozenset[str]
+    readers: frozenset[str]
+    fixtures: frozenset[str]
+
+
+_NO_SOURCES = _Sources(frozenset(), frozenset(), frozenset())
+
+
+def _source_derived(node: ast.expr, sources: _Sources) -> bool:
+    """True when NODE's value descends from a source read.
+
+    The descent survives a name binding, a collection constructor or view, a
+    subscript, an attribute, and an `_EXTRACTIONS` method. Every OTHER call ends
+    it, because a call is a transformation whose result belongs to whatever
+    performed it — normally the code under test. That is the whole precision
+    budget of the structural route: without it, `collect(data)` in an ordinary
+    output-vs-expected assertion would read as the live side of a drift guard.
+    """
+    if isinstance(node, ast.Name):
+        return node.id in sources.names
+    if isinstance(node, (ast.Subscript, ast.Attribute)):
+        return _source_derived(node.value, sources)
+    if not isinstance(node, ast.Call):
+        return False
+    if _is_read_call(node):
+        return True
+    func = node.func
+    if isinstance(func, ast.Name):
+        if func.id in sources.readers:
+            return True
+        return (
+            func.id in _COLLECTION_CTORS
+            and bool(node.args)
+            and _source_derived(node.args[0], sources)
+        )
+    if isinstance(func, ast.Attribute):
+        if func.attr in _COLLECTION_METHODS:
+            return _source_derived(func.value, sources)
+        return func.attr in _EXTRACTIONS and any(
+            _source_derived(operand, sources) for operand in (func.value, *node.args)
+        )
     return False
 
 
-def _asserts_maintained_copy_equals(node: ast.AST) -> bool:
-    """True when the body asserts a COLLECTION equality with a hand-maintained
-    copy on one side — `assert MAINTAINED == other_collection`, or an
-    `assertEqual/assertCountEqual/...` where one argument is a maintained copy.
-    The maintained-copy requirement is what keeps this off ordinary
-    output-vs-expected unit assertions."""
+def _reads_a_hoisted_source(node: ast.expr, outer: _Sources) -> bool:
+    """True when NODE's value reaches the test ALREADY read — from a module-level
+    name, from a fixture, or from a read accessor.
+
+    OUTER must exclude the test's own locals. Both halves of the test are load
+    bearing. `outer` rejects a name the test itself binds. `_NO_SOURCES` carries
+    no bindings at all, so a value is derived under it only when the descent ends
+    at a read call the test writes inline; rejecting those drops that shape too.
+
+    Only the fan-out route needs this, because that route drops the
+    collection-shape requirement and needs a constraint in its place. A fanned-out
+    guard reads the live side ONCE and spreads the hand-kept copy over the cases,
+    so its live side always arrives as a binding. A test that reads a file it
+    just ran the code against is reading back that code's OUTPUT, and an
+    observation of output is not a second copy of a source. `template-sync.sh`'s
+    suite is exactly that shape: it writes a file, runs the script, then compares
+    the file's new content against a per-case expectation.
+    """
+    return _source_derived(node, outer) and not _source_derived(node, _NO_SOURCES)
+
+
+def _is_fixture(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when NODE carries a `@pytest.fixture` decorator, called or bare."""
+    for decorator in node.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if isinstance(target, ast.Attribute) and target.attr == "fixture":
+            return True
+        if isinstance(target, ast.Name) and target.id == "fixture":
+            return True
+    return False
+
+
+def _yields_a_source(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when the value NODE hands back is source-derived.
+
+    For a FIXTURE, and deliberately not "a read anywhere in the body". A fixture
+    that reads a file only to WRITE it somewhere else — the sandbox-building
+    idiom — then returns the directory it built, and that directory is not the
+    file it read. A whole-subtree walk would call the returned value
+    source-derived on the strength of a read that never reaches it, which is the
+    co-location mistake this route exists to stop making.
+    """
+    scope = _bind_assignments(_NO_SOURCES, node.body)
+    return any(
+        isinstance(child, (ast.Return, ast.Yield))
+        and child.value is not None
+        and _source_derived(child.value, scope)
+        for child in ast.walk(node)
+    )
+
+
+def _is_read_accessor(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when NODE's body is a single `return` of a source-derived value.
+
+    An accessor IS the read, so calling it carries the read to the caller. A
+    helper that reads and then transforms is not an accessor: its return value is
+    the transformation's output, which no rule can tell apart from the code under
+    test. `_NO_SOURCES` is deliberate — an accessor must spell the read itself,
+    so resolving it needs no module context and no definition ordering.
+    """
+    body = [
+        stmt
+        for stmt in node.body
+        if not (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
+    ]
+    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+        return False
+    return _source_derived(body[0].value, _NO_SOURCES)
+
+
+def _assignments(statements: list[ast.stmt]) -> list[ast.Assign | ast.AnnAssign]:
+    """Every assignment STATEMENTS makes in its OWN scope, in source order.
+
+    Nested function, class, and lambda bodies are skipped: their locals are not
+    bound here, and treating a helper's local as a module name would make the
+    same spelling source-derived everywhere it recurs.
+    """
+    found: list[ast.Assign | ast.AnnAssign] = []
+    pending = list(statements)
+    while pending:
+        node = pending.pop()
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+        ):
+            continue
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            found.append(node)
+        pending.extend(ast.iter_child_nodes(node))
+    return sorted(found, key=lambda node: (node.lineno, node.col_offset))
+
+
+def _bind_assignments(sources: _Sources, statements: list[ast.stmt]) -> _Sources:
+    """SOURCES plus every name STATEMENTS binds to a source-derived value.
+
+    One in-source-order pass is enough, and no fixpoint is needed: Python binds a
+    value before anything reads it, so an assignment's right-hand side only names
+    bindings this loop has already seen.
+    """
+    names = set(sources.names)
+    for node in _assignments(statements):
+        current = _Sources(frozenset(names), sources.readers, sources.fixtures)
+        if node.value is None or not _source_derived(node.value, current):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        names.update(t.id for t in targets if isinstance(t, ast.Name))
+    return _Sources(frozenset(names), sources.readers, sources.fixtures)
+
+
+def _module_sources(tree: ast.Module) -> _Sources:
+    """The source-derived spellings a whole module offers its tests."""
+    defs = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    seed = _Sources(
+        frozenset(),
+        frozenset(node.name for node in defs if _is_read_accessor(node)),
+        frozenset(
+            node.name for node in defs if _is_fixture(node) and _yields_a_source(node)
+        ),
+    )
+    return _bind_assignments(seed, tree.body)
+
+
+def _outer_sources(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, sources: _Sources
+) -> _Sources:
+    """What reaches NODE already read: the module's names, plus NODE's own
+    parameters that name a fixture that reads. NODE's locals are excluded on
+    purpose — `_reads_a_hoisted_source` needs that boundary."""
+    params = {arg.arg for arg in (*node.args.args, *node.args.kwonlyargs)}
+    return _Sources(
+        sources.names | (params & sources.fixtures),
+        sources.readers,
+        sources.fixtures,
+    )
+
+
+def _equality_pairs(node: ast.AST) -> list[tuple[ast.expr, ast.expr, bool]]:
+    """(left, right, collection_shaped) for every equality NODE asserts.
+
+    Two spellings: a bare `assert a == b`, and an `assertEqual`-family call. The
+    flag reports whether BOTH sides of a bare assert construct a collection. An
+    `assertEqual`-family call is always flagged True: its own name says it
+    compares collections, which is the shape test the bare form has to make for
+    itself.
+    """
+    pairs: list[tuple[ast.expr, ast.expr, bool]] = []
     for child in ast.walk(node):
         if (
             isinstance(child, ast.Assert)
@@ -269,49 +551,146 @@ def _asserts_maintained_copy_equals(node: ast.AST) -> bool:
             and isinstance(child.test.ops[0], ast.Eq)
         ):
             left, right = child.test.left, child.test.comparators[0]
-            if (
-                _is_collection_shaped(left)
-                and _is_collection_shaped(right)
-                and (_is_maintained_copy(left) or _is_maintained_copy(right))
-            ):
-                return True
+            shaped = _is_collection_shaped(left) and _is_collection_shaped(right)
+            pairs.append((left, right, shaped))
         if (
             isinstance(child, ast.Call)
             and isinstance(child.func, ast.Attribute)
             and child.func.attr in _COLLECTION_ASSERTS
             and len(child.args) >= 2
-            and (
-                _is_maintained_copy(child.args[0]) or _is_maintained_copy(child.args[1])
-            )
         ):
-            return True
-    return False
+            pairs.append((child.args[0], child.args[1], True))
+    return pairs
 
 
-def _is_structural_guard(node: ast.AST) -> bool:
-    """The copies-agree structural signature: the test reads a separate source
-    AND asserts a hand-maintained collection copy equals it."""
-    return _reads_source(node) and _asserts_maintained_copy_equals(node)
+def _asserts_maintained_copy_equals(node: ast.AST, sources: _Sources) -> bool:
+    """True when NODE asserts a COLLECTION equality between a hand-maintained
+    copy and a source-derived value.
+
+    Both requirements matter. The maintained copy keeps this off ordinary
+    output-vs-expected assertions. The source-derived side is what makes the pair
+    two copies of one thing rather than an input and an expectation.
+
+    A name can satisfy both — `LIVE = json.load(...)` is UPPER_CASE and holds a
+    read. No precedence rule resolves that, and none should: asking only that the
+    OTHER side be source-derived keeps `assert sorted(A_LIVE) == sorted(B_LIVE)`
+    flagged, which is the file-A-equals-file-B guard this check exists for.
+    """
+    return any(
+        shaped
+        and (
+            (_is_maintained_copy(left) and _source_derived(right, sources))
+            or (_is_maintained_copy(right) and _source_derived(left, sources))
+        )
+        for left, right, shaped in _equality_pairs(node)
+    )
+
+
+def _argnames(node: ast.expr) -> list[str]:
+    """The parameter names a `parametrize` argnames argument binds — from the
+    comma-separated string form and from the list/tuple-of-strings form."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [name.strip() for name in node.value.split(",") if name.strip()]
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [
+            element.value.strip()
+            for element in node.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, str)
+        ]
+    return []
+
+
+def _fanned_out_copy_params(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """The parameters NODE binds from a `@pytest.mark.parametrize` whose value
+    list is a hand-maintained copy.
+
+    The maintained-copy requirement is what separates a fanned-out guard from the
+    sanctioned single-source pattern. `parametrize("name", sorted(live_config))`
+    fans out over the LIVE side and yields nothing here, so a test that reads one
+    config and checks the code handles each entry stays quiet.
+    """
+    params: set[str] = set()
+    for decorator in node.decorator_list:
+        if not (
+            isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Attribute)
+            and decorator.func.attr == "parametrize"
+            and len(decorator.args) >= 2
+            and _is_maintained_copy(decorator.args[1])
+        ):
+            continue
+        params.update(_argnames(decorator.args[0]))
+    return params
+
+
+def _fans_out_a_maintained_copy(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, sources: _Sources
+) -> bool:
+    """True when NODE spreads a copies-agree equality across parametrize cases.
+
+    The collection equality still exists; it just lives at the decorator instead
+    of inside the assert, so `_asserts_maintained_copy_equals` sees one item
+    compared against one item. Collection SHAPE is therefore not required here —
+    the maintained collection is the value list, which `_fanned_out_copy_params`
+    has already demanded. `_reads_a_hoisted_source` supplies the constraint that
+    the dropped shape test used to carry.
+    """
+    params = _fanned_out_copy_params(node)
+    if not params:
+        return False
+
+    def bound(expr: ast.expr) -> bool:
+        return isinstance(expr, ast.Name) and expr.id in params
+
+    return any(
+        (bound(left) and _reads_a_hoisted_source(right, sources))
+        or (bound(right) and _reads_a_hoisted_source(left, sources))
+        for left, right, _ in _equality_pairs(node)
+    )
+
+
+def _is_structural_guard(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, sources: _Sources
+) -> bool:
+    """The copies-agree structural signature, in either of its two shapes: a
+    maintained copy asserted equal to a source-derived collection, or that same
+    equality fanned out over parametrize.
+
+    The two routes see different scopes. The collection route reads the test's
+    locals too, because a read assigned to a local is the shape it has always
+    caught. The fan-out route sees only what arrives from outside the body.
+    """
+    outer = _outer_sources(node, sources)
+    return _asserts_maintained_copy_equals(
+        node, _bind_assignments(outer, node.body)
+    ) or _fans_out_a_maintained_copy(node, outer)
 
 
 def _has_optout(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, comments: dict[int, str]
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    comments: dict[int, str],
+    lines: list[str],
 ) -> bool:
-    """True when a `# not-a-drift-guard: <reason>` comment sits within the
-    function's source span — the explicit escape for a genuine collection-equality
-    unit test that the structural trigger would otherwise flag.
+    """True when a `# not-a-drift-guard: <reason>` comment annotates NODE — the
+    explicit escape for a genuine collection-equality unit test that the
+    structural trigger would otherwise flag.
 
-    Read from real comment TOKENS, never the raw text. This one suppresses a
-    finding, so a text scan here fails OPEN: a string literal anywhere in the
-    function that happens to spell the token — a fixture for this very lint, an
-    error message quoting the escape hatch — would silently disarm the trigger
-    for the whole test. The tokenizer cannot confuse the two.
+    `annotation_window` owns WHERE the reason may go, so this check honours the
+    same placement as every other hook in the pack instead of open-coding a
+    twentieth answer. The span it is given starts at the first DECORATOR: a guard
+    fanned out over `@pytest.mark.parametrize` keeps its hand-maintained
+    collection there, so the case table is where a reviewer writes the reason.
+
+    Which lines are COMMENTS still comes from real tokens, never from the raw
+    text. This call suppresses a finding, so a text scan here fails OPEN: a
+    string literal anywhere in the function that happens to spell the token — a
+    fixture for this very lint, an error message quoting the escape hatch —
+    would silently disarm the trigger for the whole test.
     """
-    end = node.end_lineno or node.lineno
+    span = _source_span(node)
     return any(
-        _OPTOUT_RE.search(body)
-        for line, body in comments.items()
-        if node.lineno <= line <= end
+        line in comments and _OPTOUT_RE.search(comments[line])
+        for line in annotation_window(lines, span.start, span.stop - 1)
     )
 
 
@@ -349,6 +728,8 @@ def violations(source: str) -> list[tuple[int, str]]:
     except (SyntaxError, ValueError, tokenize.TokenError):
         return []
 
+    sources = _module_sources(tree)
+    lines = source.split("\n")
     hits: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -358,12 +739,12 @@ def violations(source: str) -> list[tuple[int, str]]:
         phrasing = _is_drift_guard(
             node.name, ast.get_docstring(node) or ""
         ) or _self_declares(node, comments)
-        structural = _is_structural_guard(node)
+        structural = _is_structural_guard(node, sources)
         if not (phrasing or structural):
             continue
         if any(_justification(dec) for dec in node.decorator_list):
             continue
-        if structural and not phrasing and _has_optout(node, comments):
+        if structural and not phrasing and _has_optout(node, comments, lines):
             continue
         hits.append((node.lineno, node.name))
     return hits

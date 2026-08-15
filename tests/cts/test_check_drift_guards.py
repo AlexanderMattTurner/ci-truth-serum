@@ -426,6 +426,232 @@ def test_assert_count_equal_needs_a_maintained_copy() -> None:
     assert mod.violations(guard) == [(1, "test_x")]
 
 
+# ── the read may sit outside the function that compares against it ────────────
+# The gap this closes: the structural trigger used to demand the read and the
+# equality in ONE body, so hoisting the read out — to module scope, to a fixture,
+# to a read accessor — walked past it while the guard stayed a guard.
+
+_HOISTED_GUARDS = {
+    "module-level assignment": (
+        '_LIVE = json.loads(Path("detectors.json").read_text())\n'
+        "\n"
+        "def test_examples_cover_the_config():\n"
+        "    assert sorted(EXAMPLES.keys()) == sorted(_LIVE)\n"
+    ),
+    "read accessor": (
+        "def _live():\n"
+        '    return json.load(open("detectors.json"))\n'
+        "\n"
+        "def test_examples_cover_the_config():\n"
+        "    assert sorted(EXAMPLES.keys()) == sorted(_live())\n"
+    ),
+    "fixture that reads": (
+        "@pytest.fixture\n"
+        "def live():\n"
+        "    return yaml.safe_load(CFG.read_text())\n"
+        "\n"
+        "def test_examples_cover_the_config(live):\n"
+        "    assert set(EXAMPLES) == set(live)\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("src", _HOISTED_GUARDS.values(), ids=list(_HOISTED_GUARDS))
+def test_a_hoisted_read_still_reads_as_a_guard(src: str) -> None:
+    assert [name for _, name in mod.violations(src)] == [
+        "test_examples_cover_the_config"
+    ]
+
+
+def test_a_hoisted_guard_clears_with_the_marker() -> None:
+    """Non-vacuity for the three cases above: the same sources pass once the
+    judgement is stated, so they are flagged for their shape and nothing else."""
+    for src in _HOISTED_GUARDS.values():
+        marked = src.replace(
+            "def test_examples_cover_the_config",
+            '@pytest.mark.drift_guard("the vendor owns detectors.json")\n'
+            "def test_examples_cover_the_config",
+        )
+        assert mod.violations(marked) == []
+
+
+def test_a_transforming_helper_does_not_carry_the_read() -> None:
+    """A module-level helper that reads and then TRANSFORMS is not an accessor.
+    Its return value is the transformation's output, which nothing can tell apart
+    from the code under test — so `route` here is opaque and the status-tuple
+    comparison below is an ordinary unit assertion, not two copies."""
+    src = (
+        "def _route(text):\n"
+        "    return routing.routing(yaml.load(text), text)\n"
+        "\n"
+        "def test_marker_inside_a_step_is_not_a_classification():\n"
+        "    route = _route(TEXT)\n"
+        "    assert (route.opted_out, route.marker_error) == (False, None)\n"
+    )
+    assert mod.violations(src) == []
+
+
+def test_a_read_disconnected_from_the_equality_is_not_a_guard() -> None:
+    """The trigger now follows the DATA, so a read that feeds neither side of the
+    comparison no longer counts. Co-location was only ever standing in for this."""
+    src = (
+        "def test_x():\n"
+        "    data = json.load(open('x.json'))\n"
+        "    run(data)\n"
+        "    assert sorted(EXAMPLES.keys()) == sorted(other_thing())\n"
+    )
+    assert mod.violations(src) == []
+
+
+# ── a guard fanned out over parametrize is still one guard ────────────────────
+# The second evasion: split the collection equality into per-case equalities. The
+# hand-kept collection then lives in the decorator, so the body compares one item
+# against one item and the collection-shape test sees nothing.
+
+_FANNED_OUT = (
+    '_LIVE = json.loads(Path("detectors.json").read_text())\n'
+    "\n"
+    '@pytest.mark.parametrize("name, opts", sorted(EXPECTED_DETECTORS.items()))\n'
+    "def test_detector_matches_config(name, opts):\n"
+    "    assert _LIVE[name] == opts\n"
+)
+
+
+def test_a_fanned_out_guard_is_flagged() -> None:
+    assert mod.violations(_FANNED_OUT) == [(4, "test_detector_matches_config")]
+
+
+def test_a_fanned_out_guard_reads_list_form_argnames() -> None:
+    """`parametrize` takes its argnames as a comma-separated string OR as a list
+    of strings. A guard must not clear by choosing the second spelling."""
+    src = _FANNED_OUT.replace('"name, opts"', '["name", "opts"]')
+    assert mod.violations(src) == [(4, "test_detector_matches_config")]
+
+
+@pytest.mark.parametrize(
+    "clearing",
+    [
+        '@pytest.mark.drift_guard("the vendor owns detectors.json")\n',
+        None,
+    ],
+    ids=["marker", "optout"],
+)
+def test_a_fanned_out_guard_clears_like_any_structural_hit(
+    clearing: str | None,
+) -> None:
+    if clearing:
+        cleared = _FANNED_OUT.replace(
+            "def test_detector", clearing + "def test_detector"
+        )
+    else:
+        cleared = _FANNED_OUT.replace(
+            "    assert _LIVE",
+            "    # not-a-drift-guard: EXPECTED_DETECTORS is this code's own output\n"
+            "    assert _LIVE",
+        )
+    assert mod.violations(cleared) == []
+
+
+_FAN_OUT_NON_GUARDS = {
+    # The repo's dominant idiom — 235 tests. The compared value comes from a call
+    # to the code under test, so provenance ends there and nothing fires.
+    "table-driven unit test": (
+        '@pytest.mark.parametrize("src, expected", [("a", 1), ("b", 2)])\n'
+        "def test_compute(src, expected):\n"
+        "    assert compute(src) == expected\n"
+    ),
+    # The SANCTIONED single-source pattern: fan out over the LIVE side and check
+    # the code handles each entry. The value list is not a hand-kept copy.
+    "fan-out over the live side": (
+        '_LIVE = json.loads(Path("x.json").read_text())\n'
+        "\n"
+        '@pytest.mark.parametrize("entry", sorted(_LIVE))\n'
+        "def test_code_handles_every_entry(entry):\n"
+        "    assert handles(entry) == True\n"
+    ),
+    # Reading back a file the test just ran the code against is an observation of
+    # OUTPUT, not a second copy of a source.
+    "reads back its own output": (
+        '@pytest.mark.parametrize("body, expected", [("a", "A")])\n'
+        "def test_script_writes(tmp_path, body, expected):\n"
+        "    run(tmp_path, body)\n"
+        '    assert (tmp_path / "out.txt").read_text() == expected\n'
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "src", _FAN_OUT_NON_GUARDS.values(), ids=list(_FAN_OUT_NON_GUARDS)
+)
+def test_fan_out_trigger_ignores_non_guards(src: str) -> None:
+    assert mod.violations(src) == []
+
+
+def test_an_extraction_from_the_source_is_still_the_source() -> None:
+    """The shape of this repo's own marked guard in `test_readme_rev.py`: read a
+    doc, pull the interesting rows out with a regex, compare them to a literal.
+    `findall` selects a subset of the file's content — it computes no new fact —
+    so what the assert compares is still the file. Measured, not guessed: with
+    extraction ending provenance, stripping that guard's marker left it
+    undetected, which is a recall loss the unit cases could not show.
+    """
+    src = (
+        "def test_readme_rev_pins_name_the_released_tag():\n"
+        '    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")\n'
+        "    revs = _REV.findall(readme)\n"
+        "    assert set(revs) == {expected}\n"
+    )
+    assert mod.violations(src) == [(1, "test_readme_rev_pins_name_the_released_tag")]
+
+
+def test_a_fixture_that_reads_only_to_write_supplies_no_source() -> None:
+    """The sandbox-building idiom: read a file, write it somewhere else, hand back
+    the directory. The returned value is not the file that was read, so a
+    whole-body read scan would call `sandbox` source-derived on the strength of a
+    read that never reaches it — the co-location mistake, one scope out."""
+    src = (
+        "@pytest.fixture\n"
+        "def sandbox(tmp_path):\n"
+        '    (tmp_path / "s.sh").write_bytes(SESSION_SETUP.read_bytes())\n'
+        "    return tmp_path\n"
+        "\n"
+        '@pytest.mark.parametrize("name, expected", EXPECTED.items())\n'
+        "def test_hook(sandbox, name, expected):\n"
+        "    assert sandbox[name] == expected\n"
+    )
+    assert mod.violations(src) == []
+
+
+def test_an_optout_on_the_case_table_clears_a_fanned_out_guard() -> None:
+    """A fanned-out guard keeps its hand-maintained collection in the decorator,
+    so the case table is where a reviewer writes the opt-out. The source span has
+    to start at the first decorator; starting it at `def` would leave the finding
+    with no way to clear."""
+    src = (
+        '_LIVE = json.loads(Path("d.json").read_text())\n'
+        "\n"
+        "# not-a-drift-guard: EXPECTED is this code's own output\n"
+        '@pytest.mark.parametrize("name, opts", EXPECTED.items())\n'
+        "def test_d(name, opts):\n"
+        "    assert _LIVE[name] == opts\n"
+    )
+    assert mod.violations(src) == []
+
+
+def test_a_comprehension_does_not_carry_the_read() -> None:
+    """~40 dogfood tests in this repo build `offenders` by comprehension over a
+    read and assert it equals `[]`, and `[]` is a maintained copy. Propagating
+    provenance through a comprehension would flag every one of them."""
+    src = (
+        '_LIVE = json.loads(Path("x.json").read_text())\n'
+        "\n"
+        "def test_tree_is_clean():\n"
+        "    offenders = [x for x in _LIVE if bad(x)]\n"
+        "    assert offenders == []\n"
+    )
+    assert mod.violations(src) == []
+
+
 @pytest.mark.parametrize(
     "source",
     [
