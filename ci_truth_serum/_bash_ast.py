@@ -138,24 +138,29 @@ def assert_parseable(script: str) -> None:
     """
     root = parse(script)
     if root.has_error:
+        line, byte_offset = _first_error_location(root)
         raise UnparseableShellError(
             f"the bash grammar could not parse this file (first unparsed "
-            f"construct near line {_first_error_line(root)}), so no lint over it "
-            "can report the file clean. See UnparseableShellError for the known "
-            "triggers and their behaviour-identical rewrites."
+            f"construct near line {line}, byte offset {byte_offset}). Fix the "
+            "syntax (see UnparseableShellError for known triggers and their "
+            "behaviour-identical rewrites), or add this file to the shell "
+            "hook's exclude: pattern in .pre-commit-config.yaml if it is not "
+            "real bash."
         )
 
 
-def _first_error_line(root: Node) -> int:
-    """1-based line of the earliest ERROR or missing node, for the refusal
-    message — the one construct a reader has to rewrite."""
-    rows = [
-        node.start_point[0] + 1
+def _first_error_location(root: Node) -> tuple[int, int]:
+    """1-based line and 0-based byte offset of the earliest ERROR or missing
+    node, for the refusal message — the one construct a reader has to rewrite."""
+    candidates = [
+        (node.start_point[0] + 1, node.start_byte)
         for node in iter_nodes(root, "ERROR")
         if node.type == "ERROR"
     ]
-    missing = [node.start_point[0] + 1 for node in _walk_missing(root)]
-    return min(rows + missing, default=1)
+    candidates += [
+        (node.start_point[0] + 1, node.start_byte) for node in _walk_missing(root)
+    ]
+    return min(candidates, default=(1, 0))
 
 
 def _walk_missing(node: Node):
