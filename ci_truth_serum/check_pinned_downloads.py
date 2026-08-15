@@ -436,14 +436,16 @@ def _executes(command, target: str) -> bool:
     TARGET as an argument, `source`/`.` on TARGET, or `chmod` granting TARGET
     execute permission with a symbolic mode.
 
-    Every token equal to TARGET is dropped before the `_SHELLS` check reads the
-    command's shape, so a downloaded file that happens to be named `bash` can
-    never look like it executes itself."""
+    The `_SHELLS` check only looks at tokens BEFORE TARGET's first occurrence —
+    an interpreter runs a script named after it, never after — so `sudo bash t`
+    still matches (the shell precedes the target past position 0) while
+    `cp t /usr/local/bin/bash` does not (the shell name is the copy's
+    destination, not an invoked interpreter)."""
     tokens = _tokens(command)
     if not tokens:
         return False
-    other_tokens = [token for token in tokens if token != target]
-    if _names(other_tokens) & _SHELLS:
+    target_at = tokens.index(target) if target in tokens else len(tokens)
+    if _names(tokens[:target_at]) & _SHELLS:
         return True
     name = tokens[0].rsplit("/", 1)[-1]
     if name in _SOURCE_NAMES:
@@ -464,18 +466,50 @@ def _execution_of(root, after_byte: int, target: str) -> int | None:
     the search — as does any other command that merely names the file
     (`cp TARGET dest`), since a reference the grammar cannot read as an
     execution still counts as the proof the caller was looking for."""
-    for node in iter_nodes(root, *ARGUMENT_TYPES):
-        if node.start_byte < after_byte:
-            continue
-        if unquote(node_text(node)) != target:
-            continue
-        command = node
-        while command is not None and command.type != "command":
-            command = command.parent
-        if command is not None and _executes(command, target):
-            return command.start_point[0] + 1
-        return None
-    return None
+    found, line = _first_reference(root, after_byte, target)
+    return line if found else None
+
+
+def _first_reference(root, after_byte: int, target: str) -> tuple[bool, int | None]:
+    """(found, line) for the first reference to TARGET in ROOT at or after
+    AFTER_BYTE, in document order.
+
+    `found` is False when nothing in ROOT names TARGET at all — the signal an
+    outer, still-in-progress search needs to keep looking past ROOT rather than
+    conclude TARGET was never referenced. `found` is True with LINE set when the
+    reference executes TARGET, and True with LINE unset when it merely names
+    TARGET (a guard, or an unrelated command); either way the search stops,
+    since only the FIRST reference decides the caller's question.
+
+    A reference hidden inside a heredoc body or a `bash -c`/`eval`/`ssh` string
+    is invisible to a plain node walk — that text is unparsed until something
+    executes it — so a `command` wrapping one of those bodies is re-parsed in
+    place, the same boundary `_findings` already crosses for the download
+    itself."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "command":
+            args = command_arguments(node)
+            tokens = [unquote(node_text(child)) for child in args]
+            for script_node, script in _executed_scripts(node, tokens, args):
+                if script_node.start_byte < after_byte:
+                    continue
+                nested_found, nested_line = _first_reference(parse(script), 0, target)
+                if nested_found:
+                    offset = script_node.start_point[0]
+                    line = offset + nested_line if nested_line is not None else None
+                    return True, line
+        if node.type in ARGUMENT_TYPES and node.start_byte >= after_byte:
+            if unquote(node_text(node)) == target:
+                command = node
+                while command is not None and command.type != "command":
+                    command = command.parent
+                if command is not None and _executes(command, target):
+                    return True, command.start_point[0] + 1
+                return True, None
+        stack.extend(reversed(node.children))
+    return False, None
 
 
 @dataclass(frozen=True)

@@ -421,11 +421,26 @@ def test_two_downloads_on_one_line_keep_the_first_ones_target() -> None:
 
 
 def test_a_file_named_like_a_shell_cannot_execute_itself() -> None:
-    # The downloaded file is literally named `bash`. Every token equal to the
-    # target is dropped before the `_SHELLS` match, so `ls bash` (a real
-    # reference, not an executor) closes the check rather than misreading the
-    # target's own name as an interpreter invocation.
+    # The downloaded file is literally named `bash`. The `_SHELLS` match only
+    # looks at tokens before the target's first occurrence, so `ls bash` (a
+    # real reference, not an executor) closes the check rather than misreading
+    # the target's own name as an interpreter invocation.
     text = 'curl "$u" -o bash https://x  # pin-exempt: r\nls bash\n'
+    assert _flags(text) == []
+
+
+def test_a_shell_after_a_wrapper_still_executes_the_target() -> None:
+    # The shell need not be the command's first word -- `sudo bash t` still
+    # counts, since `bash` precedes the target.
+    text = 'curl "$u" -o t https://x  # pin-exempt: r\nsudo bash t\n'
+    assert mod.violations(text) == [(1, _empty_download_msg("t", 2))]
+
+
+def test_a_shell_named_destination_after_the_target_is_not_an_executor() -> None:
+    # `cp t /usr/local/bin/bash` installs a shell binary named after the
+    # target; `bash` sits AFTER `t`, so it is a destination, not an invoked
+    # interpreter, and must not be misread as `bash t`.
+    text = 'curl "$u" -o t https://x  # pin-exempt: r\ncp t /usr/local/bin/bash\n'
     assert _flags(text) == []
 
 
@@ -452,6 +467,28 @@ def test_download_run_reference_inside_a_heredoc_body_is_data() -> None:
         'curl "$u" -o t https://x  # pin-exempt: r\n'
         "cat <<'EOF' > doc.txt\nbash t\nEOF\n"
     )
+    assert _flags(text) == []
+
+
+def test_run_reference_inside_a_bash_c_string_is_still_found() -> None:
+    # `bash -c "bash t"` runs `t` from inside a quoted script, not a plain
+    # argument -- the search must re-parse the string, the same boundary
+    # `_findings` already crosses for the download itself.
+    text = 'curl "$u" -o t https://x  # pin-exempt: r\nbash -c "bash t"\n'
+    assert mod.violations(text) == [(1, _empty_download_msg("t", 2))]
+
+
+def test_run_reference_inside_an_executed_heredoc_is_still_found() -> None:
+    # Same crossing, for a heredoc fed to an interpreter rather than a quoted
+    # string -- the run is two lines below the heredoc that carries it.
+    text = "curl \"$u\" -o t https://x  # pin-exempt: r\nbash <<'EOF2'\nbash t\nEOF2\n"
+    assert mod.violations(text) == [(1, _empty_download_msg("t", 3))]
+
+
+def test_guard_inside_a_bash_c_string_still_closes_the_check() -> None:
+    # The first reference to `t` still wins even when it is nested: the guard
+    # inside the quoted script closes the check before its own `bash t` runs.
+    text = 'curl "$u" -o t https://x  # pin-exempt: r\nbash -c "[[ -s t ]] && bash t"\n'
     assert _flags(text) == []
 
 
