@@ -10,6 +10,7 @@ These cases pin the two halves: `parse` stays permissive for the callers that
 legitimately hand it non-bash, and the whole-file path refuses.
 """
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -56,6 +57,29 @@ def test_assert_parseable_refuses_and_names_the_line() -> None:
     # The line number is what makes the message actionable — it names the one
     # construct to rewrite, not just the file.
     assert "line 2" in str(excinfo.value)
+
+
+def test_assert_parseable_reports_a_byte_offset_true_to_the_original_file() -> None:
+    """The reported offset must index SCRIPT's own bytes, not the astral-folded
+    copy the grammar actually parses. A supplementary-plane character (an emoji)
+    is 4 UTF-8 bytes in SCRIPT and only 3 in the U+FFFD stand-in the grammar
+    sees, so reading `node.start_byte` straight off the parsed tree would
+    undercount every offset that follows such a character by one byte each."""
+    baseline_comment = "# plain\n"
+    astral_comment = "# plain\U0001f600\n"
+
+    def offset_of(comment_line: str) -> int:
+        script = f"#!/bin/bash\n{comment_line}{COLLAPSE_TRIGGER}{VIOLATION}"
+        with pytest.raises(bash_ast.UnparseableShellError) as excinfo:
+            bash_ast.assert_parseable(script)
+        match = re.search(r"byte offset (\d+)", str(excinfo.value))
+        assert match is not None
+        return int(match.group(1))
+
+    delta = offset_of(astral_comment) - offset_of(baseline_comment)
+    assert delta == len(astral_comment.encode("utf-8")) - len(
+        baseline_comment.encode("utf-8")
+    )
 
 
 def test_the_driver_reports_an_unparseable_shell_file(

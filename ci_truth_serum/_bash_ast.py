@@ -138,20 +138,28 @@ def assert_parseable(script: str) -> None:
     """
     root = parse(script)
     if root.has_error:
-        line, byte_offset = _first_error_location(root)
+        line, byte_offset = _first_error_location(root, script)
         raise UnparseableShellError(
             f"the bash grammar could not parse this file (first unparsed "
             f"construct near line {line}, byte offset {byte_offset}). Fix the "
             "syntax (see UnparseableShellError for known triggers and their "
             "behaviour-identical rewrites), or add this file to the shell "
-            "hook's exclude: pattern in .pre-commit-config.yaml if it is not "
+            "checks' exclude: pattern in .pre-commit-config.yaml if it is not "
             "real bash."
         )
 
 
-def _first_error_location(root: Node) -> tuple[int, int]:
-    """1-based line and 0-based byte offset of the earliest ERROR or missing
-    node, for the refusal message — the one construct a reader has to rewrite."""
+def _first_error_location(root: Node, script: str) -> tuple[int, int]:
+    """1-based line and 0-based byte offset, both in the ORIGINAL SCRIPT, of the
+    earliest ERROR or missing node — the one construct a reader has to rewrite.
+
+    `root` was parsed from `_neutralize_supplementary(script)`, so a node's own
+    `start_byte` indexes the astral-folded string's UTF-8 bytes, not SCRIPT's: a
+    folded char is 3 bytes (U+FFFD) where the original was 4, so the two byte
+    streams diverge after the first supplementary-plane char. `_neutralize_
+    supplementary` is one-to-one on CHARACTERS, so a byte offset is mapped to a
+    character index in the folded string first, then re-encoded against SCRIPT
+    up to that same character index to land back on SCRIPT's own bytes."""
     candidates = [
         (node.start_point[0] + 1, node.start_byte)
         for node in iter_nodes(root, "ERROR")
@@ -160,7 +168,20 @@ def _first_error_location(root: Node) -> tuple[int, int]:
     candidates += [
         (node.start_point[0] + 1, node.start_byte) for node in _walk_missing(root)
     ]
-    return min(candidates, default=(1, 0))
+    line, safe_byte_offset = min(candidates, default=(1, 0))
+    safe = _neutralize_supplementary(script)
+    char_index = _char_index_at_byte(safe, safe_byte_offset)
+    return line, len(script[:char_index].encode("utf-8"))
+
+
+def _char_index_at_byte(safe: str, byte_offset: int) -> int:
+    """The character index in SAFE whose UTF-8 encoding starts at BYTE_OFFSET."""
+    total = 0
+    for index, char in enumerate(safe):
+        if total >= byte_offset:
+            return index
+        total += len(char.encode("utf-8"))
+    return len(safe)
 
 
 def _walk_missing(node: Node):
