@@ -72,9 +72,9 @@ def test_assert_parseable_reports_a_byte_offset_true_to_the_original_file() -> N
         script = f"#!/bin/bash\n{comment_line}{COLLAPSE_TRIGGER}{VIOLATION}"
         with pytest.raises(bash_ast.UnparseableShellError) as excinfo:
             bash_ast.assert_parseable(script)
-        match = re.search(r"byte offset (\d+)", str(excinfo.value))
+        match = re.search(r"byte offset (?P<offset>\d+)", str(excinfo.value))
         assert match is not None
-        return int(match.group(1))
+        return int(match.group("offset"))
 
     delta = offset_of(astral_comment) - offset_of(baseline_comment)
     assert delta == len(astral_comment.encode("utf-8")) - len(
