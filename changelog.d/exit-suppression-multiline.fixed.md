@@ -1,1 +1,0 @@
-- `check-exit-suppression` no longer false-positives on a `|| true` inside a `$( … )` / `<( … )` value capture that spans multiple lines (the multi-line form of the already-allowed single-line `var=$(cmd || true)`). It also no longer miscounts an escaped backtick (`\``) when deciding whether a suppressor sits inside a capture.

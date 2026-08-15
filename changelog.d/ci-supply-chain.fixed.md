@@ -1,1 +1,0 @@
-- The gitleaks download is now checksum-verified against a committed SHA-256 before execution, and post-merge tagging detects a version advance against the latest release tag so releases are no longer silently skipped under rebase-and-merge.
