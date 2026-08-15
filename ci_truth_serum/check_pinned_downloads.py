@@ -48,11 +48,28 @@ stdout sink piped into a *shell* (``curl -O- … | sh``) still executes, so it f
 A download that genuinely cannot be pinned opts out with a same-line or
 preceding-line ``# pin-exempt: <reason>``.
 
+A ``# pin-exempt``'d download still owes one proof. The saved file must not be
+empty when something runs it. An empty file is a real outcome, not a
+hypothetical one. A 200 response can carry an empty body. A proxy can answer
+with nothing. A full disk can truncate the write. ``curl -f`` reports success
+in each of these cases. ``bash`` on an empty file runs no command and exits 0.
+The install then reports success and installs nothing. A checksum catches
+this for free, because an empty file fails its own digest. This second check
+therefore fires ONLY where ``pin-exempt`` already fired.
+
+It fires when the file's first later reference runs it — as ``bash``/``sh``/…,
+as ``source``/``.``, or as ``chmod +x``. No earlier reference may sit between
+the download and that run. An earlier ``[[ -s FILE ]]`` or ``test -s FILE``
+closes the check: its ``test_command`` node carries no enclosing ``command``
+node, so the grammar reads it as no executor. Every other arm here uses this
+same structural read. Opt out with ``# empty-download-ok: <reason>``.
+
 Invoked by pre-commit with the staged shell + Dockerfile paths as arguments.
 """
 
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -71,11 +88,24 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
 )
 
 OPT_OUT = "pin-exempt"
+EMPTY_OPT_OUT = "empty-download-ok"
 
 MESSAGE = (
     "downloaded artifact is not checksum/signature verified — add a "
     f"sha256sum/cosign/gpg check after it, or annotate `# {OPT_OUT}: <reason>`"
 )
+
+
+def _empty_download_message(target: str, exec_line: int) -> str:
+    """The message for a `pin-exempt`'d download whose saved file TARGET runs,
+    with no proof of content, at 1-based line EXEC_LINE."""
+    return (
+        f"`{target}` runs at line {exec_line} with no check that the download "
+        f"wrote real bytes — an empty file runs as a silent success. Add "
+        f"`[[ -s {target} ]] || exit 1` before it, or annotate "
+        f"`# {EMPTY_OPT_OUT}: <reason>`"
+    )
+
 
 # How many lines after a download to scan for its verification before giving up.
 # The scan also stops at the next download, so one check can't cover two.
@@ -113,6 +143,16 @@ _NULL_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "-"})
 _SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "busybox"})
 _EVAL = "eval"
 _SSH = "ssh"
+
+# `source`/`.` run a file as shell code in the current session, the same
+# commitment `_SHELLS` names for a subprocess interpreter.
+_SOURCE_NAMES = frozenset({"source", "."})
+_CHMOD = "chmod"
+# A symbolic chmod mode that GRANTS execute (`+x`, `a+x`, `u+x`, `go+rx`, `=rwx`)
+# — never a numeric mode (`755`) or one that only REMOVES it (`-x`). Narrow on
+# purpose: a numeric mode needs the current mode bits to know if `x` is being
+# added, which the grammar alone cannot tell.
+_CHMOD_EXEC_MODE = re.compile(r"^[ugoa]*[+=][rwxXst]*[xX][rwxXst]*$")
 
 # A remote source for a Dockerfile `ADD`. `ADD` of a build-context path fetches
 # nothing; only an http(s) URL pulls bytes into the image.
@@ -182,24 +222,29 @@ def _output_target(tokens: list[str]) -> tuple[bool, str | None]:
     return False, None
 
 
-def _writes_a_file(redirect) -> bool:
-    """True when a `file_redirect` node sends stdout into a real file.
+def _write_target(redirect) -> str | None:
+    """The real file a `file_redirect` node sends stdout into, or None.
 
     An FD dup (`>&2`, whose operator is `>&`) and an FD-qualified route
     (`2>/dev/null`, which carries a `file_descriptor`) move diagnostics, not the
     artifact, so neither counts as a saved download."""
     kinds = {child.type for child in redirect.children}
     if "file_descriptor" in kinds or not kinds & _WRITE_OPERATORS:
-        return False
-    return any(
-        unquote(node_text(child)) not in _NULL_TARGETS
-        for child in redirect.children
-        if child.type in ARGUMENT_TYPES
+        return None
+    return next(
+        (
+            unquote(node_text(child))
+            for child in redirect.children
+            if child.type in ARGUMENT_TYPES
+            and unquote(node_text(child)) not in _NULL_TARGETS
+        ),
+        None,
     )
 
 
-def _redirects_to_file(command) -> bool:
-    """True when a redirection covering COMMAND writes its stdout into a real file.
+def _redirect_target(command) -> str | None:
+    """The real file a redirection covering COMMAND writes its stdout into, or
+    None.
 
     Redirections belong to the enclosing `redirected_statement`, never to the
     command's argument list — which is why a `>&2` cannot be read as an output
@@ -216,17 +261,21 @@ def _redirects_to_file(command) -> bool:
     while node.parent is not None:
         parent = node.parent
         if parent.type == "redirected_statement":
-            return any(
-                _writes_a_file(child)
-                for child in parent.children
-                if child.type == "file_redirect"
+            return next(
+                (
+                    target
+                    for child in parent.children
+                    if child.type == "file_redirect"
+                    and (target := _write_target(child)) is not None
+                ),
+                None,
             )
         if parent.type not in _REDIRECT_WRAPPERS:
-            return False
+            return None
         if parent.type == "list" and node != parent.named_children[-1]:
-            return False
+            return None
         node = parent
-    return False
+    return None
 
 
 def _stage_command(stage):
@@ -303,7 +352,7 @@ def _is_download(command, tokens: list[str]) -> bool:
         return True
     if not _names_a_downloader(tokens):
         return False
-    if _piped_into_shell(command) or _redirects_to_file(command):
+    if _piped_into_shell(command) or _redirect_target(command) is not None:
         return True
     flagged, target = _output_target(tokens)
     if flagged:
@@ -311,6 +360,20 @@ def _is_download(command, tokens: list[str]) -> bool:
     # wget (unlike curl, which defaults to stdout) writes to disk by default, so a
     # bare `wget <url>` with no output flag or redirect is still an artifact.
     return _WGET in _names(tokens)
+
+
+def _saved_file(command, tokens: list[str]) -> str | None:
+    """The literal name of the file COMMAND saved, or None when it derived the
+    name from the URL (curl's `-O`, `--remote-name`) or executed the bytes with
+    no file ever touching disk (a piped installer).
+
+    An explicit output flag wins over a shell redirect — a download can carry
+    both (`curl -o a url > b` writes `a`, ignoring the never-reached `b`), and
+    the flag is the name curl/wget itself act on."""
+    flagged, target = _output_target(tokens)
+    if flagged:
+        return target if target is not None and target not in _NULL_TARGETS else None
+    return _redirect_target(command)
 
 
 def _verifies(tokens: list[str]) -> bool:
@@ -368,14 +431,108 @@ def _executed_scripts(
     return scripts
 
 
-def _findings(root) -> tuple[list[tuple[int, int]], set[int]]:
-    """((first line, last line) of every download, lines carrying a verification)
-    under ROOT, all 1-based.
+def _executes(command, target: str) -> bool:
+    """True when COMMAND runs TARGET as code: an interpreter in `_SHELLS` passed
+    TARGET as an argument, `source`/`.` on TARGET, or `chmod` granting TARGET
+    execute permission with a symbolic mode.
+
+    The `_SHELLS` check only looks at tokens BEFORE TARGET's first occurrence —
+    an interpreter runs a script named after it, never after — so `sudo bash t`
+    still matches (the shell precedes the target past position 0) while
+    `cp t /usr/local/bin/bash` does not (the shell name is the copy's
+    destination, not an invoked interpreter)."""
+    tokens = _tokens(command)
+    if not tokens:
+        return False
+    target_at = tokens.index(target) if target in tokens else len(tokens)
+    if _names(tokens[:target_at]) & _SHELLS:
+        return True
+    name = tokens[0].rsplit("/", 1)[-1]
+    if name in _SOURCE_NAMES:
+        return True
+    if name == _CHMOD:
+        return any(_CHMOD_EXEC_MODE.match(token) for token in tokens[1:])
+    return False
+
+
+def _execution_of(root, after_byte: int, target: str) -> int | None:
+    """1-based line of the first reference to TARGET at or after AFTER_BYTE that
+    runs it as code, or None.
+
+    Only the FIRST reference decides this. Climbing from it to the nearest
+    enclosing `command` node answers whether that reference is a guard or an
+    execution: a `[[ -s TARGET ]]`/`[ -s TARGET ]` test is a `test_command`,
+    which carries no enclosing `command` for the grammar to judge, so it closes
+    the search — as does any other command that merely names the file
+    (`cp TARGET dest`), since a reference the grammar cannot read as an
+    execution still counts as the proof the caller was looking for."""
+    found, line = _first_reference(root, after_byte, target)
+    return line if found else None
+
+
+def _first_reference(root, after_byte: int, target: str) -> tuple[bool, int | None]:
+    """(found, line) for the first reference to TARGET in ROOT at or after
+    AFTER_BYTE, in document order.
+
+    `found` is False when nothing in ROOT names TARGET at all — the signal an
+    outer, still-in-progress search needs to keep looking past ROOT rather than
+    conclude TARGET was never referenced. `found` is True with LINE set when the
+    reference executes TARGET, and True with LINE unset when it merely names
+    TARGET (a guard, or an unrelated command); either way the search stops,
+    since only the FIRST reference decides the caller's question.
+
+    A reference hidden inside a heredoc body or a `bash -c`/`eval`/`ssh` string
+    is invisible to a plain node walk — that text is unparsed until something
+    executes it — so a `command` wrapping one of those bodies is re-parsed in
+    place, the same boundary `_findings` already crosses for the download
+    itself."""
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "command":
+            args = command_arguments(node)
+            tokens = [unquote(node_text(child)) for child in args]
+            for script_node, script in _executed_scripts(node, tokens, args):
+                if script_node.start_byte < after_byte:
+                    continue
+                nested_found, nested_line = _first_reference(parse(script), 0, target)
+                if nested_found:
+                    offset = script_node.start_point[0]
+                    line = offset + nested_line if nested_line is not None else None
+                    return True, line
+        if node.type in ARGUMENT_TYPES and node.start_byte >= after_byte:
+            if unquote(node_text(node)) == target:
+                command = node
+                while command is not None and command.type != "command":
+                    command = command.parent
+                if command is not None and _executes(command, target):
+                    return True, command.start_point[0] + 1
+                return True, None
+        stack.extend(reversed(node.children))
+    return False, None
+
+
+@dataclass(frozen=True)
+class _Download:
+    """One flagged fetch: the 1-based (first, last) line of the command, the
+    file it saved (None when the fetch derived no file — a piped installer, or
+    `curl -O`, whose name comes from the URL), and the 1-based line where that
+    file is first run (None when nothing later runs it)."""
+
+    first_line: int
+    last_line: int
+    target: str | None
+    exec_line: int | None
+
+
+def _findings(root) -> tuple[list[_Download], set[int]]:
+    """(every download under ROOT, lines carrying a verification), all 1-based.
 
     Recurses into the bodies something executes, so a download inside
     `bash -c "…"` or a `bash <<'EOF'` heredoc is judged as the command it becomes;
-    its lines are reported relative to the enclosing script."""
-    downloads: list[tuple[int, int]] = []
+    its lines (and its execution line, if any) are reported relative to the
+    enclosing script."""
+    downloads: list[_Download] = []
     verified: set[int] = set()
     for command in iter_nodes(root, "command"):
         args = command_arguments(command)
@@ -384,50 +541,85 @@ def _findings(root) -> tuple[list[tuple[int, int]], set[int]]:
             offset = node.start_point[0]
             inner_downloads, inner_verified = _findings(parse(script))
             downloads += [
-                (offset + first, offset + last) for first, last in inner_downloads
+                _Download(
+                    offset + d.first_line,
+                    offset + d.last_line,
+                    d.target,
+                    offset + d.exec_line if d.exec_line is not None else None,
+                )
+                for d in inner_downloads
             ]
             verified |= {offset + line for line in inner_verified}
         if _verifies(tokens):
             verified.add(command.start_point[0] + 1)
         if _is_download(command, tokens):
-            downloads.append((command.start_point[0] + 1, command.end_point[0] + 1))
+            target = _saved_file(command, tokens)
+            exec_line = (
+                _execution_of(root, command.end_byte, target)
+                if target is not None
+                else None
+            )
+            downloads.append(
+                _Download(
+                    command.start_point[0] + 1,
+                    command.end_point[0] + 1,
+                    target,
+                    exec_line,
+                )
+            )
     return downloads, verified
 
 
-def violations(text: str) -> list[int]:
-    """1-based line numbers of artifact downloads with no nearby verification.
+def violations(text: str) -> list[tuple[int, str]]:
+    """(1-based line, message) for every artifact download this check flags —
+    either unverified, or (pin-exempt'd) run with no proof it saved real bytes.
 
     Detection walks the bash grammar, so a `\\`-continued download is ONE node
     (reported at its first line), a download written in a comment is a `comment`
     node rather than a command, and one written inside a message string or a
     heredoc body is text the grammar yields no command from. A verification is
     likewise a real command, so a ``# TODO: verify with sha256sum`` cannot satisfy
-    the gate. The raw physical lines are kept for the ``# pin-exempt:`` opt-out,
-    which by definition lives in a comment (accepted on any physical line of the
-    flagged command, or the line directly above it)."""
+    the gate. The raw physical lines are kept for the ``# pin-exempt:``/
+    ``# empty-download-ok:`` opt-outs, which by definition live in a comment
+    (accepted on any physical line of the flagged command, or the line directly
+    above it)."""
     raw = text.splitlines()
     downloads, verified = _findings(parse(text))
     # One finding per line, carrying the WIDEST span that starts there: two
     # downloads can begin on the same row (`curl -o a x; curl -o b y`, or a
     # `bash -c` string whose fetch sits on the line that opened it), and a line
     # reported twice would be a duplicate finding — plus the wider span gives the
-    # `pin-exempt` lookup every physical line the reader would put it on.
-    widest: dict[int, int] = {}
-    for start, end in downloads:
-        widest[start] = max(widest.get(start, end), end)
+    # `pin-exempt` lookup every physical line the reader would put it on. Ties
+    # keep the first download seen (document order), same as the plain `max`
+    # this replaced.
+    widest: dict[int, _Download] = {}
+    for download in downloads:
+        current = widest.get(download.first_line)
+        if current is None or download.last_line > current.last_line:
+            widest[download.first_line] = download
     starts = sorted(widest)
-    hits = []
+    hits: list[tuple[int, str]] = []
     for index, start in enumerate(starts):
-        if annotated_near(raw, start, OPT_OUT, span_end=widest[start]):
-            continue
+        download = widest[start]
         # Each download must carry its OWN check: the scan reaches _WINDOW lines
         # past it and stops before the next download, so one checksum can't cover
         # two fetches.
         limit = start + _WINDOW
         if index + 1 < len(starts):
             limit = min(limit, starts[index + 1] - 1)
-        if not any(start <= line <= limit for line in verified):
-            hits.append(start)
+        if any(start <= line <= limit for line in verified):
+            continue  # a real checksum/signature makes both arms moot
+        if not annotated_near(raw, start, OPT_OUT, span_end=download.last_line):
+            hits.append((start, MESSAGE))
+            continue
+        # The annotation may sit anywhere between the download and the run it
+        # excuses — the same range a real `[[ -s FILE ]]` guard would occupy.
+        if download.exec_line is not None and not annotated_near(
+            raw, start, EMPTY_OPT_OUT, span_end=download.exec_line
+        ):
+            hits.append(
+                (start, _empty_download_message(download.target, download.exec_line))
+            )
     return hits
 
 
@@ -445,8 +637,8 @@ def main(argv: list[str]) -> int:
             print(f"{arg}: {err}", file=sys.stderr)
             status = 1
             continue
-        for lineno in hits:
-            print(f"{arg}:{lineno}: {MESSAGE}", file=sys.stderr)
+        for lineno, message in hits:
+            print(f"{arg}:{lineno}: {message}", file=sys.stderr)
             status = 1
     return status
 
