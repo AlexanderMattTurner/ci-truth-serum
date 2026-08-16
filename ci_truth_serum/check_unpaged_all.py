@@ -173,7 +173,7 @@ def _py_reads_envelope(node: ast.AST) -> bool:
     return False
 
 
-def _py_words(tree: ast.Module) -> tuple[set[str], bool]:
+def _py_words(tree: ast.Module) -> tuple[set[str], set[str], bool]:
     """Every name, attribute, keyword and string literal in TREE, plus whether
     TREE holds a `while` loop, as (code words, docstring words, loop).
 
