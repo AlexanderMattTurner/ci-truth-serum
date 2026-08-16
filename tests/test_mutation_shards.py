@@ -53,6 +53,27 @@ def test_excluded_modules_get_no_shard() -> None:
         assert excluded not in modules, f"{excluded} is excluded but got a shard"
 
 
+# ── the reverse of the SSOT contract: an exclusion must be TRUE ────────────
+#
+# `test_every_shard_oracle_exists_and_is_id_sorted` below proves every mutated
+# module has an oracle. It says nothing about the modules cosmic-ray.toml skips.
+# A module can sit in `excluded-modules` with a comment claiming "no offline
+# test oracle" while a real `tests/cts/test_<module>.py` suite kills mutants in
+# it — that was true of `run_tier` and `sync_required_checks` until both moved
+# into the mutated set. This test closes that gap: an exclusion is legitimate
+# only when the module truly has no test file, so the mutation gate can never
+# again skip a module whose own suite would have scored it.
+def test_excluded_modules_lack_offline_oracle() -> None:
+    for excluded in _COSMIC["excluded-modules"]:
+        stem = Path(excluded).stem
+        oracle = REPO_ROOT / mod._test_file(stem)
+        assert not oracle.is_file(), (
+            f"{excluded} is excluded from mutation, but its oracle {oracle} "
+            "exists and can kill mutants. Mutate the module instead of "
+            "excluding it, or delete the stale oracle file."
+        )
+
+
 def test_every_shard_oracle_exists_and_is_id_sorted() -> None:
     shards = mod.expand_shards(REPO_ROOT)
     assert shards == sorted(shards, key=lambda s: s["id"])
