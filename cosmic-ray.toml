@@ -7,9 +7,13 @@
 # rewrites the file on disk and reruns the suite, so it is agnostic to how tests
 # import the code under test.
 #
-# Scope: the whole `ci_truth_serum/` package is mutated. The orchestrators/IO-only modules
-# (run_tier, sync_required_checks, the __main__/network plumbing) have no offline
-# test oracle, so their mutants survive by design and are excluded below.
+# Scope: the whole `ci_truth_serum/` package is mutated. `__init__.py` holds only
+# a docstring and has no test file, so it is the sole exclusion below. Every
+# other module — including the argv dispatcher `run_tier` and the GitHub REST
+# apply script `sync_required_checks` — has a fully offline test suite that
+# kills real mutants, so both are mutated too. See `tests/test_mutation_shards.py`
+# for the check that a future exclusion cannot claim "no offline oracle" when a
+# module's own suite kills mutants.
 #
 # This file is the SSOT (mutated package, exclusions, timeout, test-command,
 # operator filters). CI does NOT run it whole: .github/scripts/mutation_shards.py
@@ -25,17 +29,13 @@
 
 [cosmic-ray]
 module-path = "ci_truth_serum"
-# Skip the two modules with no offline test oracle, so their always-surviving
-# mutants don't drown the real survivors in the report:
-#   - sync_required_checks: GitHub REST plumbing (network),
-#   - run_tier: argv dispatcher to the other hooks (each mutated on its own).
+# Skip only the one module with no offline test oracle at all: `__init__.py`
+# has no `tests/cts/test_init__.py`, because it holds a docstring and no logic.
 # Everything else IS mutated, including check_pinned_base_images: its offline
 # violations()/fix_text()/_split_ref paths are pinned by the example + fuzz
 # suites, so they belong in the score (only its live registry resolver lacks an
 # offline oracle, and those few survivors are expected).
 excluded-modules = [
-    "ci_truth_serum/sync_required_checks.py",
-    "ci_truth_serum/run_tier.py",
     "ci_truth_serum/__init__.py",
 ]
 timeout = 60.0
