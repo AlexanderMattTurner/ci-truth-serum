@@ -197,6 +197,39 @@ def test_every_required_symbol_is_a_real_module_member() -> None:
         assert hasattr(mod, symbol), f"{stem}.{symbol} is not a real module member"
 
 
+def test_non_parser_hooks_expose_no_fuzzable_parser_symbol() -> None:
+    # The positive half of the exemption. REQUIRED (above) is disk-derived and
+    # reddens for a new parser, but nothing proved _NON_PARSER_HOOKS members truly
+    # lack a parser -- a real `violations()` mis-filed here would turn the gate
+    # green with no fuzz suite ever written. Reuse FUZZ_REQUIRED's own symbol set
+    # so the two halves cannot drift apart.
+    import importlib.util
+
+    parser_symbols = set(FUZZ_REQUIRED.values())
+    for stem in sorted(_NON_PARSER_HOOKS):
+        src = HOOKS_DIR / f"{stem}.py"
+        assert src.exists(), f"{stem}: no such hook"
+        spec = importlib.util.spec_from_file_location(f"gate_exempt_{stem}", src)
+        assert spec and spec.loader
+        loaded = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(loaded)
+        # Only symbols DEFINED in this module count -- an imported helper (e.g.
+        # sync_required_checks importing _linecheck.required_check_contexts) keeps
+        # its origin module's __module__ and is fuzzed under that module's own
+        # entry, not this one.
+        own_symbols = {
+            name
+            for name, value in vars(loaded).items()
+            if getattr(value, "__module__", None) == loaded.__name__
+        }
+        exposed = parser_symbols & own_symbols
+        assert not exposed, (
+            f"{stem} sits in _NON_PARSER_HOOKS, but exposes {sorted(exposed)} -- "
+            "a real parser mis-filed as an orchestrator. Move it to FUZZ_REQUIRED "
+            "and give it a fuzz suite."
+        )
+
+
 def test_every_input_parsing_hook_has_a_fuzz_suite() -> None:
     for stem, symbol in FUZZ_REQUIRED.items():
         # The module must be loaded by a fuzz suite (its name appears) AND its
