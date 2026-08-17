@@ -107,7 +107,6 @@ fi
 # (`.[][]`) to walk every review across every page, then `last` picks the most
 # recent. A single `.[]` iterates PAGES, so `.user.login`/`.state` index a page
 # ARRAY — jq errors, the `2>/dev/null` swallows it to empty, and the recheck
-<<<<<<< local
 # silently never fires (the bug that stranded every held PR).
 #
 # The filter runs as a SEPARATE jq over the captured document, never as gh's
@@ -116,23 +115,8 @@ fi
 # would turn every run into the same silent no-re-review. A transient API
 # failure yields empty -> no re-review, which is the intended degradation.
 reviews="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp 2>/dev/null || true)" # allow-exit-suppress: a transient API failure yields empty -> no re-review, which is the intended degradation
-state="$(jq -r "[.[][] | select(.user.login == \"$REVIEWER\")] | last | .state // empty" \
+state="$(jq -r "[.[][] | ${REVIEWER_MATCH_USER}] | last | .state // empty" \
   <<<"${reviews:-[]}" 2>/dev/null || true)" # allow-exit-suppress: an empty/unparseable reviews capture yields an empty state, which the caller already treats as no reviewer hold
-||||||| base
-# silently never fires (the bug that stranded every held PR). `--slurp` keeps the
-# whole result in one document so `--jq` runs ONCE and emits a single line; bare
-# `--paginate` would run the filter per page and concatenate. A transient API
-# failure yields empty -> no re-review.
-state="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp \
-  --jq "[.[][] | select(.user.login == \"$REVIEWER\")] | last | .state // empty" 2>/dev/null || true)"
-=======
-# silently never fires (the bug that stranded every held PR). `--slurp` keeps the
-# whole result in one document so `--jq` runs ONCE and emits a single line; bare
-# `--paginate` would run the filter per page and concatenate. A transient API
-# failure yields empty -> no re-review.
-state="$(gh api "repos/$REPO/pulls/${PR:-}/reviews" --paginate --slurp \
-  --jq "[.[][] | ${REVIEWER_MATCH_USER}] | last | .state // empty" 2>/dev/null || true)"
->>>>>>> template
 if [[ "$state" == "CHANGES_REQUESTED" || "$state" == "COMMENTED" ]]; then
   emit true "outstanding $REVIEWER_LOGIN hold ($state) — re-checking on Haiku" "$HAIKU_MODEL"
 else
