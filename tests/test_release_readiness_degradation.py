@@ -124,7 +124,11 @@ def _make_repo(tmp_path: Path, fragments: dict[str, str]) -> tuple[Path, Path, P
 
     (repo / "scripts").mkdir()
     shutil.copy2(REPO_ROOT / "scripts" / "assemble-changelog.mjs", repo / "scripts")
+    shutil.copy2(REPO_ROOT / "scripts" / "pin-readme-rev.mjs", repo / "scripts")
 
+    # A README with a consumer `rev:` pin, so the release path's pin step runs
+    # for real here rather than taking its missing-file exit.
+    (repo / "README.md").write_text("# x\n\n```yaml\n- repo: x\n  rev: v1.0.0\n```\n")
     (repo / "package.json").write_text('{"name": "x", "version": "1.0.0"}\n')
     (repo / "CHANGELOG.md").write_text(CHANGELOG)
     fragdir = repo / "changelog.d"

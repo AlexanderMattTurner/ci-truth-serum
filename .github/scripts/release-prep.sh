@@ -171,6 +171,13 @@ pkg.version = process.env.NEW_VERSION;
 fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
 '
 
+# Point the README's `rev:` pins at the tag this release will cut. The pins are
+# a consumer's copy-paste config, so a bump that leaves them behind ships a
+# README whose rev does not resolve; tests/cts/test_readme_rev.py fails the
+# release for exactly that.
+PIN_README_REV="${PIN_README_REV:-scripts/pin-readme-rev.mjs}"
+node "$PIN_README_REV" "$NEW_VERSION"
+
 # Roll the CHANGELOG: assemble the pending changelog.d/ fragments into a new
 # "## [version] - date" section below the release marker and delete the consumed
 # fragments. "## Unreleased" stays an empty static header above the marker.
@@ -182,6 +189,12 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
 # `git add changelog.d` stages the fragment deletions alongside the edits.
 git add -A -- package.json CHANGELOG.md changelog.d
+# README.md is staged only when it exists: `git add` exits 128 on a pathspec
+# that matches nothing, and a downstream repo without the file must still
+# release (the pinner treats it as a no-op for the same reason).
+if [[ -f README.md ]]; then
+  git add -A -- README.md
+fi
 git commit -m "chore(release): v$NEW_VERSION"
 
 # Push the bump to the PR head branch (ordinary push, no force). Retried with

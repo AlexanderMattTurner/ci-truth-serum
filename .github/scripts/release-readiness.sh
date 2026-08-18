@@ -247,6 +247,10 @@ const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
 pkg.version = process.env.NEW_VERSION;
 fs.writeFileSync(process.argv[1], JSON.stringify(pkg, null, 2) + "\n");
 ' "$ROOT/package.json"
+  # Same pin move release-prep.sh makes for a human release PR: the README's
+  # `rev:` examples must name the tag this release cuts, or the release PR is
+  # born red on tests/cts/test_readme_rev.py.
+  node "${PIN_README_REV:-$ROOT/scripts/pin-readme-rev.mjs}" "$CANDIDATE" "$ROOT/README.md"
   node "$ASSEMBLE_CHANGELOG" --release "$CANDIDATE" --date "$release_date"
 
   git -c user.name="github-actions[bot]" \
