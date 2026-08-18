@@ -7,6 +7,9 @@ Drives ``normalize_repo_url()`` for the normalization rules and ``check_repo()``
 """
 
 import json
+import os
+import shutil
+import stat
 import subprocess
 
 import pytest
@@ -14,6 +17,17 @@ import pytest
 from tests._helpers import init_test_repo, load_hook
 
 mod = load_hook("check_provenance_repo_url.py", "check_provenance_repo_url")
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_github_repository(monkeypatch) -> None:
+    """Drop `$GITHUB_REPOSITORY` for every test here.
+
+    The check now prefers that variable over the remote, and CI exports it — so
+    without this the whole suite would compare against the repo running the
+    tests, and every origin-remote case would pass or fail for the wrong reason.
+    """
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
 
 
 # ── normalize_repo_url ───────────────────────────────────────────────────
@@ -167,6 +181,191 @@ def test_pyproject_matching_source_key_passes(tmp_path) -> None:
         '[project.urls]\n"Source Code" = "https://github.com/real/owner-repo"\n'
     )
     assert mod.check_repo(repo) == []
+
+
+# ── the two trees that hold nothing to compare ───────────────────────────
+def test_a_tree_with_no_manifest_says_it_scanned_nothing(tmp_path, capsys) -> None:
+    # Exit 0 over a tree that declares no repository URL is honest, and silence
+    # about it is not: a clean pass and a check that never ran look the same.
+    repo = _repo(tmp_path)
+    _publish_workflow(repo)
+    assert mod.check_repo(repo) == []
+    assert "scanned nothing" in capsys.readouterr().err
+
+
+def test_an_unidentified_repo_says_it_scanned_nothing(tmp_path, capsys) -> None:
+    repo = _repo(tmp_path, origin=None)
+    _pkg(repo, "git+https://github.com/anything/at-all.git")
+    assert mod.check_repo(repo) == []
+    err = capsys.readouterr().err
+    assert "scanned nothing" in err and "$GITHUB_REPOSITORY" in err
+
+
+# ── $GITHUB_REPOSITORY ───────────────────────────────────────────────────
+def test_github_repository_env_outranks_a_stale_origin(tmp_path, monkeypatch) -> None:
+    # The rename case as CI sees it: origin still names the old repo, and npm
+    # signs the provenance bundle with $GITHUB_REPOSITORY, which package.json
+    # already matches.
+    repo = _repo(tmp_path, origin="https://github.com/old/name")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "New/Name")
+    _pkg(repo, "git+https://github.com/new/name.git")
+    assert mod.check_repo(repo) == []
+
+
+def test_github_repository_env_mismatch_fails(tmp_path, monkeypatch) -> None:
+    # The origin remote agrees with package.json, and the publisher does not.
+    # npm validates against the publisher, so this release dies.
+    repo = _repo(tmp_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "other/publisher")
+    _pkg(repo, "https://github.com/real/owner-repo")
+    msgs = mod.check_repo(repo)
+    assert len(msgs) == 1
+    assert "other/publisher" in msgs[0] and "$GITHUB_REPOSITORY" in msgs[0]
+
+
+def test_github_repository_env_pins_identity_without_any_remote(
+    tmp_path, monkeypatch
+) -> None:
+    # A checkout with no origin was skipped entirely. The variable alone is
+    # enough to judge it.
+    repo = _repo(tmp_path, origin=None)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "real/owner-repo")
+    _pkg(repo, "https://github.com/upstream/owner-repo")
+    assert len(mod.check_repo(repo)) == 1
+
+
+@pytest.mark.parametrize("value", ["", "   ", "owner", "owner/repo/extra", "/repo"])
+def test_malformed_github_repository_falls_back_to_origin(
+    tmp_path, monkeypatch, value: str
+) -> None:
+    repo = _repo(tmp_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", value)
+    _pkg(repo, "https://github.com/real/owner-repo")
+    assert mod.check_repo(repo) == []
+
+
+# ── rename redirects ─────────────────────────────────────────────────────
+def _fake_git(tmp_path, monkeypatch, redirect_to: str | None, delay: float = 0):
+    """Put a `git` on PATH that answers `ls-remote` itself and delegates every
+    other subcommand to the real git.
+
+    A rename redirect cannot be staged locally — it needs an HTTP server that
+    answers 301 — so the probe's transport is the one part stubbed. Everything
+    else the check runs (`remote get-url`, the repo setup) stays real git. The
+    stub appends one line per call to `calls.txt`, which is how a test proves
+    the probe ran once, or never.
+    """
+    real_git = shutil.which("git")
+    assert real_git, "git must be on PATH"
+    calls = tmp_path / "calls.txt"
+    warning = (
+        f'printf "warning: redirecting to {redirect_to}\\n" >&2' if redirect_to else ":"
+    )
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    shim = bindir / "git"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'for arg in "$@"; do\n'
+        '  if [[ "${arg}" == "ls-remote" ]]; then\n'
+        f'    printf "%s\\n" "$*" >> "{calls}"\n'
+        f"    sleep {delay}\n"
+        f"    {warning}\n"
+        '    printf "deadbeef\\tHEAD\\n"\n'
+        "    exit 0\n"
+        "  fi\n"
+        "done\n"
+        f'exec "{real_git}" "$@"\n'
+    )
+    shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    return calls
+
+
+def test_renamed_repo_clears_the_mismatch(tmp_path, monkeypatch) -> None:
+    # The rename case in a plain clone: origin holds the old URL, package.json
+    # holds the new name, and the old URL redirects to the new one.
+    repo = _repo(tmp_path, origin="https://github.com/old/name")
+    _pkg(repo, "git+https://github.com/real/new-name.git")
+    calls = _fake_git(tmp_path, monkeypatch, "https://github.com/real/new-name.git/")
+    assert mod.check_repo(repo) == []
+    assert calls.read_text().count("\n") == 1
+
+
+def test_a_url_that_is_not_the_redirect_target_still_fails(
+    tmp_path, monkeypatch
+) -> None:
+    # Non-vacuity for the probe: following the redirect must clear the renamed
+    # name only, never every mismatch.
+    repo = _repo(tmp_path, origin="https://github.com/old/name")
+    _pkg(repo, "git+https://github.com/upstream/template.git")
+    _fake_git(tmp_path, monkeypatch, "https://github.com/real/new-name.git/")
+    msgs = mod.check_repo(repo)
+    assert len(msgs) == 1
+    assert "old/name" in msgs[0] and "real/new-name" in msgs[0]
+
+
+def test_origin_that_does_not_redirect_still_fails(tmp_path, monkeypatch) -> None:
+    repo = _repo(tmp_path)
+    _pkg(repo, "git+https://github.com/upstream/owner-repo.git")
+    _fake_git(tmp_path, monkeypatch, None)
+    assert len(mod.check_repo(repo)) == 1
+
+
+def test_two_mismatches_probe_the_remote_once(tmp_path, monkeypatch) -> None:
+    # The probe is a network call, so a repo that declares the same stale URL in
+    # both manifests must not pay for it twice.
+    repo = _repo(tmp_path, origin="https://github.com/old/name")
+    _pkg(repo, "git+https://github.com/upstream/template.git")
+    (repo / "pyproject.toml").write_text(
+        '[project.urls]\nRepository = "https://github.com/upstream/template"\n'
+    )
+    calls = _fake_git(tmp_path, monkeypatch, "https://github.com/real/new-name.git/")
+    assert len(mod.check_repo(repo)) == 2
+    assert calls.read_text().count("\n") == 1
+
+
+def test_a_pinned_identity_never_probes_the_network(tmp_path, monkeypatch) -> None:
+    # $GITHUB_REPOSITORY IS the publisher npm validates against, so a redirect
+    # cannot excuse a mismatch with it — and the probe must not run.
+    repo = _repo(tmp_path, origin="https://github.com/old/name")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "real/new-name")
+    _pkg(repo, "git+https://github.com/old/name.git")
+    calls = _fake_git(tmp_path, monkeypatch, "https://github.com/real/new-name.git/")
+    assert len(mod.check_repo(repo)) == 1
+    assert not calls.exists()
+
+
+def test_a_clean_repo_never_probes_the_network(tmp_path, monkeypatch) -> None:
+    repo = _repo(tmp_path)
+    _pkg(repo, "https://github.com/real/owner-repo")
+    calls = _fake_git(tmp_path, monkeypatch, "https://github.com/real/new-name.git/")
+    assert mod.check_repo(repo) == []
+    assert not calls.exists()
+
+
+def test_redirect_probe_reads_the_warning_from_stderr(tmp_path, monkeypatch) -> None:
+    # Drives the probe on its own: the redirect target comes back normalized.
+    repo = _repo(tmp_path, origin="https://github.com/old/name")
+    _fake_git(tmp_path, monkeypatch, "https://github.com/Real/New-Name.git/")
+    assert mod.redirected_origin_repo(repo) == "real/new-name"
+
+
+def test_redirect_probe_returns_none_without_a_warning(tmp_path, monkeypatch) -> None:
+    repo = _repo(tmp_path)
+    _fake_git(tmp_path, monkeypatch, None)
+    assert mod.redirected_origin_repo(repo) is None
+
+
+def test_a_slow_probe_leaves_the_finding_standing(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    repo = _repo(tmp_path, origin="https://github.com/old/name")
+    _pkg(repo, "git+https://github.com/real/new-name.git")
+    _fake_git(tmp_path, monkeypatch, "https://github.com/real/new-name.git/", delay=5)
+    monkeypatch.setattr(mod, "_PROBE_TIMEOUT", 0.5)
+    assert len(mod.check_repo(repo)) == 1
+    assert "did not answer" in capsys.readouterr().err
 
 
 # ── main ─────────────────────────────────────────────────────────────────

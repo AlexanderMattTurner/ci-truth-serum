@@ -104,6 +104,101 @@ def test_violations_passes_justified_drift_guard() -> None:
     assert mod.violations(src) == []
 
 
+# ── A MODULE docstring declares the whole file ───────────────────────────────
+
+_PLAIN_TEST = "def test_a():\n    assert load() == 1\n"
+
+
+def test_module_docstring_declaration_is_a_finding() -> None:
+    # The escape the per-function routes missed: the sentence moves one scope up,
+    # and the tests below it need no guard name and no visible comparison.
+    src = f'"""These tests must stay in sync with the live config."""\n{_PLAIN_TEST}'
+    assert mod.violations(src) == [(1, "<module>")]
+
+
+def test_module_docstring_without_guard_intent_is_silent() -> None:
+    # Non-vacuity control for the case above: the route reads intent phrasing,
+    # not the presence of a module docstring.
+    src = f'"""Tests for the loader."""\n{_PLAIN_TEST}'
+    assert mod.violations(src) == []
+
+
+def test_a_module_with_no_tests_is_never_declared() -> None:
+    # A lint that DETECTS drift says so in its own module docstring, and
+    # pre-commit hands this check every staged .py file.
+    src = '"""Fail unless the two pins must stay in sync."""\n\n\ndef check(a, b):\n    return a == b\n'
+    assert mod.violations(src) == []
+
+
+@pytest.mark.parametrize(
+    "pytestmark_src",
+    [
+        'pytestmark = pytest.mark.drift_guard("the upstream value is not ours")',
+        'pytestmark = [pytest.mark.drift_guard("no SSOT across the boundary")]',
+        'pytestmark = (pytest.mark.slow, pytest.mark.drift_guard("cross-language"))',
+        'pytestmark: list = [pytest.mark.drift_guard("cross-process boundary")]',
+    ],
+)
+def test_a_justified_pytestmark_clears_the_module(pytestmark_src: str) -> None:
+    src = f'"""These tests must stay in sync with the live config."""\n{pytestmark_src}\n{_PLAIN_TEST}'
+    assert mod.violations(src) == []
+
+
+@pytest.mark.parametrize(
+    "pytestmark_src",
+    [
+        "pytestmark = pytest.mark.drift_guard",  # not a call: no reason given
+        'pytestmark = pytest.mark.drift_guard("")',  # empty reason
+        "pytestmark = pytest.mark.slow",  # a different marker
+        'other = pytest.mark.drift_guard("bound to a name pytest ignores")',
+        "pytestmark: list = []",  # annotated, and carrying no marker
+    ],
+)
+def test_an_unjustified_pytestmark_does_not_clear_the_module(
+    pytestmark_src: str,
+) -> None:
+    src = f'"""These tests must stay in sync with the live config."""\n{pytestmark_src}\n{_PLAIN_TEST}'
+    assert mod.violations(src) == [(1, "<module>")]
+
+
+@pytest.mark.parametrize(
+    "second, expected",
+    [
+        # pytest collects the LAST binding, so a rebinding drops the reason with
+        # it and the file is unjustified again.
+        ("pytest.mark.unit", [(1, "<module>")]),
+        ('[pytest.mark.drift_guard("the values cross a process boundary")]', []),
+    ],
+)
+def test_only_the_last_pytestmark_binding_counts(second: str, expected: list) -> None:
+    src = (
+        '"""These tests must stay in sync with the live config."""\n'
+        'pytestmark = pytest.mark.drift_guard("the upstream value is not ours")\n'
+        f"pytestmark = {second}\n"
+        f"{_PLAIN_TEST}"
+    )
+    assert mod.violations(src) == expected
+
+
+def test_a_justified_pytestmark_clears_every_test_in_the_file() -> None:
+    # pytest applies `pytestmark` to each test, so the file-wide reason answers
+    # for the file-wide declaration AND for the guards under it.
+    src = (
+        '"""These tests must stay in sync with the live config."""\n'
+        'pytestmark = pytest.mark.drift_guard("the values cross a process boundary")\n'
+        'def test_a():\n    """drift guard: lists agree"""\n'
+    )
+    assert mod.violations(src) == []
+
+
+def test_the_module_finding_joins_the_per_test_ones_in_line_order() -> None:
+    src = (
+        '"""These tests must stay in sync with the live config."""\n'
+        'def test_a():\n    """a drift-guard on the config"""\n'
+    )
+    assert mod.violations(src) == [(1, "<module>"), (2, "test_a")]
+
+
 # ── Laundered authority: a comment calling a copy a source of truth ───────────
 
 
@@ -781,6 +876,21 @@ def test_script_rejects_unmarked_drift_guard(tmp_path: Path, src: str) -> None:
     assert proc.returncode == 1
     assert str(bad) in proc.stderr
     assert "lacks a justification" in proc.stderr
+
+
+def test_script_names_pytestmark_for_a_module_declaration(tmp_path: Path) -> None:
+    """A file-wide finding must state the file-wide remedy: telling the author to
+    decorate a test names no test to decorate."""
+    bad = tmp_path / "bad.py"
+    bad.write_text(
+        '"""These tests must stay in sync with the live config."""\n'
+        "def test_a():\n    assert load() == 1\n",
+        encoding="utf-8",
+    )
+    proc = _run_script(str(bad))
+    assert proc.returncode == 1
+    assert f"{bad}:1:" in proc.stderr
+    assert "pytestmark = pytest.mark.drift_guard" in proc.stderr
 
 
 def test_script_accepts_marked_and_non_guard(tmp_path: Path) -> None:

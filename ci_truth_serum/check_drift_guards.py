@@ -19,6 +19,13 @@ all three run.
      rewords the guard defeats it. A guard that calls itself an "SSOT-coverage
      contract" passes this route. That laundering is the failure this check
      exists to stop, so phrasing cannot be the only route.
+  1a. A MODULE DOCSTRING that says the same thing declares the whole FILE. The
+     file then gets ONE finding, on the docstring, because the sentence names no
+     test. A module-level `pytestmark = pytest.mark.drift_guard("…")` justifies
+     it, which is also how pytest itself marks every test in a file. Route 1 read
+     function docstrings only, so a declaration one scope up used to hide the
+     guard from all three routes: the tests under it need neither a guard NAME
+     nor a comparison route 2 can see.
   1b. LAUNDERED AUTHORITY — a body COMMENT calls a value authoritative and also
      admits the value is a copy of one held elsewhere. An example is "SSOT char
      sets (mirrored from the per-layer suites)". Each half alone is safe, so only
@@ -157,6 +164,10 @@ _GUARD_PATTERNS = (
 _GUARD_RE = re.compile("|".join(_GUARD_PATTERNS), re.IGNORECASE)
 
 _MARKER = "drift_guard"
+
+# The name a file-wide finding carries, in place of a test's. A module docstring
+# declares the FILE a guard, and picking one test to blame would be a guess.
+_MODULE = "<module>"
 
 # The non-Python opt-out: a comment `drift-guard-ok: <reason>` with a non-empty
 # reason. (The bare token `drift-guard` inside it also matches _GUARD_RE, but the
@@ -714,6 +725,67 @@ def _justification(decorator: ast.expr) -> str | None:
     return None
 
 
+def _module_justification(tree: ast.Module) -> bool:
+    """True when a module-level `pytestmark` carries a justified
+    `@pytest.mark.drift_guard(...)`.
+
+    pytest applies `pytestmark` to every test in the file, so it is the answer
+    pytest itself gives to a file-wide declaration. Without it a module docstring
+    that declares a guard could only be cleared by decorating every test one by
+    one, or by rewording the docstring — and rewording is exactly the laundering
+    this check exists to stop.
+
+    Only the LAST module-level binding counts, because that is the value pytest
+    collects. A justified marker that a later line rebinds — `pytestmark =
+    pytest.mark.drift_guard("…")`, then `pytestmark = pytest.mark.unit` — reaches
+    no test, so it must clear nothing here either.
+    """
+    bindings = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign | ast.AnnAssign)
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name) and target.id == "pytestmark"
+    ]
+    if not bindings or bindings[-1].value is None:
+        return False
+    value = bindings[-1].value
+    marks = list(value.elts) if isinstance(value, (ast.List, ast.Tuple)) else [value]
+    return any(_justification(mark) for mark in marks)
+
+
+def _module_declaration(tree: ast.Module) -> int | None:
+    """The line of a MODULE docstring that declares the file a drift guard, or
+    None.
+
+    A file-wide claim is the same self-declaration as a test-level one, one
+    scope up: "these tests must stay in sync with the live config" describes
+    every test under it. Route 1 read only function docstrings, so
+    moving the sentence to the top of the file hid the guard from all three
+    routes at once — the tests below it need neither a guard NAME nor a
+    comparison the AST can see.
+
+    The finding lands ONCE, on the docstring, because the claim is about the
+    file rather than about any one test. Naming a test here would be a guess at
+    which one the sentence meant.
+
+    A file with no `test_*` function is not judged at all. This is the same
+    scoping the per-test routes get for free, and the check needs it: pre-commit
+    hands it every staged `.py` file, and a lint that DETECTS drift describes
+    what it detects in its own module docstring. `check_lockstep_pins` opens by
+    naming the "keep in lockstep" comment it replaces, for exactly that reason.
+    """
+    if not _is_drift_guard("", ast.get_docstring(tree) or ""):
+        return None
+    if not any(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name.startswith("test_")
+        for node in ast.walk(tree)
+    ):
+        return None
+    return tree.body[0].lineno
+
+
 def violations(source: str) -> list[tuple[int, str]]:
     """(1-based line, function name) for every test in SOURCE that reads as a
     drift guard — by intent PHRASING, by a LAUNDERED-authority body comment, or by
@@ -721,7 +793,11 @@ def violations(source: str) -> list[tuple[int, str]]:
     A structural-only hit is cleared by a `# not-a-drift-guard:` opt-out; the other
     two are not (calling a copy authoritative is a self-declaration). A file that
     does not parse as Python produces no findings (other tooling owns syntax
-    errors)."""
+    errors).
+
+    A MODULE docstring that declares the guard adds one further hit, named
+    `<module>` and placed on the docstring, which a module-level `pytestmark`
+    justifies."""
     try:
         tree = ast.parse(source)
         comments = python_comments(source)
@@ -731,6 +807,13 @@ def violations(source: str) -> list[tuple[int, str]]:
     sources = _module_sources(tree)
     lines = source.split("\n")
     hits: list[tuple[int, str]] = []
+    # pytest applies a module-level `pytestmark` to every test in the file, so a
+    # justified one answers for each of them too — not only for the file-wide
+    # declaration below.
+    justified_file = _module_justification(tree)
+    declared = _module_declaration(tree)
+    if declared is not None and not justified_file:
+        hits.append((declared, _MODULE))
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -742,7 +825,7 @@ def violations(source: str) -> list[tuple[int, str]]:
         structural = _is_structural_guard(node, sources)
         if not (phrasing or structural):
             continue
-        if any(_justification(dec) for dec in node.decorator_list):
+        if justified_file or any(_justification(dec) for dec in node.decorator_list):
             continue
         if structural and not phrasing and _has_optout(node, comments, lines):
             continue
@@ -797,6 +880,18 @@ def main(argv: list[str]) -> int:
             continue
         if path.endswith(".py"):
             for lineno, name in violations(source):
+                if name == _MODULE:
+                    print(
+                        f"{path}:{lineno}: this module's docstring declares a drift "
+                        "guard over every test in the file, and states no reason — "
+                        "prefer removing the duplication (make one source "
+                        "authoritative), "
+                        f'add pytestmark = pytest.mark.{_MARKER}("why a true SSOT is '
+                        'infeasible"), or reword a docstring that does not mean it.',
+                        file=sys.stderr,
+                    )
+                    status = 1
+                    continue
                 print(
                     f"{path}:{lineno}: drift guard {name!r} lacks a justification — "
                     "prefer removing the duplication (make one source authoritative), "
