@@ -713,3 +713,22 @@
       tree-sitter-javascript,
       tree-sitter-typescript,
     ]
+
+# Select by TAG (what a check is about) instead of by tier (how opinionated it
+# is). Needs at least one `--select`; a typo or an empty selection exits 2
+# rather than running a smaller set. Carries every member's dependency, because
+# a selection can name any check in the pack.
+- id: check-select
+  name: "aggregate: every check a --select expression names (tier / tag / check)"
+  description: "Runs the checks the args select: all | tier:<1|2|extras> | tag:<name> | check:<id>, minus any --ignore."
+  entry: python -m ci_truth_serum.run_selection
+  language: python
+  additional_dependencies:
+    [
+      PyYAML,
+      identify,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]

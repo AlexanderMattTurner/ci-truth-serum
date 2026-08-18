@@ -231,6 +231,62 @@ Three checks are in no aggregate. Add each `- id:` on its own if you want it:
 You may mix an aggregate with individual ids. The named check then simply runs
 twice.
 
+### Select by tag
+
+A tier says how much of your CI architecture a check assumes. A tag says what the check is about. The two are different questions, so a check carries one tier and as many tags as apply: `check-token-fallback` is `secrets` and `security` at once.
+
+Select on either axis with `check-select`. It takes `--select` (repeatable, union) and `--ignore` (repeatable, subtraction):
+
+```yaml
+repos:
+  - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
+    rev: v1.0.0
+    hooks:
+      - id: check-select
+        args: [--select, "tag:security", --select, "tag:secrets"]
+```
+
+A selector is one of these four forms:
+
+| selector                    | selects                                            |
+| --------------------------- | -------------------------------------------------- |
+| `all`                       | every aggregated check in the pack                 |
+| `tier:<1\|2\|extras>`       | every check in that tier (what `check-tier1` runs) |
+| `tag:<name>`                | every check carrying that tag                      |
+| `check:<module-or-hook-id>` | one check, written either way                      |
+
+Tier 1 without its Docker lint is one line:
+
+```yaml
+- id: check-select
+  args: [--select, "tier:1", --ignore, "check:check-pinned-base-images"]
+```
+
+Three cases exit 2 instead of running a smaller set: no `--select` at all, a selector this pack does not ship, and a selection that ends up empty after the `--ignore` values. A hook that runs zero checks and reports success is the false green this pack exists to refuse.
+
+The tag vocabulary is closed. These are the values:
+
+| tag               | the defect it is about                                                        |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `honesty`         | a failure that reports success: a masked exit code, a parsed error string     |
+| `supply-chain`    | code that runs without naming what it is: a mutable tag, an unpinned download |
+| `security`        | privilege or untrusted input reaching a place it must not                     |
+| `secrets`         | a token or a secret file handled so its absence passes as its presence        |
+| `required-checks` | a required check that never reports, or reports on the wrong events           |
+| `concurrency`     | a concurrency group that cancels or strands the run a merge waits on          |
+| `scheduling`      | a cron whose schedule, target, or gating does not do what it says             |
+| `alerting`        | a failure that reaches no human                                               |
+| `docs`            | narration that contradicts the tree it describes                              |
+| `tests`           | a test that passes without testing anything                                   |
+| `agents`          | an AI-agent surface: a model pin, a tool grant, tool markup left in a file    |
+| `correctness`     | ordinary logic defects the other tags do not cover                            |
+| `maintainability` | code shaped so the next reader cannot see what runs                           |
+| `cost`            | CI minutes spent on a run that cannot finish or did not need to start         |
+
+A tag is not a file type. The files a check reads come from its own `types:`, so there is no `shell` or `python` tag to restate them.
+
+The three checks that sit in no aggregate carry no tag either, so no selector reaches them. `check-absolute-symlinks`, `check-lockstep-pins`, and `check-env-symmetry` stay standalone ids.
+
 ### Scope one check to specific paths
 
 One check in a tier can need tighter file scoping than the rest. For example,
@@ -252,7 +308,7 @@ as a standalone hook with the usual pre-commit `files:` and `exclude:` filters:
 `--skip` is repeatable: pass one `--skip <name>` pair per check you drop. **An
 unknown name is a hard error**, which catches a typo that would otherwise
 include the check again in silence. Module names use underscores and match the
-TIERS registry in `ci_truth_serum/run_tier.py`. Write `check_exit_suppression`,
+registry in `ci_truth_serum/_registry.py`. Write `check_exit_suppression`,
 not `check-exit-suppression`.
 
 This keeps the property that matters. A new check added to the tier upstream

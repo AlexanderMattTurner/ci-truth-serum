@@ -49,6 +49,7 @@ def _python_member_hooks() -> list[dict]:
         for h in MANIFEST
         if h["entry"].startswith("python -m ci_truth_serum.")
         and not h["entry"].startswith("python -m ci_truth_serum.run_tier")
+        and not h["entry"].startswith("python -m ci_truth_serum.run_selection")
     ]
 
 
@@ -267,6 +268,14 @@ def test_skip_unknown_name_exits_nonzero(capsys):
     rc = rt.main(["1", "--skip", "check_does_not_exist"])
     assert rc == 2
     assert "unknown" in capsys.readouterr().err
+
+
+def test_a_misspelled_flag_is_not_a_filename(capsys):
+    """`--skp <name>` read as two paths would run the tier with the check the
+    caller meant to drop still in it."""
+    rc = rt.main(["1", "--skp", "check_exit_suppression"])
+    assert rc == 2
+    assert "unknown option" in capsys.readouterr().err
 
 
 def test_skip_without_argument_exits_nonzero(capsys):
