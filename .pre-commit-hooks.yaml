@@ -316,6 +316,14 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-conclusion-coverage
+  name: "opinionated: one terminal-red conclusion set, which no consumer may narrow"
+  description: A completed run also ends `timed_out`, `startup_failure` or `action_required`, so a listener, router or scanner that recognizes only `failure` lets a real red reach nobody. The check reads workflow expressions, shell tests and Python comparisons through their own parsers, and names the conclusions each site left out. `cancelled` is never required, because a superseded run is not a failure. Widen the set for the whole repository in `.github/conclusion-coverage.yml`.
+  entry: python -m ci_truth_serum.check_conclusion_coverage
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types_or: [shell, python, yaml]
+
 - id: check-cancellable-required-check
   name: "opinionated: no static cancellable workflow-level concurrency lock on required checks"
   description: "A static cancellable concurrency group on a `# required-check: true` workflow lets a sibling ref cancel the run and its workflow-level always() reporter wholesale, hanging the check at 'Expected — Waiting'."

@@ -57,6 +57,10 @@ DRIFT = "drift"
 # check_replacement_expansion reads a call's argument list in two languages, so it
 # takes the source files of both: JS/TS (including JSX/TSX) and Python.
 JS_OR_PYTHON = "js_or_python"
+# check_conclusion_coverage asks one question of three surfaces, because the
+# defect is three copies of one answer drifting apart: a workflow expression, a
+# shell test, and a Python comparison.
+SHELL_PYTHON_OR_WORKFLOW_YAML = "shell_python_or_workflow_yaml"
 
 # The file classes whose `#`/`//` comments the comment lints can read, and the
 # prose classes scanned line-by-line.
@@ -66,6 +70,10 @@ _PROSE_TAGS = frozenset({"markdown", "rst"})
 # The workflow/composite-action files a SHELL_OR_WORKFLOW_YAML lint scans for
 # inline `run:` blocks (matching the standalone hook's own path routing).
 _WORKFLOW_YAML = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
+# check_conclusion_coverage's repository override. It is not a consumer, but a
+# commit that widens the declared set changes no consumer at all, so the check
+# has to SEE the file to know it must re-verify the tree.
+_CONCLUSION_CONFIG = re.compile(r"(?:^|/)\.github/conclusion-coverage\.ya?ml$")
 
 TIERS: dict[str, list[tuple[str, str]]] = {
     "1": [
@@ -105,6 +113,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_reusable_permissions", WORKFLOW),
         ("check_failure_notifier_coverage", WORKFLOW),
         ("check_cancellable_required_check", WORKFLOW),
+        ("check_conclusion_coverage", SHELL_PYTHON_OR_WORKFLOW_YAML),
         ("check_token_fallback", WORKFLOW),
         ("check_workflow_secret_names", WORKFLOW),
         ("check_pin_comment_truth", WORKFLOW),
@@ -163,6 +172,15 @@ def matches(path: str, kind: str) -> bool:
         return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS))
     if kind == REFERENCING_TEXT:
         return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS | {"yaml"}))
+    if kind == SHELL_PYTHON_OR_WORKFLOW_YAML:
+        normalized = path.replace("\\", "/")
+        return bool(tags & {"shell", "python"}) or bool(
+            "yaml" in tags
+            and (
+                _WORKFLOW_YAML.search(normalized)
+                or _CONCLUSION_CONFIG.search(normalized)
+            )
+        )
     if kind == JS_OR_PYTHON:
         return bool(tags & {"python", "javascript", "jsx", "ts", "tsx"})
     if kind == DRIFT:

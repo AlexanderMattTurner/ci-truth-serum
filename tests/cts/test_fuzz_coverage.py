@@ -102,6 +102,7 @@ FUZZ_REQUIRED = {
     "check_external_clock_targets": "violations",
     "check_multi_cron_gating": "violations",
     "check_toolchain_skips": "violations",
+    "check_conclusion_coverage": "violations",
     "release_canary": "changelog_top_version",
     "check_job_timeout": "check_file",
     "check_uncached_download": "check_file",
