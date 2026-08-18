@@ -183,6 +183,24 @@ def test_pyproject_matching_source_key_passes(tmp_path) -> None:
     assert mod.check_repo(repo) == []
 
 
+# ── the two trees that hold nothing to compare ───────────────────────────
+def test_a_tree_with_no_manifest_says_it_scanned_nothing(tmp_path, capsys) -> None:
+    # Exit 0 over a tree that declares no repository URL is honest, and silence
+    # about it is not: a clean pass and a check that never ran look the same.
+    repo = _repo(tmp_path)
+    _publish_workflow(repo)
+    assert mod.check_repo(repo) == []
+    assert "scanned nothing" in capsys.readouterr().err
+
+
+def test_an_unidentified_repo_says_it_scanned_nothing(tmp_path, capsys) -> None:
+    repo = _repo(tmp_path, origin=None)
+    _pkg(repo, "git+https://github.com/anything/at-all.git")
+    assert mod.check_repo(repo) == []
+    err = capsys.readouterr().err
+    assert "scanned nothing" in err and "$GITHUB_REPOSITORY" in err
+
+
 # ── $GITHUB_REPOSITORY ───────────────────────────────────────────────────
 def test_github_repository_env_outranks_a_stale_origin(tmp_path, monkeypatch) -> None:
     # The rename case as CI sees it: origin still names the old repo, and npm

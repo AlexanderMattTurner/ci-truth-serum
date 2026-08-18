@@ -37,8 +37,10 @@ makes that one network call only after it finds a mismatch, and only when
 
 No opt-out for a mismatch: a `repository.url` naming a repo other than the one
 publishing is always wrong — forks must repoint their self-referential URLs.
-A repo with no `origin` remote and no `$GITHUB_REPOSITORY` is skipped (nothing
-to compare against). Globs every workflow like the other workflow lints; the
+Two trees hold nothing to compare, and the check names each one on stderr
+rather than exiting 0 in silence: a tree with no `package.json` and no
+`pyproject.toml`, and a repo with no `origin` remote and no
+`$GITHUB_REPOSITORY`. Globs every workflow like the other workflow lints; the
 passed file list is ignored.
 """
 
@@ -64,6 +66,10 @@ ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 _REPO_URL_KEYS = frozenset({"repository", "source", "source code", "repo"})
 
 _PUBLISH = re.compile(r"\b(?:npm|pnpm)\s+publish\b")
+
+# The files that can declare a repository URL. A tree with neither declares
+# nothing, so there is nothing for this check to compare.
+_MANIFESTS = ("package.json", "pyproject.toml")
 
 
 def normalize_repo_url(url: str) -> str | None:
@@ -220,6 +226,17 @@ def has_npm_publish(repo_root: Path) -> bool:
 
 def check_repo(repo_root: Path) -> list[str]:
     """Every provenance-URL violation for the repo, as printable messages."""
+    if not any((repo_root / name).exists() for name in _MANIFESTS):
+        # A tree that declares no repository URL has none to compare, so an empty
+        # result here is not a pass. Say so: a silent exit 0 reads as "checked and
+        # clean", which is the lie this pack exists to catch.
+        print(
+            f"note: {repo_root} has no {' and no '.join(_MANIFESTS)} — "
+            "this check scanned nothing.",
+            file=sys.stderr,
+        )
+        return []
+
     pinned = env_repo()
     origin = pinned or origin_repo(repo_root)
     if origin is None:
