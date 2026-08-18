@@ -1,6 +1,10 @@
 """Tests for ci_truth_serum/check_lockstep_pins.py — the config-driven lint that
 extracts one pinned value from each of two files and fails unless they agree
-(the enforced version of a "keep these in lockstep" comment).
+(the enforced version of a comment that asks two files to hold one value).
+
+The phrase this lint enforces is the SUBJECT here, never a claim about these
+tests, so it stays out of this docstring: a module docstring reads as a
+declaration about every test below it.
 
 Drives ``check_pair()`` for the extraction/compare rules and ``main()`` for the
 argparse contract (repeatable --pair, no-config hard error, exit codes).
