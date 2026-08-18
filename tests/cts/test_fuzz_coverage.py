@@ -124,8 +124,12 @@ FUZZ_REQUIRED = {
 # rather than be tolerated, so it has no untrusted-input surface to fuzz.
 # Orchestrators, not input parsers: each drives the GitHub REST API or dispatches
 # other hooks, so there is no attacker-shaped text for a property to fuzz.
+# ``_registry`` is data, not a parser: it declares which checks ship, in which
+# tier, with which tags, and it reads no input at all.
 _NON_PARSER_HOOKS = {
     "run_tier",
+    "run_selection",
+    "_registry",
     "sync_required_checks",
     "sync_merge_queue",
     "startup_failure_scan",

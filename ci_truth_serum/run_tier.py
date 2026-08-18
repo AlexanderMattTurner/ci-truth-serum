@@ -25,42 +25,37 @@ config-driven (it does nothing without per-repo ``--pair`` args, and the
 aggregate passes none), so running it here would hard-error every consumer; and
 ``check-env-symmetry`` is a whole-tree scan needing a per-project ``--prefix``
 arg no aggregate can supply. The contract test in
-``tests/cts/test_run_tier.py`` asserts this registry stays in sync with
+``tests/cts/test_run_tier.py`` asserts the registry stays in sync with
 ``.pre-commit-hooks.yaml`` so a newly added hook can't silently escape its tier.
+
+The registry itself is ``ci_truth_serum/_registry.py``, which also carries each
+check's tags. ``run_selection`` runs a selection over those tags.
 """
 
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 from identify import identify
 
-# Selector kinds: WORKFLOW ignores the file list and self-discovers .github/*;
-# the rest name the committed-file class a content lint should receive.
-WORKFLOW = "workflow"
-SHELL = "shell"
-PYTHON = "python"
-DOCKERFILE = "dockerfile"
-SHELL_OR_DOCKERFILE = "shell_or_dockerfile"
-SHELL_OR_WORKFLOW_YAML = "shell_or_workflow_yaml"
-MARKDOWN = "markdown"
-COMMENTED_CODE = "commented_code"
-PROSE_OR_COMMENTED_CODE = "prose_or_commented_code"
-# check_workflow_refs reads narration wherever it lives, and a workflow's own
-# `#` comments are one of the densest sources of sibling-workflow citations —
-# hence prose + commented code + YAML.
-REFERENCING_TEXT = "referencing_text"
-# check_drift_guards dispatches by extension: `.py` → AST marker pass, else → a
-# phrase pass. Its file class is therefore Python plus the JS/TS/shell suites that
-# carry copies-agree tests but no @pytest.mark.
-DRIFT = "drift"
-# check_replacement_expansion reads a call's argument list in two languages, so it
-# takes the source files of both: JS/TS (including JSX/TSX) and Python.
-JS_OR_PYTHON = "js_or_python"
-# check_conclusion_coverage asks one question of three surfaces, because the
-# defect is three copies of one answer drifting apart: a workflow expression, a
-# shell test, and a Python comparison.
-SHELL_PYTHON_OR_WORKFLOW_YAML = "shell_python_or_workflow_yaml"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    COMMENTED_CODE,
+    DOCKERFILE,
+    DRIFT,
+    JS_OR_PYTHON,
+    MARKDOWN,
+    PROSE_OR_COMMENTED_CODE,
+    PYTHON,
+    REFERENCING_TEXT,
+    SHELL,
+    SHELL_OR_DOCKERFILE,
+    SHELL_OR_WORKFLOW_YAML,
+    SHELL_PYTHON_OR_WORKFLOW_YAML,
+    TIERS,
+    WORKFLOW,
+)
 
 # The file classes whose `#`/`//` comments the comment lints can read, and the
 # prose classes scanned line-by-line.
@@ -74,79 +69,6 @@ _WORKFLOW_YAML = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 # commit that widens the declared set changes no consumer at all, so the check
 # has to SEE the file to know it must re-verify the tree.
 _CONCLUSION_CONFIG = re.compile(r"(?:^|/)\.github/conclusion-coverage\.ya?ml$")
-
-TIERS: dict[str, list[tuple[str, str]]] = {
-    "1": [
-        ("check_workflow_pipefail", WORKFLOW),
-        ("check_exit_suppression", SHELL),
-        ("check_stderr_suppression", SHELL),
-        ("check_substitution_exit_swallow", SHELL),
-        ("check_argument_exit_swallow", SHELL),
-        ("check_soft_timeout", SHELL),
-        ("check_pipefail_grep_pipe", SHELL),
-        ("check_folded_scalar_comment", WORKFLOW),
-        ("check_gh_slurp_jq", SHELL_OR_WORKFLOW_YAML),
-        ("check_pr_paths", WORKFLOW),
-        ("check_pinned_base_images", DOCKERFILE),
-        ("check_pinned_downloads", SHELL_OR_DOCKERFILE),
-        ("check_versionless_install", SHELL_OR_WORKFLOW_YAML),
-        ("check_frozen_head_sha", WORKFLOW),
-        ("check_ready_for_review", WORKFLOW),
-        ("check_provenance_repo_url", WORKFLOW),
-        ("check_trusted_base", WORKFLOW),
-        ("check_untrusted_exec", WORKFLOW),
-        ("check_unscoped_tool_grant", WORKFLOW),
-    ],
-    "2": [
-        ("check_job_timeout", WORKFLOW),
-        ("check_uncached_download", WORKFLOW),
-        ("check_always_reporter", WORKFLOW),
-        ("check_required_reporter", WORKFLOW),
-        ("check_required_event_closure", WORKFLOW),
-        ("check_inline_run_length", WORKFLOW),
-        ("check_concurrency", WORKFLOW),
-        ("check_static_concurrency", WORKFLOW),
-        ("check_pending_cancel_concurrency", WORKFLOW),
-        ("check_requires_concurrency", WORKFLOW),
-        ("check_externalized_markers", WORKFLOW),
-        ("check_path_gate_deps", WORKFLOW),
-        ("check_reusable_permissions", WORKFLOW),
-        ("check_failure_notifier_coverage", WORKFLOW),
-        ("check_cancellable_required_check", WORKFLOW),
-        ("check_conclusion_coverage", SHELL_PYTHON_OR_WORKFLOW_YAML),
-        ("check_token_fallback", WORKFLOW),
-        ("check_workflow_secret_names", WORKFLOW),
-        ("check_pin_comment_truth", WORKFLOW),
-        ("check_divergent_action_pins", WORKFLOW),
-        ("check_stderr_merge_parse", SHELL_OR_WORKFLOW_YAML),
-        ("check_echo_fallback", SHELL),
-        ("check_bare_return_status", SHELL),
-    ],
-    "extras": [
-        ("check_unnamed_regex_groups", PYTHON),
-        ("check_replacement_expansion", JS_OR_PYTHON),
-        ("check_unpaged_all", JS_OR_PYTHON),
-        ("check_global_stdio_swap", PYTHON),
-        ("check_claude_model", WORKFLOW),
-        ("check_drift_guards", DRIFT),
-        ("check_graceful_handwave", PROSE_OR_COMMENTED_CODE),
-        ("check_historical_comments", COMMENTED_CODE),
-        ("check_doc_line_refs", MARKDOWN),
-        ("check_workflow_refs", REFERENCING_TEXT),
-        ("check_flag_arity", SHELL),
-        ("check_secret_file_perms", SHELL),
-        ("check_case_default", SHELL),
-        ("check_cron_comment", WORKFLOW),
-        ("check_cron_alert_coverage", WORKFLOW),
-        ("check_external_clock_targets", WORKFLOW),
-        ("check_multi_cron_gating", WORKFLOW),
-        ("check_unused_reusable_input", WORKFLOW),
-        ("check_workflow_run_branch_filter", WORKFLOW),
-        ("check_toolchain_skips", PYTHON),
-        ("check_stray_tool_markup", PROSE_OR_COMMENTED_CODE),
-        ("check_test_predicate_shadow", SHELL),
-    ],
-}
 
 
 def matches(path: str, kind: str) -> bool:
@@ -209,6 +131,28 @@ def run_check(module: str, argv: list[str]) -> int:
     ).returncode
 
 
+def run_members(
+    members: list[tuple[str, str]], files: list[str]
+) -> tuple[int, list[str]]:
+    """Run each (module, kind) member over FILES; return the exit code and the
+    members that had no file of their kind to scan.
+
+    The second value is what separates a member that passed from one that never
+    ran: both leave exit code 0, and a caller that reports one as the other is
+    the false green this pack exists to refuse.
+    """
+    rc = 0
+    unscanned: list[str] = []
+    for module, kind in members:
+        argv = selected_files(kind, files)
+        if argv is None:
+            unscanned.append(module)
+            continue
+        if run_check(module, argv):
+            rc = 1
+    return rc, unscanned
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] not in TIERS:
@@ -245,17 +189,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    rc = 0
-    unscanned: list[str] = []
-    for module, kind in TIERS[tier]:
-        if module in skips:
-            continue
-        argv = selected_files(kind, files)
-        if argv is None:
-            unscanned.append(module)
-            continue
-        if run_check(module, argv):
-            rc = 1
+    members = [(m, k) for m, k in TIERS[tier] if m not in skips]
+    rc, unscanned = run_members(members, files)
 
     # A member that never ran and a member that passed leave the same exit code.
     # This note is what separates them: a hand run with no file arguments runs

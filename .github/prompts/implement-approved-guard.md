@@ -14,7 +14,7 @@ Keep the guard here when all three hold:
 
 - The defect class comes from a tool every consumer uses: GitHub Actions, shell, Python, pre-commit, a package manager.
 - A consumer with no knowledge of the originating repository would still want the check.
-- The detector needs no per-repository configuration. A check that needs a project prefix or a file pair is config-driven, and those stay out of the tier aggregates (see `ci_truth_serum/run_tier.py`).
+- The detector needs no per-repository configuration. A check that needs a project prefix or a file pair is config-driven, and those stay out of the aggregates (see `ci_truth_serum/_registry.py`).
 
 Otherwise the guard belongs in the repository that found the defect. Say which repository you chose and why, in one sentence, then stop if it is not this one.
 
@@ -55,12 +55,12 @@ New module: `ci_truth_serum/check_<slug>.py`.
 
 A missing one is silent:
 
-| Place                                | What breaks without it                                      |
-| ------------------------------------ | ----------------------------------------------------------- |
-| `.pre-commit-hooks.yaml`             | No consumer can enable the hook.                            |
-| `ci_truth_serum/run_tier.py` `TIERS` | The hook escapes its tier aggregate. A contract test fails. |
-| The `README.md` table for that tier  | `tests/cts/test_readme_hook_coverage.py` fails.             |
-| `changelog.d/<id>.added.md`          | Consumers never learn the hook exists.                      |
+| Place                                  | What breaks without it                                                         |
+| -------------------------------------- | ------------------------------------------------------------------------------ |
+| `.pre-commit-hooks.yaml`               | No consumer can enable the hook.                                               |
+| `ci_truth_serum/_registry.py` `CHECKS` | The hook escapes its tier aggregate and carries no tag. A contract test fails. |
+| The `README.md` table for that tier    | `tests/cts/test_readme_hook_coverage.py` fails.                                |
+| `changelog.d/<id>.added.md`            | Consumers never learn the hook exists.                                         |
 
 Scope the manifest entry with `files:` and `types:` so the hook reads only where the failure bites. A workflow lint sets `pass_filenames: false` and self-discovers.
 

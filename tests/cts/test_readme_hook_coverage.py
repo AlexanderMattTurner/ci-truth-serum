@@ -26,8 +26,9 @@ from tests._helpers import REPO_ROOT
 
 # A hook id in the first column of a README table row: `| `check-foo` | … |`.
 _README_ROW = re.compile(r"^\|\s*`(?P<hook>check-[\w-]+)`", re.MULTILINE)
-# One id per tier, not a check: documented in prose, never as a table row.
-AGGREGATES = frozenset({"check-tier1", "check-tier2", "check-extras"})
+# The aggregates: one id per tier, plus the tag/tier selector. Each runs other
+# checks rather than being one, so each is documented in prose, not as a row.
+AGGREGATES = frozenset({"check-tier1", "check-tier2", "check-extras", "check-select"})
 
 
 def _exported_hooks() -> set[str]:

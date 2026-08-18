@@ -49,6 +49,7 @@ def _python_member_hooks() -> list[dict]:
         for h in MANIFEST
         if h["entry"].startswith("python -m ci_truth_serum.")
         and not h["entry"].startswith("python -m ci_truth_serum.run_tier")
+        and not h["entry"].startswith("python -m ci_truth_serum.run_selection")
     ]
 
 
