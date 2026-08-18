@@ -734,29 +734,24 @@ def _module_justification(tree: ast.Module) -> bool:
     that declares a guard could only be cleared by decorating every test one by
     one, or by rewording the docstring — and rewording is exactly the laundering
     this check exists to stop.
+
+    Only the LAST module-level binding counts, because that is the value pytest
+    collects. A justified marker that a later line rebinds — `pytestmark =
+    pytest.mark.drift_guard("…")`, then `pytestmark = pytest.mark.unit` — reaches
+    no test, so it must clear nothing here either.
     """
-    for node in tree.body:
-        if isinstance(node, ast.Assign):
-            targets: list[ast.expr] = list(node.targets)
-        elif isinstance(node, ast.AnnAssign):
-            targets = [node.target]
-        else:
-            continue
-        if not any(
-            isinstance(target, ast.Name) and target.id == "pytestmark"
-            for target in targets
-        ):
-            continue
-        if node.value is None:
-            continue
-        marks = (
-            list(node.value.elts)
-            if isinstance(node.value, (ast.List, ast.Tuple))
-            else [node.value]
-        )
-        if any(_justification(mark) for mark in marks):
-            return True
-    return False
+    bindings = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign | ast.AnnAssign)
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name) and target.id == "pytestmark"
+    ]
+    if not bindings or bindings[-1].value is None:
+        return False
+    value = bindings[-1].value
+    marks = list(value.elts) if isinstance(value, (ast.List, ast.Tuple)) else [value]
+    return any(_justification(mark) for mark in marks)
 
 
 def _module_declaration(tree: ast.Module) -> int | None:

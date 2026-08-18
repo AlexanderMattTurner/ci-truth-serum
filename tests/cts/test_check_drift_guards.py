@@ -161,6 +161,25 @@ def test_an_unjustified_pytestmark_does_not_clear_the_module(
     assert mod.violations(src) == [(1, "<module>")]
 
 
+@pytest.mark.parametrize(
+    "second, expected",
+    [
+        # pytest collects the LAST binding, so a rebinding drops the reason with
+        # it and the file is unjustified again.
+        ("pytest.mark.unit", [(1, "<module>")]),
+        ('[pytest.mark.drift_guard("the values cross a process boundary")]', []),
+    ],
+)
+def test_only_the_last_pytestmark_binding_counts(second: str, expected: list) -> None:
+    src = (
+        '"""These tests must stay in sync with the live config."""\n'
+        'pytestmark = pytest.mark.drift_guard("the upstream value is not ours")\n'
+        f"pytestmark = {second}\n"
+        f"{_PLAIN_TEST}"
+    )
+    assert mod.violations(src) == expected
+
+
 def test_a_justified_pytestmark_clears_every_test_in_the_file() -> None:
     # pytest applies `pytestmark` to each test, so the file-wide reason answers
     # for the file-wide declaration AND for the guards under it.
