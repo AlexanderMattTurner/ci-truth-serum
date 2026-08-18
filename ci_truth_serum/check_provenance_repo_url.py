@@ -8,25 +8,42 @@ owner/repo. This bites every fork of a template: the URLs still point at the
 upstream, so the very first release dies at publish — it killed the first
 releases of three sibling repos.
 
-Checks (all local — the only git touched is `git remote get-url origin`):
+The publishing repo is identified in this order:
+
+  1. `$GITHUB_REPOSITORY`. npm mints the provenance bundle from this variable,
+     so in CI it IS the repo the registry validates against. It also outranks
+     the remote, which a rename can leave stale.
+  2. the `origin` remote.
+
+Checks:
 
   * `package.json` `repository` / `repository.url` and `pyproject.toml`
     `[project.urls]` repository-ish keys (`repository`, `source`, `source
     code`; `homepage` is deliberately NOT compared — docs sites legitimately
-    live elsewhere) must name the same owner/repo as the `origin` remote,
+    live elsewhere) must name the same owner/repo as the publishing repo,
     after normalization (`git+` prefix, `.git` suffix, ssh vs https, case).
   * A workflow that runs `npm publish`/`pnpm publish` with no
     `package.json` `repository.url` at all is flagged — provenance has
     nothing to validate against and the first release dies.
 
+A rename is the honest case where the two names disagree. GitHub redirects the
+old URL to the new one. The manifests get the new name. Every existing clone
+keeps the old URL in `origin`, so a compare against that remote failed a repo
+that is correct.
+
+To clear that case the check follows the redirect with `git ls-remote`. It
+makes that one network call only after it finds a mismatch, and only when
+`$GITHUB_REPOSITORY` did not pin the identity. A clean repo stays fully local.
+
 No opt-out for a mismatch: a `repository.url` naming a repo other than the one
 publishing is always wrong — forks must repoint their self-referential URLs.
-A repo with no `origin` remote is skipped silently (nothing to compare
-against). Globs every workflow like the other workflow lints; the passed file
-list is ignored.
+A repo with no `origin` remote and no `$GITHUB_REPOSITORY` is skipped (nothing
+to compare against). Globs every workflow like the other workflow lints; the
+passed file list is ignored.
 """
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -80,6 +97,66 @@ def origin_repo(repo_root: Path) -> str | None:
     if proc.returncode != 0:
         return None
     return normalize_repo_url(proc.stdout.strip())
+
+
+def env_repo() -> str | None:
+    """OWNER/REPO from `$GITHUB_REPOSITORY`, or None when it is unset or is not
+    one `owner/repo` pair.
+
+    This is the name npm signs into the provenance bundle, so in CI it is the
+    name the registry compares the manifest against.
+    """
+    owner, _, repo = os.environ.get("GITHUB_REPOSITORY", "").strip().partition("/")
+    if not owner or not repo or "/" in repo:
+        return None
+    return f"{owner}/{repo}".lower()
+
+
+# git prints this to stderr when the HTTP transport follows a redirect, which is
+# what a renamed repo serves on its old URL. `LC_ALL=C` pins the message: git
+# translates its warnings, and a translated one would read as no redirect.
+_REDIRECT_RE = re.compile(r"^warning: redirecting to (?P<url>\S+)", re.MULTILINE)
+
+# Seconds to wait for that one probe. An unreachable host must not hang a commit.
+_PROBE_TIMEOUT = 15
+
+
+def redirected_origin_repo(repo_root: Path) -> str | None:
+    """OWNER/REPO that the `origin` URL redirects to, or None when it does not
+    redirect (and None when the probe cannot run — no network, no credentials,
+    or a host that answers too slowly).
+
+    This is the only network call in the check. The caller makes it once, and
+    only to clear a mismatch that a rename explains.
+
+    An HTTPS remote is what this reads. An ssh remote serves a renamed repo with
+    no redirect at all, so the rename stays invisible here and the mismatch
+    stands. `$GITHUB_REPOSITORY` covers that case in CI, and a local clone of a
+    renamed repo answers it with `git remote set-url origin <new URL>`.
+    """
+    env = {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-remote", "--quiet", "origin", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+            timeout=_PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        # Recovery, not a swallowed error: the probe exists to CLEAR a finding
+        # the caller already has. An unanswered probe clears nothing, and the
+        # finding stands — but say why, or a stale URL and a slow host look the
+        # same to the reader.
+        print(
+            f"note: `git ls-remote origin` in {repo_root} did not answer within "
+            f"{_PROBE_TIMEOUT}s, so a repository rename cannot be ruled out.",
+            file=sys.stderr,
+        )
+        return None
+    match = _REDIRECT_RE.search(proc.stderr)
+    return normalize_repo_url(match.group("url")) if match else None
 
 
 def package_json_repo_url(repo_root: Path) -> str | None:
@@ -143,26 +220,52 @@ def has_npm_publish(repo_root: Path) -> bool:
 
 def check_repo(repo_root: Path) -> list[str]:
     """Every provenance-URL violation for the repo, as printable messages."""
-    origin = origin_repo(repo_root)
+    pinned = env_repo()
+    origin = pinned or origin_repo(repo_root)
     if origin is None:
         # Nothing to compare against, so no violation can exist and this returns
         # clean. Say so: this empty result and a real pass are the same output,
         # and the caller cannot otherwise tell the check never got to run.
         print(
-            f"note: {repo_root} has no `origin` remote to compare against — "
-            "this check scanned nothing.",
+            f"note: {repo_root} has no `origin` remote and no $GITHUB_REPOSITORY "
+            "to compare against — this check scanned nothing.",
             file=sys.stderr,
         )
         return []
+
+    accepted = {origin}
+    probed = pinned is not None  # $GITHUB_REPOSITORY is the publisher: it is final.
+
+    def names_the_repo(named: str | None) -> bool:
+        """True when NAMED is the repo that publishes. A first mismatch buys one
+        redirect probe, because a rename leaves every clone's `origin` on the old
+        URL while the manifests carry the new name."""
+        nonlocal probed
+        if named in accepted:
+            return True
+        if probed:
+            return False
+        probed = True
+        renamed = redirected_origin_repo(repo_root)
+        if renamed is not None:
+            accepted.add(renamed)
+        return named in accepted
+
+    def publisher() -> str:
+        """How a message names the publishing repo, and where that name came
+        from. A probe that found a rename leaves two acceptable names, and the
+        reader needs both to see why the declared one is neither."""
+        source = "$GITHUB_REPOSITORY" if pinned else "the origin remote"
+        return f"`{'` or `'.join(sorted(accepted))}` ({source})"
 
     found: list[str] = []
     pkg_url = package_json_repo_url(repo_root)
     if pkg_url is not None:
         named = normalize_repo_url(pkg_url)
-        if named != origin:
+        if not names_the_repo(named):
             found.append(
                 f"::error file=package.json::repository.url names `{named or pkg_url}` "
-                f"but the origin remote is `{origin}`. npm provenance validates "
+                f"but the publishing repo is {publisher()}. npm provenance validates "
                 "repository.url against the publishing repo and rejects the upload "
                 "(E422) on mismatch — repoint the URL (forks must repoint every "
                 "self-referential GitHub URL)."
@@ -177,11 +280,11 @@ def check_repo(repo_root: Path) -> list[str]:
 
     for key, url in pyproject_repo_urls(repo_root):
         named = normalize_repo_url(url)
-        if named != origin:
+        if not names_the_repo(named):
             found.append(
                 f"::error file=pyproject.toml::[project.urls] {key} names "
-                f"`{named or url}` but the origin remote is `{origin}` — repoint "
-                "the URL (forks must repoint every self-referential URL)."
+                f"`{named or url}` but the publishing repo is {publisher()} — "
+                "repoint the URL (forks must repoint every self-referential URL)."
             )
     return found
 

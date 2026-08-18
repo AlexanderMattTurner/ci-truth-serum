@@ -144,8 +144,8 @@
   entry: python -m ci_truth_serum.check_provenance_repo_url
   language: python
   pass_filenames: false
-  # The compared value (the origin remote) can change with no file edit, and
-  # the check is one git call plus two small file reads — always run.
+  # The compared value (the publishing repo) can change with no file edit, and
+  # a clean repo costs one git call plus two small file reads — always run.
   always_run: true
 
 # ───────────────────────── Tier 1 · Security (default-on) ────────────────────
