@@ -49,6 +49,8 @@ THREE SURFACES, THREE PARSERS:
   * Python — `_py_ast`. An `if`/`elif` chain is ONE decision, so this check
     judges the chain whole. It also resolves a set of conclusions bound to a
     constant, so `conclusion in FAILING` is read against what `FAILING` holds.
+    That resolution follows Python's own scoping: two functions may each bind
+    their own `RED`, and one function's value never answers for the other's.
 
 THE REPOSITORY OVERRIDE. A repository that treats more conclusions as red
 declares them once, in `.github/conclusion-coverage.yml`::
@@ -59,6 +61,10 @@ Every consumer in the tree then owes that widened set. The file is optional, and
 it is the ONE place that can widen the set. No consumer can narrow it, which is
 the property this check holds. A malformed file, or a name that is not a
 conclusion GitHub returns, is a hard error rather than an ignored line.
+
+A commit that widens the set changes no consumer, so a changed-file run would
+scan none of them and report a clean pass. This check therefore re-verifies
+every tracked consumer whenever the override file is among the paths it gets.
 
 Opt out with `# allow-conclusion-subset: <reason>` on the finding's line or the
 comment block above it. The reason is required.
@@ -80,6 +86,7 @@ import argparse
 import ast
 import json
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -528,21 +535,51 @@ def _is_conclusion_key(node: ast.AST) -> bool:
     )
 
 
-def _constant_bindings(tree: ast.AST) -> dict[str, set[str]]:
-    """Every name in TREE bound to a fixed collection of strings.
+# The nodes that open a new Python scope. A name bound inside one is invisible
+# outside it, so a binding walk that crosses these boundaries answers a question
+# Python never asks.
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
+def _own_nodes(scope: ast.AST):
+    """Every descendant of SCOPE that belongs to SCOPE itself.
+
+    A nested function, class or lambda is yielded, but this does not descend into
+    its body: the names it binds are its own.
+    """
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, _SCOPES):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _constant_bindings(scope: ast.AST) -> dict[str, set[str]]:
+    """The names SCOPE itself binds to a fixed collection of strings.
 
     Without this, `conclusion in FAILING_CONCLUSIONS` shows the checker a bare
     name and no conclusions at all. That is the exact shape of the defective
     scanner in the originating repository.
+
+    Scoped, not flattened over the module: two functions may each bind their own
+    `RED`, and reading the second one's value at the first one's comparison would
+    call a partial classifier complete. Both the plain and the annotated
+    spellings count — a `RED: frozenset[str] = frozenset({"failure"})` is an
+    `ast.AnnAssign`, and skipping it would hide exactly the subset this check
+    rejects.
     """
     constants: dict[str, set[str]] = {}
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+    for node in _own_nodes(scope):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        else:
             continue
-        target = node.targets[0]
         if not isinstance(target, ast.Name):
             continue
-        values = _py_literals(node.value, {})
+        values = _py_literals(value, {})
         if values:
             constants[target.id] = values
     return constants
@@ -601,39 +638,55 @@ def _chain_tests(node: ast.If) -> list[ast.expr]:
     return tests
 
 
+def _scope_groups(
+    scope: ast.AST, inherited: dict[str, set[str]], out: list[Group]
+) -> None:
+    """Append every group SCOPE's own statements hold, then recurse.
+
+    A nested scope inherits the names above it and may shadow any of them, which
+    is what `{**inherited, **own}` says.
+    """
+    own = _constant_bindings(scope)
+    constants = {**inherited, **own}
+    nodes = list(_own_nodes(scope))
+    continuations = {
+        id(node.orelse[0])
+        for node in nodes
+        if isinstance(node, ast.If)
+        and len(node.orelse) == 1
+        and isinstance(node.orelse[0], ast.If)
+    }
+    claimed: set[int] = set()
+    for node in nodes:
+        if not isinstance(node, ast.If) or id(node) in continuations:
+            continue
+        facts: list[tuple[str, str]] = []
+        for test in _chain_tests(node):
+            for compare in ast.walk(test):
+                if isinstance(compare, ast.Compare):
+                    claimed.add(id(compare))
+                    facts += _compare_facts(compare, constants)
+        group = _group(facts, lambda _needle, at=node.lineno: at)
+        if group:
+            out.append(group)
+    for node in nodes:
+        if not isinstance(node, ast.Compare) or id(node) in claimed:
+            continue
+        group = _group(
+            _compare_facts(node, constants), lambda _needle, at=node.lineno: at
+        )
+        if group:
+            out.append(group)
+    for nested in nodes:
+        if isinstance(nested, _SCOPES):
+            _scope_groups(nested, constants, out)
+
+
 def python_groups(source: str) -> list[Group]:
     """One group per Python decision about a run conclusion."""
     groups: list[Group] = []
     for tree in trees(source):
-        constants = _constant_bindings(tree)
-        continuations = {
-            id(node.orelse[0])
-            for node in ast.walk(tree)
-            if isinstance(node, ast.If)
-            and len(node.orelse) == 1
-            and isinstance(node.orelse[0], ast.If)
-        }
-        claimed: set[int] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.If) or id(node) in continuations:
-                continue
-            facts: list[tuple[str, str]] = []
-            for test in _chain_tests(node):
-                for compare in ast.walk(test):
-                    if isinstance(compare, ast.Compare):
-                        claimed.add(id(compare))
-                        facts += _compare_facts(compare, constants)
-            group = _group(facts, lambda _needle, at=node.lineno: at)
-            if group:
-                groups.append(group)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Compare) or id(node) in claimed:
-                continue
-            group = _group(
-                _compare_facts(node, constants), lambda _needle, at=node.lineno: at
-            )
-            if group:
-                groups.append(group)
+        _scope_groups(tree, {}, groups)
     return sorted(groups, key=lambda found: found.line)
 
 
@@ -644,6 +697,40 @@ def is_workflow_path(path: str) -> bool:
     """True when PATH names a workflow or composite action, whose scalars carry
     GitHub expressions."""
     return bool(_WORKFLOW_PATH.search(path.replace("\\", "/")))
+
+
+def is_config_path(path: str, config_path: Path) -> bool:
+    """True when PATH is the repository's override file."""
+    return path.replace("\\", "/") == str(config_path).replace("\\", "/")
+
+
+def tracked_consumers() -> list[str]:
+    """Every tracked file this check can read: workflow, shell, or Python.
+
+    Read from `git ls-files`, because the commit that WIDENS the declared set
+    changes no consumer, and a changed-file run would then report a clean pass
+    while every existing consumer still recognizes the old, narrower set. That
+    pass is the false green this pack refuses, so widening the set re-verifies
+    the whole tree. An unreadable path is skipped: the index can name a file a
+    rename race just removed.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], capture_output=True, text=True, check=True
+    ).stdout.split("\0")
+    found: list[str] = []
+    for path in tracked:
+        if not path:
+            continue
+        if is_workflow_path(path) or is_python_source(path):
+            found.append(path)
+            continue
+        try:
+            first = Path(path).read_text(encoding="utf-8").split("\n", 1)[0]
+        except (OSError, UnicodeDecodeError):
+            continue
+        if is_shell_source(path, first):
+            found.append(path)
+    return sorted(found)
 
 
 def violations(
@@ -695,7 +782,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args(argv)
 
-    required = TERMINAL_RED | load_extra(Path(args.config))
+    config_path = Path(args.config)
+    required = TERMINAL_RED | load_extra(config_path)
     if not args.paths:
         print(
             "check_conclusion_coverage: no files to scan. This check reads only "
@@ -705,8 +793,17 @@ def main(argv: list[str]) -> int:
         )
         return 2
 
+    paths = args.paths
+    if any(is_config_path(path, config_path) for path in paths):
+        paths = tracked_consumers()
+        print(
+            f"note: {config_path} changed, so every tracked consumer "
+            f"({len(paths)}) is re-checked against the declared set.",
+            file=sys.stderr,
+        )
+
     status = 0
-    for path in args.paths:
+    for path in paths:
         try:
             text = Path(path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):

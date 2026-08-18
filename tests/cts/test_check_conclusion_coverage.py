@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._helpers import HOOKS_DIR, load_hook
+from tests._helpers import HOOKS_DIR, commit_all, init_test_repo, load_hook
 
 mod = load_hook("check_conclusion_coverage.py", "check_conclusion_coverage")
 
@@ -493,3 +493,97 @@ def test_main_skips_a_path_that_vanished(tmp_path: Path) -> None:
     """A deleted path in pre-commit's own file list is a rename race, not a
     verdict about content."""
     assert _run(str(tmp_path / "gone.py"), cwd=tmp_path).returncode == 0
+
+
+# ── Python constant bindings ─────────────────────────────────────────────
+def test_an_annotated_constant_is_resolved() -> None:
+    """`RED: frozenset[str] = ...` is an `ast.AnnAssign`, not an `ast.Assign`.
+    Reading only the plain spelling would hide exactly the subset this check
+    rejects, because the comparison would show no literals at all."""
+    src = (
+        "RED: frozenset[str] = frozenset({'failure'})\n"
+        "def is_broken(run):\n"
+        '    return run["conclusion"] in RED\n'
+    )
+    assert [line for line, _ in mod.violations(src, "scan.py")] == [3]
+
+
+def test_an_annotated_constant_naming_the_whole_set_passes() -> None:
+    src = (
+        f"RED: frozenset[str] = frozenset({REQUIRED!r})\n"
+        "def is_broken(run):\n"
+        '    return run["conclusion"] in RED\n'
+    )
+    assert mod.violations(src, "scan.py") == []
+
+
+def test_one_function_s_constant_does_not_answer_for_another_s() -> None:
+    """Two functions may each bind their own `RED`. Flattening the module would
+    let the second, complete one excuse the first, partial one."""
+    src = (
+        "def narrow(run):\n"
+        '    RED = {"failure"}\n'
+        '    return run["conclusion"] in RED\n'
+        "def wide(run):\n"
+        f"    RED = set({REQUIRED!r})\n"
+        '    return run["conclusion"] in RED\n'
+    )
+    assert [line for line, _ in mod.violations(src, "scan.py")] == [3]
+
+
+def test_a_function_inherits_the_module_s_constant() -> None:
+    src = (
+        'RED = {"failure"}\ndef is_broken(run):\n    return run["conclusion"] in RED\n'
+    )
+    assert [line for line, _ in mod.violations(src, "scan.py")] == [3]
+
+
+def test_a_local_binding_shadows_the_module_s() -> None:
+    src = (
+        f"RED = set({REQUIRED!r})\n"
+        "def narrow(run):\n"
+        '    RED = {"failure"}\n'
+        '    return run["conclusion"] in RED\n'
+    )
+    assert [line for line, _ in mod.violations(src, "scan.py")] == [4]
+
+
+# ── widening the set re-verifies the tree ────────────────────────────────
+def _consumer_tree(root: Path) -> Path:
+    """A repository holding one consumer that names the whole default set."""
+    init_test_repo(root)
+    (root / ".github").mkdir(parents=True)
+    (root / "scan.py").write_text(_python(REQUIRED), encoding="utf-8")
+    commit_all(root, "consumer")
+    return root / ".github" / "conclusion-coverage.yml"
+
+
+def test_widening_the_set_rechecks_every_tracked_consumer(tmp_path: Path) -> None:
+    """The commit that widens the set changes NO consumer, so a changed-file run
+    would scan none of them and report a clean pass over the very tree the new
+    set just invalidated."""
+    config = _consumer_tree(tmp_path)
+    config.write_text("extra: [stale]\n", encoding="utf-8")
+    result = _run(str(config.relative_to(tmp_path)), cwd=tmp_path)
+    assert result.returncode == 1
+    assert "scan.py:4:" in result.stderr
+    assert "'stale'" in result.stderr
+    assert "every tracked consumer" in result.stderr
+
+
+def test_the_override_file_alone_is_not_read_as_a_consumer(tmp_path: Path) -> None:
+    """Non-vacuity for the case above: the rescan is what finds the consumer,
+    not the config file being scanned as one."""
+    config = _consumer_tree(tmp_path)
+    config.write_text("# no extras\n", encoding="utf-8")
+    result = _run(str(config.relative_to(tmp_path)), cwd=tmp_path)
+    assert result.returncode == 0
+    assert "every tracked consumer" in result.stderr
+
+
+def test_a_changed_consumer_alone_does_not_trigger_the_rescan(tmp_path: Path) -> None:
+    scanner = tmp_path / "scan.py"
+    scanner.write_text(_python(REQUIRED), encoding="utf-8")
+    result = _run(str(scanner), cwd=tmp_path)
+    assert result.returncode == 0
+    assert "every tracked consumer" not in result.stderr

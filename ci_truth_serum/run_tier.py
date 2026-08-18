@@ -70,6 +70,10 @@ _PROSE_TAGS = frozenset({"markdown", "rst"})
 # The workflow/composite-action files a SHELL_OR_WORKFLOW_YAML lint scans for
 # inline `run:` blocks (matching the standalone hook's own path routing).
 _WORKFLOW_YAML = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
+# check_conclusion_coverage's repository override. It is not a consumer, but a
+# commit that widens the declared set changes no consumer at all, so the check
+# has to SEE the file to know it must re-verify the tree.
+_CONCLUSION_CONFIG = re.compile(r"(?:^|/)\.github/conclusion-coverage\.ya?ml$")
 
 TIERS: dict[str, list[tuple[str, str]]] = {
     "1": [
@@ -169,8 +173,13 @@ def matches(path: str, kind: str) -> bool:
     if kind == REFERENCING_TEXT:
         return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS | {"yaml"}))
     if kind == SHELL_PYTHON_OR_WORKFLOW_YAML:
+        normalized = path.replace("\\", "/")
         return bool(tags & {"shell", "python"}) or bool(
-            "yaml" in tags and _WORKFLOW_YAML.search(path.replace("\\", "/"))
+            "yaml" in tags
+            and (
+                _WORKFLOW_YAML.search(normalized)
+                or _CONCLUSION_CONFIG.search(normalized)
+            )
         )
     if kind == JS_OR_PYTHON:
         return bool(tags & {"python", "javascript", "jsx", "ts", "tsx"})
