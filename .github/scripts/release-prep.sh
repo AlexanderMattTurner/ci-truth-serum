@@ -188,7 +188,13 @@ git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
 # `git add changelog.d` stages the fragment deletions alongside the edits.
-git add -A -- package.json CHANGELOG.md README.md changelog.d
+git add -A -- package.json CHANGELOG.md changelog.d
+# README.md is staged only when it exists: `git add` exits 128 on a pathspec
+# that matches nothing, and a downstream repo without the file must still
+# release (the pinner treats it as a no-op for the same reason).
+if [[ -f README.md ]]; then
+  git add -A -- README.md
+fi
 git commit -m "chore(release): v$NEW_VERSION"
 
 # Push the bump to the PR head branch (ordinary push, no force). Retried with

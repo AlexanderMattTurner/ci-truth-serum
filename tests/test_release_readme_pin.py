@@ -109,8 +109,12 @@ def test_release_prep_pins_the_readme_before_it_commits():
     pin = source.index('node "$PIN_README_REV"')
     commit = source.index("git commit -m")
     assert pin < commit
-    # The pinned README must reach the release commit, not the runner's floor.
-    assert "git add -A -- package.json CHANGELOG.md README.md changelog.d" in source
+    # The pinned README must reach the release commit, not the runner's floor,
+    # and it is staged under an existence test: `git add` exits 128 on a
+    # pathspec that matches nothing, which would abort a release in a repo that
+    # ships no README.
+    assert "git add -A -- package.json CHANGELOG.md changelog.d" in source
+    assert "if [[ -f README.md ]]; then\n  git add -A -- README.md" in source
 
 
 def test_release_readiness_pins_the_readme_before_it_commits():
