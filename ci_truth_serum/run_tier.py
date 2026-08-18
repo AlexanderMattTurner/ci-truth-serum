@@ -153,6 +153,31 @@ def run_members(
     return rc, unscanned
 
 
+def report_unscanned(
+    unscanned: list[str], files: list[str], subject: str, rerun: str
+) -> None:
+    """Name the members that had no file of their kind, on stderr.
+
+    A member that never ran and a member that passed leave the same exit code,
+    so a run with no file arguments reads as clean while every content lint sat
+    out. SUBJECT names the set ("tier 1 checks"), RERUN is the command that
+    scans the whole tree — the remedy only an empty file list has, because a
+    caller who DID pass files has already scanned what they hold.
+    """
+    if not unscanned:
+        return
+    print(
+        f"note: these {subject} did not run, because no file of their kind was "
+        f"passed: {', '.join(unscanned)}",
+        file=sys.stderr,
+    )
+    if not files:
+        print(
+            f"  to scan the whole tree: git ls-files -z | xargs -0 {rerun}",
+            file=sys.stderr,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] not in TIERS:
@@ -173,6 +198,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             skips.add(rest[i + 1])
             i += 2
+        elif rest[i].startswith("--"):
+            # A misspelled flag must not become a filename. `--skp <name>` would
+            # otherwise pass two paths no member matches, and the tier would run
+            # with the check the caller meant to drop still in it.
+            print(f"error: unknown option {rest[i]!r}", file=sys.stderr)
+            return 2
         else:
             files.append(rest[i])
             i += 1
@@ -191,25 +222,12 @@ def main(argv: list[str] | None = None) -> int:
 
     members = [(m, k) for m, k in TIERS[tier] if m not in skips]
     rc, unscanned = run_members(members, files)
-
-    # A member that never ran and a member that passed leave the same exit code.
-    # This note is what separates them: a hand run with no file arguments runs
-    # every workflow lint, reports 0, and reads as a clean tier without it.
-    if unscanned:
-        print(
-            f"note: these tier {tier} checks did not run, because no file of "
-            f"their kind was passed: {', '.join(unscanned)}",
-            file=sys.stderr,
-        )
-        # Only an empty file list has this remedy. When the caller DID pass
-        # files, the checks above sat out because the repository holds no file
-        # of their kind, and re-running over the whole tree changes nothing.
-        if not files:
-            print(
-                "  to scan the whole tree: git ls-files -z | xargs -0 python -m "
-                f"ci_truth_serum.run_tier {tier}",
-                file=sys.stderr,
-            )
+    report_unscanned(
+        unscanned,
+        files,
+        f"tier {tier} checks",
+        f"python -m ci_truth_serum.run_tier {tier}",
+    )
     return rc
 
 

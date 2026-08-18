@@ -99,12 +99,6 @@ def test_a_check_can_carry_several_tags():
     assert {"secrets", "security"} <= token.tags
 
 
-def test_tag_index_lists_hook_ids_per_tag():
-    index = reg.tag_index()
-    assert set(index) == set(reg.TAGS)
-    assert "check-cron-alert-coverage" in index["alerting"]
-
-
 def test_the_readme_documents_every_tag():
     undocumented = [t for t in sorted(reg.TAGS) if f"`{t}`" not in README]
     assert undocumented == []

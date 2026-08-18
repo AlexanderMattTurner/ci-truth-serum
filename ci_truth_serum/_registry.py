@@ -191,8 +191,3 @@ TIERS: dict[str, list[tuple[str, str]]] = {
 def by_tag(tag: str) -> list[Check]:
     """Every check carrying TAG, in registry order."""
     return [c for c in CHECKS if tag in c.tags]
-
-
-def tag_index() -> dict[str, list[str]]:
-    """Each tag mapped to the hook ids that carry it, both sorted."""
-    return {tag: sorted(c.hook_id for c in by_tag(tag)) for tag in sorted(TAGS)}

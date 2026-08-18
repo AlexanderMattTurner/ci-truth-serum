@@ -34,8 +34,10 @@ from _registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     TAGS,
     TIERS,
     Check,
+    by_tag,
 )
 from run_tier import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    report_unscanned,
     run_members,
 )
 
@@ -73,7 +75,7 @@ def resolve(selector: str) -> list[Check]:
             raise SelectorError(
                 f"unknown tag {value!r}; valid: {', '.join(sorted(TAGS))}"
             )
-        return [c for c in CHECKS if value in c.tags]
+        return by_tag(value)
     if kind == "check":
         module = value.replace("-", "_")
         found = [c for c in CHECKS if c.module == module]
@@ -107,6 +109,11 @@ def parse_args(argv: list[str]) -> tuple[list[str], list[str], list[str]]:
                 raise SelectorError(f"{arg} requires an argument")
             (selects if arg == "--select" else ignores).append(argv[i + 1])
             i += 2
+        elif arg.startswith("--"):
+            # A misspelled flag must not become a filename. `--selec tag:tests`
+            # would otherwise drop that selection and run the rest, which is the
+            # narrower green this hook refuses.
+            raise SelectorError(f"unknown option {arg!r}")
         else:
             files.append(arg)
             i += 1
@@ -135,27 +142,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     rc, unscanned = run_members([(c.module, c.kind) for c in chosen], files)
-
-    # A member that never ran and a member that passed leave the same exit code.
-    # This note is what separates them.
-    if unscanned:
-        print(
-            "note: these selected checks did not run, because no file of their "
-            f"kind was passed: {', '.join(unscanned)}",
-            file=sys.stderr,
-        )
-        # Only an empty file list has this remedy. When the caller DID pass
-        # files, the checks above sat out because the repository holds no file
-        # of their kind, and re-running over the whole tree changes nothing.
-        if not files:
-            flags = " ".join(
-                [f"--select {s}" for s in selects] + [f"--ignore {s}" for s in ignores]
-            )
-            print(
-                "  to scan the whole tree: git ls-files -z | xargs -0 python -m "
-                f"ci_truth_serum.run_selection {flags}",
-                file=sys.stderr,
-            )
+    flags = " ".join(
+        [f"--select {s}" for s in selects] + [f"--ignore {s}" for s in ignores]
+    )
+    report_unscanned(
+        unscanned,
+        files,
+        "selected checks",
+        f"python -m ci_truth_serum.run_selection {flags}",
+    )
     return rc
 
 

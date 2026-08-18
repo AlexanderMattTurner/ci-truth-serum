@@ -136,6 +136,23 @@ def test_a_flag_without_a_value_raises():
         raise AssertionError("expected SelectorError")
 
 
+def test_a_misspelled_flag_is_not_a_filename():
+    """`--selec tag:tests` must stop the run. Read as two paths it would drop
+    that selection and run the rest, which is a narrower green than the caller
+    asked for."""
+    try:
+        rs.parse_args(["--select", "tag:alerting", "--selec", "tag:tests"])
+    except rs.SelectorError as exc:
+        assert "unknown option" in str(exc)
+    else:
+        raise AssertionError("expected SelectorError")
+
+
+def test_main_rejects_a_misspelled_flag(capsys):
+    assert rs.main(["--select", "tag:alerting", "--selec", "tag:tests"]) == 2
+    assert "unknown option" in capsys.readouterr().err
+
+
 # ── main ──────────────────────────────────────────────────────────────────
 def test_main_without_select_exits_two(capsys):
     assert rs.main([]) == 2
