@@ -8,8 +8,8 @@ Covered here: check_token_fallback, check_workflow_secret_names,
 check_provenance_repo_url (URL normalization), check_pin_comment_truth,
 check_divergent_action_pins, check_stderr_merge_parse, check_echo_fallback,
 check_case_default, check_soft_timeout, check_bare_return_status,
-check_lockstep_pins, check_cron_comment, check_toolchain_skips, and
-release_canary's changelog/semver parsing.
+check_lockstep_pins, check_cron_comment, check_toolchain_skips,
+check_conclusion_coverage, and release_canary's changelog/semver parsing.
 """
 
 from hypothesis import given
@@ -223,3 +223,47 @@ def test_changelog_and_semver_parsing_are_total(text: str) -> None:
     assert best is None or canary.semver_key(best) is not None
     pkgver = canary.pkgbuild_version(text)
     assert pkgver is None or isinstance(pkgver, str)
+
+
+# ── check_conclusion_coverage: one question, three parsers ──────────────
+conclusion_coverage = load_hook(
+    "check_conclusion_coverage.py", "fuzz_check_conclusion_coverage"
+)
+
+# Tokens that reach the real branches of all three surfaces: a workflow gate in
+# both comparison and `contains(fromJSON(...))` spellings, a `[[ ]]` test, a
+# `case` arm, a Python comparison and a membership test against a constant.
+_CONCLUSION_TOKENS = [
+    "    if: github.event.workflow_run.conclusion == 'failure'",
+    '    if: contains(fromJSON(\'["failure","timed_out"]\'), '
+    "github.event.workflow_run.conclusion)",
+    "    if: contains('failure cancelled', steps.a.conclusion)",
+    'if [[ "$conclusion" == failure ]]; then n; fi',
+    'if [[ "$conclusion" != success ]]; then n; fi',
+    'case "$conclusion" in\n  failure|timed_out) n ;;\nesac',
+    "conclusion=$(gh run view --json conclusion -q .conclusion)",
+    'if run["conclusion"] == "failure":\n    n()',
+    'RED = frozenset({"failure"})',
+    "if conclusion in RED:\n    n()",
+    "# allow-conclusion-subset: judged elsewhere",
+    "jobs:",
+    "  notify:",
+    "conclusion",
+    "'",
+]
+
+_conclusion_text = st.lists(
+    st.one_of(st.sampled_from(_CONCLUSION_TOKENS), st.text(max_size=12)), max_size=20
+).map("\n".join)
+
+_CONCLUSION_PATHS = [".github/workflows/a.yaml", "route.sh", "scan.py", "notes.txt"]
+
+
+@given(_conclusion_text, st.sampled_from(_CONCLUSION_PATHS))
+def test_conclusion_coverage_violations_is_total(text: str, path: str) -> None:
+    n_lines = len(text.split("\n"))
+    result = conclusion_coverage.violations(text, path)
+    assert conclusion_coverage.violations(text, path) == result  # deterministic
+    for lineno, detail in result:
+        assert 1 <= lineno <= max(n_lines, 1)
+        assert isinstance(detail, str) and detail

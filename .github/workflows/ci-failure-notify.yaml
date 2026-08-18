@@ -59,10 +59,13 @@ jobs:
   notify:
     name: File or update ci-failure issue
     # PR-triggered failures are already visible on the PR; only failures of
-    # push/schedule runs on the default branch go unnoticed. Skipped/cancelled
-    # conclusions are not failures.
+    # push/schedule runs on the default branch go unnoticed. The conclusion set
+    # is the whole terminal-red set check-conclusion-coverage declares:
+    # `cancelled` and `skipped` are not failures, but `timed_out`,
+    # `startup_failure` and `action_required` are.
     if: >-
-      github.event.workflow_run.conclusion == 'failure' &&
+      contains(fromJSON('["failure","timed_out","startup_failure","action_required"]'),
+      github.event.workflow_run.conclusion) &&
       (github.event.workflow_run.event == 'push' ||
        github.event.workflow_run.event == 'schedule') &&
       github.event.workflow_run.head_branch == github.event.repository.default_branch

@@ -57,6 +57,10 @@ DRIFT = "drift"
 # check_replacement_expansion reads a call's argument list in two languages, so it
 # takes the source files of both: JS/TS (including JSX/TSX) and Python.
 JS_OR_PYTHON = "js_or_python"
+# check_conclusion_coverage asks one question of three surfaces, because the
+# defect is three copies of one answer drifting apart: a workflow expression, a
+# shell test, and a Python comparison.
+SHELL_PYTHON_OR_WORKFLOW_YAML = "shell_python_or_workflow_yaml"
 
 # The file classes whose `#`/`//` comments the comment lints can read, and the
 # prose classes scanned line-by-line.
@@ -105,6 +109,7 @@ TIERS: dict[str, list[tuple[str, str]]] = {
         ("check_reusable_permissions", WORKFLOW),
         ("check_failure_notifier_coverage", WORKFLOW),
         ("check_cancellable_required_check", WORKFLOW),
+        ("check_conclusion_coverage", SHELL_PYTHON_OR_WORKFLOW_YAML),
         ("check_token_fallback", WORKFLOW),
         ("check_workflow_secret_names", WORKFLOW),
         ("check_pin_comment_truth", WORKFLOW),
@@ -163,6 +168,10 @@ def matches(path: str, kind: str) -> bool:
         return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS))
     if kind == REFERENCING_TEXT:
         return bool(tags & (_COMMENT_TAGS | _PROSE_TAGS | {"yaml"}))
+    if kind == SHELL_PYTHON_OR_WORKFLOW_YAML:
+        return bool(tags & {"shell", "python"}) or bool(
+            "yaml" in tags and _WORKFLOW_YAML.search(path.replace("\\", "/"))
+        )
     if kind == JS_OR_PYTHON:
         return bool(tags & {"python", "javascript", "jsx", "ts", "tsx"})
     if kind == DRIFT:

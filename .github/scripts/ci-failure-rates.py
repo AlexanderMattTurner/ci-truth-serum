@@ -91,6 +91,10 @@ def build_report(
             continue
         name = rec.get("name", "")
         runs[name] += 1
+        # allow-conclusion-subset: these records are JOBS, not runs. A job never
+        # carries `startup_failure` (the loader rejects a whole run before any
+        # job exists), and `action_required` is a wait for a human rather than a
+        # verdict, so neither belongs in a rate whose denominator is COUNTED.
         if conclusion in FAILED:
             failures[name] += 1
 

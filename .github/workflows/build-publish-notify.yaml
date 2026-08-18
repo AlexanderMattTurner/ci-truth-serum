@@ -43,8 +43,12 @@ permissions:
 jobs:
   notify:
     name: Notify on build/publish failure
+    # The conclusion set is the whole terminal-red set
+    # check-conclusion-coverage declares: a publish that times out, or that
+    # GitHub never started, is as red as one that failed.
     if: >-
-      github.event.workflow_run.conclusion == 'failure' &&
+      contains(fromJSON('["failure","timed_out","startup_failure","action_required"]'),
+      github.event.workflow_run.conclusion) &&
       github.event.workflow_run.event != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
