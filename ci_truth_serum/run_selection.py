@@ -139,6 +139,15 @@ def main(argv: list[str] | None = None) -> int:
             "reports a green it did not earn",
             file=sys.stderr,
         )
+        print(
+            f"  selected: {', '.join(selects)}; ignored: {', '.join(ignores) or 'nothing'}",
+            file=sys.stderr,
+        )
+        print(
+            "  remedy: drop an --ignore, or widen the selection; "
+            "--select all runs every check in the pack",
+            file=sys.stderr,
+        )
         return 2
 
     rc, unscanned = run_members([(c.module, c.kind) for c in chosen], files)

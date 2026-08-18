@@ -168,7 +168,11 @@ def test_an_empty_selection_exits_two(capsys):
     """The false green this refusal prevents: every selected check ignored away,
     zero checks run, exit 0."""
     assert rs.main(["--select", "tier:1", "--ignore", "tier:1"]) == 2
-    assert "matched no checks" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "matched no checks" in err
+    # The message names the selection that emptied and the way out of it.
+    assert "selected: tier:1; ignored: tier:1" in err
+    assert "--select all" in err
 
 
 def _repo_with_pr_paths_violation(tmp_path: Path) -> Path:
