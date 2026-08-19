@@ -489,6 +489,50 @@ def test_flags_uses_job_marked_required_true(tmp_path):
     assert "caller job name" in message
 
 
+USES_JOB_REQUIRED_TRUE_NO_PR_TRIGGER = """\
+name: x
+on:
+  push:
+    branches: [main]
+jobs:
+  scan:  # required-check: true
+    name: Vulnerability scan
+    uses: ./.github/workflows/decide-reusable.yaml
+"""
+
+USES_JOB_REQUIRED_TRUE_OPTED_OUT = f"""\
+name: x
+on:
+  pull_request:  # {crr.OPT_OUT}
+jobs:
+  scan:  # required-check: true
+    name: Vulnerability scan
+    uses: ./.github/workflows/decide-reusable.yaml
+"""
+
+
+def test_flags_uses_job_even_without_a_pr_trigger(tmp_path):
+    # sync-required-checks reads the marker from every workflow, on any
+    # trigger, so the reporter-classification early return must not shadow
+    # this rule for a push-only (or workflow_dispatch-only) workflow.
+    found = crr.check_file(
+        _write(tmp_path, "wf.yaml", USES_JOB_REQUIRED_TRUE_NO_PR_TRIGGER)
+    )
+    assert len(found) == 1
+    assert "uses:" in found[0][1]
+
+
+def test_flags_uses_job_even_when_workflow_opts_out(tmp_path):
+    # `# not-required-check` opts a workflow out of reporter classification,
+    # not out of the marker itself — sync-required-checks has no such
+    # opt-out, so a uses: job marked true here is just as broken.
+    found = crr.check_file(
+        _write(tmp_path, "wf.yaml", USES_JOB_REQUIRED_TRUE_OPTED_OUT)
+    )
+    assert len(found) == 1
+    assert "uses:" in found[0][1]
+
+
 def test_uses_job_marked_advisory_is_fine(tmp_path):
     assert crr.check_file(_write(tmp_path, "wf.yaml", USES_JOB_ADVISORY)) == []
 
@@ -496,7 +540,9 @@ def test_uses_job_marked_advisory_is_fine(tmp_path):
 def test_thin_reporter_needing_a_uses_job_is_fine(tmp_path):
     # The sanctioned shape: the marker sits on a plain reporter job that
     # `needs:` the `uses:` job, never on the `uses:` job itself.
-    assert crr.check_file(_write(tmp_path, "wf.yaml", USES_JOB_PLUS_THIN_REPORTER)) == []
+    assert (
+        crr.check_file(_write(tmp_path, "wf.yaml", USES_JOB_PLUS_THIN_REPORTER)) == []
+    )
 
 
 def test_main_reports_uses_job_violation(tmp_path, monkeypatch, capsys):

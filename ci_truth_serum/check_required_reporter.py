@@ -35,7 +35,10 @@ itself carry `# required-check: true`. GitHub reports that job's check run as
 `<caller job name> / <called job name>`, never the job's own `name:` — the
 name the apply workflow registers — so the ruleset would require a context
 nothing reports and every PR would hang. The marker belongs on a thin
-caller-local reporter job that `needs:` the call instead.
+caller-local reporter job that `needs:` the call instead. Unlike the
+reporter-classification rule above, this one applies to every workflow file:
+the apply workflow reads `# required-check: true` from any job, on any
+trigger, with no opt-out, so this check has the same unconditional scope.
 """
 
 import re
@@ -120,6 +123,23 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     if not isinstance(doc, dict):
         return []
 
+    jobs = doc.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return []
+
+    blocks = _job_blocks(text)
+    violations: list[tuple[int, str]] = []
+
+    # Applies to every workflow file, regardless of trigger or the
+    # not-required-check opt-out below: sync-required-checks reads
+    # `# required-check: true` from every job in every workflow
+    # (`_marked_jobs`, unfiltered by trigger), so a `uses:` job carrying it
+    # poisons the ruleset even off a pull_request trigger.
+    for name in _marked_jobs(blocks, jobs):
+        if "uses" in jobs[name]:
+            line, _block = blocks.get(name, (1, ""))
+            violations.append((line, _uses_job_required(name)))
+
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
     triggers = doc.get("on", doc.get(True))
     names = _trigger_names(triggers)
@@ -134,14 +154,8 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
             if out:
                 opted_out = True
     if pr_line is None or opted_out:
-        return []
+        return violations
 
-    jobs = doc.get("jobs", {})
-    if not isinstance(jobs, dict):
-        return []
-
-    blocks = _job_blocks(text)
-    violations: list[tuple[int, str]] = []
     for name in _reporter_names(jobs):
         line, block = blocks.get(name, (pr_line, ""))
         match = _CLASSIFY.search(_classification_text(block))
@@ -149,10 +163,6 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
             violations.append((line, _unclassified(name)))
         elif match.group(1) == "false" and not _REASON.search(match.group("rest")):
             violations.append((line, _no_reason(name)))
-    for name in _marked_jobs(blocks, jobs):
-        if "uses" in jobs[name]:
-            line, _block = blocks.get(name, (pr_line, ""))
-            violations.append((line, _uses_job_required(name)))
     return violations
 
 
