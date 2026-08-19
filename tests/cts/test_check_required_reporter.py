@@ -431,3 +431,77 @@ def test_main_returns_zero_on_opt_out(tmp_path, monkeypatch, capsys):
     wf = _point_at(tmp_path, monkeypatch)
     _write(wf, "opted-out.yaml", OPT_OUT_YAML)
     assert crr.main() == 0
+
+
+# ── uses: job marked required-check: true ──────────────────────────────────
+# GitHub reports a `uses:` (reusable-workflow-call) job's check run as
+# "<caller job name> / <called job name>", never the job's own `name:` — the
+# name `_marked_jobs`/`sync-required-checks` register. That mismatch means the
+# ruleset would require a context nothing ever reports.
+
+USES_JOB_REQUIRED_TRUE = """\
+name: x
+on:
+  pull_request:
+jobs:
+  scan:  # required-check: true
+    name: Vulnerability scan
+    uses: ./.github/workflows/decide-reusable.yaml
+"""
+
+USES_JOB_ADVISORY = """\
+name: x
+on:
+  pull_request:
+jobs:
+  scan:
+    name: Vulnerability scan
+    uses: ./.github/workflows/decide-reusable.yaml
+    # required-check: false  # advisory only
+"""
+
+USES_JOB_PLUS_THIN_REPORTER = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  scan-run:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+  scan:  # required-check: true
+    name: Vulnerability scan
+    needs: [decide, scan-run]
+    if: always()
+    runs-on: ubuntu-latest
+"""
+
+
+def test_flags_uses_job_marked_required_true(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", USES_JOB_REQUIRED_TRUE))
+    assert len(found) == 1
+    line, message = found[0]
+    assert line == 5  # `scan:` key line
+    assert "scan" in message
+    assert "uses:" in message
+    assert "caller job name" in message
+
+
+def test_uses_job_marked_advisory_is_fine(tmp_path):
+    assert crr.check_file(_write(tmp_path, "wf.yaml", USES_JOB_ADVISORY)) == []
+
+
+def test_thin_reporter_needing_a_uses_job_is_fine(tmp_path):
+    # The sanctioned shape: the marker sits on a plain reporter job that
+    # `needs:` the `uses:` job, never on the `uses:` job itself.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", USES_JOB_PLUS_THIN_REPORTER)) == []
+
+
+def test_main_reports_uses_job_violation(tmp_path, monkeypatch, capsys):
+    wf = _point_at(tmp_path, monkeypatch)
+    _write(wf, "bad.yaml", USES_JOB_REQUIRED_TRUE)
+    assert crr.main() == 1
+    out = capsys.readouterr().out
+    assert "::error file=.github/workflows/bad.yaml,line=5::" in out

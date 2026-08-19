@@ -28,6 +28,14 @@ cleanup job) demands a classification; mark such jobs `false` with a reason.
 
 Opt the whole workflow out with "# not-required-check" on its pull_request:
 trigger line (the same marker check-always-reporter honors).
+
+A second, unrelated rule shares this file because both police the same
+annotation: a job with a `uses:` key (a reusable-workflow call) may never
+itself carry `# required-check: true`. GitHub reports that job's check run as
+`<caller job name> / <called job name>`, never the job's own `name:` — the
+name the apply workflow registers — so the ruleset would require a context
+nothing reports and every PR would hang. The marker belongs on a thin
+caller-local reporter job that `needs:` the call instead.
 """
 
 import re
@@ -41,6 +49,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     annotated,
     _classification_text,
     _job_blocks,
+    _marked_jobs,
     is_always_reporter,
     workflow_files as _workflow_files,
 )
@@ -140,6 +149,10 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
             violations.append((line, _unclassified(name)))
         elif match.group(1) == "false" and not _REASON.search(match.group("rest")):
             violations.append((line, _no_reason(name)))
+    for name in _marked_jobs(blocks, jobs):
+        if "uses" in jobs[name]:
+            line, _block = blocks.get(name, (pr_line, ""))
+            violations.append((line, _uses_job_required(name)))
     return violations
 
 
@@ -158,6 +171,17 @@ def _no_reason(name: str) -> str:
         f"always() reporter job '{name}' is marked '# {MARKER}: false' but gives "
         "no reason — append '# <reason>' explaining why it is deliberately not a "
         "required check."
+    )
+
+
+def _uses_job_required(name: str) -> str:
+    return (
+        f"job '{name}' calls a reusable workflow (`uses:`) and is marked "
+        f"'# {MARKER}: true' — GitHub reports that job's check run as "
+        "'<caller job name> / <called job name>', never the job's own name:, so "
+        "the ruleset would require a context nothing reports and every PR would "
+        "hang. Move the marker to a thin caller-local reporter job that `needs:` "
+        f"'{name}' instead."
     )
 
 
