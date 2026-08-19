@@ -28,6 +28,17 @@ cleanup job) demands a classification; mark such jobs `false` with a reason.
 
 Opt the whole workflow out with "# not-required-check" on its pull_request:
 trigger line (the same marker check-always-reporter honors).
+
+A second, unrelated rule shares this file because both police the same
+annotation: a job with a `uses:` key (a reusable-workflow call) may never
+itself carry `# required-check: true`. GitHub reports that job's check run as
+`<caller job name> / <called job name>`, never the job's own `name:` — the
+name the apply workflow registers — so the ruleset would require a context
+nothing reports and every PR would hang. The marker belongs on a thin
+caller-local reporter job that `needs:` the call instead. Unlike the
+reporter-classification rule above, this one applies to every workflow file:
+the apply workflow reads `# required-check: true` from any job, on any
+trigger, with no opt-out, so this check has the same unconditional scope.
 """
 
 import re
@@ -41,6 +52,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     annotated,
     _classification_text,
     _job_blocks,
+    _marked_jobs,
     is_always_reporter,
     workflow_files as _workflow_files,
 )
@@ -111,6 +123,23 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     if not isinstance(doc, dict):
         return []
 
+    jobs = doc.get("jobs", {})
+    if not isinstance(jobs, dict):
+        return []
+
+    blocks = _job_blocks(text)
+    violations: list[tuple[int, str]] = []
+
+    # Applies to every workflow file, regardless of trigger or the
+    # not-required-check opt-out below: sync-required-checks reads
+    # `# required-check: true` from every job in every workflow
+    # (`_marked_jobs`, unfiltered by trigger), so a `uses:` job carrying it
+    # poisons the ruleset even off a pull_request trigger.
+    for name in _marked_jobs(blocks, jobs):
+        if "uses" in jobs[name]:
+            line, _block = blocks.get(name, (1, ""))
+            violations.append((line, _uses_job_required(name)))
+
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
     triggers = doc.get("on", doc.get(True))
     names = _trigger_names(triggers)
@@ -125,14 +154,8 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
             if out:
                 opted_out = True
     if pr_line is None or opted_out:
-        return []
+        return violations
 
-    jobs = doc.get("jobs", {})
-    if not isinstance(jobs, dict):
-        return []
-
-    blocks = _job_blocks(text)
-    violations: list[tuple[int, str]] = []
     for name in _reporter_names(jobs):
         line, block = blocks.get(name, (pr_line, ""))
         match = _CLASSIFY.search(_classification_text(block))
@@ -158,6 +181,17 @@ def _no_reason(name: str) -> str:
         f"always() reporter job '{name}' is marked '# {MARKER}: false' but gives "
         "no reason — append '# <reason>' explaining why it is deliberately not a "
         "required check."
+    )
+
+
+def _uses_job_required(name: str) -> str:
+    return (
+        f"job '{name}' calls a reusable workflow (`uses:`) and is marked "
+        f"'# {MARKER}: true' — GitHub reports that job's check run as "
+        "'<caller job name> / <called job name>', never the job's own name:, so "
+        "the ruleset would require a context nothing reports and every PR would "
+        "hang. Move the marker to a thin caller-local reporter job that `needs:` "
+        f"'{name}' instead."
     )
 
 

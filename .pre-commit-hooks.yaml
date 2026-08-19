@@ -193,7 +193,7 @@
 
 - id: check-required-reporter
   name: "opinionated: classify every always() reporter as required or advisory"
-  description: An unclassified always() reporter silently escapes the required-status-check set; mark it required-check true|false.
+  description: "An unclassified always() reporter silently escapes the required-status-check set; mark it required-check true|false. A required-check true marker on a uses: job also fails, since GitHub reports that job under a name the marker cannot predict."
   entry: python -m ci_truth_serum.check_required_reporter
   language: python
   additional_dependencies: [PyYAML]
