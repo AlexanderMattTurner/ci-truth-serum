@@ -772,12 +772,196 @@ PER_REF_CONCURRENCY_KEYS = (
 # A `${{ … }}` expression span. Non-greedy: each span ends at its own `}}`.
 _EXPR_SPAN = re.compile(r"\$\{\{(?P<expr>.*?)\}\}", re.DOTALL)
 
+# The events that dispatch a run against the ref the run is FOR, so `github.ref`
+# and `github.ref_name` name that ref and tell one run from another.
+REF_VARYING_EVENTS = frozenset(
+    {
+        "push",
+        "pull_request",  # refs/pull/<n>/merge — one per PR
+        "create",
+        "workflow_dispatch",  # the ref the caller chose
+        "merge_group",
+        "release",  # the release tag
+    }
+)
 
-def group_is_per_ref(group: str) -> bool:
-    """True if a concurrency `group:` expression carries a per-ref/per-PR/per-run
-    key INSIDE a `${{ … }}` expression span — meaning a superseding run is always
-    the same ref's newer run, which re-reports, so the group cannot strand a
-    required check. Outside a span the key is a literal: a group named
+# The events that pin `github.ref` to ONE string for every run. Most of them get
+# the default branch, because the event names no ref of its own.
+# `pull_request_target` is the trap in this set: it runs in the BASE repo, so
+# `github.ref` is the base branch. Every open PR onto `main` shares
+# `refs/heads/main` there, exactly as two scheduled runs do — `github.head_ref`
+# and the PR number are the only per-PR keys that event offers.
+REF_CONSTANT_EVENTS = frozenset(
+    {
+        "pull_request_target",
+        "issues",
+        "issue_comment",
+        "schedule",
+        "workflow_run",
+        "repository_dispatch",
+        "check_run",
+        "check_suite",
+        "status",
+        "label",
+        "milestone",
+        "discussion",
+        "discussion_comment",
+        "fork",
+        "watch",
+        "gollum",
+        "public",
+        "registry_package",
+        "page_build",
+        "branch_protection_rule",
+        "member",
+    }
+)
+
+# `github.head_ref` is set on a pull-request event and is EMPTY on every other
+# event.
+HEAD_REF_EVENTS = frozenset({"pull_request", "pull_request_target"})
+
+# The events whose payload carries the pull request, so `…pull_request.number`
+# is set. `github.event.number` is the top-level PR number, which only the two
+# pull-request events themselves carry.
+PR_PAYLOAD_EVENTS = HEAD_REF_EVENTS | {
+    "pull_request_review",
+    "pull_request_review_comment",
+}
+
+# The events this table models at all. An event outside it — a new GitHub event,
+# or a `workflow_call` whose context belongs to the CALLER — leaves every key
+# UNKNOWN, so the group stays unflagged. An event INSIDE it can still leave one
+# key unknown: `deployment` and `deployment_status` are absent because their
+# `github.ref` is whatever the deployment named (a branch, a tag, or nothing for
+# a raw SHA), and the review events are here for their PR number while their
+# `github.ref` falls through to UNKNOWN.
+_KNOWN_EVENTS = REF_VARYING_EVENTS | REF_CONSTANT_EVENTS | PR_PAYLOAD_EVENTS
+
+# Contexts that hold one value for the whole workflow. A group made only of
+# these is static, whatever the event. The list is short on purpose: an
+# unlisted context reads as UNKNOWN below, which keeps the group unflagged.
+_CONSTANT_CONTEXTS = frozenset(
+    {
+        "github.workflow",
+        "github.workflow_ref",
+        "github.repository",
+        "github.repository_owner",
+        "github.repository_id",
+        "github.event_name",
+        "github.job",
+        "github.actor",
+        "github.action",
+    }
+)
+
+# How a context behaves on one event: VARYING gives each ref its own group,
+# CONSTANT gives every run of that event the same group, EMPTY drops out of an
+# `||` chain, and UNKNOWN means this code cannot tell.
+_VARYING, _CONSTANT, _EMPTY, _UNKNOWN = "varying", "constant", "empty", "unknown"
+
+# One operand of an `||` chain: a dotted context path, or a single-quoted
+# literal (GitHub escapes a quote inside a literal by doubling it).
+_CONTEXT_ATOM = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_LITERAL_ATOM = re.compile(r"^'(?:[^']|'')*'$")
+
+
+def declared_events(doc: object) -> frozenset[str]:
+    """The event names a workflow's `on:` declares, for every `on:` spelling: a
+    scalar (`on: push`), a list (`on: [push, schedule]`), and a mapping. An
+    empty set means the triggers could not be read."""
+    triggers = workflow_triggers(doc)
+    if isinstance(triggers, str):
+        return frozenset({triggers})
+    if isinstance(triggers, (list, dict)):
+        return frozenset(str(name) for name in triggers)
+    return frozenset()
+
+
+def _atom_state(atom: str, event: str) -> str:
+    """How one `||` operand behaves on EVENT."""
+    if _LITERAL_ATOM.match(atom):
+        return _EMPTY if atom == "''" else _CONSTANT
+    if not _CONTEXT_ATOM.match(atom):
+        return _UNKNOWN
+    if atom in _CONSTANT_CONTEXTS:
+        return _CONSTANT
+    if atom in ("github.run_id", "github.run_number"):
+        return _VARYING  # a fresh value per run, on every event
+    if event not in _KNOWN_EVENTS:
+        return _UNKNOWN  # an event this table does not model — judge nothing
+    if atom in ("github.ref", "github.ref_name"):
+        if event in REF_VARYING_EVENTS:
+            return _VARYING
+        # A known event can still leave the ref unknown: the review events are
+        # modelled for their PR number alone. Decline rather than guess.
+        return _CONSTANT if event in REF_CONSTANT_EVENTS else _UNKNOWN
+    if atom == "github.head_ref":
+        return _VARYING if event in HEAD_REF_EVENTS else _EMPTY
+    if atom == "github.event.number":
+        return _VARYING if event in HEAD_REF_EVENTS else _EMPTY
+    if atom.endswith("pull_request.number"):
+        return _VARYING if event in PR_PAYLOAD_EVENTS else _EMPTY
+    return _UNKNOWN
+
+
+def _or_atoms(expr: str) -> list[str] | None:
+    """The operands of EXPR when it is a plain `||` chain, else None.
+
+    Only the chain shape is recognized. Any other expression — a comparison, a
+    function call, `&&`, a parenthesis — returns None, which the caller reads as
+    UNKNOWN and leaves alone. This is a recognizer, not a parser of GitHub's
+    expression grammar: it either sees the one shape it knows or it declines.
+    """
+    atoms: list[str] = []
+    current: list[str] = []
+    quoted = False
+    index = 0
+    while index < len(expr):
+        char = expr[index]
+        if char == "'":
+            quoted = not quoted
+        if not quoted and expr.startswith("||", index):
+            atoms.append("".join(current))
+            current = []
+            index += 2
+            continue
+        current.append(char)
+        index += 1
+    if quoted:
+        return None  # an unterminated literal — the shape is not what it seems
+    atoms.append("".join(current))
+    stripped = [atom.strip() for atom in atoms]
+    if any(not atom for atom in stripped):
+        return None
+    return stripped
+
+
+def _span_state(expr: str, event: str) -> str:
+    """How one `${{ … }}` span behaves on EVENT. An `||` chain takes the value of
+    its FIRST operand that is not empty, so the walk stops on the first operand
+    that is set."""
+    atoms = _or_atoms(expr)
+    if atoms is None:
+        return _UNKNOWN
+    for atom in atoms:
+        state = _atom_state(atom, event)
+        if state != _EMPTY:
+            return state
+    return _CONSTANT  # every operand is empty — the span contributes nothing
+
+
+def _group_varies_on(group: str, event: str) -> bool:
+    """True if GROUP still gives each ref its own value on EVENT."""
+    return any(
+        _span_state(span.group("expr"), event) in (_VARYING, _UNKNOWN)
+        for span in _EXPR_SPAN.finditer(group)
+    )
+
+
+def group_has_per_ref_key(group: str) -> bool:
+    """True if GROUP names a per-ref/per-PR/per-run key INSIDE a `${{ … }}`
+    expression span. Outside a span the key is a literal: a group named
     `"github.ref-shared"` is one static string for every ref, so a bare
     substring match would fail open exactly on the workflows this guard exists
     to flag."""
@@ -785,6 +969,67 @@ def group_is_per_ref(group: str) -> bool:
         key in span.group("expr")
         for span in _EXPR_SPAN.finditer(group)
         for key in PER_REF_CONCURRENCY_KEYS
+    )
+
+
+def group_collapse_event(group: str, events: Iterable[str]) -> str | None:
+    """The first declared event under which GROUP stops naming the ref, else None.
+
+    A key inside the group is not the same as a key that HOLDS a value. GitHub
+    leaves `github.head_ref` empty off a pull-request event. GitHub sets
+    `github.ref` to the default branch on an event that carries no ref of its
+    own, such as `workflow_run`, `issue_comment`, or `schedule`.
+
+    Take the house group `${{ github.workflow }}-${{ github.head_ref ||
+    github.ref }}` on a workflow that fires on `pull_request` and on
+    `workflow_run`. A pull-request run puts the PR branch in the group. A
+    `workflow_run` run puts `refs/heads/main` there, and so does every other
+    `workflow_run` run of that workflow. Those runs all share one slot, which is
+    the static-group hazard the caller reports.
+
+    Three cases count as varying, so a group is only reported when its collapse
+    is certain: an operand this code cannot classify, an expression that is not
+    a plain `||` chain, and an event outside the table above.
+    """
+    return next(
+        (event for event in sorted(events) if not _group_varies_on(group, event)),
+        None,
+    )
+
+
+def group_is_per_ref(group: str, events: Iterable[str] = ()) -> bool:
+    """True if a concurrency `group:` expression names the ref on every event
+    EVENTS lists — meaning a superseding run is always the same ref's newer run,
+    which re-reports, so the group cannot strand a required check.
+
+    Pass the workflow's declared events (see `declared_events`) to get the
+    second half of the question answered: a key that is EMPTY or fixed on one of
+    those events collapses the group to a static string for every run of that
+    event. With no events the key's presence is all that is judged.
+    """
+    if not group_has_per_ref_key(group):
+        return False
+    return group_collapse_event(group, events) is None
+
+
+def static_group_reason(group: str, events: Iterable[str]) -> str:
+    """The opening sentence a concurrency lint reports for a static GROUP.
+
+    One SSOT: both lints describe the same group with the same words, and a
+    group that goes static only on one of its events names that event.
+    """
+    collapsed = (
+        group_collapse_event(group, events) if group_has_per_ref_key(group) else None
+    )
+    if collapsed is None:
+        return (
+            "workflow-level concurrency.group is static (no github.ref / "
+            "github.head_ref key)."
+        )
+    return (
+        "workflow-level concurrency.group collapses to one static string on a "
+        f"'{collapsed}' run. Its per-ref key is empty or fixed on that event, so "
+        f"every '{collapsed}' run of this workflow shares one slot."
     )
 
 

@@ -25,6 +25,14 @@ same ref's newer run, which re-reports); moving the `concurrency:` block onto th
 expensive job avoids it (the run + reporter always execute and a superseded run
 goes definitively red); `cancel-in-progress: false` avoids the cancellation.
 
+"Static" covers a group whose per-ref key holds no distinct value on one of the
+workflow's events, not only a group that names no key at all. GitHub leaves
+`github.head_ref` empty off a pull-request event, and sets `github.ref` to the
+default branch on an event that carries no ref of its own. So
+`${{ github.workflow }}-${{ github.head_ref || github.ref }}` is per-PR on a
+pull-request run and one fixed string on every `schedule` run. The message names
+the event that flattens the group. See `_linecheck.group_collapse_event`.
+
 Keyed off the explicit `# required-check: true` marker (mandatory on such
 workflows), so false positives are low: this repo's required-check workflows all
 use per-ref cancellable groups — the blessed pattern — and none are flagged.
@@ -41,9 +49,11 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    declared_events,
     group_is_per_ref,
     opted_out,
     required_check_contexts,
+    static_group_reason,
     workflow_files,
 )
 
@@ -110,7 +120,8 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
         return None
 
     group = str(conc.get("group", ""))
-    if group_is_per_ref(group):
+    events = declared_events(doc)
+    if group_is_per_ref(group, events):
         return None  # per-ref / per-PR group — only superseded by its own ref
     if not _is_cancellable(conc.get("cancel-in-progress")):
         return None  # not cancel-on-supersede — nothing tears down the reporter
@@ -121,14 +132,16 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
 
     line = _concurrency_line(text)
     return line, (
-        "workflow-level concurrency.group is static (no github.ref / "
-        "github.head_ref key) AND cancellable (cancel-in-progress truthy) on a "
-        "workflow that declares a required check ('# required-check: true'). A "
+        f"{static_group_reason(group, events)} The group is also cancellable "
+        "(cancel-in-progress truthy), and this workflow declares a required "
+        "check ('# required-check: true'). A "
         "sibling ref's run shares the one static slot and cancels this run "
         "wholesale — the workflow-level cancel tears down the always() reporter "
         "too, no status posts for this ref's head, and the required check hangs "
-        "at 'Expected — Waiting' forever. Key the group per-ref/per-PR "
-        "(github.ref / github.head_ref / pull_request.number), move the "
+        "at 'Expected — Waiting' forever. Key the group on something that holds "
+        "a distinct value on EVERY event this workflow declares (github.run_id "
+        "always does; github.head_ref and pull_request.number hold one only on a "
+        "pull-request event), move the "
         "concurrency: block onto the expensive job so the run + reporter always "
         f"execute, or set cancel-in-progress: false. Add '# {OPT_OUT}' if this "
         "static cancellable group is deliberate and known-safe."

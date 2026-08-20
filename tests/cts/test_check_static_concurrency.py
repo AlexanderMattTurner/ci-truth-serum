@@ -77,6 +77,36 @@ def test_per_ref_group_on_required_check_is_clean(tmp_path):
     assert sc.check_file(_write(tmp_path, body)) is None
 
 
+def test_group_that_empties_off_a_pull_request_is_an_error(tmp_path):
+    """The house group holds the PR branch on a pull_request run and the default
+    branch on a workflow_run run — one string every workflow_run run shares. The
+    key is spelled in the group, so the substring pass called it safe."""
+    body = (
+        "name: x\non:\n  pull_request:\n  workflow_run:\n"
+        "    workflows: [ci]\n    types: [completed]\n"
+        "concurrency:\n"
+        "  group: x-${{ github.head_ref || github.ref }}\n"
+        "  cancel-in-progress: true\n" + REQUIRED_CHECK_JOBS
+    )
+    result = sc.check_file(_write(tmp_path, body))
+    assert result is not None
+    _line, message = result
+    assert "workflow_run" in message
+    assert "static" in message
+
+
+def test_run_id_fallback_keeps_the_group_per_run(tmp_path):
+    """github.run_id is fresh on every run of every event, so the same shape with
+    a run_id fallback is the fix, not another finding."""
+    body = (
+        "name: x\non:\n  pull_request:\n  schedule:\n    - cron: '0 6 * * 1'\n"
+        "concurrency:\n"
+        "  group: x-${{ github.event.pull_request.number || github.run_id }}\n"
+        "  cancel-in-progress: true\n" + REQUIRED_CHECK_JOBS
+    )
+    assert sc.check_file(_write(tmp_path, body)) is None
+
+
 def test_static_group_without_reporter_shape_is_clean(tmp_path):
     """A globally-serialized workflow that is NOT a required check (no decide gate
     + always() reporter) keeps its static lock — e.g. release/tag workflows."""

@@ -13,6 +13,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 from tests._helpers import HOOKS_DIR, load_hook
 
@@ -613,6 +614,120 @@ def test_job_concurrency_line(block, expected: int) -> None:
 )
 def test_group_is_per_ref_requires_expression_span(group: str, per_ref: bool) -> None:
     assert lc.group_is_per_ref(group) is per_ref
+
+
+# ── group_is_per_ref: the key must also HOLD a value on every declared event ──
+# A key inside the group is not a key with a value in it. `github.head_ref` is
+# empty off a pull request, and `github.ref` is the default branch on an event
+# that carries no ref of its own, so the house group goes static on those
+# events. The substring pass called all of these safe.
+HOUSE_GROUP = "${{ github.workflow }}-${{ github.head_ref || github.ref }}"
+
+
+@pytest.mark.parametrize(
+    "group,events,per_ref",
+    [
+        # The house group: per-PR on a pull request, per-branch on a push…
+        (HOUSE_GROUP, ["pull_request"], True),
+        (HOUSE_GROUP, ["pull_request", "push"], True),
+        # …and ONE string on an event that carries no ref of its own.
+        (HOUSE_GROUP, ["pull_request", "workflow_run"], False),
+        (HOUSE_GROUP, ["schedule"], False),
+        (HOUSE_GROUP, ["issue_comment"], False),
+        # pull_request_target runs in the BASE repo, so github.ref is the base
+        # branch: every open PR onto main shares refs/heads/main…
+        ("x-${{ github.ref }}", ["pull_request_target"], False),
+        ("x-${{ github.ref_name }}", ["pull_request_target"], False),
+        # …while github.head_ref and the PR number stay per-PR there.
+        (HOUSE_GROUP, ["pull_request_target"], True),
+        ("x-${{ github.event.pull_request.number }}", ["pull_request_target"], True),
+        # The review events are modelled for their PR number. Their github.ref
+        # is not modelled, so a group keyed on it is declined, not flagged.
+        ("x-${{ github.ref }}", ["pull_request_review"], True),
+        # A deployment names the ref it deploys — a branch, a tag, or nothing at
+        # all for a raw SHA — so that event is not modelled either.
+        ("x-${{ github.ref }}", ["deployment"], True),
+        # head_ref with no fallback is empty on every non-PR event.
+        ("x-${{ github.head_ref }}", ["pull_request"], True),
+        ("x-${{ github.head_ref }}", ["pull_request", "push"], False),
+        # A PR number is set on a review event too, but on nothing else.
+        ("x-${{ github.event.pull_request.number }}", ["pull_request_review"], True),
+        ("x-${{ github.event.pull_request.number }}", ["schedule"], False),
+        # github.run_id is fresh on every run of every event.
+        ("x-${{ github.run_id }}", ["workflow_run", "schedule"], True),
+        (
+            "x-${{ github.event.pull_request.number || github.run_id }}",
+            ["schedule"],
+            True,
+        ),
+        # A literal fallback is a fixed string, so the group goes static.
+        ("x-${{ github.head_ref || 'main' }}", ["pull_request", "push"], False),
+        # An operand this code cannot classify may well be per-ref: leave it.
+        (
+            "x-${{ github.event.workflow_run.head_branch || github.ref }}",
+            ["workflow_run"],
+            True,
+        ),
+        # An expression that is not a plain `||` chain is not judged either.
+        (
+            "x-${{ github.event_name == 'push' && github.ref || github.head_ref }}",
+            ["workflow_run"],
+            True,
+        ),
+        # An event outside the table (here the caller's own) is not judged.
+        (HOUSE_GROUP, ["workflow_call"], True),
+        # No events at all: the key's presence is all that can be judged.
+        (HOUSE_GROUP, [], True),
+        # A group with no key stays static whatever the events are.
+        ("static-lock", ["pull_request"], False),
+    ],
+)
+def test_group_is_per_ref_reads_the_key_under_each_event(
+    group: str, events: list[str], per_ref: bool
+) -> None:
+    assert lc.group_is_per_ref(group, events) is per_ref
+
+
+def test_group_collapse_event_names_the_event() -> None:
+    """The lint message says WHICH event flattens the group, so a reader can
+    check the claim against the workflow's own `on:` block."""
+    assert lc.group_collapse_event(HOUSE_GROUP, ["pull_request", "workflow_run"]) == (
+        "workflow_run"
+    )
+    assert lc.group_collapse_event(HOUSE_GROUP, ["pull_request", "push"]) is None
+
+
+@pytest.mark.parametrize(
+    "group,events,expected",
+    [
+        # No key at all — the original wording, unchanged.
+        ("static-lock", ["push"], "is static (no github.ref / github.head_ref key)"),
+        # A key that empties out — the wording names the event.
+        (HOUSE_GROUP, ["schedule"], "collapses to one static string on a 'schedule'"),
+    ],
+)
+def test_static_group_reason_distinguishes_the_two_failures(
+    group: str, events: list[str], expected: str
+) -> None:
+    assert expected in lc.static_group_reason(group, events)
+
+
+@pytest.mark.parametrize(
+    "on_block,expected",
+    [
+        ("on: push\n", {"push"}),
+        ("on: [push, schedule]\n", {"push", "schedule"}),
+        (
+            "on:\n  pull_request:\n  workflow_dispatch:\n",
+            {"pull_request", "workflow_dispatch"},
+        ),
+        # `on:` reaches PyYAML as the boolean True (YAML 1.1) — read either key.
+        ("'on':\n  push:\n", {"push"}),
+        ("name: x\n", set()),
+    ],
+)
+def test_declared_events(on_block: str, expected: set) -> None:
+    assert lc.declared_events(yaml.safe_load(on_block)) == expected
 
 
 # ── is_test_path: one predicate, two consumers ───────────────────────────
