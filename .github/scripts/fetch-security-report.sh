@@ -66,8 +66,13 @@ gh_api_section \
 # Skip when there's no Node project — setup-base-env leaves pnpm uninstalled
 # in that case, and `pnpm audit` would error out instead of returning "clean".
 if [[ -f package.json ]]; then
-  pnpm audit 2>&1 | head -100 >>"$REPORT_PATH"
-  pnpm_rc=${PIPESTATUS[0]}
+  # Read pnpm's status from the command itself, and cap the report copy with a
+  # consumer that reaches EOF. Capping with `head -100` instead would close the
+  # pipe on any audit longer than that, SIGPIPE pnpm, and leave PIPESTATUS
+  # holding 141 — reporting "audit encountered an error" for a run that worked.
+  pnpm_output=$(pnpm audit 2>&1)
+  pnpm_rc=$?
+  printf '%s\n' "$pnpm_output" | awk 'NR <= 100' >>"$REPORT_PATH" # stderr-merge-ok: copied verbatim into the report so a reader sees pnpm's own diagnostics; never parsed or compared
   # Exit 0 = clean, exit 1 = vulnerabilities found (expected); higher = real error
   # echo-fallback-ok: the string is prose in the report a human and the triage
   # model read, never a value any code parses, and it STATES the incompleteness
