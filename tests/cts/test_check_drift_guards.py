@@ -93,7 +93,9 @@ def test_justification(decorator_src: str, expected: str | None) -> None:
     ],
 )
 def test_violations_flags_unmarked_drift_guard(src: str) -> None:
-    assert mod.violations(src) == [(1, "test_a")]
+    # The finding sits on the DOCSTRING, which is what declares the guard — not
+    # on the `def` line above it.
+    assert mod.violations(src) == [(2, "test_a", "phrase")]
 
 
 def test_violations_passes_justified_drift_guard() -> None:
@@ -113,7 +115,7 @@ def test_module_docstring_declaration_is_a_finding() -> None:
     # The escape the per-function routes missed: the sentence moves one scope up,
     # and the tests below it need no guard name and no visible comparison.
     src = f'"""These tests must stay in sync with the live config."""\n{_PLAIN_TEST}'
-    assert mod.violations(src) == [(1, "<module>")]
+    assert mod.violations(src) == [(1, "<module>", "module")]
 
 
 def test_module_docstring_without_guard_intent_is_silent() -> None:
@@ -158,7 +160,7 @@ def test_an_unjustified_pytestmark_does_not_clear_the_module(
     pytestmark_src: str,
 ) -> None:
     src = f'"""These tests must stay in sync with the live config."""\n{pytestmark_src}\n{_PLAIN_TEST}'
-    assert mod.violations(src) == [(1, "<module>")]
+    assert mod.violations(src) == [(1, "<module>", "module")]
 
 
 @pytest.mark.parametrize(
@@ -166,7 +168,7 @@ def test_an_unjustified_pytestmark_does_not_clear_the_module(
     [
         # pytest collects the LAST binding, so a rebinding drops the reason with
         # it and the file is unjustified again.
-        ("pytest.mark.unit", [(1, "<module>")]),
+        ("pytest.mark.unit", [(1, "<module>", "module")]),
         ('[pytest.mark.drift_guard("the values cross a process boundary")]', []),
     ],
 )
@@ -196,7 +198,7 @@ def test_the_module_finding_joins_the_per_test_ones_in_line_order() -> None:
         '"""These tests must stay in sync with the live config."""\n'
         'def test_a():\n    """a drift-guard on the config"""\n'
     )
-    assert mod.violations(src) == [(1, "<module>"), (2, "test_a")]
+    assert mod.violations(src) == [(1, "<module>", "module"), (3, "test_a", "phrase")]
 
 
 # ── Laundered authority: a comment calling a copy a source of truth ───────────
@@ -251,7 +253,7 @@ def test_violations_flags_a_laundered_body_comment() -> None:
         "    # canonical char set, mirrored from the per-layer suites\n"
         "    assert SHELL_CHARS == PY_CHARS\n"
     )
-    assert mod.violations(src) == [(1, "test_shell_and_python_agree")]
+    assert mod.violations(src) == [(2, "test_shell_and_python_agree", "phrase")]
 
 
 def test_laundered_comment_cleared_by_marker() -> None:
@@ -275,7 +277,7 @@ def test_laundering_is_not_cleared_by_the_structural_optout() -> None:
         "    # canonical char set, mirrored from the per-layer suites\n"
         "    assert SHELL_CHARS == PY_CHARS\n"
     )
-    assert mod.violations(src) == [(1, "test_shell_and_python_agree")]
+    assert mod.violations(src) == [(3, "test_shell_and_python_agree", "phrase")]
 
 
 @pytest.mark.parametrize("token", ["not-a-drift-guard", "drift-guard-ok"])
@@ -322,7 +324,7 @@ def test_a_faked_optout_in_a_string_literal_does_not_suppress() -> None:
         "    hint = 'add a # not-a-drift-guard: <reason> comment'\n"
         "    assert sorted(EXAMPLES.keys()) == sorted(live)\n"
     )
-    assert mod.violations(src) == [(1, "test_examples_cover_the_config")]
+    assert mod.violations(src) == [(1, "test_examples_cover_the_config", "structural")]
 
 
 def test_laundering_pass_reaches_non_python_suites(
@@ -450,7 +452,9 @@ def test_structural_trigger_catches_laundered_guard() -> None:
     """A guard that avoids every intent phrase (calls itself an 'SSOT-coverage
     contract') is still caught by the copies-agree structure: it reads a source
     and asserts an UPPER_CASE constant's keys equal it."""
-    assert mod.violations(_LAUNDERED_GUARD) == [(1, "test_examples_cover_the_config")]
+    assert mod.violations(_LAUNDERED_GUARD) == [
+        (1, "test_examples_cover_the_config", "structural")
+    ]
 
 
 def test_structural_trigger_cleared_by_marker() -> None:
@@ -518,7 +522,7 @@ def test_assert_count_equal_needs_a_maintained_copy() -> None:
         "    self.assertCountEqual(got, EXPECTED_SET)\n"
     )
     assert mod.violations(non_guard) == []
-    assert mod.violations(guard) == [(1, "test_x")]
+    assert mod.violations(guard) == [(1, "test_x", "structural")]
 
 
 # ── the read may sit outside the function that compares against it ────────────
@@ -553,7 +557,7 @@ _HOISTED_GUARDS = {
 
 @pytest.mark.parametrize("src", _HOISTED_GUARDS.values(), ids=list(_HOISTED_GUARDS))
 def test_a_hoisted_read_still_reads_as_a_guard(src: str) -> None:
-    assert [name for _, name in mod.violations(src)] == [
+    assert [hit.name for hit in mod.violations(src)] == [
         "test_examples_cover_the_config"
     ]
 
@@ -613,14 +617,16 @@ _FANNED_OUT = (
 
 
 def test_a_fanned_out_guard_is_flagged() -> None:
-    assert mod.violations(_FANNED_OUT) == [(4, "test_detector_matches_config")]
+    assert mod.violations(_FANNED_OUT) == [
+        (4, "test_detector_matches_config", "structural")
+    ]
 
 
 def test_a_fanned_out_guard_reads_list_form_argnames() -> None:
     """`parametrize` takes its argnames as a comma-separated string OR as a list
     of strings. A guard must not clear by choosing the second spelling."""
     src = _FANNED_OUT.replace('"name, opts"', '["name", "opts"]')
-    assert mod.violations(src) == [(4, "test_detector_matches_config")]
+    assert mod.violations(src) == [(4, "test_detector_matches_config", "structural")]
 
 
 @pytest.mark.parametrize(
@@ -696,7 +702,9 @@ def test_an_extraction_from_the_source_is_still_the_source() -> None:
         "    revs = _REV.findall(readme)\n"
         "    assert set(revs) == {expected}\n"
     )
-    assert mod.violations(src) == [(1, "test_readme_rev_pins_name_the_released_tag")]
+    assert mod.violations(src) == [
+        (1, "test_readme_rev_pins_name_the_released_tag", "structural")
+    ]
 
 
 def test_a_fixture_that_reads_only_to_write_supplies_no_source() -> None:
@@ -822,6 +830,155 @@ def test_main_accepts_annotated_non_python_guard(tmp_path: Path) -> None:
     assert mod.main([str(good)]) == 0
 
 
+# ── a finding points at the line that DECLARES the guard ─────────────────────
+# The bug: every route reported the enclosing `def`, so a docstring that declares
+# the guard four lines down sent the reader to a line that says nothing.
+
+
+_DECLARING_LINES = {
+    # The reported shape, from a real `tests/test_sbx_egress_filter.py`.
+    "docstring below the def": (
+        "def test_hosts():\n"
+        '    """Check the allow list.\n'
+        "\n"
+        "    The two host tables can't drift apart.\n"
+        '    """\n'
+        "    assert f() == 1\n",
+        4,
+    ),
+    # The name IS on the `def` line, so that route's anchor does not move.
+    "name on the def line": (
+        "def test_hosts_must_stay_in_sync():\n    assert f() == 1\n",
+        1,
+    ),
+    "name under a decorator": (
+        "@pytest.mark.slow\ndef test_hosts_must_stay_in_sync():\n    assert f() == 1\n",
+        2,
+    ),
+    "laundered body comment": (
+        "def test_hosts():\n"
+        "    assert f() == 1\n"
+        "    # the canonical rows, mirrored from the loader\n"
+        "    assert g() == 2\n",
+        3,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "src, line", _DECLARING_LINES.values(), ids=list(_DECLARING_LINES)
+)
+def test_a_phrase_hit_lands_on_the_declaring_line(src: str, line: int) -> None:
+    assert [hit.line for hit in mod.violations(src)] == [line]
+
+
+def test_a_structural_hit_lands_on_the_def() -> None:
+    """The control for the case above: the structure IS the whole function, so
+    there is no one line to point at and the `def` stays the anchor."""
+    src = (
+        "def test_examples_cover_the_config():\n"
+        "    live = json.load(open('detectors.json'))\n"
+        "    assert sorted(EXAMPLES.keys()) == sorted(live)\n"
+    )
+    assert mod.violations(src) == [(1, "test_examples_cover_the_config", "structural")]
+
+
+def test_a_phrase_split_over_two_literals_lands_on_the_first() -> None:
+    """The docstring the AST hands back is joined and re-indented, so a phrase can
+    match it and match no single line of the file. The literal's first line
+    answers for that, because the finding needs a line in the file."""
+    src = 'def test_a():\n    ("the two must stay in "\n     "sync")\n'
+    assert mod.violations(src) == [(2, "test_a", "phrase")]
+
+
+# ── the hatch each route accepts ──────────────────────────────────────────────
+
+
+def test_a_phrase_hit_clears_with_the_allow_annotation() -> None:
+    """`# not-a-drift-guard:` clears a structural hit only, so a phrasing hit used
+    to have no annotation at all — the author had to reword the sentence, which is
+    the laundering this check exists to stop. The annotation the JS and shell pass
+    already takes now states the reason here too."""
+    src = (
+        "def test_a():\n"
+        '    """drift guard: lists agree"""\n'
+        "    # drift-guard-ok: the vendor owns the upstream list\n"
+        "    assert f() == 1\n"
+    )
+    assert mod.violations(src) == []
+
+
+def test_the_allow_annotation_clears_a_structural_hit_too() -> None:
+    """`drift-guard-ok:` states the reason a guard is necessary, so it answers a
+    hit from either route. `not-a-drift-guard:` says the opposite — that the
+    equality is no guard — which is why that one clears the structural route
+    alone."""
+    src = (
+        "def test_examples_cover_the_config():\n"
+        "    live = json.load(open('detectors.json'))\n"
+        "    # drift-guard-ok: the vendor owns detectors.json\n"
+        "    assert sorted(EXAMPLES.keys()) == sorted(live)\n"
+    )
+    assert mod.violations(src) == []
+
+
+def test_a_reasonless_allow_annotation_does_not_clear_a_phrase_hit() -> None:
+    src = (
+        "def test_a():\n"
+        '    """drift guard: lists agree"""\n'
+        "    # drift-guard-ok\n"
+        "    assert f() == 1\n"
+    )
+    assert mod.violations(src) == [(2, "test_a", "phrase")]
+
+
+def test_the_module_declaration_takes_pytestmark_and_not_an_annotation() -> None:
+    """A file-wide claim needs a file-wide answer. An annotation sits in one
+    function and says nothing about the tests beside it."""
+    src = (
+        '"""These tests must stay in sync with the live config."""\n'
+        "# drift-guard-ok: the upstream value is not ours\n"
+        f"{_PLAIN_TEST}"
+    )
+    assert mod.violations(src) == [(1, "<module>", "module")]
+
+
+_HATCH_BY_ROUTE = {
+    "phrase": (
+        'def test_a():\n    """drift guard: lists agree"""\n',
+        "drift-guard-ok:",
+        "not-a-drift-guard:",
+    ),
+    "structural": (
+        "def test_a():\n"
+        "    live = json.load(open('detectors.json'))\n"
+        "    assert sorted(EXAMPLES.keys()) == sorted(live)\n",
+        "not-a-drift-guard:",
+        "drift-guard-ok:",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "src, hatch, other", _HATCH_BY_ROUTE.values(), ids=list(_HATCH_BY_ROUTE)
+)
+def test_main_names_the_hatch_the_route_accepts(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    src: str,
+    hatch: str,
+    other: str,
+) -> None:
+    """One remedy sentence served both routes and named the structural hatch. An
+    author who took that advice on a phrasing hit watched the finding stand."""
+    bad = tmp_path / "bad.py"
+    bad.write_text(src, encoding="utf-8")
+    assert mod.main([str(bad)]) == 1
+    err = capsys.readouterr().err
+    assert hatch in err
+    assert other not in err
+
+
 def test_main_returns_one_on_violation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -829,7 +986,7 @@ def test_main_returns_one_on_violation(
     bad.write_text('def test_a():\n    """drift guard: x"""\n', encoding="utf-8")
     assert mod.main([str(bad)]) == 1
     err = capsys.readouterr().err
-    assert f"{bad}:1: drift guard 'test_a' lacks a justification" in err
+    assert f"{bad}:2: drift guard 'test_a' lacks a justification" in err
 
 
 def test_main_returns_zero_when_clean(tmp_path: Path) -> None:
@@ -918,7 +1075,7 @@ def test_own_test_tree_is_clean() -> None:
         for p in sorted((REPO_ROOT / "tests").rglob("*.py"))
         for rel in [str(p.relative_to(REPO_ROOT))]
         if not exclude.match(rel)
-        for lineno, name in mod.violations(p.read_text(encoding="utf-8"))
+        for lineno, name, _ in mod.violations(p.read_text(encoding="utf-8"))
     ]
     assert offenders == []
 

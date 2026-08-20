@@ -97,6 +97,20 @@ function body, on a decorator, or in the comment block directly above:
 
     # not-a-drift-guard: <why this collection equality is not two copies>
 
+That opt-out clears route 2 ONLY. A self-declaration is not a false positive, so
+routes 1, 1a, and 1b need the marker, or the annotation the non-Python pass uses:
+
+    # drift-guard-ok: <why a true SSOT is infeasible>
+
+Put that annotation in the same window as the opt-out. A route 1 phrase usually
+sits in a DOCSTRING, and a comment cannot go inside a docstring.
+
+Each finding points at the line that DECLARES the guard. Route 1 points at the
+`def` line for a guard NAME, and at the docstring line for a guard DOCSTRING.
+Route 1b points at the comment. Route 2 points at the `def` line, because the
+structure is the whole function. Each message names the hatch that its own route
+accepts, so a reader never reads about an escape this check ignores.
+
 Copies-agree tests also live in JavaScript, in TypeScript (``*.test.mjs``), and
 in shell suites. Those carry no ``@pytest.mark``. A sibling phrase pass covers
 them (``text_violations``). Any line that expresses drift-guard intent must carry
@@ -131,6 +145,7 @@ import sys
 import tokenize
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -168,6 +183,27 @@ _MARKER = "drift_guard"
 # The name a file-wide finding carries, in place of a test's. A module docstring
 # declares the FILE a guard, and picking one test to blame would be a guess.
 _MODULE = "<module>"
+
+# Which route found a guard. The route decides the remedy the message states, so
+# a finding carries it out of `violations` instead of `main` guessing it back.
+_PHRASE_ROUTE = "phrase"
+_STRUCTURAL_ROUTE = "structural"
+_MODULE_ROUTE = "module"
+
+
+class Finding(NamedTuple):
+    """One unjustified guard: the line that DECLARES it, the test's name, and the
+    route that found it.
+
+    `line` is the declaring line, not the enclosing `def`. A docstring that says
+    "must stay in sync" can sit many lines below the `def`, and the author has to
+    read the sentence to act on the finding.
+    """
+
+    line: int
+    name: str
+    route: str
+
 
 # The non-Python opt-out: a comment `drift-guard-ok: <reason>` with a non-empty
 # reason. (The bare token `drift-guard` inside it also matches _GUARD_RE, but the
@@ -237,11 +273,14 @@ def _source_span(node: ast.FunctionDef | ast.AsyncFunctionDef) -> range:
     return range(start, (node.end_lineno or node.lineno) + 1)
 
 
-def _self_declares(
+def _laundering_line(
     node: ast.FunctionDef | ast.AsyncFunctionDef, comments: dict[int, str]
-) -> bool:
-    """True when a comment inside NODE's line span launders a copy as
-    authoritative.
+) -> int | None:
+    """The FIRST line inside NODE's span whose comment launders a copy as
+    authoritative, or None.
+
+    The line is the finding's anchor, so a reader lands on the sentence that
+    declares the guard rather than on the `def` above it.
 
     An annotation comment is skipped: `# not-a-drift-guard: …` and
     `# drift-guard-ok: …` both spell the token they exist to excuse, and a reason
@@ -255,12 +294,16 @@ def _self_declares(
     cannot drift into rejecting valid requests").
     """
     span = _source_span(node)
-    return any(
-        _launders(body)
-        for line, body in comments.items()
-        if line in span
-        and not _OPTOUT_RE.search(body)
-        and not _ALLOW_MARKER.search(body)
+    return min(
+        (
+            line
+            for line, body in comments.items()
+            if line in span
+            and not _OPTOUT_RE.search(body)
+            and not _ALLOW_MARKER.search(body)
+            and _launders(body)
+        ),
+        default=None,
     )
 
 
@@ -301,6 +344,46 @@ def _is_drift_guard(name: str, docstring: str) -> bool:
     """A test reads as a drift guard if its name (underscores read as spaces) or
     its docstring uses guard-intent phrasing."""
     return bool(_GUARD_RE.search(name.replace("_", " ")) or _GUARD_RE.search(docstring))
+
+
+def _docstring_phrase_line(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, lines: list[str]
+) -> int:
+    """The line of NODE's docstring that carries the guard phrase.
+
+    The AST gives the literal's span, and the raw source lines inside that span
+    give the line. `ast.get_docstring` re-indents the text and drops the quotes,
+    so its offsets do not map back to the file.
+
+    A phrase that a line break splits matches the cleaned docstring and no single
+    raw line. The literal's first line answers for that one, because some line in
+    the range must carry the finding.
+    """
+    literal = node.body[0].value
+    span = range(literal.lineno, (literal.end_lineno or literal.lineno) + 1)
+    return next(
+        (line for line in span if _GUARD_RE.search(lines[line - 1])), span.start
+    )
+
+
+def _phrase_line(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    lines: list[str],
+    comments: dict[int, str],
+) -> int | None:
+    """The line on which NODE declares itself a drift guard, or None.
+
+    The three self-declaring routes each put the sentence somewhere else. A guard
+    NAME sits on the `def` line. A guard DOCSTRING sits below it. A laundered
+    comment sits in the body. The name is read first, because a test whose name
+    and docstring both declare the guard is one finding, and the `def` line is
+    the earlier of the two.
+    """
+    if _is_drift_guard(node.name, ""):
+        return node.lineno
+    if _is_drift_guard("", ast.get_docstring(node) or ""):
+        return _docstring_phrase_line(node, lines)
+    return _laundering_line(node, comments)
 
 
 def _is_collection_shaped(node: ast.expr) -> bool:
@@ -677,14 +760,19 @@ def _is_structural_guard(
     ) or _fans_out_a_maintained_copy(node, outer)
 
 
-def _has_optout(
+def _annotated(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     comments: dict[int, str],
     lines: list[str],
+    marker: "re.Pattern[str]",
 ) -> bool:
-    """True when a `# not-a-drift-guard: <reason>` comment annotates NODE — the
-    explicit escape for a genuine collection-equality unit test that the
-    structural trigger would otherwise flag.
+    """True when a comment matching MARKER annotates NODE.
+
+    Two markers use this. `# not-a-drift-guard: <reason>` is the explicit escape
+    for a genuine collection-equality unit test that the structural trigger would
+    otherwise flag. `# drift-guard-ok: <reason>` is the stated justification for a
+    guard the phrasing routes find, and it clears every route, exactly as it does
+    in a JS or shell suite.
 
     `annotation_window` owns WHERE the reason may go, so this check honours the
     same placement as every other hook in the pack instead of open-coding a
@@ -700,7 +788,7 @@ def _has_optout(
     """
     span = _source_span(node)
     return any(
-        line in comments and _OPTOUT_RE.search(comments[line])
+        line in comments and marker.search(comments[line])
         for line in annotation_window(lines, span.start, span.stop - 1)
     )
 
@@ -786,14 +874,18 @@ def _module_declaration(tree: ast.Module) -> int | None:
     return tree.body[0].lineno
 
 
-def violations(source: str) -> list[tuple[int, str]]:
-    """(1-based line, function name) for every test in SOURCE that reads as a
-    drift guard — by intent PHRASING, by a LAUNDERED-authority body comment, or by
-    copies-agree STRUCTURE — but lacks a justified @pytest.mark.drift_guard marker.
-    A structural-only hit is cleared by a `# not-a-drift-guard:` opt-out; the other
-    two are not (calling a copy authoritative is a self-declaration). A file that
-    does not parse as Python produces no findings (other tooling owns syntax
+def violations(source: str) -> list[Finding]:
+    """A Finding for every test in SOURCE that reads as a drift guard — by intent
+    PHRASING, by a LAUNDERED-authority body comment, or by copies-agree STRUCTURE
+    — but lacks a justified @pytest.mark.drift_guard marker. Each finding sits on
+    the line that DECLARES the guard, and names the route that found it. A file
+    that does not parse as Python produces no findings (other tooling owns syntax
     errors).
+
+    A structural-only hit is cleared by a `# not-a-drift-guard:` opt-out. That
+    opt-out does not clear a self-declaration, because calling a copy
+    authoritative is not a false positive. A `# drift-guard-ok:` annotation states
+    the reason instead, so it clears either route.
 
     A MODULE docstring that declares the guard adds one further hit, named
     `<module>` and placed on the docstring, which a module-level `pytestmark`
@@ -806,30 +898,32 @@ def violations(source: str) -> list[tuple[int, str]]:
 
     sources = _module_sources(tree)
     lines = source.split("\n")
-    hits: list[tuple[int, str]] = []
+    hits: list[Finding] = []
     # pytest applies a module-level `pytestmark` to every test in the file, so a
     # justified one answers for each of them too — not only for the file-wide
     # declaration below.
     justified_file = _module_justification(tree)
     declared = _module_declaration(tree)
     if declared is not None and not justified_file:
-        hits.append((declared, _MODULE))
+        hits.append(Finding(declared, _MODULE, _MODULE_ROUTE))
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         if not node.name.startswith("test_"):
             continue
-        phrasing = _is_drift_guard(
-            node.name, ast.get_docstring(node) or ""
-        ) or _self_declares(node, comments)
+        declaring = _phrase_line(node, lines, comments)
         structural = _is_structural_guard(node, sources)
-        if not (phrasing or structural):
+        if declaring is None and not structural:
             continue
         if justified_file or any(_justification(dec) for dec in node.decorator_list):
             continue
-        if structural and not phrasing and _has_optout(node, comments, lines):
+        if _annotated(node, comments, lines, _ALLOW_MARKER):
             continue
-        hits.append((node.lineno, node.name))
+        if declaring is None and _annotated(node, comments, lines, _OPTOUT_RE):
+            continue
+        route = _STRUCTURAL_ROUTE if declaring is None else _PHRASE_ROUTE
+        anchor = node.lineno if declaring is None else declaring
+        hits.append(Finding(anchor, node.name, route))
     return hits
 
 
@@ -871,6 +965,36 @@ def text_violations(
     return hits
 
 
+_PREFER = "prefer removing the duplication (make one source authoritative)"
+
+
+def _remedy(finding: Finding) -> str:
+    """The message FINDING prints, with the hatch its own route accepts.
+
+    The route picks the sentence, because one sentence for all three routes can
+    only name one hatch. `# not-a-drift-guard:` clears a structural hit alone, so
+    an author who reads it under a phrasing hit writes a comment that this check
+    ignores.
+    """
+    if finding.route == _MODULE_ROUTE:
+        return (
+            "this module's docstring declares a drift guard over every test in "
+            f"the file, and states no reason — {_PREFER}, add pytestmark = "
+            f'pytest.mark.{_MARKER}("why a true SSOT is infeasible"), or reword a '
+            "docstring that does not mean it."
+        )
+    hatch = (
+        "or a `# drift-guard-ok: <reason>` comment"
+        if finding.route == _PHRASE_ROUTE
+        else "or — for a genuine non-guard collection-equality — a "
+        "`# not-a-drift-guard: <reason>` comment"
+    )
+    return (
+        f"drift guard {finding.name!r} lacks a justification — {_PREFER}, add "
+        f'@pytest.mark.{_MARKER}("why a true SSOT is infeasible"), {hatch}.'
+    )
+
+
 def main(argv: list[str]) -> int:
     status = 0
     for path in argv:
@@ -879,27 +1003,8 @@ def main(argv: list[str]) -> int:
         except (OSError, UnicodeDecodeError):
             continue
         if path.endswith(".py"):
-            for lineno, name in violations(source):
-                if name == _MODULE:
-                    print(
-                        f"{path}:{lineno}: this module's docstring declares a drift "
-                        "guard over every test in the file, and states no reason — "
-                        "prefer removing the duplication (make one source "
-                        "authoritative), "
-                        f'add pytestmark = pytest.mark.{_MARKER}("why a true SSOT is '
-                        'infeasible"), or reword a docstring that does not mean it.',
-                        file=sys.stderr,
-                    )
-                    status = 1
-                    continue
-                print(
-                    f"{path}:{lineno}: drift guard {name!r} lacks a justification — "
-                    "prefer removing the duplication (make one source authoritative), "
-                    f'add @pytest.mark.{_MARKER}("why a true SSOT is infeasible"), or — '
-                    "for a genuine non-guard collection-equality — a "
-                    "`# not-a-drift-guard: <reason>` comment.",
-                    file=sys.stderr,
-                )
+            for finding in violations(source):
+                print(f"{path}:{finding.line}: {_remedy(finding)}", file=sys.stderr)
                 status = 1
             continue
         # The non-Python phrase pass runs only on TEST files: a drift guard is a
