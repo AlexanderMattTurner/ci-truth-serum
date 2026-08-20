@@ -1,1 +1,0 @@
-- `check-job-timeout` (Tier 2): requires every GitHub Actions job to declare `timeout-minutes` instead of inheriting GitHub's 360-minute (6h) default, so one wedged step can't pin a shared runner slot for six hours. Reusable-workflow (`uses:`) jobs are exempt; opt out with `# allow-no-timeout: <reason>`.
