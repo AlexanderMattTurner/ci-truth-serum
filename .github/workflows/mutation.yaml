@@ -22,8 +22,8 @@ name: Mutation testing
 # break — so "required" here means every shard ran cleanly and reported, not that
 # the score is perfect. The mutation-passed reporter is an `if: always()` summary
 # so it always concludes (even when the gates are closed), which lets it be a
-# stable required status check. Concurrency is keyed per PR/ref so a superseded
-# run goes red rather than stranding the required check.
+# stable required status check. Concurrency is keyed per PR (and per run off a
+# PR) so a superseded run goes red rather than stranding the required check.
 
 on:
   schedule:
@@ -38,7 +38,13 @@ on:
         default: dev
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # The fallback is github.run_id, not github.ref: off a pull request (the cron
+  # and workflow_dispatch) github.ref is the default branch for EVERY run, so a
+  # ref fallback puts all of them in one slot. cancel-in-progress would then let
+  # a manual dispatch cancel the cron run whole — including the always()
+  # reporter — and the required check would strand. run_id gives each non-PR run
+  # its own slot; a PR still supersedes itself by number.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 permissions:

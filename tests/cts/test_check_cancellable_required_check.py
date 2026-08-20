@@ -77,6 +77,23 @@ def test_static_cancellable_expression_is_flagged_conservatively(tmp_path):
     assert "static" in result[1]
 
 
+def test_group_that_empties_off_a_pull_request_is_an_error(tmp_path):
+    """`github.head_ref` is empty on a schedule run and `github.ref` is the
+    default branch there, so the house group is one string every scheduled run
+    shares. The key is spelled in the group, so the substring pass passed it."""
+    body = (
+        "name: x\non:\n  pull_request:\n  schedule:\n    - cron: '0 6 * * 1'\n"
+        "concurrency:\n"
+        "  group: x-${{ github.head_ref || github.ref }}\n"
+        "  cancel-in-progress: true\n" + REQUIRED_CHECK_JOBS
+    )
+    result = crc.check_file(_write(tmp_path, body))
+    assert result is not None
+    _line, message = result
+    assert "schedule" in message
+    assert "static" in message
+
+
 # ── check_file: the safe combinations (false-positive guards) ─────────────────
 
 

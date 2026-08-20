@@ -11,6 +11,16 @@ hangs at "Expected — Waiting for status to be reported" forever. The existing
 always()-reporter guard cannot catch this: the cancellation happens at the
 concurrency-queue stage, before any job initializes.
 
+A key in the group is not the same as a key with a value in it, so the lint asks
+whether the key holds a distinct value on each event the workflow declares.
+GitHub leaves `github.head_ref` empty off a pull-request event. GitHub sets
+`github.ref` to the default branch on an event that carries no ref of its own,
+such as `workflow_run`, `issue_comment`, or `schedule`. The house group
+`${{ github.workflow }}-${{ github.head_ref || github.ref }}` therefore names
+the PR branch on a pull-request run, and one fixed string on every
+`workflow_run` run of the same workflow. The lint reports that group as static
+and names the event that flattens it.
+
 A workflow "backs a required check" here when it has both a decide gate and an
 `always()` reporter (the decide-job + reporter architecture). When global
 serialization is genuinely needed (e.g. a shared volume), put the `concurrency:`
@@ -29,10 +39,12 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     concurrency_line,
+    declared_events,
     group_is_per_ref,
     has_always_reporter,
     has_decide_gate,
     opted_out,
+    static_group_reason,
     workflow_files,
 )
 
@@ -66,7 +78,8 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
         return None
 
     group = str(conc.get("group", ""))
-    if group_is_per_ref(group):
+    events = declared_events(doc)
+    if group_is_per_ref(group, events):
         return None  # per-ref / per-PR group — only superseded by its own ref
 
     jobs = doc.get("jobs", {})
@@ -77,12 +90,13 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
 
     line = concurrency_line(text)
     return line, (
-        "workflow-level concurrency.group is static (no github.ref / "
-        "github.head_ref key) on a workflow that backs a required check "
-        "(decide gate + always() reporter). A sibling ref's run can cancel "
+        f"{static_group_reason(group, events)} This workflow backs a required "
+        "check (decide gate + always() reporter). A sibling ref's run can cancel "
         "this one's *pending* run wholesale — zero jobs start, the always() "
         "reporter never runs, and the required check hangs at 'Expected — "
-        "Waiting' forever. Move the concurrency: block onto the expensive job "
+        "Waiting' forever. Key the group on something that holds a distinct "
+        "value on EVERY event this workflow declares (github.run_id always does), "
+        "move the concurrency: block onto the expensive job "
         "to serialize there while the run + reporter always execute, or add "
         f"'# {OPT_OUT}' if this workflow is never a required check."
     )
