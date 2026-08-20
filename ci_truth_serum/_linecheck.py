@@ -773,42 +773,27 @@ PER_REF_CONCURRENCY_KEYS = (
 _EXPR_SPAN = re.compile(r"\$\{\{(?P<expr>.*?)\}\}", re.DOTALL)
 
 # The events that dispatch a run against the ref the run is FOR, so `github.ref`
-# and `github.ref_name` name that ref. On every OTHER event — `workflow_run`,
-# `issue_comment`, `schedule`, … — GitHub sets `github.ref` to the DEFAULT
-# BRANCH, which is one fixed string for every such run.
+# and `github.ref_name` name that ref and tell one run from another.
 REF_VARYING_EVENTS = frozenset(
     {
         "push",
-        "pull_request",
-        "pull_request_target",
+        "pull_request",  # refs/pull/<n>/merge — one per PR
         "create",
-        "delete",
-        "workflow_dispatch",
+        "workflow_dispatch",  # the ref the caller chose
         "merge_group",
-        "release",
+        "release",  # the release tag
     }
 )
 
-# `github.head_ref` is set on a pull-request event and is EMPTY on every other
-# event.
-HEAD_REF_EVENTS = frozenset({"pull_request", "pull_request_target"})
-
-# The events whose payload carries the pull request, so `…pull_request.number`
-# is set. `github.event.number` is the top-level PR number, which only the two
-# pull-request events themselves carry.
-PR_PAYLOAD_EVENTS = HEAD_REF_EVENTS | {
-    "pull_request_review",
-    "pull_request_review_comment",
-}
-
-# The events this table models. An event outside it — a new GitHub event, or a
-# `workflow_call` whose context belongs to the CALLER — leaves every key
-# UNKNOWN, so the group stays unflagged. The set holds the events that carry no
-# ref of their own; the ones that do arrive through REF_VARYING_EVENTS.
-_KNOWN_EVENTS = (
-    REF_VARYING_EVENTS
-    | PR_PAYLOAD_EVENTS
-    | {
+# The events that pin `github.ref` to ONE string for every run. Most of them get
+# the default branch, because the event names no ref of its own.
+# `pull_request_target` is the trap in this set: it runs in the BASE repo, so
+# `github.ref` is the base branch. Every open PR onto `main` shares
+# `refs/heads/main` there, exactly as two scheduled runs do — `github.head_ref`
+# and the PR number are the only per-PR keys that event offers.
+REF_CONSTANT_EVENTS = frozenset(
+    {
+        "pull_request_target",
         "issues",
         "issue_comment",
         "schedule",
@@ -826,13 +811,32 @@ _KNOWN_EVENTS = (
         "gollum",
         "public",
         "registry_package",
-        "deployment",
-        "deployment_status",
         "page_build",
         "branch_protection_rule",
         "member",
     }
 )
+
+# `github.head_ref` is set on a pull-request event and is EMPTY on every other
+# event.
+HEAD_REF_EVENTS = frozenset({"pull_request", "pull_request_target"})
+
+# The events whose payload carries the pull request, so `…pull_request.number`
+# is set. `github.event.number` is the top-level PR number, which only the two
+# pull-request events themselves carry.
+PR_PAYLOAD_EVENTS = HEAD_REF_EVENTS | {
+    "pull_request_review",
+    "pull_request_review_comment",
+}
+
+# The events this table models at all. An event outside it — a new GitHub event,
+# or a `workflow_call` whose context belongs to the CALLER — leaves every key
+# UNKNOWN, so the group stays unflagged. An event INSIDE it can still leave one
+# key unknown: `deployment` and `deployment_status` are absent because their
+# `github.ref` is whatever the deployment named (a branch, a tag, or nothing for
+# a raw SHA), and the review events are here for their PR number while their
+# `github.ref` falls through to UNKNOWN.
+_KNOWN_EVENTS = REF_VARYING_EVENTS | REF_CONSTANT_EVENTS | PR_PAYLOAD_EVENTS
 
 # Contexts that hold one value for the whole workflow. A group made only of
 # these is static, whatever the event. The list is short on purpose: an
@@ -887,7 +891,11 @@ def _atom_state(atom: str, event: str) -> str:
     if event not in _KNOWN_EVENTS:
         return _UNKNOWN  # an event this table does not model — judge nothing
     if atom in ("github.ref", "github.ref_name"):
-        return _VARYING if event in REF_VARYING_EVENTS else _CONSTANT
+        if event in REF_VARYING_EVENTS:
+            return _VARYING
+        # A known event can still leave the ref unknown: the review events are
+        # modelled for their PR number alone. Decline rather than guess.
+        return _CONSTANT if event in REF_CONSTANT_EVENTS else _UNKNOWN
     if atom == "github.head_ref":
         return _VARYING if event in HEAD_REF_EVENTS else _EMPTY
     if atom == "github.event.number":

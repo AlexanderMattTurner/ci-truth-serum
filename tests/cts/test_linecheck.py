@@ -634,6 +634,19 @@ HOUSE_GROUP = "${{ github.workflow }}-${{ github.head_ref || github.ref }}"
         (HOUSE_GROUP, ["pull_request", "workflow_run"], False),
         (HOUSE_GROUP, ["schedule"], False),
         (HOUSE_GROUP, ["issue_comment"], False),
+        # pull_request_target runs in the BASE repo, so github.ref is the base
+        # branch: every open PR onto main shares refs/heads/main…
+        ("x-${{ github.ref }}", ["pull_request_target"], False),
+        ("x-${{ github.ref_name }}", ["pull_request_target"], False),
+        # …while github.head_ref and the PR number stay per-PR there.
+        (HOUSE_GROUP, ["pull_request_target"], True),
+        ("x-${{ github.event.pull_request.number }}", ["pull_request_target"], True),
+        # The review events are modelled for their PR number. Their github.ref
+        # is not modelled, so a group keyed on it is declined, not flagged.
+        ("x-${{ github.ref }}", ["pull_request_review"], True),
+        # A deployment names the ref it deploys — a branch, a tag, or nothing at
+        # all for a raw SHA — so that event is not modelled either.
+        ("x-${{ github.ref }}", ["deployment"], True),
         # head_ref with no fallback is empty on every non-PR event.
         ("x-${{ github.head_ref }}", ["pull_request"], True),
         ("x-${{ github.head_ref }}", ["pull_request", "push"], False),
