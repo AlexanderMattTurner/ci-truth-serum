@@ -1,0 +1,11 @@
+overrides:
+  # GHSA-ph9p-34f9-6g65 (HIGH) and GHSA-52f5-9888-hmc6 (LOW): path traversal and
+  # symlink write in tmp via @stryker-mutator/core > @inquirer/editor > external-editor.
+  # The patched version (0.2.6+) has API differences from 0.0.x. The mutation test
+  # suite does not exercise the interactive editor path, so the runtime breakage risk
+  # is contained to manual `pnpm mutation` runs.
+  tmp: ">=0.2.6"
+  # GHSA-2g4f-4pwh-qvx6 (MODERATE): ReDoS in ajv when using the $data option.
+  # @stryker-mutator/core@8.7.1 resolves ajv@8.17.1. The fix (>=8.18.0) is within
+  # the same major version, so no breaking API changes are expected.
+  ajv: ">=8.18.0"
