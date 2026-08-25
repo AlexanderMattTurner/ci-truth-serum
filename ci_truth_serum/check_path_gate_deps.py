@@ -173,18 +173,27 @@ def decide_matchers(with_: dict) -> list[re.Pattern[str]]:
     """The file matchers for one decide job, as the union of its declared shapes.
 
     `filters:` globs translate through `glob_to_regex`. A `paths-regex:` ERE
-    string is compiled directly (matched with `.search()`, mirroring runtime
-    `grep -qE`): an empty string is a deliberately keyword-only gate, so path
-    coverage is not applicable — it becomes a match-everything matcher
-    (`re.compile("")`, whose `.search` matches any string) so no dependency is
-    reported uncovered. An unresolved `${{ inputs.paths-regex }}` expression
-    compiles to a literal that matches no real path — fail-closed and correct,
-    so the author must statically cover the deps or suppress.
+    string compiles per LINE, matched with `.search()`, mirroring runtime
+    `grep -qE`: grep reads a newline in a pattern as an alternation separator,
+    and a generator that writes one alternative per line (so two branches adding
+    different files edit different lines) then produces a pattern Python `re`
+    compiles whole and matches nothing with. An empty string is a deliberately
+    keyword-only gate, so path coverage is not applicable — it becomes a
+    match-everything matcher (`re.compile("")`, whose `.search` matches any
+    string) so no dependency is reported uncovered. An unresolved
+    `${{ inputs.paths-regex }}` expression compiles to a literal that matches no
+    real path — fail-closed and correct, so the author must statically cover the
+    deps or suppress.
+
+    A BLANK line is the empty pattern, which grep matches against every path.
+    It is dropped rather than honoured: reading it as match-everything would
+    report a whole gate covered on a pattern nobody wrote deliberately.
     """
     matchers = [glob_to_regex(p) for p in filter_patterns(with_.get("filters"))]
     regex = with_.get("paths-regex")
     if isinstance(regex, str):
-        matchers.append(re.compile(regex.strip()))
+        lines = [line for line in regex.strip().split("\n") if line.strip()]
+        matchers += [re.compile(line) for line in lines] or [re.compile("")]
     return matchers
 
 
