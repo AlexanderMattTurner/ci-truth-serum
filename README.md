@@ -2,7 +2,7 @@
 
 **A green check does not always mean the work passed.** These pre-commit lints find the places where CI reports success over a real failure. They are fast and they run offline.
 
-Both of these problems look fine on the dashboard:
+Two things go wrong, and neither one shows up as a red check:
 
 - **The pipeline hides a failure.** A pipe drops the exit code of the command that failed. Or a required check never reports, so the pull request waits forever.
 - **You cannot prove what you ran.** A base image or a download names a tag or a bare URL. That target can change, so the bytes you run may differ from the bytes you reviewed.
