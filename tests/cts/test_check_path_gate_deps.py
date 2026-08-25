@@ -367,20 +367,18 @@ def test_paths_regex_omitting_composite_fails_naming_dep(tmp_path, monkeypatch, 
     assert out.count("::error") == 1
 
 
-def test_a_multi_line_paths_regex_covers_each_of_its_lines(tmp_path, monkeypatch):
+def test_a_multi_line_paths_regex_covers_each_of_its_lines():
     """`grep -qE` reads a newline in a pattern as an alternation separator, so a
     generator writing one alternative per line — which is what stops two branches
     adding different files from conflicting on one line — must be read the same
     way here. Compiled whole, the pattern matches neither alternative."""
-    matchers = cpgd.decide_matchers(
-        {"paths-regex": "^src/\n^\\.github/actions/setup/"}
-    )
+    matchers = cpgd.decide_matchers({"paths-regex": "^src/\n^\\.github/actions/setup/"})
     assert any(m.search(".github/actions/setup/action.yml") for m in matchers)
     assert any(m.search("src/a.ts") for m in matchers)
     assert not any(m.search("docs/readme.md") for m in matchers)
 
 
-def test_a_blank_line_in_a_paths_regex_covers_nothing_on_its_own(tmp_path, monkeypatch):
+def test_a_blank_line_in_a_paths_regex_covers_nothing_on_its_own():
     """A blank line is the empty pattern, which grep matches against every path.
     Honouring it here would report every dependency covered on a pattern nobody
     wrote deliberately, so it is dropped and the real lines still decide."""
