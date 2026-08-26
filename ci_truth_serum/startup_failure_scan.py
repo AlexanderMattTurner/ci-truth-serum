@@ -185,7 +185,7 @@ def jobless_failures(repo: str, runs: list[dict], token: str) -> list[dict]:
 
 
 @dataclass(frozen=True)
-class Finding:
+class StartupFailure:
     """One workflow's jobless failed runs, and whether the scan read them all."""
 
     name: str
@@ -202,12 +202,12 @@ class Finding:
 
     @property
     def newest(self) -> str:
-        """When the most recent jobless failure started. A Finding is built only
+        """When the most recent jobless failure started. A StartupFailure is built only
         from a non-empty run list, so there is always one."""
         return max(run["created_at"] for run in self.runs)
 
 
-def scan(repo: str, since_iso: str, token: str) -> list[Finding]:
+def scan(repo: str, since_iso: str, token: str) -> list[StartupFailure]:
     """Every workflow in REPO with at least one jobless failed run since SINCE_ISO."""
     findings = []
     for workflow in list_workflows(repo, token):
@@ -215,7 +215,7 @@ def scan(repo: str, since_iso: str, token: str) -> list[Finding]:
         jobless = jobless_failures(repo, runs, token)
         if jobless:
             findings.append(
-                Finding(
+                StartupFailure(
                     name=workflow["name"] or workflow["path"],
                     path=workflow["path"],
                     runs=jobless,
@@ -226,7 +226,7 @@ def scan(repo: str, since_iso: str, token: str) -> list[Finding]:
     return findings
 
 
-def _truncation_lines(findings: list[Finding]) -> list[str]:
+def _truncation_lines(findings: list[StartupFailure]) -> list[str]:
     """The note that says a count is a floor, or nothing when every run was read."""
     truncated = [f for f in findings if f.truncated]
     if not truncated:
@@ -239,7 +239,7 @@ def _truncation_lines(findings: list[Finding]) -> list[str]:
     ]
 
 
-def render(findings: list[Finding], window_days: int, markdown: bool) -> str:
+def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> str:
     """The report a human reads, as plain text or as a Markdown block."""
     heading = "### Workflows that failed to start"
     if not findings:

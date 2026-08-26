@@ -51,9 +51,9 @@
 # nobody has touched leaves the candidate set entirely, so retries only ever
 # accrue to branches someone is actively working on.
 
-# shellcheck source=lib/shared-names.bash disable=SC1091
+# shellcheck source=.github/scripts/lib/shared-names.bash
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/shared-names.bash"
-# shellcheck source=lib/commit-status-mark.bash disable=SC1091
+# shellcheck source=.github/scripts/lib/commit-status-mark.bash
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/commit-status-mark.bash"
 
 AUTO_RESOLVE_ATTEMPT_CONTEXT="$_COMMIT_STATUS_AUTO_RESOLVE_ATTEMPT"

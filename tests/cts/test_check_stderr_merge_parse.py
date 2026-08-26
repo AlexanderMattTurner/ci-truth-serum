@@ -184,7 +184,7 @@ def test_opt_out_on_assignment_covers_later_use() -> None:
 # ── main: argv routing ───────────────────────────────────────────────────
 def test_main_flags_shell_file(tmp_path, capsys) -> None:
     p = tmp_path / "s.sh"
-    p.write_text("v=$(cmd 2>&1 | tail -1)\n")
+    p.write_text("v=$(cmd 2>&1 | tail -1)\n", encoding="utf-8")
     assert mod.main([str(p)]) == 1
     assert f"{p}:1:" in capsys.readouterr().err
 
@@ -194,7 +194,8 @@ def test_main_scans_workflow_run_blocks(tmp_path, capsys) -> None:
     wf.mkdir(parents=True)
     p = wf / "ci.yaml"
     p.write_text(
-        "jobs:\n  j:\n    steps:\n      - run: |\n          v=$(cmd 2>&1 | tail -1)\n"
+        "jobs:\n  j:\n    steps:\n      - run: |\n          v=$(cmd 2>&1 | tail -1)\n",
+        encoding="utf-8",
     )
     assert mod.main([str(p)]) == 1
     assert "ci.yaml" in capsys.readouterr().err
@@ -202,13 +203,13 @@ def test_main_scans_workflow_run_blocks(tmp_path, capsys) -> None:
 
 def test_main_skips_non_workflow_yaml(tmp_path) -> None:
     p = tmp_path / "data.yaml"
-    p.write_text("x: v=$(cmd 2>&1 | tail -1)\n")
+    p.write_text("x: v=$(cmd 2>&1 | tail -1)\n", encoding="utf-8")
     assert mod.main([str(p)]) == 0
 
 
 def test_main_clean_files_pass(tmp_path) -> None:
     p = tmp_path / "s.sh"
-    p.write_text('out=$(cmd 2>&1)\necho "$out"\n')
+    p.write_text('out=$(cmd 2>&1)\necho "$out"\n', encoding="utf-8")
     assert mod.main([str(p)]) == 0
 
 

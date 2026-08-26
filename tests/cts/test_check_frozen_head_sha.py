@@ -14,7 +14,7 @@ HEADER = "name: x\non:\n  pull_request:\njobs:\n  build:\n    runs-on: ubuntu-la
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -154,7 +154,7 @@ def test_malformed_yaml_is_reported_not_raised(tmp_path):
 
 def test_non_dict_top_level_is_ignored(tmp_path):
     path = tmp_path / "list.yaml"
-    path.write_text("- a\n- b\n")
+    path.write_text("- a\n- b\n", encoding="utf-8")
     assert fh.check_file(path) == []
 
 
@@ -192,7 +192,8 @@ def test_main_reports_violation_and_returns_nonzero(tmp_path, monkeypatch, capsy
     wf.mkdir(parents=True)
     (wf / "bad.yaml").write_text(
         HEADER
-        + "      - run: git diff ${{ github.event.pull_request.head.sha }}...HEAD\n"
+        + "      - run: git diff ${{ github.event.pull_request.head.sha }}...HEAD\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(fh, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(fh, "WORKFLOWS_DIR", wf)

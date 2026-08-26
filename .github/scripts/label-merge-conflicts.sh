@@ -19,6 +19,10 @@
 # the retry loop; RETRY_DELAY_SECS overrides the between-pass wait.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/retry.bash disable=SC1091
+source "$SCRIPT_DIR/lib/retry.bash"
+
 : "${GH_TOKEN:?}" "${REPO:?}"
 
 export LABEL="merge-conflict"
@@ -40,8 +44,10 @@ list_prs() {
 }
 
 unknown=""
-for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
-  [[ "$pass" == "1" ]] || sleep "${RETRY_DELAY_SECS:-10}"
+# One pass: sync every PR's label, and report success only when none are left
+# UNKNOWN. retry_cmd owns the between-pass wait (doubling, not the original
+# constant delay — GitHub's lazy mergeability computation tolerates either).
+sync_pass() {
   unknown=""
   while IFS=$'\t' read -r num state labeled; do
     [[ -n "$num" ]] || continue
@@ -57,8 +63,13 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
       ;;
     esac
   done <<<"$(list_prs)"
-  [[ -n "$unknown" ]] || break
-done
+  [[ -z "$unknown" ]]
+}
+# Exhausting the passes is not fatal: the block below reports whatever is
+# still UNKNOWN. A 2 is retry_cmd rejecting its own arguments, which is.
+rc=0
+retry_cmd "${MAX_PASSES:-2}" "${RETRY_DELAY_SECS:-10}" sync_pass || rc=$?
+[[ "${rc:-0}" -le 1 ]] || exit "${rc}"
 
 if [[ -n "$unknown" ]]; then
   echo "::warning::mergeability still UNKNOWN for$unknown after ${MAX_PASSES:-2} passes; the next PR event or scheduled run will retry them."

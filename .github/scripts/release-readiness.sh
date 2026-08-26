@@ -100,7 +100,12 @@ LAST_DATE=$(awk '/^## \[[0-9]+\.[0-9]+\.[0-9]+\] - / {
 }' "$ROOT/CHANGELOG.md")
 DAYS_SINCE="unknown"
 if [[ -n "$LAST_DATE" ]] && last_epoch=$(date -u -d "$LAST_DATE" +%s 2>/dev/null); then
-  DAYS_SINCE=$(((${SOURCE_DATE_EPOCH:-$(date -u +%s)} - last_epoch) / 86400))
+  if [[ "${SOURCE_DATE_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+    now_epoch="$SOURCE_DATE_EPOCH"
+  else
+    now_epoch="$(date -u +%s)"
+  fi
+  DAYS_SINCE=$(((now_epoch - last_epoch) / 86400))
 fi
 
 SANITIZED=$(sanitize_changelog_section "$UNRELEASED")
@@ -264,12 +269,12 @@ fs.writeFileSync(process.argv[1], JSON.stringify(pkg, null, 2) + "\n");
   # rejection that would retry deterministically and wedge every future run.
   # Absence is the normal case (the `if` swallows the delete's non-zero without
   # aborting under set -e); a real push problem still surfaces at the push below.
-  if git push --no-verify origin --delete "$pr_branch" 2>/dev/null; then
+  if timeout --kill-after=15 60 git push --no-verify origin --delete "$pr_branch" 2>/dev/null; then
     echo "Deleted a stale remote branch '$pr_branch' from an earlier closed release PR."
   fi
 
   # Ordinary branch push, retried with backoff on transient failures.
-  if ! retry_cmd 4 2 git push --no-verify -u origin "$pr_branch"; then
+  if ! retry_cmd 4 2 timeout --kill-after=15 60 git push --no-verify -u origin "$pr_branch"; then
     echo "Error: failed to push the release branch '$pr_branch' after 4 attempts." >&2
     exit 1
   fi

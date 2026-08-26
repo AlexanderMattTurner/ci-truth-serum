@@ -36,7 +36,8 @@ def test_desired_contexts_dedups_and_sorts_across_files(tmp_path):
               j:
                 name: Beta  # required-check: true
             """
-        )
+        ),
+        encoding="utf-8",
     )
     (tmp_path / "b.yml").write_text(
         wf(
@@ -47,7 +48,8 @@ def test_desired_contexts_dedups_and_sorts_across_files(tmp_path):
               k:
                 name: Beta  # required-check: true
             """
-        )
+        ),
+        encoding="utf-8",
     )
     assert mod.desired_contexts(tmp_path) == ["Alpha", "Beta"]
 
@@ -303,7 +305,8 @@ def _workflows(tmp_path):
               j:
                 name: Gate A  # required-check: true
             """
-        )
+        ),
+        encoding="utf-8",
     )
     return tmp_path
 

@@ -570,7 +570,9 @@ def test_main_producer_only_flag(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     bad = tmp_path / "bad.sh"
-    bad.write_text('v="$(jq -r .version pkg.json || true)"\nteardown || true\n')
+    bad.write_text(
+        'v="$(jq -r .version pkg.json || true)"\nteardown || true\n', encoding="utf-8"
+    )
     assert mod.main(["--producer-only", str(bad)]) == 1
     out = capsys.readouterr().err
     assert f"{bad}:1:" in out

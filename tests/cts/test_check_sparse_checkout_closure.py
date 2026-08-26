@@ -1,0 +1,336 @@
+"""Tests for ci_truth_serum/check_sparse_checkout_closure.py — the workflow
+lint that fails a `sparse-checkout:` job whose list misses a file its own
+steps execute (directly, or through a listed Python entry point's own local
+imports).
+
+Drives the module's functions directly (patterns, coverage, dependency
+derivation) plus `main()` end to end against a real git repo under `tmp_path`
+— `tracked_files()` shells out to `git ls-files`, so every fixture is a real
+commit.
+"""
+
+from pathlib import Path
+
+import pytest
+
+from tests._helpers import commit_all, init_test_repo, load_hook
+
+mod = load_hook("check_sparse_checkout_closure.py", "check_sparse_checkout_closure")
+
+
+def _write(root: Path, rel: str, body: str) -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+def _repo(tmp_path: Path) -> Path:
+    init_test_repo(tmp_path)
+    return tmp_path
+
+
+# ── _cone_covers / _noncone_covers / covers ───────────────────────────────
+_NO_FILES: frozenset = frozenset()
+
+
+def test_cone_covers_the_listed_directory_and_its_files():
+    assert mod._cone_covers((".github/scripts",), ".github/scripts/x.py", _NO_FILES)
+    assert not mod._cone_covers(
+        (".github/scripts",), ".github/actions/x/run.sh", _NO_FILES
+    )
+
+
+def test_cone_covers_root_level_files_with_no_directory():
+    assert mod._cone_covers((".github/scripts",), "README.md", _NO_FILES)
+
+
+def test_cone_covers_a_files_ancestor_directory_rung():
+    # A listed `.github/scripts` implies the files directly in `.github/`
+    # itself (the ancestor rung git writes around `set A/B`).
+    assert mod._cone_covers((".github/scripts",), ".github/tool-versions.sh", _NO_FILES)
+
+
+def test_cone_covers_denies_the_ancestor_rung_for_a_listed_file():
+    # Listing the FILE `.github/scripts/render.py` makes that file visible,
+    # not every sibling in `.github/scripts/` — the rung is directory-only.
+    files = frozenset({".github/scripts/render.py"})
+    assert not mod._cone_covers(
+        (".github/scripts/render.py",), ".github/scripts/_lockfiles.py", files
+    )
+
+
+def test_noncone_slashless_pattern_is_unanchored():
+    # gitignore semantics: a bare name matches at any depth.
+    assert mod._noncone_covers(("config",), "a/config/b.py")
+    assert mod._noncone_covers(("config",), "config")
+    assert not mod._noncone_covers(("config",), "a/configuration/b.py")
+
+
+def test_noncone_slashed_pattern_is_anchored():
+    assert mod._noncone_covers((".github/scripts",), ".github/scripts/x.py")
+    assert not mod._noncone_covers((".github/scripts",), "a/.github/scripts/x.py")
+
+
+def test_covers_dispatches_on_cone_flag():
+    cone = mod.Checkout(Path("w.yaml"), "build", 1, (), (".github/scripts",), True)
+    noncone = mod.Checkout(Path("w.yaml"), "build", 1, (), ("scripts",), False)
+    assert mod.covers(cone, ".github/tool-versions.sh", _NO_FILES)
+    assert mod.covers(noncone, "a/scripts/b.py", _NO_FILES)
+
+
+# ── _path_token_re / _dependencies ────────────────────────────────────────
+def test_path_token_re_matches_only_named_dirs():
+    pattern = mod._path_token_re((".github/scripts",))
+    assert pattern.findall("bash .github/scripts/run.sh") == [".github/scripts/run.sh"]
+    assert pattern.findall("bash .github/actions/x/run.sh") == []
+
+
+def test_path_token_re_with_no_dirs_matches_nothing():
+    pattern = mod._path_token_re(())
+    assert pattern.findall(".github/scripts/run.sh") == []
+
+
+def test_dependencies_reads_run_text_and_local_composite_uses():
+    window = (
+        {"run": "bash .github/scripts/run.sh"},
+        {"uses": "./.github/actions/x"},
+    )
+    deps = mod._dependencies(window, mod._path_token_re((".github/scripts",)))
+    assert deps == {".github/scripts/run.sh", ".github/actions/x"}
+
+
+# ── suppressions ───────────────────────────────────────────────────────────
+def test_suppressions_accepts_a_marker_with_a_reason():
+    text = "# sparse-checkout-ok: .github/actions/x the caller passes it in\n"
+    with_reason, reasonless = mod.suppressions(text)
+    assert with_reason == {".github/actions/x": "the caller passes it in"}
+    assert reasonless == []
+
+
+def test_suppressions_refuses_a_marker_with_no_reason():
+    with_reason, reasonless = mod.suppressions("# sparse-checkout-ok: some/dep\n")
+    assert with_reason == {}
+    assert reasonless == ["some/dep"]
+
+
+# ── checkouts() / _window ─────────────────────────────────────────────────
+def _workflow_text(sparse: str, run: str, extra_steps: str = "") -> str:
+    return (
+        "jobs:\n"
+        "  build:\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@abc\n"
+        "        with:\n"
+        f"          sparse-checkout: |\n            {sparse}\n"
+        f"      - run: {run}\n" + extra_steps
+    )
+
+
+def test_checkouts_skips_a_runtime_decided_pattern():
+    text = _workflow_text("${{ inputs.x }}", "echo hi")
+    assert mod.checkouts(text, Path("w.yaml")) == []
+
+
+def test_checkouts_skips_a_wildcard_pattern():
+    text = _workflow_text("*.py", "echo hi")
+    assert mod.checkouts(text, Path("w.yaml")) == []
+
+
+def test_checkouts_reads_cone_mode_default_true():
+    text = _workflow_text(".github/scripts", "echo hi")
+    [checkout] = mod.checkouts(text, Path("w.yaml"))
+    assert checkout.cone is True
+    assert checkout.patterns == (".github/scripts",)
+
+
+def test_window_stops_at_a_later_unconditional_full_checkout():
+    text = _workflow_text(
+        ".github/scripts",
+        "echo one",
+        "      - uses: actions/checkout@abc\n"
+        "        with:\n"
+        "          ref: main\n"
+        "      - run: echo two\n",
+    )
+    [checkout] = mod.checkouts(text, Path("w.yaml"))
+    assert [s.get("run") for s in checkout.window] == ["echo one"]
+
+
+def test_window_keeps_going_past_a_conditional_checkout():
+    # The conditional checkout step itself never enters the window (it is not
+    # a `run:` step); the window just keeps accumulating past it.
+    text = _workflow_text(
+        ".github/scripts",
+        "echo one",
+        "      - uses: actions/checkout@abc\n"
+        "        if: github.event_name == 'push'\n"
+        "        with:\n"
+        "          ref: main\n"
+        "      - run: echo two\n",
+    )
+    [checkout] = mod.checkouts(text, Path("w.yaml"))
+    assert [s.get("run") for s in checkout.window] == ["echo one", "echo two"]
+
+
+def test_window_excludes_a_step_sharing_the_conditional_checkouts_if():
+    text = _workflow_text(
+        ".github/scripts",
+        "echo one",
+        "      - uses: actions/checkout@abc\n"
+        "        if: github.event_name == 'push'\n"
+        "        with:\n"
+        "          ref: main\n"
+        "      - run: echo two\n"
+        "        if: github.event_name == 'push'\n",
+    )
+    [checkout] = mod.checkouts(text, Path("w.yaml"))
+    assert [s.get("run") for s in checkout.window] == ["echo one"]
+
+
+def test_window_never_ends_on_a_path_scoped_checkout():
+    # A `path:`-scoped checkout clones beside the tree rather than replacing
+    # it, so it stays IN the window (as an ordinary non-`run:` step) instead
+    # of ending it.
+    text = _workflow_text(
+        ".github/scripts",
+        "echo one",
+        "      - uses: actions/checkout@abc\n"
+        "        with:\n"
+        "          path: other\n"
+        "      - run: echo two\n",
+    )
+    [checkout] = mod.checkouts(text, Path("w.yaml"))
+    assert [s.get("run") for s in checkout.window] == ["echo one", None, "echo two"]
+
+
+# ── main(): end to end against a real repo ────────────────────────────────
+def test_main_flags_an_uncovered_dependency(tmp_path: Path):
+    repo = _repo(tmp_path)
+    # The checkout lists `.github/actions` only; the run step reaches a
+    # script under the DEFAULT recognized dir, `.github/scripts`, instead.
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/actions", "bash .github/scripts/run.sh"),
+    )
+    _write(repo, ".github/scripts/run.sh", "echo hi\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+
+
+def test_main_passes_a_covered_dependency(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts", "bash .github/scripts/run.sh"),
+    )
+    _write(repo, ".github/scripts/run.sh", "echo hi\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_follows_a_listed_entrypoints_local_imports(tmp_path: Path):
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts/render.py", 'python3 "$DIR/render.py"'),
+    )
+    _write(
+        repo,
+        ".github/scripts/render.py",
+        "from _lockfiles import rule_for\n",
+    )
+    _write(repo, ".github/scripts/_lockfiles.py", "rule_for = 1\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+
+
+def test_main_passes_when_the_import_is_also_listed(tmp_path: Path):
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(
+            ".github/scripts/render.py\n            .github/scripts/_lockfiles.py",
+            'python3 "$DIR/render.py"',
+        ),
+    )
+    _write(repo, ".github/scripts/render.py", "from _lockfiles import rule_for\n")
+    _write(repo, ".github/scripts/_lockfiles.py", "rule_for = 1\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+def test_main_does_not_follow_a_py_file_no_interpreter_runs(tmp_path: Path):
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts", "ruff check .github/scripts/render.py"),
+    )
+    _write(repo, ".github/scripts/render.py", "from _lockfiles import rule_for\n")
+    _write(repo, ".github/scripts/_lockfiles.py", "rule_for = 1\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+def test_main_respects_a_dep_scoped_opt_out(tmp_path: Path):
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        "# sparse-checkout-ok: .github/actions/x deliberately optional\n"
+        + _workflow_text(".github/scripts", "bash .github/actions/x/run.sh"),
+    )
+    _write(repo, ".github/actions/x/run.sh", "echo hi\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+def test_main_flags_a_reasonless_opt_out(tmp_path: Path, capsys: pytest.CaptureFixture):
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        "# sparse-checkout-ok: .github/actions/x\n"
+        + _workflow_text(".github/scripts", "bash .github/actions/x/run.sh"),
+    )
+    _write(repo, ".github/actions/x/run.sh", "echo hi\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert "has no reason" in capsys.readouterr().out
+
+
+def test_main_extends_dep_dirs_with_a_repeated_flag(tmp_path: Path):
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts", "bash config/run.sh"),
+    )
+    _write(repo, "config/run.sh", "echo hi\n")
+    commit_all(repo)
+    # The default dep-dir set (`.github/scripts` alone) cannot see `config/`.
+    assert mod.main(["--repo-root", str(repo)]) == 0
+    assert mod.main(["--repo-root", str(repo), "--dep-dir", "config"]) == 1
+
+
+def test_main_is_silent_over_a_tree_with_no_sparse_checkout(tmp_path: Path):
+    repo = _repo(tmp_path)
+    _write(repo, ".github/workflows/w.yaml", "jobs:\n  build:\n    steps: []\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+def test_main_notes_a_tree_with_no_workflow_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    repo = _repo(tmp_path)
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+    assert "scanned nothing" in capsys.readouterr().err

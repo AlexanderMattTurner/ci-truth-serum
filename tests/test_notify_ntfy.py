@@ -40,7 +40,8 @@ def _run(
     if curl_exit is not None:
         curl = bindir / "curl"
         curl.write_text(
-            f'#!/usr/bin/env bash\necho "$@" >>"{tmp_path}/curl.log"\nexit {curl_exit}\n'
+            f'#!/usr/bin/env bash\necho "$@" >>"{tmp_path}/curl.log"\nexit {curl_exit}\n',
+            encoding="utf-8",
         )
         curl.chmod(0o755)
     return subprocess.run(

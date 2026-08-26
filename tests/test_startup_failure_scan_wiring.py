@@ -133,7 +133,8 @@ def _run_wrapper(
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "uv").write_text(
-        f"#!/usr/bin/env bash\nprintf '%s\\n' {output!r}\nexit {scan_exit}\n"
+        f"#!/usr/bin/env bash\nprintf '%s\\n' {output!r}\nexit {scan_exit}\n",
+        encoding="utf-8",
     )
     (bindir / "uv").chmod(0o755)
     summary = tmp_path / "summary.md"

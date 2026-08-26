@@ -45,7 +45,7 @@ def desired_contexts(workflows_dir: Path) -> list[str]:
     contexts: set[str] = set()
     for glob in WORKFLOW_GLOBS:
         for path in sorted(workflows_dir.glob(glob)):
-            contexts.update(required_check_contexts(path.read_text()))
+            contexts.update(required_check_contexts(path.read_text(encoding="utf-8")))
     return sorted(contexts)
 
 

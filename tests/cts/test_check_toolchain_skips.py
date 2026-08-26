@@ -141,9 +141,9 @@ def test_is_test_path(path: str, expected: bool) -> None:
 def test_main_flags_test_file_and_skips_non_test_file(tmp_path, capsys) -> None:
     bad = 'pytest.mark.skipif(shutil.which("jq") is None, reason="r")\n'
     test_file = tmp_path / "test_a.py"
-    test_file.write_text(bad)
+    test_file.write_text(bad, encoding="utf-8")
     src_file = tmp_path / "module.py"
-    src_file.write_text(bad)
+    src_file.write_text(bad, encoding="utf-8")
     assert mod.main([str(test_file), str(src_file)]) == 1
     err = capsys.readouterr().err
     assert "test_a.py:1:" in err
@@ -152,7 +152,7 @@ def test_main_flags_test_file_and_skips_non_test_file(tmp_path, capsys) -> None:
 
 def test_main_clean_file_exits_zero(tmp_path) -> None:
     p = tmp_path / "test_a.py"
-    p.write_text("def test_x():\n    assert True\n")
+    p.write_text("def test_x():\n    assert True\n", encoding="utf-8")
     assert mod.main([str(p)]) == 0
 
 

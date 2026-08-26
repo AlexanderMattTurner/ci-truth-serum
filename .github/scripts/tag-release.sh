@@ -32,7 +32,7 @@ fi
 # A shallow Actions checkout (fetch-depth != 0) does not fetch tags, so fetch
 # them explicitly — the advance detection is only correct with the full tag set
 # locally present. Fail loud rather than mistaking a missing tag for an advance.
-if ! retry_cmd 4 2 git fetch --tags --quiet origin; then
+if ! retry_cmd 4 2 timeout --kill-after=15 60 git fetch --tags --quiet origin; then
   echo "Error: failed to fetch tags to detect a version advance" >&2
   exit 1
 fi
@@ -55,7 +55,7 @@ else
 
   # Push the tag, retried with backoff; a failure fails the job loudly so a
   # released commit is never left without its tag.
-  if ! retry_cmd 4 2 git push origin "v$NEW_VERSION"; then
+  if ! retry_cmd 4 2 timeout --kill-after=15 60 git push origin "v$NEW_VERSION"; then
     echo "Error: failed to push tag v$NEW_VERSION after 4 attempts" >&2
     exit 1
   fi

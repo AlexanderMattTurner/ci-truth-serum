@@ -157,11 +157,11 @@ def _repo(tmp_path, monkeypatch, workflows: dict, manifest: "str | None"):
     wf_dir = tmp_path / ".github" / "workflows"
     wf_dir.mkdir(parents=True)
     for name, text in workflows.items():
-        (wf_dir / name).write_text(text)
+        (wf_dir / name).write_text(text, encoding="utf-8")
     if manifest is not None:
         sched = tmp_path / ".github" / "scheduler"
         sched.mkdir(parents=True)
-        (sched / "sweeps.txt").write_text(manifest)
+        (sched / "sweeps.txt").write_text(manifest, encoding="utf-8")
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf_dir)
 
@@ -194,8 +194,8 @@ def test_main_with_a_comment_only_manifest_passes(tmp_path, monkeypatch) -> None
 def test_main_honors_a_custom_manifest_path(tmp_path, monkeypatch, capsys) -> None:
     wf_dir = tmp_path / ".github" / "workflows"
     wf_dir.mkdir(parents=True)
-    (wf_dir / "sweep.yaml").write_text(_FIREABLE)
-    (tmp_path / "clocks.txt").write_text("missing.yaml\n")
+    (wf_dir / "sweep.yaml").write_text(_FIREABLE, encoding="utf-8")
+    (tmp_path / "clocks.txt").write_text("missing.yaml\n", encoding="utf-8")
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf_dir)
     assert mod.main(["--manifest", "clocks.txt"]) == 1

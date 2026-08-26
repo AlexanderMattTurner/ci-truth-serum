@@ -22,7 +22,9 @@ pytestmark = pytest.mark.skipif(
 
 
 def _write_pkg(repo: Path, version: str) -> None:
-    (repo / "package.json").write_text(f'{{"name": "x", "version": "{version}"}}\n')
+    (repo / "package.json").write_text(
+        f'{{"name": "x", "version": "{version}"}}\n', encoding="utf-8"
+    )
 
 
 def _install_gh_stub(bindir: Path, gh_log: Path) -> None:
@@ -34,7 +36,8 @@ def _install_gh_stub(bindir: Path, gh_log: Path) -> None:
         "#!/usr/bin/env bash\n"
         f'echo "$@" >> "{gh_log}"\n'
         # `release view` exit 0 == release already exists -> script exits early.
-        "exit 0\n"
+        "exit 0\n",
+        encoding="utf-8",
     )
     gh.chmod(0o755)
 

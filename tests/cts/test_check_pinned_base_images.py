@@ -84,7 +84,10 @@ def test_valueless_arg_does_not_resolve() -> None:
 def test_arg_pinned_default_end_to_end_accepts(tmp_path) -> None:
     # The script (not just violations()) accepts a `FROM ${ARG}` whose ARG default is pinned.
     df = tmp_path / "Dockerfile"
-    df.write_text("ARG BASE=node:22@sha256:" + "a" * 64 + "\nFROM ${BASE}\nRUN true\n")
+    df.write_text(
+        "ARG BASE=node:22@sha256:" + "a" * 64 + "\nFROM ${BASE}\nRUN true\n",
+        encoding="utf-8",
+    )
     proc = subprocess.run(
         [sys.executable, str(HOOKS_DIR / "check_pinned_base_images.py"), str(df)],
         capture_output=True,
@@ -100,7 +103,7 @@ def test_main_wires_violations_and_message(
     message. The generic loop behaviour is covered once in test_linecheck.py;
     here we only pin that main() emits THIS message."""
     bad = tmp_path / "Dockerfile"
-    bad.write_text("FROM node:22\n")
+    bad.write_text("FROM node:22\n", encoding="utf-8")
     assert mod.main([str(bad)]) == 1
     assert "not pinned to @sha256" in capsys.readouterr().err
 
@@ -258,9 +261,9 @@ def test_fix_text_pins_only_resolvable_in_mixed_file() -> None:
 def test_main_fix_writes_file_and_signals_modification(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(mod, "resolve_digest", lambda image: _DIGEST)
     df = tmp_path / "Dockerfile"
-    df.write_text("FROM node:22\n")
+    df.write_text("FROM node:22\n", encoding="utf-8")
     assert mod.main(["--fix", str(df)]) == 1  # modified → non-zero for re-staging
-    assert df.read_text() == f"FROM node:22@{_DIGEST}\n"
+    assert df.read_text(encoding="utf-8") == f"FROM node:22@{_DIGEST}\n"
     # Re-running over the now-pinned file is a clean no-op.
     assert mod.main(["--fix", str(df)]) == 0
 
@@ -271,9 +274,9 @@ def test_main_fix_reports_unresolvable(tmp_path, monkeypatch, capsys) -> None:
 
     monkeypatch.setattr(mod, "resolve_digest", boom)
     df = tmp_path / "Dockerfile"
-    df.write_text("FROM node:22\n")
+    df.write_text("FROM node:22\n", encoding="utf-8")
     assert mod.main(["--fix", str(df)]) == 1
-    assert df.read_text() == "FROM node:22\n"  # unchanged
+    assert df.read_text(encoding="utf-8") == "FROM node:22\n"  # unchanged
     assert "could not pin" in capsys.readouterr().err
 
 
@@ -283,9 +286,9 @@ def test_main_fix_skips_unreadable_path_without_aborting(tmp_path, monkeypatch) 
     monkeypatch.setattr(mod, "resolve_digest", lambda image: _DIGEST)
     missing = tmp_path / "nope" / "Dockerfile"  # parent absent → OSError on open
     good = tmp_path / "Dockerfile"
-    good.write_text("FROM node:22\n")
+    good.write_text("FROM node:22\n", encoding="utf-8")
     assert mod.main(["--fix", str(missing), str(good)]) == 1
-    assert good.read_text() == f"FROM node:22@{_DIGEST}\n"
+    assert good.read_text(encoding="utf-8") == f"FROM node:22@{_DIGEST}\n"
 
 
 @pytest.mark.parametrize(

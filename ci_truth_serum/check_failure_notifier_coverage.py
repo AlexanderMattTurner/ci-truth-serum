@@ -74,6 +74,7 @@ import re
 import sys
 from collections.abc import Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -128,8 +129,26 @@ def display_name(path: Path, doc: dict) -> tuple[str, bool]:
     return str(path.relative_to(REPO_ROOT)), False
 
 
+class WorkflowDoc(NamedTuple):
+    """One readable workflow: its path, parsed mapping, and source text (the
+    text rides along because an opt-out marker is a comment the parser drops)."""
+
+    path: Path
+    doc: dict
+    text: str
+
+
+class StaleEntry(NamedTuple):
+    """One notifier file whose `workflows:` list is out of date: the file,
+    the stale (nonexistent) names it lists, and whether it has duplicates."""
+
+    path: Path
+    stale: list[str]
+    duplicated: bool
+
+
 def residual_names(
-    docs: list[tuple[Path, dict, str]], matcher: "re.Pattern[str]"
+    docs: list[WorkflowDoc], matcher: "re.Pattern[str]"
 ) -> tuple[set[str], list[str]]:
     """(display names the notifier must list, unnamed-workflow warnings) over the
     monitored workflows in DOCS (the notifiers excluded by the caller).
@@ -168,7 +187,7 @@ def corrected_block(names: set[str]) -> str:
     return "\n".join(lines)
 
 
-def load_workflows() -> tuple[list[tuple[Path, dict, str]], list[str]]:
+def load_workflows() -> tuple[list[WorkflowDoc], list[str]]:
     """(path, parsed mapping, source text) for every readable workflow, plus one
     message per file the parser rejected.
 
@@ -179,11 +198,11 @@ def load_workflows() -> tuple[list[tuple[Path, dict, str]], list[str]]:
     notifier or a workflow the notifier must list, and either way coverage can no
     longer be verified — which is a finding, not a crash.
     """
-    docs: list[tuple[Path, dict, str]] = []
+    docs: list[WorkflowDoc] = []
     errors: list[str] = []
     for path in workflow_files(WORKFLOWS_DIR):
         rel = path.relative_to(REPO_ROOT)
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         try:
             doc = yaml.load(text, Loader=LineLoader)
         except yaml.YAMLError as err:
@@ -195,7 +214,7 @@ def load_workflows() -> tuple[list[tuple[Path, dict, str]], list[str]]:
             )
             continue
         if isinstance(doc, dict):
-            docs.append((path, doc, text))
+            docs.append(WorkflowDoc(path, doc, text))
     return docs, errors
 
 
@@ -221,7 +240,7 @@ def defaults_an_input(action_dir: Path, input_name: str) -> bool:
         if not path.exists():
             continue
         try:
-            doc = yaml.safe_load(path.read_text())
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
         except (yaml.YAMLError, OSError):
             return False
         inputs = doc.get("inputs") if isinstance(doc, dict) else None
@@ -320,7 +339,11 @@ def check_repo(
 
     notifier_paths = {path for path, _ in notifiers}
     required, warnings = residual_names(
-        [(path, doc, text) for path, doc, text in docs if path not in notifier_paths],
+        [
+            WorkflowDoc(path, doc, text)
+            for path, doc, text in docs
+            if path not in notifier_paths
+        ],
         matcher,
     )
     found += [f"::error::{w}" for w in warnings]
@@ -330,7 +353,7 @@ def check_repo(
     real = {display_name(path, doc)[0] for path, doc, _ in docs}
 
     covered: set[str] = set()
-    stale_by_file: list[tuple[Path, list[str], bool]] = []
+    stale_by_file: list[StaleEntry] = []
     for path, doc in notifiers:
         rel = path.relative_to(REPO_ROOT)
         listed = notifier_list(doc)
@@ -344,7 +367,7 @@ def check_repo(
         stale = sorted(set(listed) - real)
         duplicated = len(listed) != len(set(listed))
         if stale or duplicated:
-            stale_by_file.append((path, stale, duplicated))
+            stale_by_file.append(StaleEntry(path, stale, duplicated))
 
     missing = sorted(required - covered)
     # What the list should hold: everything it already watches that really

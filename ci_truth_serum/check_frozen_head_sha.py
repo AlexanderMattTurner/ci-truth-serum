@@ -289,7 +289,7 @@ def find_violations(text: str) -> list[tuple[int | None, str]]:
 
 def check_file(path: Path) -> list[tuple[int | None, str]]:
     """(line, message) for every frozen-head-SHA violation in PATH."""
-    return find_violations(path.read_text())
+    return find_violations(path.read_text(encoding="utf-8"))
 
 
 def workflow_files() -> list[Path]:

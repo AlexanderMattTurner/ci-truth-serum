@@ -30,7 +30,7 @@ _SECRET_ENV = "        env:\n          TOKEN: ${{ secrets.NPM_TOKEN }}\n"
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -367,7 +367,7 @@ def test_non_dict_yaml_is_ignored(tmp_path):
 def _workflow_tree(tmp_path: Path, monkeypatch, body: str) -> Path:
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
-    (wf / "bad.yaml").write_text(body)
+    (wf / "bad.yaml").write_text(body, encoding="utf-8")
     monkeypatch.setattr(ue, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(ue, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(ue, "ACTIONS_DIR", tmp_path / ".github" / "actions")

@@ -82,9 +82,11 @@ def test_refs_empty_but_file_lists_names_fails() -> None:
 def _repo(tmp_path, monkeypatch, workflow_text: str, allowlist: str | None):
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
-    (wf / "a.yaml").write_text(workflow_text)
+    (wf / "a.yaml").write_text(workflow_text, encoding="utf-8")
     if allowlist is not None:
-        (tmp_path / ".github" / "workflow-secrets.txt").write_text(allowlist)
+        (tmp_path / ".github" / "workflow-secrets.txt").write_text(
+            allowlist, encoding="utf-8"
+        )
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(mod, "ACTIONS_DIR", tmp_path / ".github" / "actions")
@@ -106,7 +108,9 @@ def test_main_scans_composite_actions_too(tmp_path, monkeypatch) -> None:
     _repo(tmp_path, monkeypatch, "name: x\n", None)
     act = tmp_path / ".github" / "actions" / "n"
     act.mkdir(parents=True)
-    (act / "action.yaml").write_text("x: ${{ secrets.FROM_ACTION }}\n")
+    (act / "action.yaml").write_text(
+        "x: ${{ secrets.FROM_ACTION }}\n", encoding="utf-8"
+    )
     assert mod.main() == 1  # referenced but no allowlist file
 
 

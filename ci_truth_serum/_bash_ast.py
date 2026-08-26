@@ -22,6 +22,8 @@ swallowed. The bindings are pinned as a hook runtime dependency
 pre-commit and CI always have them.
 """
 
+from functools import lru_cache
+
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
 
@@ -95,14 +97,12 @@ def _neutralize_supplementary(script: str) -> str:
 
 
 # Building the Language once is cheap; reuse it across every parse in a run.
-_PARSER: Parser | None = None
-
-
+# `lru_cache` rather than a module-level binding a function writes: the cache
+# carries its own `cache_clear`, so a caller that must not inherit a previous
+# run's parser can drop it.
+@lru_cache(maxsize=1)
 def _parser() -> Parser:
-    global _PARSER
-    if _PARSER is None:
-        _PARSER = Parser(Language(tree_sitter_bash.language()))
-    return _PARSER
+    return Parser(Language(tree_sitter_bash.language()))
 
 
 def parse(script: str) -> Node:

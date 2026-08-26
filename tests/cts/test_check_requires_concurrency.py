@@ -30,7 +30,7 @@ JOB_CONCURRENCY = (
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -142,7 +142,7 @@ def test_missing_on_key_is_exempt(tmp_path):
 
 def test_non_dict_yaml_top_level_is_ignored(tmp_path):
     path = tmp_path / "list.yaml"
-    path.write_text("- item1\n- item2\n")
+    path.write_text("- item1\n- item2\n", encoding="utf-8")
     assert rc.check_file(path) is None
 
 
@@ -158,7 +158,7 @@ def test_non_mapping_jobs_with_pr_trigger_is_still_flagged(tmp_path):
 
 def test_main_reports_violation_and_returns_nonzero(tmp_path, monkeypatch, capsys):
     bad = tmp_path / "bad.yaml"
-    bad.write_text("name: x\non:\n  pull_request:\n" + PLAIN_JOBS)
+    bad.write_text("name: x\non:\n  pull_request:\n" + PLAIN_JOBS, encoding="utf-8")
     monkeypatch.setattr(rc, "WORKFLOWS_DIR", tmp_path)
     monkeypatch.setattr(rc, "REPO_ROOT", tmp_path)
     assert rc.main() == 1
@@ -169,7 +169,10 @@ def test_main_reports_violation_and_returns_nonzero(tmp_path, monkeypatch, capsy
 
 def test_main_clean_repo_returns_zero(tmp_path, monkeypatch, capsys):
     good = tmp_path / "ok.yaml"
-    good.write_text("name: x\non:\n  pull_request:\n" + WF_CONCURRENCY + PLAIN_JOBS)
+    good.write_text(
+        "name: x\non:\n  pull_request:\n" + WF_CONCURRENCY + PLAIN_JOBS,
+        encoding="utf-8",
+    )
     monkeypatch.setattr(rc, "WORKFLOWS_DIR", tmp_path)
     monkeypatch.setattr(rc, "REPO_ROOT", tmp_path)
     assert rc.main() == 0, capsys.readouterr().out

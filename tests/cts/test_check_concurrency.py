@@ -11,7 +11,7 @@ cc = load_hook("check_concurrency.py", "check_concurrency")
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -178,7 +178,7 @@ def test_non_dict_concurrency_is_ignored(tmp_path):
 def test_non_dict_yaml_top_level_is_ignored(tmp_path):
     """A YAML file whose top-level element is a list (not a workflow dict) is exempt."""
     path = tmp_path / "list.yaml"
-    path.write_text("- item1\n- item2\n")
+    path.write_text("- item1\n- item2\n", encoding="utf-8")
     assert cc.check_file(path) == []
 
 
@@ -191,7 +191,8 @@ def test_main_reports_violation_and_returns_nonzero(tmp_path, monkeypatch, capsy
     bad.write_text(
         "name: x\non:\n  pull_request:\nconcurrency:\n"
         "  group: x-${{ github.ref }}\n"
-        "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(cc, "WORKFLOWS_DIR", tmp_path)
     monkeypatch.setattr(cc, "REPO_ROOT", tmp_path)

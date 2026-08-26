@@ -95,11 +95,11 @@ def _repo(tmp_path: Path, monkeypatch, workflow: str, files: dict[str, str]) -> 
     init_test_repo(repo)
     wf_dir = repo / ".github" / "workflows"
     wf_dir.mkdir(parents=True)
-    (wf_dir / "wf.yaml").write_text(workflow)
+    (wf_dir / "wf.yaml").write_text(workflow, encoding="utf-8")
     for rel, content in files.items():
         dest = repo / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content)
+        dest.write_text(content, encoding="utf-8")
     commit_all(repo)
     monkeypatch.setattr(cpgd, "REPO_ROOT", repo)
     monkeypatch.setattr(cpgd, "WORKFLOWS_DIR", wf_dir)

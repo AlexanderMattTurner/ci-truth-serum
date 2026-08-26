@@ -57,7 +57,7 @@ def _privileged_wf(steps: str, trigger: str = "pull_request_target") -> str:
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -228,7 +228,8 @@ def test_main_reports_and_returns_nonzero(tmp_path, monkeypatch, capsys):
     (wf / "bad.yaml").write_text(
         "on:\n  pull_request_target:\n"
         "permissions:\n  contents: write\n"
-        "jobs:\n  build:\n    runs-on: ubuntu-latest\n" + _HEAD_CHECKOUT
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n" + _HEAD_CHECKOUT,
+        encoding="utf-8",
     )
     monkeypatch.setattr(tb, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(tb, "WORKFLOWS_DIR", wf)

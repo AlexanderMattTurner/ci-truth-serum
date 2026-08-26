@@ -142,7 +142,7 @@ def _check(tmp_path, monkeypatch, files: dict[str, str]):
     for rel, content in files.items():
         dest = root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content)
+        dest.write_text(content, encoding="utf-8")
     monkeypatch.setattr(uri, "REPO_ROOT", root)
     monkeypatch.setattr(uri, "WORKFLOWS_DIR", root / ".github" / "workflows")
     return uri.check_repo(root / ".github" / "workflows")
@@ -307,7 +307,7 @@ def _root(tmp_path, monkeypatch, files: dict[str, str]) -> Path:
     for rel, content in files.items():
         dest = root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content)
+        dest.write_text(content, encoding="utf-8")
     monkeypatch.setattr(uri, "REPO_ROOT", root)
     monkeypatch.setattr(uri, "WORKFLOWS_DIR", root / ".github" / "workflows")
     return root

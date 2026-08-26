@@ -100,7 +100,7 @@ def test_opt_out_on_cron_line() -> None:
 def _wire(tmp_path, monkeypatch, text: str):
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
-    (wf / "s.yaml").write_text(text)
+    (wf / "s.yaml").write_text(text, encoding="utf-8")
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(mod, "ACTIONS_DIR", tmp_path / ".github" / "actions")

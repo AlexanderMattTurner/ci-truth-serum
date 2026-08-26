@@ -44,6 +44,7 @@ from _registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     COMMENTED_CODE,
     DOCKERFILE,
     DRIFT,
+    JS,
     JS_OR_PYTHON,
     MARKDOWN,
     PROSE_OR_COMMENTED_CODE,
@@ -105,6 +106,8 @@ def matches(path: str, kind: str) -> bool:
         )
     if kind == JS_OR_PYTHON:
         return bool(tags & {"python", "javascript", "jsx", "ts", "tsx"})
+    if kind == JS:
+        return bool(tags & {"javascript", "jsx", "ts", "tsx"})
     if kind == DRIFT:
         return bool(tags & {"python", "javascript", "ts", "shell"})
     return False

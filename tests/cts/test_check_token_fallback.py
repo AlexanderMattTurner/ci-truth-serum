@@ -66,7 +66,9 @@ def test_multiple_hits_report_each_line() -> None:
 def test_main_flags_violation_and_reports_file(tmp_path, monkeypatch, capsys) -> None:
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
-    (wf / "bad.yaml").write_text(f"jobs:\n  j:\n    env:\n      token: {FALLBACK}\n")
+    (wf / "bad.yaml").write_text(
+        f"jobs:\n  j:\n    env:\n      token: {FALLBACK}\n", encoding="utf-8"
+    )
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(mod, "ACTIONS_DIR", tmp_path / ".github" / "actions")
@@ -81,9 +83,11 @@ def test_main_passes_clean_repo_and_scans_actions(tmp_path, monkeypatch) -> None
     wf.mkdir(parents=True)
     act.mkdir(parents=True)
     (wf / "ok.yaml").write_text(
-        "jobs:\n  j:\n    env:\n      token: ${{ secrets.X }}\n"
+        "jobs:\n  j:\n    env:\n      token: ${{ secrets.X }}\n", encoding="utf-8"
     )
-    (act / "action.yaml").write_text("runs:\n  using: composite\n  steps: []\n")
+    (act / "action.yaml").write_text(
+        "runs:\n  using: composite\n  steps: []\n", encoding="utf-8"
+    )
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(mod, "ACTIONS_DIR", tmp_path / ".github" / "actions")
@@ -94,7 +98,7 @@ def test_main_passes_clean_repo_and_scans_actions(tmp_path, monkeypatch) -> None
 def _run_main(tmp_path, monkeypatch, workflow_text: str) -> int:
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
-    (wf / "w.yaml").write_text(workflow_text)
+    (wf / "w.yaml").write_text(workflow_text, encoding="utf-8")
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(mod, "ACTIONS_DIR", tmp_path / ".github" / "actions")
@@ -158,7 +162,8 @@ def test_main_flags_composite_action_files(tmp_path, monkeypatch, capsys) -> Non
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     act.mkdir(parents=True)
     (act / "action.yml").write_text(
-        f"runs:\n  using: composite\n  steps:\n    - env:\n        GH_TOKEN: {FALLBACK}\n"
+        f"runs:\n  using: composite\n  steps:\n    - env:\n        GH_TOKEN: {FALLBACK}\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", tmp_path / ".github" / "workflows")

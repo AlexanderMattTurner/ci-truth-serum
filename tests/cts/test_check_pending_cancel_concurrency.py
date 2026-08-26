@@ -43,7 +43,7 @@ REF_GROUP = (
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -405,7 +405,9 @@ def test_scalar_static_concurrency_is_clean(tmp_path):
 def test_main_reports_violation_and_returns_nonzero(tmp_path, monkeypatch, capsys):
     wf_dir = tmp_path / ".github" / "workflows"
     wf_dir.mkdir(parents=True)
-    (wf_dir / "bad.yaml").write_text(STORM_TRIGGER + REF_GROUP + REQUIRED_CHECK_JOBS)
+    (wf_dir / "bad.yaml").write_text(
+        STORM_TRIGGER + REF_GROUP + REQUIRED_CHECK_JOBS, encoding="utf-8"
+    )
     monkeypatch.setattr(pc, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(pc, "WORKFLOWS_DIR", wf_dir)
     monkeypatch.setattr(pc, "ACTIONS_DIR", tmp_path / ".github" / "actions")

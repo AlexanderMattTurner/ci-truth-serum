@@ -32,6 +32,10 @@ REVIEWER_LOGIN="${REVIEWER_LOGIN:-github-actions[bot]}"
 REVIEWER_LOGIN_BARE="${REVIEWER_LOGIN%'[bot]'}"
 
 mkdir -p "$PR_INPUT_DIR"
+[[ -d "$PR_INPUT_DIR" ]] || {
+  echo "::error::could not create ${PR_INPUT_DIR}." >&2
+  exit 1
+}
 owner="${GH_REPO%%/*}"
 name="${GH_REPO##*/}"
 

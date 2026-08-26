@@ -41,7 +41,7 @@ def _analyze(text: str) -> list[str]:
 def _write(dirpath: Path, name: str, body: str) -> Path:
     dirpath.mkdir(parents=True, exist_ok=True)
     path = dirpath / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 

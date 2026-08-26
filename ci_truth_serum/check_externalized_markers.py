@@ -39,6 +39,7 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -138,7 +139,16 @@ def _step_external(run: str, uses: object, reader: Reader) -> list[tuple[str, st
     return sources
 
 
-def _iter_steps(steps: object) -> list[tuple[int | None, str, object]]:
+class Step(NamedTuple):
+    """One workflow step: its source line, inline `run:` text, and `uses:`
+    value."""
+
+    line: "int | None"
+    run: str
+    uses: object
+
+
+def _iter_steps(steps: object) -> list[Step]:
     """Every (line, run text, uses value) in STEPS. LINE is the step's 1-based
     source line (None when parsed without line tags, e.g. a unit-test dict)."""
     if not isinstance(steps, list):
@@ -148,7 +158,7 @@ def _iter_steps(steps: object) -> list[tuple[int | None, str, object]]:
         if not isinstance(step, dict):
             continue
         run = step.get("run") if isinstance(step.get("run"), str) else ""
-        out.append((step.get("__line__"), run, step.get("uses")))
+        out.append(Step(step.get("__line__"), run, step.get("uses")))
     return out
 
 
@@ -241,7 +251,7 @@ def check_file(
     if markers is None:
         markers = [(m, _marker_regex(m)) for m in DEFAULT_MARKERS]
     try:
-        doc = yaml.load(path.read_text(), Loader=_LineLoader)
+        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=_LineLoader)
     except yaml.YAMLError as err:
         first_line = str(err).partition("\n")[0]
         return [

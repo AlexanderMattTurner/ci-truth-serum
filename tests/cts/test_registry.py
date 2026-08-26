@@ -13,7 +13,9 @@ from tests._helpers import REPO_ROOT, load_hook
 
 reg = load_hook("_registry.py", "_registry")
 
-MANIFEST = yaml.safe_load((REPO_ROOT / ".pre-commit-hooks.yaml").read_text())
+MANIFEST = yaml.safe_load(
+    (REPO_ROOT / ".pre-commit-hooks.yaml").read_text(encoding="utf-8")
+)
 README = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
 
 # The category a hook's `name:` prefix declares, mapped to the tag that says the

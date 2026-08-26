@@ -253,10 +253,13 @@ def test_check_file_resolves_indirection_from_disk(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(em, "REPO_ROOT", tmp_path)
     scripts = tmp_path / ".github" / "scripts"
     scripts.mkdir(parents=True)
-    (scripts / "autofix.sh").write_text("git commit --amend --no-edit\n")
+    (scripts / "autofix.sh").write_text(
+        "git commit --amend --no-edit\n", encoding="utf-8"
+    )
     wf = tmp_path / "wf.yaml"
     wf.write_text(
-        "jobs:\n  autofix:\n    steps:\n      - run: bash .github/scripts/autofix.sh\n"
+        "jobs:\n  autofix:\n    steps:\n      - run: bash .github/scripts/autofix.sh\n",
+        encoding="utf-8",
     )
     out = em.check_file(wf)
     assert len(out) == 1
@@ -269,7 +272,7 @@ def test_check_file_reports_unparseable_yaml(tmp_path: Path):
     # Unparseable input can't be verified, so it must not silently read as
     # "no violations" — that would be the exact false-green this tool exists to catch.
     bad = tmp_path / "bad.yaml"
-    bad.write_text("jobs: [unbalanced\n")
+    bad.write_text("jobs: [unbalanced\n", encoding="utf-8")
     out = em.check_file(bad)
     assert len(out) == 1
     line, message = out[0]
@@ -298,10 +301,11 @@ def test_main_reports_and_fails_on_violation(tmp_path: Path, monkeypatch, capsys
     monkeypatch.setattr(em, "REPO_ROOT", tmp_path)
     scripts = tmp_path / ".github" / "scripts"
     scripts.mkdir(parents=True)
-    (scripts / "autofix.sh").write_text("git rebase --onto main\n")
+    (scripts / "autofix.sh").write_text("git rebase --onto main\n", encoding="utf-8")
     wf = tmp_path / "wf.yaml"
     wf.write_text(
-        "jobs:\n  autofix:\n    steps:\n      - run: bash .github/scripts/autofix.sh\n"
+        "jobs:\n  autofix:\n    steps:\n      - run: bash .github/scripts/autofix.sh\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(em, "workflow_files", lambda: [wf])
     assert em.main() == 1

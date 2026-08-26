@@ -77,9 +77,20 @@ _INTRO = (
 )
 
 
+# Every git call names its repository. Without it the argv acts on whatever
+# directory the process sits in, so an in-process caller reaches the developer's
+# own checkout — and `merge-tree --write-tree` below writes objects into it.
+REPO_ROOT = subprocess.run(
+    ["git", "rev-parse", "--show-toplevel"],
+    capture_output=True,
+    text=True,
+    check=True,
+).stdout.strip()
+
+
 def _git(*args: str) -> str:
     return subprocess.run(
-        ["git", *args], capture_output=True, text=True, check=True
+        ["git", "-C", REPO_ROOT, *args], capture_output=True, text=True, check=True
     ).stdout
 
 
@@ -165,7 +176,7 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
     """The mechanical 3-way merge of two parents as a tree oid (conflicted paths
     keep their conflict markers embedded)."""
     res = subprocess.run(
-        ["git", "merge-tree", "--write-tree", parent1, parent2],
+        ["git", "-C", REPO_ROOT, "merge-tree", "--write-tree", parent1, parent2],
         capture_output=True,
         text=True,
         check=False,

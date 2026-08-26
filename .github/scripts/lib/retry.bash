@@ -28,6 +28,7 @@ retry_cmd() {
     return 2
   }
   shift 2
+  # retry-loop-ok: this IS the retry primitive the check steers callers toward, so it must implement the attempt-and-sleep loop it replaces everywhere else.
   while [[ "$attempt" -le "$max" ]]; do
     "$@" && return 0
     if [[ "$attempt" -lt "$max" ]]; then

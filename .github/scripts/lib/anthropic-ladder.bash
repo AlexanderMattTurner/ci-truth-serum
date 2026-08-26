@@ -96,7 +96,7 @@ _anthropic_post() {
   local code
   # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted; echo-fallback-ok: "000" is the case analysis's own transport-failure code — the `*)` arm below retries it on this rung, exactly as a 5xx
   code=$(curl -s -o "$_ANTHROPIC_RESPONSE_FILE" -w "%{http_code}" \
-    --max-time 30 https://api.anthropic.com/v1/messages \
+    --max-time 30 --retry 3 --retry-delay 2 https://api.anthropic.com/v1/messages \
     -H "Content-Type: application/json" \
     "${AUTH_HEADERS[@]}" \
     -d "$_ANTHROPIC_REQUEST_BODY" || echo "000")

@@ -22,7 +22,7 @@ stage_trusted() {
   export "${env_var}=${staged}"
 }
 
-git fetch --quiet origin "$BASE_REF"
+timeout --kill-after=15 60 git fetch --quiet origin "$BASE_REF"
 stage_trusted scripts/assemble-changelog.mjs ASSEMBLE_CHANGELOG
 stage_trusted scripts/pin-readme-rev.mjs PIN_README_REV
 stage_trusted bin/lib/retry.bash RETRY_LIB

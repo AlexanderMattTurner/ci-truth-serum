@@ -19,7 +19,7 @@
 if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
   _COMMIT_STATUS_MARK_SOURCED=1
 
-  # shellcheck source=lib/shared-names.bash disable=SC1091
+  # shellcheck source=.github/scripts/lib/shared-names.bash
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/shared-names.bash"
 
   # The release convention, taken from shared-names.json because the reader that

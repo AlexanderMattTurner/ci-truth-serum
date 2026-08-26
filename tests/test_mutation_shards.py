@@ -24,7 +24,9 @@ _spec = importlib.util.spec_from_file_location("mutation_shards", _SRC)
 mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mod)
 
-_COSMIC = tomllib.loads((REPO_ROOT / "cosmic-ray.toml").read_text())["cosmic-ray"]
+_COSMIC = tomllib.loads((REPO_ROOT / "cosmic-ray.toml").read_text(encoding="utf-8"))[
+    "cosmic-ray"
+]
 
 
 def _mutated_modules() -> set[str]:
@@ -130,9 +132,11 @@ def _write_min_repo(root: Path, *, modules: list[str], tests: list[str]) -> None
     (root / "ci_truth_serum").mkdir()
     (root / "tests" / "cts").mkdir(parents=True)
     for m in modules:
-        (root / "ci_truth_serum" / m).write_text("x = 1\n")
+        (root / "ci_truth_serum" / m).write_text("x = 1\n", encoding="utf-8")
     for t in tests:
-        (root / "tests" / "cts" / t).write_text("def test_x(): pass\n")
+        (root / "tests" / "cts" / t).write_text(
+            "def test_x(): pass\n", encoding="utf-8"
+        )
     (root / "cosmic-ray.toml").write_text(
         "[cosmic-ray]\n"
         'module-path = "ci_truth_serum"\n'
@@ -140,7 +144,8 @@ def _write_min_repo(root: Path, *, modules: list[str], tests: list[str]) -> None
         "timeout = 60.0\n"
         'test-command = "python -m pytest -x -q -p no:cacheprovider tests/cts"\n'
         '\n[cosmic-ray.distributor]\nname = "local"\n'
-        "\n[cosmic-ray.filters.operators-filter]\nexclude-operators = []\n"
+        "\n[cosmic-ray.filters.operators-filter]\nexclude-operators = []\n",
+        encoding="utf-8",
     )
 
 
@@ -164,18 +169,22 @@ def test_large_module_splits_into_line_capped_sub_shards(tmp_path: Path) -> None
     # A module just over 2x the line cap must split into 3 sub-shards indexed 0..2.
     lines = mod.SPLIT_EVERY_LINES * 2 + 1
     _write_min_repo(tmp_path, modules=["__init__.py", "check_big.py"], tests=[])
-    (tmp_path / "ci_truth_serum" / "check_big.py").write_text("x = 1\n" * lines)
-    (tmp_path / "tests" / "cts" / "test_check_big.py").write_text("def test(): pass\n")
+    (tmp_path / "ci_truth_serum" / "check_big.py").write_text(
+        "x = 1\n" * lines, encoding="utf-8"
+    )
+    (tmp_path / "tests" / "cts" / "test_check_big.py").write_text(
+        "def test(): pass\n", encoding="utf-8"
+    )
     shards = mod.expand_shards(tmp_path)
     assert [s["id"] for s in shards] == ["check_big-1", "check_big-2", "check_big-3"]
     assert all(s["total"] == 3 for s in shards)
     assert [s["index"] for s in shards] == [0, 1, 2]
     # a module at exactly the cap stays a single bare-stem shard
     (tmp_path / "ci_truth_serum" / "check_small.py").write_text(
-        "x = 1\n" * mod.SPLIT_EVERY_LINES
+        "x = 1\n" * mod.SPLIT_EVERY_LINES, encoding="utf-8"
     )
     (tmp_path / "tests" / "cts" / "test_check_small.py").write_text(
-        "def test(): pass\n"
+        "def test(): pass\n", encoding="utf-8"
     )
     small = [
         s for s in mod.expand_shards(tmp_path) if s["module"].endswith("check_small.py")
@@ -208,8 +217,10 @@ def _write_hashable_repo(root: Path) -> None:
         modules=["check_a.py", "check_b.py", "shared.py"],
         tests=["test_check_a.py", "test_check_b.py", "test_shared.py"],
     )
-    (root / "ci_truth_serum" / "check_a.py").write_text("from shared import helper\n")
-    (root / "ci_truth_serum" / "shared.py").write_text("helper = 1\n")
+    (root / "ci_truth_serum" / "check_a.py").write_text(
+        "from shared import helper\n", encoding="utf-8"
+    )
+    (root / "ci_truth_serum" / "shared.py").write_text("helper = 1\n", encoding="utf-8")
     (root / ".github" / "scripts").mkdir(parents=True)
     (root / "tests" / "cts" / "fixtures" / "consumer").mkdir(parents=True)
     for path, text in {
@@ -224,7 +235,7 @@ def _write_hashable_repo(root: Path) -> None:
         ".github/scripts/mutation_shards.py": "# planner\n",
         ".github/scripts/run-mutation-shard.sh": "# runner\n",
     }.items():
-        (root / path).write_text(text)
+        (root / path).write_text(text, encoding="utf-8")
 
 
 def _hashes(root: Path) -> dict[str, str]:
@@ -372,7 +383,7 @@ def test_cli_write_config_writes_parseable_toml(tmp_path: Path) -> None:
     _write_min_repo(tmp_path, modules=["check_a.py"], tests=["test_check_a.py"])
     (tmp_path / ".github" / "scripts").mkdir(parents=True)
     dest = tmp_path / ".github" / "scripts" / "mutation_shards.py"
-    dest.write_text(_SRC.read_text())
+    dest.write_text(_SRC.read_text(encoding="utf-8"), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, str(dest), "--write-config", "check_a"],
         capture_output=True,
@@ -380,7 +391,7 @@ def test_cli_write_config_writes_parseable_toml(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    written = (tmp_path / "cosmic-ray.shard.toml").read_text()
+    written = (tmp_path / "cosmic-ray.shard.toml").read_text(encoding="utf-8")
     assert (
         tomllib.loads(written)["cosmic-ray"]["module-path"]
         == "ci_truth_serum/check_a.py"

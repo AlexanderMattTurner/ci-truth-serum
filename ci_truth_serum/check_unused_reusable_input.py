@@ -45,6 +45,7 @@ ignored.
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -231,7 +232,16 @@ def unused(doc: object, text: str, passed: set[str]) -> list[tuple[int | None, s
     return found
 
 
-def check_repo(workflows_dir: Path) -> list[tuple[Path, int, str]]:
+class UnusedInputViolation(NamedTuple):
+    """One reported line: the file, the line number (0 when none applies), and
+    the message."""
+
+    path: Path
+    line: int
+    message: str
+
+
+def check_repo(workflows_dir: Path) -> list[UnusedInputViolation]:
     """(path, line, message) for every unused input under WORKFLOWS_DIR.
 
     Two passes, because a callee's verdict depends on every other workflow: the
@@ -239,7 +249,7 @@ def check_repo(workflows_dir: Path) -> list[tuple[Path, int, str]]:
     the second judges each callee against the union of what its callers pass.
     """
     parsed: dict[Path, tuple[object, str]] = {}
-    unparseable: list[tuple[Path, int, str]] = []
+    unparseable: list[UnusedInputViolation] = []
     for path in workflow_files(workflows_dir):
         text = path.read_text(encoding="utf-8")
         try:
@@ -247,7 +257,7 @@ def check_repo(workflows_dir: Path) -> list[tuple[Path, int, str]]:
         except yaml.YAMLError as err:
             first_line = str(err).partition("\n")[0]
             unparseable.append(
-                (
+                UnusedInputViolation(
                     path,
                     0,
                     f"could not parse as YAML ({first_line}); cannot tell which "
@@ -275,7 +285,7 @@ def check_repo(workflows_dir: Path) -> list[tuple[Path, int, str]]:
         if rel not in called:
             continue
         for line, message in unused(doc, text, passed.get(rel, set())):
-            found.append((path, line or 0, message))
+            found.append(UnusedInputViolation(path, line or 0, message))
     return found
 
 

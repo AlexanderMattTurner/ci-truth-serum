@@ -19,7 +19,7 @@ _GUARD_RE = re.compile(r'^\s*:?\s*"\$\{(?P<var>[A-Za-z_][A-Za-z0-9_]*):\?')
 def _guard_vars(script: Path) -> list[str]:
     """Every env var protected by a `${VAR:?…}` guard in `script`, in file order."""
     out: list[str] = []
-    for line in script.read_text().splitlines():
+    for line in script.read_text(encoding="utf-8").splitlines():
         m = _GUARD_RE.match(line)
         if m:
             out.append(m.group("var"))

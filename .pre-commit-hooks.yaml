@@ -116,6 +116,14 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-truncating-pr-json
+  name: "honesty: refuse a `gh pr` --json read of a field GitHub truncates at 100"
+  description: "`gh pr view --json files` asks GraphQL for `files(first: 100)` with no cursor, so past 100 entries gh exits 0 with a short list and nothing in the response says so. Reads shell, inline workflow `run:` blocks, and Python `subprocess` calls."
+  entry: python -m ci_truth_serum.check_truncating_pr_json
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types_or: [shell, python, yaml]
+
 # ───────────────────────── Tier 1 · Identity (default-on) ────────────────────
 - id: check-pinned-base-images
   name: "identity: enforce digest-pinned Docker base images"
@@ -410,6 +418,64 @@
   pass_filenames: false
   always_run: true
 
+- id: check-bare-mkdir
+  name: "opinionated: a bare `mkdir -p` proves nothing about the directory"
+  description: On macOS and BSD `mkdir -p "$X"` exits 0 when $X is an existing dangling symlink, so a caller that needs the directory afterward must test the post-condition instead of the exit status.
+  entry: python -m ci_truth_serum.check_bare_mkdir
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types: [shell]
+
+- id: check-env-arith
+  name: "opinionated: ban an environment-sourced variable inside $(( )) arithmetic"
+  description: An unvalidated env var inside arithmetic is a syntax error that aborts a `set -e` caller, and some garbage values coerce to 0 and silently disable the limit. Validate the value into a variable first.
+  entry: python -m ci_truth_serum.check_env_arith
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types: [shell]
+
+- id: check-curl-retry
+  name: "opinionated: require a retry on a file-writing curl download"
+  description: "A single-shot `curl -o file` fails the whole install for one dropped packet. Name your own retry helpers with `--retry-wrapper NAME`."
+  entry: python -m ci_truth_serum.check_curl_retry
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types: [shell]
+
+- id: check-retry-loop
+  name: "opinionated: ban a new hand-rolled attempt-and-sleep loop"
+  description: "A counter-bound loop that sleeps between attempts re-decides the attempt count, the wait and the exhaustion message, and gets one of them wrong. Name the repo's primitive with `--retry-helper` and its wrappers with `--wrapper NAME`."
+  entry: python -m ci_truth_serum.check_retry_loop
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types: [shell]
+
+- id: check-unbounded-waits
+  name: "opinionated: bound a git remote call with a timeout"
+  description: "A `git fetch`/`clone`/`push`/`pull`/`ls-remote` against a wedged endpoint hangs forever, which eats a Ctrl-C in an interactive hook and strands a teardown. Put the bound first: `timeout 60 git fetch`. Scope the check with `files:`."
+  entry: python -m ci_truth_serum.check_unbounded_waits
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types: [shell]
+
+- id: check-shell-source-declarations
+  name: "opinionated: every `source` shellcheck cannot follow must say why"
+  description: "A `# shellcheck source=` comment naming a path the tree lacks, masked by a nearby `disable=SC1091`, makes shellcheck exit 0 having never read the library. Pass your shellcheck `-P` roots with `--search-path`."
+  entry: python -m ci_truth_serum.check_shell_source_declarations
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types: [shell]
+
+- id: check-sparse-checkout-closure
+  name: "opinionated: a sparse-checkout list must cover what its job reads"
+  description: A job that checks out sparsely and then runs a tracked file the list omits dies with "No such file or directory" on the runner, and no static read of the tree sees it coming — sparse-checkout sets SKIP_WORKTREE rather than removing the entry. The closure follows a served Python entrypoint's local imports too.
+  entry: python -m ci_truth_serum.check_sparse_checkout_closure
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
 - id: check-absolute-symlinks
@@ -675,6 +741,114 @@
   # discovers via `git ls-files`, so the passed file list is ignored. Supply the
   # project prefix: `args: [--prefix, GLOVEBOX_]`.
   pass_filenames: false
+
+- id: check-dead-shell-functions
+  name: "extra: flag a shell function nothing outside tests calls"
+  description: A function no production code calls rots — its assumptions drift from the live code, and it tells a reader a code path exists. References are swept across the whole tracked tree, so a caller in a workflow or a Python shell-out still counts.
+  entry: python -m ci_truth_serum.check_dead_shell_functions
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types: [shell]
+
+- id: check-cwd-scoped-git
+  name: "extra: a git argv built in Python must name its repository"
+  description: "`subprocess.run([\"git\", \"merge\", \"--abort\"])` with no `-C` and no `cwd=` acts on whatever directory the process sits in — a test driving that helper in-process aborts the developer's own merge."
+  entry: python -m ci_truth_serum.check_cwd_scoped_git
+  language: python
+  additional_dependencies: [PyYAML]
+  types: [python]
+
+- id: check-unspecified-encoding
+  name: "extra: name the encoding on every text-mode filesystem call"
+  description: "`read_text()` and `open()` with no `encoding=` decode with the platform default, so a file holding an em-dash mis-decodes on one host and nowhere else."
+  entry: python -m ci_truth_serum.check_unspecified_encoding
+  language: python
+  additional_dependencies: [PyYAML]
+  types: [python]
+
+- id: check-duplicate-module-constant
+  name: "extra: ban a module-level name assigned twice at top level"
+  description: The second binding silently shadows the first, so an edit to the first is discarded with no error.
+  entry: python -m ci_truth_serum.check_duplicate_module_constant
+  language: python
+  additional_dependencies: [PyYAML]
+  types: [python]
+
+- id: check-duplicate-class-names
+  name: "extra: ban one top-level class name defined in two modules"
+  description: "Two modules defining the same class name means neither is the definition, and a call site reads one header while getting the other's behaviour. Narrow the comparison set with `--scope DIR`."
+  entry: python -m ci_truth_serum.check_duplicate_class_names
+  language: python
+  additional_dependencies: [PyYAML]
+  types: [python]
+
+- id: check-big-tuple-annotations
+  name: "extra: ban a positional tuple annotation of three or more elements"
+  description: "A fixed-length heterogeneous tuple forces every call site to remember what position means what, and a reordered pair is a silent bug. Use a NamedTuple. Threshold: `--min-elements`."
+  entry: python -m ci_truth_serum.check_big_tuple_annotations
+  language: python
+  additional_dependencies: [PyYAML]
+  types: [python]
+
+- id: check-unreset-module-state
+  name: "extra: a module that mutates module-level state must declare a reset"
+  description: "pytest-xdist runs many tests in one long-lived worker that imports the module once, so one test's write is the next test's answer. Name your reset convention with `--reset-name`."
+  entry: python -m ci_truth_serum.check_unreset_module_state
+  language: python
+  additional_dependencies: [PyYAML]
+  types: [python]
+
+- id: check-sleep-as-sync
+  name: "extra: ban a fixed sleep used to synchronise before an assertion"
+  description: The sleep bets that the event lands inside N seconds; the scheduler settles the bet, so it loses on a loaded shard and hides a never-arriving event on a quiet one. Poll the condition with a deadline.
+  entry: python -m ci_truth_serum.check_sleep_as_sync
+  language: python
+  additional_dependencies: [PyYAML]
+  types: [python]
+
+- id: check-positional-git-argv
+  name: "extra: ban a test that models git's argv positionally"
+  description: "`git -c protocol.version=2 fetch` shifts `fetch` to $3, so an anchored assertion goes red and a `$1`-keyed stub goes silent — it stops intercepting and the test passes asserting nothing. Search the argv for the subcommand instead."
+  entry: python -m ci_truth_serum.check_positional_git_argv
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types: [python]
+
+- id: check-test-helper-kwargs
+  name: "extra: a test call must pass keywords its helper accepts"
+  description: "Nothing type-checks a test's call sites, so a renamed keyword-only parameter and a new call site using the old spelling merge clean and go red as `TypeError`. Name your helper packages with `--helper-package`."
+  entry: python -m ci_truth_serum.check_test_helper_kwargs
+  language: python
+  additional_dependencies: [PyYAML]
+  types: [python]
+
+- id: check-wall-clock-assertions
+  name: "extra: ban an assertion on a measured wall-clock duration"
+  description: A shared runner gives a test no promise about when it runs, so an assertion on elapsed time measures the machine's load and flakes in both directions. Assert the bound's observable instead, or record what a stubbed sleep was asked for.
+  entry: python -m ci_truth_serum.check_wall_clock_assertions
+  language: python
+  additional_dependencies:
+    [PyYAML, tree-sitter, tree-sitter-javascript, tree-sitter-typescript]
+  types_or: [javascript, jsx, ts, tsx, python]
+
+- id: check-relative-imports
+  name: "extra: a relative import specifier must resolve to a real file"
+  description: "Node's ESM resolver does no extension guessing and no directory-index fallback, so `./lib-hook-io` for `lib-hook-io.mjs` is ERR_MODULE_NOT_FOUND and a directory target is ERR_UNSUPPORTED_DIR_IMPORT."
+  entry: python -m ci_truth_serum.check_relative_imports
+  language: python
+  additional_dependencies:
+    [PyYAML, tree-sitter, tree-sitter-javascript, tree-sitter-typescript]
+  types_or: [javascript, jsx, ts, tsx]
+
+- id: check-path-shadowed-interpreter
+  name: "extra: no step after an agent step may reach Python by bare name"
+  description: "`claude-code-action` writes /usr/bin to $GITHUB_PATH, and the runner rebuilds PATH by prepending each line, so every later step resolves a bare `python3` to the system interpreter and dies on a package `uv sync` installed. Name the interpreter by path."
+  entry: python -m ci_truth_serum.check_path_shadowed_interpreter
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
 
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are

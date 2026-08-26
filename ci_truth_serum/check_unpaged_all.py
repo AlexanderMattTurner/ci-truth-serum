@@ -53,6 +53,7 @@ JavaScript). Invoked by pre-commit with the staged Python and JavaScript paths.
 import ast
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # `iter_nodes` walks any tree-sitter tree, whichever grammar built it — the same
@@ -173,7 +174,16 @@ def _py_reads_envelope(node: ast.AST) -> bool:
     return False
 
 
-def _py_words(tree: ast.Module) -> tuple[set[str], set[str], bool]:
+class PyWords(NamedTuple):
+    """Every name, attribute, keyword and string literal a module holds, split
+    by whether it lives in code or a docstring, plus whether it loops."""
+
+    code: set[str]
+    prose: set[str]
+    has_loop: bool
+
+
+def _py_words(tree: ast.Module) -> PyWords:
     """Every name, attribute, keyword and string literal in TREE, plus whether
     TREE holds a `while` loop, as (code words, docstring words, loop).
 
@@ -200,7 +210,7 @@ def _py_words(tree: ast.Module) -> tuple[set[str], set[str], bool]:
             code.add(node.arg.lower())
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             (prose if id(node) in docstrings else code).add(node.value.lower())
-    return code, prose, has_loop
+    return PyWords(code, prose, has_loop)
 
 
 def _py_violations(source: str) -> list[int]:

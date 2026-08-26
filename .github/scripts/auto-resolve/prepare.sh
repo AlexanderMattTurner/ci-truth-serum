@@ -86,7 +86,7 @@ git config merge.conflictStyle diff3
 # checkout was made with a narrowed fetch refspec — so the merge below reads a
 # STALE origin/<base> and merges an out-of-date base, and no command fails. The
 # run then reports a resolution against a base that has since moved.
-git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+timeout --kill-after=15 60 git fetch --no-tags origin "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"
 
 # Captured before the merge: a clean merge (or fast-forward) moves HEAD, and the
 # no-op exit must report the commit the mark-attempt step recorded, not the tip

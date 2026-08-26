@@ -90,6 +90,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -404,7 +405,16 @@ def _shell_names_conclusion(node) -> bool:
     return False
 
 
-def _condition_facts(node) -> list[tuple[str, str, int]]:
+class Fact(NamedTuple):
+    """One comparison against a run conclusion: the literal, the operator, and
+    the 1-based line it was written on."""
+
+    conclusion: str
+    operator: str
+    line: int
+
+
+def _condition_facts(node) -> list[Fact]:
     """(conclusion, operator, 1-based line) for every comparison under NODE."""
     facts = []
     for expression in iter_nodes(node, "binary_expression"):
@@ -421,7 +431,7 @@ def _condition_facts(node) -> list[tuple[str, str, int]]:
         literal = _shell_literal(value)
         if literal is not None:
             operator_text = "!=" if operator.type == "!=" else "=="
-            facts.append((literal, operator_text, expression.start_point[0] + 1))
+            facts.append(Fact(literal, operator_text, expression.start_point[0] + 1))
     return facts
 
 
@@ -449,7 +459,7 @@ def _if_conditions(statement) -> list:
     return conditions
 
 
-def _case_facts(statement) -> list[tuple[str, str, int]]:
+def _case_facts(statement) -> list[Fact]:
     """(conclusion, `==`, line) for a `case` whose subject is a conclusion."""
     subject = []
     for child in statement.children:
@@ -466,7 +476,7 @@ def _case_facts(statement) -> list[tuple[str, str, int]]:
                 break
             literal = _shell_literal(child)
             if literal is not None:
-                facts.append((literal, "==", child.start_point[0] + 1))
+                facts.append(Fact(literal, "==", child.start_point[0] + 1))
     return facts
 
 
@@ -477,7 +487,7 @@ def shell_groups(text: str) -> list[Group]:
     claimed: set[int] = set()
     for statement in iter_nodes(root, "if_statement"):
         conditions = _if_conditions(statement)
-        facts: list[tuple[str, str, int]] = []
+        facts: list[Fact] = []
         for condition in conditions:
             claimed.update(test.id for test in iter_nodes(condition, "test_command"))
             facts += _condition_facts(condition)
@@ -497,7 +507,7 @@ def shell_groups(text: str) -> list[Group]:
     return sorted(groups, key=lambda found: found.line)
 
 
-def _facts_to_group(facts: list[tuple[str, str, int]]) -> "Group | None":
+def _facts_to_group(facts: list[Fact]) -> "Group | None":
     """Facts that already carry their own line numbers, as one Group."""
     lines = {name: line for name, _, line in facts}
     return _group(

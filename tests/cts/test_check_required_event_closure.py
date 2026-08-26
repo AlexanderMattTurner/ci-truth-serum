@@ -23,7 +23,7 @@ crec = load_hook("check_required_event_closure.py", "check_required_event_closur
 
 def _check(tmp_path: Path, body: str) -> list[tuple[int | None, str]]:
     path = tmp_path / "wf.yaml"
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return crec.check_file(path)
 
 
@@ -363,7 +363,7 @@ def test_needs_closure_walks_transitively_and_accepts_string_needs():
 def test_main_exit_codes(tmp_path, monkeypatch, capsys):
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
-    (wf / "bad.yaml").write_text(DECIDE_SKIPS_MERGE_QUEUE)
+    (wf / "bad.yaml").write_text(DECIDE_SKIPS_MERGE_QUEUE, encoding="utf-8")
     monkeypatch.setattr(crec, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(crec, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(crec, "ACTIONS_DIR", tmp_path / ".github" / "actions")
@@ -375,6 +375,7 @@ def test_main_exit_codes(tmp_path, monkeypatch, capsys):
         DECIDE_ADMITS_ONLY_PULL_REQUEST.replace(
             "github.event_name == 'pull_request'",
             "github.event_name == 'pull_request' || github.event_name == 'merge_group'",
-        )
+        ),
+        encoding="utf-8",
     )
     assert crec.main() == 0

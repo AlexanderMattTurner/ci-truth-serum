@@ -42,7 +42,7 @@ def _wf(concurrency: str, jobs: str = REQUIRED_CHECK_JOBS, header: str = "") -> 
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -169,7 +169,7 @@ def test_non_dict_concurrency_is_ignored(tmp_path):
 
 def test_non_dict_yaml_top_level_is_ignored(tmp_path):
     path = tmp_path / "list.yaml"
-    path.write_text("- a\n- b\n")
+    path.write_text("- a\n- b\n", encoding="utf-8")
     assert crc.check_file(path) is None
 
 
