@@ -56,6 +56,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     static_group_reason,
     workflow_files,
 )
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "cancellable-required-check-ok"
 REPO_ROOT = Path.cwd()
@@ -102,7 +103,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     workflow lints (check_static_concurrency &c.)."""
     text = path.read_text(encoding="utf-8")
     try:
-        doc = yaml.safe_load(text)
+        doc = safe_load(text)
     except yaml.YAMLError as err:
         first_line = str(err).partition("\n")[0]
         return None, (

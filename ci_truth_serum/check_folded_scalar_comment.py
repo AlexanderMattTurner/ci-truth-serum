@@ -56,6 +56,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     annotation_re,
     workflow_files as _workflow_files,
 )
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -143,7 +144,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     green."""
     text = path.read_text(encoding="utf-8")
     try:
-        yaml.safe_load(text)  # a validity probe: the detector below is line-based
+        safe_load(text)  # a validity probe: the detector below is line-based
     except yaml.YAMLError as err:
         first_line = str(err).partition("\n")[0]
         return [

@@ -41,6 +41,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import opted_out, workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "concurrency-not-required"
 PR_TRIGGERS = ("pull_request", "pull_request_target")
@@ -96,7 +97,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     workflow lints (check_workflow_pipefail &c.)."""
     text = path.read_text(encoding="utf-8")
     try:
-        doc = yaml.safe_load(text)
+        doc = safe_load(text)
     except yaml.YAMLError as err:
         first_line = str(err).partition("\n")[0]
         return None, (

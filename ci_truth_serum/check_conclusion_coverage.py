@@ -112,6 +112,7 @@ from _py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-positio
     name_of,
     trees,
 )
+from _fastyaml import compose, safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-conclusion-subset"
 
@@ -176,7 +177,7 @@ def load_extra(config_path: Path) -> frozenset[str]:
         return frozenset()
     text = config_path.read_text(encoding="utf-8")
     try:
-        doc = yaml.safe_load(text)
+        doc = safe_load(text)
     except yaml.YAMLError as err:
         raise ConfigError(
             f"{config_path}: could not parse as YAML "
@@ -320,7 +321,7 @@ def expression_facts(expression: str) -> list[tuple[str, str]]:
 
 def _scalar_nodes(text: str):
     """Every scalar node in a YAML document, marks included."""
-    stack = [yaml.compose(text, Loader=yaml.SafeLoader)]
+    stack = [compose(text)]
     while stack:
         node = stack.pop()
         if node is None:

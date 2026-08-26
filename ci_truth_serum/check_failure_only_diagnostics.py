@@ -99,6 +99,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     workflow_files,
     _job_blocks,
 )
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -286,7 +287,7 @@ def _action_work(uses: str, seen: frozenset) -> str | None:
     target = _action_path(uses)
     if target is None or target in seen:
         return None
-    doc = yaml.safe_load(target.read_text(encoding="utf-8"))
+    doc = safe_load(target.read_text(encoding="utf-8"))
     runs = doc.get("runs") if isinstance(doc, dict) else None
     return next(
         (

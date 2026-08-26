@@ -31,13 +31,16 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _fastyaml import SafeLoader, safe_load, scan  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
 # Lines whose first word only prints text — a command quoted inside them is an
 # example or hint, not executed code. Shared by the stderr- and download-pinning
 # checks; check_exit_suppression extends it (it also excuses status helpers).
 MESSAGE_PREFIX = re.compile(r"^(?:echo|printf|warn|status|die|log|:)\b")
 
 
-class LineLoader(yaml.SafeLoader):
+class LineLoader(SafeLoader):
     """SafeLoader that tags every mapping with `__line__` (the 1-based source line
     of its first key) so a flagged step can be reported with a navigable
     file/line annotation instead of a bare, unclickable `::error::`. Shared by the
@@ -1090,7 +1093,7 @@ def strip_yaml_comments(text: str) -> str:
     try:
         spans = [
             (token.start_mark.index, token.end_mark.index)
-            for token in yaml.scan(text, Loader=yaml.SafeLoader)
+            for token in scan(text)
             if isinstance(token, yaml.tokens.ScalarToken)
         ]
     except yaml.YAMLError:
@@ -1316,7 +1319,7 @@ def required_check_contexts(text: str) -> list[str]:
     classified, a superset of what is read here (a cheap always-run linter carries
     the marker but is no reporter).
     """
-    doc = yaml.safe_load(text)
+    doc = safe_load(text)
     if not isinstance(doc, dict):
         return []
     jobs = doc.get("jobs", {})

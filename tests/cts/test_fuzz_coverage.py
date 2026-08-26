@@ -45,6 +45,7 @@ FUZZ_REQUIRED = {
     "_js_ast": "parse",
     "_py_ast": "trees",
     "_comments": "comment_lines",
+    "_fastyaml": "safe_load",
     "_linecheck": "required_check_contexts",
     "_failure_routing": "routing",
     "check_exit_suppression": "violations",

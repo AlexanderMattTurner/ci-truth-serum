@@ -45,6 +45,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     has_trigger,
     workflow_triggers,
 )
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -135,7 +136,7 @@ def violations(
             )
             continue
         try:
-            doc = yaml.safe_load(source)
+            doc = safe_load(source)
         except yaml.YAMLError as err:
             first = str(err).partition(chr(10))[0]
             out.append(

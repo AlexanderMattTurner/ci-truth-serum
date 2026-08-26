@@ -48,6 +48,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     workflow_triggers,
 )
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "event-scoped-ok"
 REPO_ROOT = Path.cwd()
@@ -312,7 +313,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     """
     text = path.read_text(encoding="utf-8")
     try:
-        doc = yaml.safe_load(text)
+        doc = safe_load(text)
     except yaml.YAMLError as err:
         first_line = str(err).partition("\n")[0]
         return [
