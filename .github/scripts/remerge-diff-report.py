@@ -243,7 +243,7 @@ def _blob(rev: str, path: str) -> str:
     undecodable bytes rather than raising: a replaced character can only fail a
     block match, which keeps the hunk in the report."""
     res = subprocess.run(
-        ["git", "show", f"{rev}:{path}"],
+        ["git", "-C", REPO_ROOT, "show", f"{rev}:{path}"],
         capture_output=True,
         text=True,
         errors="replace",

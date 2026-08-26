@@ -31,6 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PathologicalInputError,
     command_words,
     iter_nodes,
     parse,
@@ -174,9 +175,24 @@ def main(argv: list[str]) -> int:
         "single-shot `curl … -o` download with no retry — a transient blip "
         f"fails the install. {_remedy(retry_wrappers)}"
     )
-    return run_source_checks(
-        args.files, lambda text, _path: violations(text, retry_wrappers), message
-    )
+    # One path at a time, so a file the shell grammar refuses to parse (over
+    # _MAX_PIPE_BYTES of piped bytes) fails LOUDLY, naming the path, instead of
+    # taking the whole run down with an uncaught traceback.
+    status = 0
+    for path in args.files:
+        try:
+            status = max(
+                status,
+                run_source_checks(
+                    [path],
+                    lambda text, _path: violations(text, retry_wrappers),
+                    message,
+                ),
+            )
+        except PathologicalInputError as err:
+            print(f"{path}: {err}", file=sys.stderr)
+            status = 1
+    return status
 
 
 if __name__ == "__main__":

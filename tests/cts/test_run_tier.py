@@ -18,6 +18,16 @@ import yaml
 
 from tests._helpers import REPO_ROOT, load_hook
 
+
+def _run(argv):
+    """rt.main's effective exit code: 0 on a plain return, N on `raise SystemExit(N)`."""
+    try:
+        rt.main(argv)
+    except SystemExit as exc:
+        return exc.code
+    return 0
+
+
 rt = load_hook("run_tier.py", "run_tier")
 
 MANIFEST = yaml.safe_load(
@@ -233,12 +243,12 @@ def test_run_check_reports_the_module_exit_code(monkeypatch):
 
 # ── main ──────────────────────────────────────────────────────────────────
 def test_main_rejects_unknown_tier(capsys):
-    assert rt.main(["nope"]) == 2
+    assert _run(["nope"]) == 2
     assert "usage: run_tier" in capsys.readouterr().err
 
 
 def test_main_rejects_missing_tier(capsys):
-    assert rt.main([]) == 2
+    assert _run([]) == 2
 
 
 # ── --skip ────────────────────────────────────────────────────────────────
@@ -259,7 +269,7 @@ def test_skip_removes_named_member(tmp_path, monkeypatch):
         return _Done()
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
-    rc = rt.main(["1", "--skip", "check_exit_suppression", str(shell_file)])
+    rc = _run(["1", "--skip", "check_exit_suppression", str(shell_file)])
     assert rc == 0
     assert "check_exit_suppression" not in called
     # check_stderr_suppression is a SHELL peer that was NOT skipped
@@ -267,7 +277,7 @@ def test_skip_removes_named_member(tmp_path, monkeypatch):
 
 
 def test_skip_unknown_name_exits_nonzero(capsys):
-    rc = rt.main(["1", "--skip", "check_does_not_exist"])
+    rc = _run(["1", "--skip", "check_does_not_exist"])
     assert rc == 2
     assert "unknown" in capsys.readouterr().err
 
@@ -275,13 +285,13 @@ def test_skip_unknown_name_exits_nonzero(capsys):
 def test_a_misspelled_flag_is_not_a_filename(capsys):
     """`--skp <name>` read as two paths would run the tier with the check the
     caller meant to drop still in it."""
-    rc = rt.main(["1", "--skp", "check_exit_suppression"])
+    rc = _run(["1", "--skp", "check_exit_suppression"])
     assert rc == 2
     assert "unknown option" in capsys.readouterr().err
 
 
 def test_skip_without_argument_exits_nonzero(capsys):
-    rc = rt.main(["1", "--skip"])
+    rc = _run(["1", "--skip"])
     assert rc == 2
     assert "requires an argument" in capsys.readouterr().err
 
@@ -309,7 +319,7 @@ def test_check_arg_reaches_only_its_member_and_precedes_the_files(
     shell_file.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
     seen = _record_argv(monkeypatch)
 
-    rc = rt.main(
+    rc = _run(
         [
             "2",
             "--check-arg",
@@ -335,7 +345,7 @@ def test_check_arg_reaches_a_workflow_member_that_takes_no_files(monkeypatch):
     its flags are the whole argv."""
     seen = _record_argv(monkeypatch)
 
-    rc = rt.main(
+    rc = _run(
         ["2", "--check-arg", "check_failure_notifier_coverage=--require-notifier"]
     )
 
@@ -344,7 +354,7 @@ def test_check_arg_reaches_a_workflow_member_that_takes_no_files(monkeypatch):
 
 
 def test_check_arg_for_a_check_outside_the_tier_exits_nonzero(capsys):
-    rc = rt.main(["1", "--check-arg", "check_does_not_exist=--flag"])
+    rc = _run(["1", "--check-arg", "check_does_not_exist=--flag"])
     assert rc == 2
     assert "unknown" in capsys.readouterr().err
 
@@ -352,19 +362,19 @@ def test_check_arg_for_a_check_outside_the_tier_exits_nonzero(capsys):
 def test_check_arg_without_an_equals_exits_nonzero(capsys):
     """`--check-arg check_retry_loop --wrapper=x` would otherwise read the
     check name as the flag and the flag as a filename."""
-    rc = rt.main(["2", "--check-arg", "check_retry_loop"])
+    rc = _run(["2", "--check-arg", "check_retry_loop"])
     assert rc == 2
     assert "<check>=<flag>" in capsys.readouterr().err
 
 
 def test_check_arg_with_an_empty_half_exits_nonzero(capsys):
-    rc = rt.main(["2", "--check-arg", "check_retry_loop="])
+    rc = _run(["2", "--check-arg", "check_retry_loop="])
     assert rc == 2
     assert "<check>=<flag>" in capsys.readouterr().err
 
 
 def test_check_arg_without_argument_exits_nonzero(capsys):
-    rc = rt.main(["2", "--check-arg"])
+    rc = _run(["2", "--check-arg"])
     assert rc == 2
     assert "requires an argument" in capsys.readouterr().err
 
@@ -372,7 +382,7 @@ def test_check_arg_without_argument_exits_nonzero(capsys):
 def test_check_arg_on_a_skipped_check_exits_nonzero(capsys):
     """Silently dropping the flags would leave the caller believing they
     configured a check that never ran."""
-    rc = rt.main(
+    rc = _run(
         [
             "2",
             "--skip",
@@ -392,7 +402,7 @@ def test_a_flag_value_may_itself_contain_an_equals(tmp_path, monkeypatch):
     seen = _record_argv(monkeypatch)
 
     assert (
-        rt.main(["2", "--check-arg", "check_retry_loop=--wrapper=a=b", str(shell_file)])
+        _run(["2", "--check-arg", "check_retry_loop=--wrapper=a=b", str(shell_file)])
         == 0
     )
     assert seen["check_retry_loop"][0] == "--wrapper=a=b"
@@ -414,7 +424,7 @@ def test_main_tier1_flags_a_real_violation(tmp_path, monkeypatch):
     # which self-discovers .github/workflows under cwd.
     repo = _tmp_repo_with_pr_paths_violation(tmp_path)
     monkeypatch.chdir(repo)
-    assert rt.main(["1"]) == 1
+    assert _run(["1"]) == 1
 
 
 def test_a_hand_run_with_no_files_says_which_checks_did_not_run(
@@ -429,7 +439,7 @@ def test_a_hand_run_with_no_files_says_which_checks_did_not_run(
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    assert rt.main(["1"]) == 0
+    assert _run(["1"]) == 0
     err = capsys.readouterr().err
     assert "did not run" in err
     # Names each one, so the reader can see the shell lints are the gap.
@@ -454,7 +464,7 @@ def test_the_whole_tree_remedy_is_absent_when_files_were_passed(
     )
     py = tmp_path / "m.py"
     py.write_text("x = 1\n", encoding="utf-8")
-    assert rt.main(["1", str(py)]) == 0
+    assert _run(["1", str(py)]) == 0
     err = capsys.readouterr().err
     assert "check_pinned_base_images" in err
     assert "git ls-files" not in err
@@ -469,7 +479,7 @@ def test_a_run_that_scans_every_member_prints_no_note(monkeypatch, capsys):
         returncode = 0
 
     monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
-    assert rt.main(["1"]) == 0
+    assert _run(["1"]) == 0
     assert "did not run" not in capsys.readouterr().err
 
 
@@ -486,7 +496,7 @@ def test_a_skipped_member_is_not_reported_as_unscanned(monkeypatch, capsys):
         returncode = 0
 
     monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
-    assert rt.main(["1", "--skip", "check_exit_suppression"]) == 0
+    assert _run(["1", "--skip", "check_exit_suppression"]) == 0
     assert "did not run" not in capsys.readouterr().err
 
 
@@ -499,4 +509,4 @@ def test_main_tier1_passes_on_clean_repo(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    assert rt.main(["1"]) == 0
+    assert _run(["1"]) == 0

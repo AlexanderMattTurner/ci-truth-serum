@@ -327,18 +327,61 @@ def _js_mentions_clock(node, names: set[str]) -> bool:
     return False
 
 
-def _js_duration_names(root) -> set[str]:
-    """Names bound to a wall-clock reading, or to a duration derived from one
-    — grown in source order, so a later declaration sees an earlier one."""
-    names: set[str] = set()
-    for declarator in iter_nodes(root, "variable_declarator"):
-        name = declarator.child_by_field_name("name")
-        value = declarator.child_by_field_name("value")
+_JS_SCOPE_TYPES = frozenset(
+    {
+        "arrow_function",
+        "function_declaration",
+        "function_expression",
+        "generator_function",
+        "generator_function_declaration",
+        "method_definition",
+    }
+)
+
+
+def _js_scope_body(scope):
+    """Every descendant of SCOPE (exclusive), pre-order, stopping at — but
+    still yielding — a nested function's own boundary node rather than
+    descending into it. This is what keeps one function's locals from
+    leaking into a SIBLING function: each scope's own declarators and
+    assert calls are read from here, never from a nested or enclosing one."""
+    found = []
+    for child in scope.children:
+        found.append(child)
+        if child.type not in _JS_SCOPE_TYPES:
+            found.extend(_js_scope_body(child))
+    return found
+
+
+def _js_names_in(scope, inherited: frozenset[str]) -> set[str]:
+    """Names bound to a wall-clock reading, or to a duration derived from one,
+    in SCOPE's own body — grown in source order, seeded by INHERITED."""
+    names = set(inherited)
+    for node in _js_scope_body(scope):
+        if node.type != "variable_declarator":
+            continue
+        name = node.child_by_field_name("name")
+        value = node.child_by_field_name("value")
         if name is None or value is None or name.type != "identifier":
             continue
         if _js_mentions_clock(value, names):
             names.add(name.text.decode("utf-8", "replace"))
     return names
+
+
+def _js_scopes(root) -> list[tuple[object, frozenset[str]]]:
+    """Each function's own subtree paired with the clock-derived names it
+    inherits from top-level bindings, plus the program itself for asserts
+    written outside any function — the JS analogue of the Python arm's
+    `_scopes`, so a one-letter name in one test does not make a same-named
+    local in an unrelated test a duration too. Every entry is seeded by the
+    SAME top-level names, matching the Python arm, which inherits only
+    module-level bindings and never an enclosing function's locals."""
+    inherited = frozenset(_js_names_in(root, frozenset()))
+    scopes: list[tuple[object, frozenset[str]]] = [(root, inherited)]
+    for func in iter_nodes(root, *_JS_SCOPE_TYPES):
+        scopes.append((func, inherited))
+    return scopes
 
 
 def _js_is_duration(node, names: set[str]) -> bool:
@@ -407,20 +450,21 @@ def _js_violations(source: str, path: str) -> list[int]:
     (`if (Date.now() - start > timeoutMs)`) reaches no assert call."""
     root = parse(source, path)
     physical = source.split("\n")
-    names = _js_duration_names(root)
     hits: set[int] = set()
-    for call in iter_nodes(root, "call_expression"):
-        callee = _js_callee(call)
-        if callee is None or "assert" not in callee:
-            continue
-        for compare in iter_nodes(call, "binary_expression"):
-            if _js_offends(compare, names) and not annotated_near(
-                physical,
-                call.start_point[0] + 1,
-                OPT_OUT,
-                span_end=call.end_point[0] + 1,
-            ):
-                hits.add(call.start_point[0] + 1)
+    for scope, inherited in _js_scopes(root):
+        names = _js_names_in(scope, inherited)
+        for call in (n for n in _js_scope_body(scope) if n.type == "call_expression"):
+            callee = _js_callee(call)
+            if callee is None or "assert" not in callee:
+                continue
+            for compare in iter_nodes(call, "binary_expression"):
+                if _js_offends(compare, names) and not annotated_near(
+                    physical,
+                    call.start_point[0] + 1,
+                    OPT_OUT,
+                    span_end=call.end_point[0] + 1,
+                ):
+                    hits.add(call.start_point[0] + 1)
     return sorted(h for h in hits if h <= len(physical))
 
 
