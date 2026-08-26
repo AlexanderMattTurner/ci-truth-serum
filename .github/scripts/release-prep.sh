@@ -18,8 +18,8 @@ set -euo pipefail
 # The retry helper is likewise sourced from the base branch's trusted copy the
 # workflow stages in $RETRY_LIB (same isolation as $ASSEMBLE_CHANGELOG), falling
 # back to the in-tree path only to bootstrap the very PR that first adds it.
-# shellcheck source=../../bin/lib/retry.bash disable=SC1091
-source "${RETRY_LIB:-$(git rev-parse --show-toplevel)/bin/lib/retry.bash}"
+# shellcheck source=lib/retry.bash disable=SC1091
+source "${RETRY_LIB:-$(git rev-parse --show-toplevel)/.github/scripts/lib/retry.bash}"
 # shellcheck source=../../bin/lib/release-model-call.bash disable=SC1091
 source "${MODEL_CALL_LIB:-$(git rev-parse --show-toplevel)/bin/lib/release-model-call.bash}"
 

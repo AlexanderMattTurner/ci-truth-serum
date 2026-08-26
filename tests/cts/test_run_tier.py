@@ -286,6 +286,118 @@ def test_skip_without_argument_exits_nonzero(capsys):
     assert "requires an argument" in capsys.readouterr().err
 
 
+# ── --check-arg ───────────────────────────────────────────────────────────
+def _record_argv(monkeypatch) -> dict[str, list[str]]:
+    """Capture the argv each member subprocess would have received."""
+    seen: dict[str, list[str]] = {}
+
+    class _Done:
+        returncode = 0
+
+    def _fake(cmd, check):
+        seen[cmd[2].removeprefix("ci_truth_serum.")] = cmd[3:]
+        return _Done()
+
+    monkeypatch.setattr(rt.subprocess, "run", _fake)
+    return seen
+
+
+def test_check_arg_reaches_only_its_member_and_precedes_the_files(
+    tmp_path, monkeypatch
+):
+    shell_file = tmp_path / "s.sh"
+    shell_file.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    seen = _record_argv(monkeypatch)
+
+    rc = rt.main(
+        [
+            "2",
+            "--check-arg",
+            "check_retry_loop=--wrapper=retry_cmd",
+            "--check-arg",
+            "check_retry_loop=--retry-helper=bin/lib/retry.bash",
+            str(shell_file),
+        ]
+    )
+
+    assert rc == 0
+    assert seen["check_retry_loop"] == [
+        "--wrapper=retry_cmd",
+        "--retry-helper=bin/lib/retry.bash",
+        str(shell_file),
+    ]
+    # A SHELL peer in the same tier gets the files and none of the flags.
+    assert seen["check_curl_retry"] == [str(shell_file)]
+
+
+def test_check_arg_reaches_a_workflow_member_that_takes_no_files(monkeypatch):
+    """A WORKFLOW member self-discovers `.github/*` and is passed no files, so
+    its flags are the whole argv."""
+    seen = _record_argv(monkeypatch)
+
+    rc = rt.main(
+        ["2", "--check-arg", "check_failure_notifier_coverage=--require-notifier"]
+    )
+
+    assert rc == 0
+    assert seen["check_failure_notifier_coverage"] == ["--require-notifier"]
+
+
+def test_check_arg_for_a_check_outside_the_tier_exits_nonzero(capsys):
+    rc = rt.main(["1", "--check-arg", "check_does_not_exist=--flag"])
+    assert rc == 2
+    assert "unknown" in capsys.readouterr().err
+
+
+def test_check_arg_without_an_equals_exits_nonzero(capsys):
+    """`--check-arg check_retry_loop --wrapper=x` would otherwise read the
+    check name as the flag and the flag as a filename."""
+    rc = rt.main(["2", "--check-arg", "check_retry_loop"])
+    assert rc == 2
+    assert "<check>=<flag>" in capsys.readouterr().err
+
+
+def test_check_arg_with_an_empty_half_exits_nonzero(capsys):
+    rc = rt.main(["2", "--check-arg", "check_retry_loop="])
+    assert rc == 2
+    assert "<check>=<flag>" in capsys.readouterr().err
+
+
+def test_check_arg_without_argument_exits_nonzero(capsys):
+    rc = rt.main(["2", "--check-arg"])
+    assert rc == 2
+    assert "requires an argument" in capsys.readouterr().err
+
+
+def test_check_arg_on_a_skipped_check_exits_nonzero(capsys):
+    """Silently dropping the flags would leave the caller believing they
+    configured a check that never ran."""
+    rc = rt.main(
+        [
+            "2",
+            "--skip",
+            "check_retry_loop",
+            "--check-arg",
+            "check_retry_loop=--wrapper=retry_cmd",
+        ]
+    )
+    assert rc == 2
+    assert "--skip removes" in capsys.readouterr().err
+
+
+def test_a_flag_value_may_itself_contain_an_equals(tmp_path, monkeypatch):
+    """The split is on the FIRST `=`, so `--wrapper=a=b` survives intact."""
+    shell_file = tmp_path / "s.sh"
+    shell_file.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    seen = _record_argv(monkeypatch)
+
+    assert (
+        rt.main(["2", "--check-arg", "check_retry_loop=--wrapper=a=b", str(shell_file)])
+        == 0
+    )
+    assert seen["check_retry_loop"][0] == "--wrapper=a=b"
+
+
 def _tmp_repo_with_pr_paths_violation(tmp_path: Path) -> Path:
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)

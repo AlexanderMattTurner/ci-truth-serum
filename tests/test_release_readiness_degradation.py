@@ -117,10 +117,13 @@ def _make_repo(tmp_path: Path, fragments: dict[str, str]) -> tuple[Path, Path, P
     shutil.copy2(REPO_ROOT / ".github" / "scripts" / "release-readiness.sh", scripts)
     (scripts / "release-readiness.sh").chmod(0o755)
 
+    (scripts / "lib").mkdir()
+    shutil.copy2(
+        REPO_ROOT / ".github" / "scripts" / "lib" / "retry.bash", scripts / "lib"
+    )
     libdir = repo / "bin" / "lib"
     libdir.mkdir(parents=True)
-    for lib in ("retry.bash", "release-model-call.bash"):
-        shutil.copy2(REPO_ROOT / "bin" / "lib" / lib, libdir)
+    shutil.copy2(REPO_ROOT / "bin" / "lib" / "release-model-call.bash", libdir)
 
     (repo / "scripts").mkdir()
     shutil.copy2(REPO_ROOT / "scripts" / "assemble-changelog.mjs", repo / "scripts")

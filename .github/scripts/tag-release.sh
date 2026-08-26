@@ -9,8 +9,8 @@
 # after a partial failure (tag pushed, release missing) backfills the release.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../../bin/lib/retry.bash disable=SC1091
-source "$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)/bin/lib/retry.bash"
+# shellcheck source=lib/retry.bash disable=SC1091
+source "$SCRIPT_DIR/lib/retry.bash"
 
 read_version() { node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0, "utf8")).version)'; }
 

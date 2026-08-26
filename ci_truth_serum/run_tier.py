@@ -18,13 +18,17 @@ reports on a commit that touches only one language. It also catches the hand
 run: ``run_tier 1`` with no arguments still runs every workflow lint and exits
 0, which without the note reads as a clean tier rather than a partial one.
 
+A member that takes flags gets them from ``--check-arg <check>=<flag>``, so a
+parameterised check stays inside its tier instead of being skipped and re-listed
+as its own hook. Repeat the flag to pass several; ``--wrapper=retry_cmd`` is one
+token, so a flag and its value need one ``--check-arg``.
+
 Three hooks are intentionally NOT aggregated, each enabled on its own:
 ``check-absolute-symlinks`` is a ``language: script`` shell hook, not a Python
-module, so it cannot run inside this Python aggregate; ``check-lockstep-pins`` is
-config-driven (it does nothing without per-repo ``--pair`` args, and the
-aggregate passes none), so running it here would hard-error every consumer; and
-``check-env-symmetry`` is a whole-tree scan needing a per-project ``--prefix``
-arg no aggregate can supply. The contract test in
+module, so it cannot run inside this Python aggregate; ``check-lockstep-pins``
+and ``check-env-symmetry`` scan the whole tree and take no file list, and every
+value they compare is per-repo, so a tier that carried them would carry one
+repo's configuration for every consumer. The contract test in
 ``tests/cts/test_run_tier.py`` asserts the registry stays in sync with
 ``.pre-commit-hooks.yaml`` so a newly added hook can't silently escape its tier.
 
@@ -135,15 +139,21 @@ def run_check(module: str, argv: list[str]) -> int:
 
 
 def run_members(
-    members: list[tuple[str, str]], files: list[str]
+    members: list[tuple[str, str]],
+    files: list[str],
+    extra: dict[str, list[str]] | None = None,
 ) -> tuple[int, list[str]]:
     """Run each (module, kind) member over FILES; return the exit code and the
     members that had no file of their kind to scan.
+
+    EXTRA maps a module to the flags `--check-arg` gave it. They precede the
+    file arguments, which is where argparse wants them.
 
     The second value is what separates a member that passed from one that never
     ran: both leave exit code 0, and a caller that reports one as the other is
     the false green this pack exists to refuse.
     """
+    extra = extra or {}
     rc = 0
     unscanned: list[str] = []
     for module, kind in members:
@@ -151,7 +161,7 @@ def run_members(
         if argv is None:
             unscanned.append(module)
             continue
-        if run_check(module, argv):
+        if run_check(module, [*extra.get(module, []), *argv]):
             rc = 1
     return rc, unscanned
 
@@ -185,13 +195,15 @@ def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] not in TIERS:
         print(
-            f"usage: run_tier <{'|'.join(TIERS)}> [--skip <check>]... [files...]",
+            f"usage: run_tier <{'|'.join(TIERS)}> [--skip <check>]... "
+            "[--check-arg <check>=<flag>]... [files...]",
             file=sys.stderr,
         )
         return 2
     tier, rest = argv[0], argv[1:]
 
     skips: set[str] = set()
+    extra: dict[str, list[str]] = {}
     files: list[str] = []
     i = 0
     while i < len(rest):
@@ -200,6 +212,19 @@ def main(argv: list[str] | None = None) -> int:
                 print("error: --skip requires an argument", file=sys.stderr)
                 return 2
             skips.add(rest[i + 1])
+            i += 2
+        elif rest[i] == "--check-arg":
+            if i + 1 >= len(rest):
+                print("error: --check-arg requires an argument", file=sys.stderr)
+                return 2
+            module, sep, flag = rest[i + 1].partition("=")
+            if not sep or not module or not flag:
+                print(
+                    f"error: --check-arg takes <check>=<flag>, got {rest[i + 1]!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            extra.setdefault(module, []).append(flag)
             i += 2
         elif rest[i].startswith("--"):
             # A misspelled flag must not become a filename. `--skp <name>` would
@@ -211,7 +236,8 @@ def main(argv: list[str] | None = None) -> int:
             files.append(rest[i])
             i += 1
 
-    unknown = skips - {mod for mod, _ in TIERS[tier]}
+    members_of_tier = {mod for mod, _ in TIERS[tier]}
+    unknown = (skips | set(extra)) - members_of_tier
     if unknown:
         print(
             f"error: unknown check(s) for tier {tier!r}: {', '.join(sorted(unknown))}",
@@ -223,8 +249,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    # A check both skipped and configured is a contradiction: the flags would
+    # silently do nothing, and the caller believes they configured the check.
+    contradictory = skips & set(extra)
+    if contradictory:
+        print(
+            "error: --check-arg names a check that --skip removes: "
+            f"{', '.join(sorted(contradictory))}",
+            file=sys.stderr,
+        )
+        return 2
+
     members = [(m, k) for m, k in TIERS[tier] if m not in skips]
-    rc, unscanned = run_members(members, files)
+    rc, unscanned = run_members(members, files, extra)
     report_unscanned(
         unscanned,
         files,

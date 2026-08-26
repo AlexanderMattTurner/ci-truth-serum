@@ -16,8 +16,8 @@
 # release rather than the fetch.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=../../bin/lib/retry.bash disable=SC1091
-source "$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)/bin/lib/retry.bash"
+# shellcheck source=lib/retry.bash disable=SC1091
+source "$SCRIPT_DIR/lib/retry.bash"
 
 if ! retry_cmd 4 2 timeout --kill-after=15 60 git fetch --tags --quiet origin; then
   echo "Error: failed to fetch tags after 4 attempts; the release canary cannot read the git-tag marker" >&2

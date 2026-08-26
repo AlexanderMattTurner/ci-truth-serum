@@ -157,9 +157,9 @@ def _make_repo(tmp_path: Path, *, uv_exit: int, with_origin: bool = True) -> tup
     shutil.copy2(REPO_ROOT / SCRIPT_REL, scripts)
     (scripts / "release-canary.sh").chmod(0o755)
 
-    libdir = repo / "bin" / "lib"
+    libdir = scripts / "lib"
     libdir.mkdir(parents=True)
-    shutil.copy2(REPO_ROOT / "bin" / "lib" / "retry.bash", libdir)
+    shutil.copy2(REPO_ROOT / ".github" / "scripts" / "lib" / "retry.bash", libdir)
 
     (repo / "seed").write_text("x\n", encoding="utf-8")
     commit_all(repo, "seed")

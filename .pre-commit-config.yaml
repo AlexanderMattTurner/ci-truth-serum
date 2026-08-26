@@ -78,12 +78,21 @@ repos:
       - id: check-tier2
         name: "dogfood aggregate: every Tier 2 (opinionated) check"
         entry: python -m ci_truth_serum.run_tier 2
-        # check_failure_notifier_coverage is skipped here and re-listed below in
-        # STRICT mode: the aggregate forwards no flags, so inside it the alert
-        # invariants that need one stay off. Shipping a strict mode we do not
-        # enable on ourselves is the same vacuous green the package exists to
-        # catch.
-        args: [--skip, check_failure_notifier_coverage]
+        # check_failure_notifier_coverage is skipped here and re-listed below
+        # with always_run, so it reports on a commit the aggregate's file
+        # filters would sit out. Shipping a strict mode we do not enable on
+        # ourselves is the same vacuous green the package exists to catch.
+        # The retry flags name this repo's one retry primitive, so a call that
+        # already delegates to it passes and the failure message points at it.
+        args:
+          - --skip
+          - check_failure_notifier_coverage
+          - --check-arg
+          - check_retry_loop=--retry-helper=.github/scripts/lib/retry.bash
+          - --check-arg
+          - check_retry_loop=--wrapper=retry_cmd
+          - --check-arg
+          - check_curl_retry=--retry-wrapper=retry_cmd
         language: python
         additional_dependencies:
           [PyYAML, identify, tree-sitter, tree-sitter-bash]

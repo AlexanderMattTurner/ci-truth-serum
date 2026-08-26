@@ -56,9 +56,9 @@ def _make_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     # the gh stub short-circuits; copy it anyway so the path resolves.
     shutil.copy2(REPO_ROOT / ".github" / "scripts" / "changelog-notes.sh", scripts)
 
-    libdir = repo / "bin" / "lib"
+    libdir = scripts / "lib"
     libdir.mkdir(parents=True)
-    shutil.copy2(REPO_ROOT / "bin" / "lib" / "retry.bash", libdir)
+    shutil.copy2(REPO_ROOT / ".github" / "scripts" / "lib" / "retry.bash", libdir)
 
     bare = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)

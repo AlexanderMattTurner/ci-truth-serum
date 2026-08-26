@@ -21,8 +21,8 @@ set -euo pipefail
 # Repo content (package.json, CHANGELOG, changelog.d, the assembler) is read from
 # the checked-out working tree — the job runs from the repo root.
 ROOT="$(git rev-parse --show-toplevel)"
-# shellcheck source=../../bin/lib/retry.bash disable=SC1091
-source "$ROOT/bin/lib/retry.bash"
+# shellcheck source=lib/retry.bash disable=SC1091
+source "$ROOT/.github/scripts/lib/retry.bash"
 # shellcheck source=../../bin/lib/release-model-call.bash disable=SC1091
 source "$ROOT/bin/lib/release-model-call.bash"
 
