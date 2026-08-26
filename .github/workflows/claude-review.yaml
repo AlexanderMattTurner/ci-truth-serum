@@ -101,11 +101,11 @@ jobs:
       statuses: write # a caller's post-review command re-posts the head's verdict
       actions: read # the owed-review re-check lists this workflow's in-flight runs
       checks: read # the reviewer's jobs may read another check run on the head
-    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@6b45ac4a10f713eeee766898e25b0df589008928 # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
+    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@8fd4317a10020e28b8e721a11a2c9857b0027fc3 # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
     with:
       reviewer-repository: AlexanderMattTurner/agent-review
       # Leave `reviewer-ref` unset. The workflow reads the sha the `uses:` line
-      # names back out of `job.workflow_sha`, so the pin is written once.
+      # names back out of `github.job_workflow_sha`, so the pin is written once.
       review-prompt: .github/prompts/claude-pr-review.md
     secrets:
       # Rung 1 is the metered key the reviewer spends before any subscription
