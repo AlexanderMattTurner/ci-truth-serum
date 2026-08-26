@@ -4,7 +4,10 @@ Two properties matter. The pack must reach libyaml when the installed PyYAML has
 it, because every selector member re-parses the workflow tree in its own
 subprocess and the pure-Python scanner is the pack's dominant cost. And the two
 loaders must agree: a check reports `<path>:<line>:`, so a loader that shifted a
-mark or dropped a mapping key would move findings, not just speed them up.
+mark or dropped a mapping key would move findings, not just speed them up. The
+agreement runs one way. libyaml accepts a little more than the Python scanner
+does, and `test_the_c_loader_accepts_a_trailing_tab_the_python_one_rejects`
+pins the one case this corpus found.
 """
 
 import importlib.util
@@ -12,6 +15,8 @@ import subprocess
 
 import pytest
 import yaml
+from hypothesis import assume, given
+from hypothesis import strategies as st
 
 from tests._helpers import HOOKS_DIR, REPO_ROOT, load_hook
 
@@ -175,10 +180,7 @@ def test_loaders_agree_on_edge_shapes(name: str) -> None:
     text = EDGE_DOCUMENTS[name]
 
     def _load(loader: type) -> object:
-        try:
-            return yaml.load(text, Loader=loader)
-        except yaml.YAMLError as err:
-            return type(err).__name__
+        return _outcome(lambda t: yaml.load(t, Loader=loader), text)
 
     assert _load(lc.LineLoader) == _load(PureLineLoader)
     assert _scalar_spans(text, mod.SafeLoader) == _scalar_spans(text, yaml.SafeLoader)
@@ -191,3 +193,86 @@ def test_line_tags_survive_the_c_parser() -> None:
     assert doc["__line__"] == 1
     assert doc["jobs"]["a"]["__line__"] == 6  # `steps:`, the mapping's first key
     assert doc["jobs"]["a"]["steps"][0]["__line__"] == 7
+
+
+# ── the two loaders agree on generated input too ─────────────────────────
+_FRAGMENTS = [
+    "on:\n  push:\n    branches: [main]",
+    "jobs:\n  a:\n    steps:\n      - run: echo hi",
+    "a: &anchor {k: v}\nb: *anchor",
+    "x: |\n  line\n   deeper",
+    "y: >-\n  folded\n  text",
+    "- 1\n- 2\n- {a: b}",
+    "k: '#not a comment'  # a comment",
+    "dup: 1\ndup: 2",
+    "\ttab",
+    "---\nz: 1\n---\nz: 2",
+    "unicode: héllo 🙂",
+    "empty:",
+]
+
+
+@st.composite
+def _yaml_text(draw: st.DrawFn) -> str:
+    """Concatenated YAML fragments plus optional garbage — the shape a lint is
+    actually fed, which is whatever bytes happen to be staged."""
+    parts = draw(st.lists(st.sampled_from(_FRAGMENTS), max_size=4))
+    if draw(st.booleans()):
+        parts.append(draw(st.text(max_size=60)))
+    return "\n".join(parts)
+
+
+REFUSED = ("refused",)
+
+
+def _outcome(load: object, text: str) -> object:
+    """The document LOAD builds from TEXT, or `("refused",)` when it will not.
+
+    The refusal carries no error class. The two implementations sort a malformed
+    document into different `yaml.YAMLError` subclasses — `on:\\n{` is a
+    `ParserError` to the Python parser and a `ScannerError` to libyaml — and
+    every check in this pack catches the base class, so the split never reaches a
+    finding. Anything that is NOT a `yaml.YAMLError` escapes and reddens this
+    test, which is the crash-resistance half.
+    """
+    try:
+        return ("parsed", load(text))
+    except yaml.YAMLError:
+        return REFUSED
+
+
+@given(text=_yaml_text())
+def test_the_c_loader_builds_what_the_python_loader_built(text: str) -> None:
+    """Crash resistance and parity in one: on any input the Python loader parses,
+    the pack's loader parses too and builds the same document. Anything that is
+    not a `yaml.YAMLError` escapes `_outcome` and reddens this test."""
+    expected = _outcome(yaml.safe_load, text)
+    assume(expected != REFUSED)  # libyaml accepts a superset — see the tab case
+    assert _outcome(mod.safe_load, text) == expected
+    assert _outcome(lambda t: yaml.load(t, Loader=lc.LineLoader), text) == _outcome(
+        lambda t: yaml.load(t, Loader=PureLineLoader), text
+    )
+
+
+@given(text=_yaml_text())
+def test_scalar_spans_agree_on_generated_input(text: str) -> None:
+    """`strip_yaml_comments` blanks comments off these spans, so a scanner that
+    ended a scalar elsewhere would hide a real finding or invent one."""
+    expected = _outcome(lambda t: _scalar_spans(t, yaml.SafeLoader), text)
+    assume(expected != REFUSED)
+    assert _outcome(lambda t: _scalar_spans(t, mod.SafeLoader), text) == expected
+
+
+def test_the_c_loader_accepts_a_trailing_tab_the_python_one_rejects() -> None:
+    """The one widening the property above assumes away, pinned as an example.
+
+    PyYAML's Python scanner refuses a tab after a plain scalar. libyaml reads it
+    as the separation whitespace YAML says it is, so a workflow with a trailing
+    tab used to be reported as unparseable by every check in this pack and is now
+    parsed and checked. The widening runs one way: no input the Python loader
+    accepts is refused here.
+    """
+    text = "jobs:\n  a:\n    steps:\n      - run: echo hi\t\n"
+    with pytest.raises(yaml.YAMLError):
+        yaml.safe_load(text)
+    assert mod.safe_load(text) == {"jobs": {"a": {"steps": [{"run": "echo hi"}]}}}
