@@ -390,7 +390,8 @@ def test_main_only_scans_test_paths(tmp_path) -> None:
             "def t():",
             "    s = time.monotonic()",
             "    assert time.monotonic() - s < 2",
-        )
+        ),
+        encoding="utf-8",
     )
     assert mod.main([str(non_test)]) == 0
 
@@ -405,7 +406,8 @@ def test_main_reports_and_exits_nonzero(tmp_path, capsys) -> None:
             "def t():",
             "    s = time.monotonic()",
             "    assert time.monotonic() - s < 2",
-        )
+        ),
+        encoding="utf-8",
     )
     assert mod.main([str(test_file)]) == 1
     assert f"{test_file}:6:" in capsys.readouterr().err
@@ -413,7 +415,7 @@ def test_main_reports_and_exits_nonzero(tmp_path, capsys) -> None:
 
 def test_main_clean_file_exits_zero(tmp_path) -> None:
     test_file = tmp_path / "test_x.py"
-    test_file.write_text(_CLEAN_POLL)
+    test_file.write_text(_CLEAN_POLL, encoding="utf-8")
     assert mod.main([str(test_file)]) == 0
 
 
@@ -428,7 +430,8 @@ def test_main_wires_the_scaler_flag(tmp_path, capsys) -> None:
             "    s = time.monotonic()",
             "    elapsed = time.monotonic() - s",
             "    assert elapsed < scale_timeout(20)",
-        )
+        ),
+        encoding="utf-8",
     )
     assert mod.main([str(test_file)]) == 0
     assert mod.main(["--scaler", "scale_timeout", str(test_file)]) == 1

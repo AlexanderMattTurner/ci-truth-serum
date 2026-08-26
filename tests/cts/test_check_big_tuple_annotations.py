@@ -133,7 +133,7 @@ def test_unparseable_source_is_skipped_not_crashed() -> None:
 # ── main: argv/exit-code contract ─────────────────────────────────────────
 def test_main_flags_an_offending_file(tmp_path, capsys) -> None:
     bad = tmp_path / "prod.py"
-    bad.write_text("def f() -> tuple[str, int, bool]: ...\n")
+    bad.write_text("def f() -> tuple[str, int, bool]: ...\n", encoding="utf-8")
     assert mod.main([str(bad)]) == 1
     err = capsys.readouterr().err
     assert "prod.py:1:" in err
@@ -142,7 +142,7 @@ def test_main_flags_an_offending_file(tmp_path, capsys) -> None:
 
 def test_main_passes_on_a_clean_file(tmp_path) -> None:
     ok = tmp_path / "prod.py"
-    ok.write_text("def f() -> tuple[str, int]: ...\n")
+    ok.write_text("def f() -> tuple[str, int]: ...\n", encoding="utf-8")
     assert mod.main([str(ok)]) == 0
 
 
@@ -153,7 +153,7 @@ def test_main_skips_test_files() -> None:
 
 def test_main_honors_min_elements_flag(tmp_path) -> None:
     src = tmp_path / "prod.py"
-    src.write_text("def f() -> tuple[str, int, bool]: ...\n")
+    src.write_text("def f() -> tuple[str, int, bool]: ...\n", encoding="utf-8")
     assert mod.main(["--min-elements", "4", str(src)]) == 0
     assert mod.main(["--min-elements", "3", str(src)]) == 1
 

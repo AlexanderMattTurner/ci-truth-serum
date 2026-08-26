@@ -183,14 +183,20 @@ def test_the_default_read_only_set_is_never_narrowed_by_extension() -> None:
 
 def test_main_reports_and_exits_1_on_a_hit(tmp_path, capsys) -> None:
     p = tmp_path / "s.py"
-    p.write_text('import subprocess\nsubprocess.run(["git", "merge", "--abort"])\n')
+    p.write_text(
+        'import subprocess\nsubprocess.run(["git", "merge", "--abort"])\n',
+        encoding="utf-8",
+    )
     assert mod.main([str(p)]) == 1
     assert f"{p}:2:" in capsys.readouterr().err
 
 
 def test_main_clean_file_exits_0(tmp_path) -> None:
     p = tmp_path / "s.py"
-    p.write_text('import subprocess\nsubprocess.run(["git", "-C", "r", "merge"])\n')
+    p.write_text(
+        'import subprocess\nsubprocess.run(["git", "-C", "r", "merge"])\n',
+        encoding="utf-8",
+    )
     assert mod.main([str(p)]) == 0
 
 
@@ -209,7 +215,9 @@ def test_main_flags_only_with_no_files_also_refuses(capsys) -> None:
 
 def test_main_flag_reaches_the_scan_and_clears_a_house_verb(tmp_path, capsys) -> None:
     p = tmp_path / "s.py"
-    p.write_text("import subprocess\nsubprocess.run(['git', 'house-verb'])\n")
+    p.write_text(
+        "import subprocess\nsubprocess.run(['git', 'house-verb'])\n", encoding="utf-8"
+    )
     assert mod.main([str(p)]) == 1
     assert mod.main(["--read-only-subcommand", "house-verb", str(p)]) == 0
 

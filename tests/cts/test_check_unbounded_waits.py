@@ -153,26 +153,26 @@ def test_remote_subcommand_flag_extends_the_built_in_set() -> None:
 # ── main ─────────────────────────────────────────────────────────────────
 def test_main_reports_and_exits_nonzero(tmp_path, capsys) -> None:
     p = tmp_path / "s.sh"
-    p.write_text("git fetch origin\n")
+    p.write_text("git fetch origin\n", encoding="utf-8")
     assert mod.main([str(p)]) == 1
     assert f"{p}:1:" in capsys.readouterr().err
 
 
 def test_main_clean_file_exits_zero(tmp_path) -> None:
     p = tmp_path / "s.sh"
-    p.write_text("timeout 30 git fetch origin\n")
+    p.write_text("timeout 30 git fetch origin\n", encoding="utf-8")
     assert mod.main([str(p)]) == 0
 
 
 def test_main_bounding_wrapper_flag_suppresses_a_hit(tmp_path, capsys) -> None:
     p = tmp_path / "s.sh"
-    p.write_text("retry_bounded 30 git fetch origin\n")
+    p.write_text("retry_bounded 30 git fetch origin\n", encoding="utf-8")
     assert mod.main([str(p)]) == 1
     assert mod.main(["--bounding-wrapper", "retry_bounded", str(p)]) == 0
 
 
 def test_main_remote_subcommand_flag_adds_a_hit(tmp_path, capsys) -> None:
     p = tmp_path / "s.sh"
-    p.write_text("git bundle-fetch origin\n")
+    p.write_text("git bundle-fetch origin\n", encoding="utf-8")
     assert mod.main([str(p)]) == 0
     assert mod.main(["--remote-subcommand", "bundle-fetch", str(p)]) == 1

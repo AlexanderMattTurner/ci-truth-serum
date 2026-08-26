@@ -198,7 +198,7 @@ def test_the_default_subcommand_set_is_never_narrowed_by_extension() -> None:
 
 def test_main_only_scans_test_paths(tmp_path, capsys) -> None:
     prod = tmp_path / "lib.py"
-    prod.write_text('assert routed[0].startswith("git rev-parse")\n')
+    prod.write_text('assert routed[0].startswith("git rev-parse")\n', encoding="utf-8")
     assert mod.main([str(prod)]) == 0
     assert capsys.readouterr().err == ""
 
@@ -206,7 +206,9 @@ def test_main_only_scans_test_paths(tmp_path, capsys) -> None:
 def test_main_scans_a_real_test_path(tmp_path, capsys) -> None:
     test_file = tmp_path / "tests" / "test_thing.py"
     test_file.parent.mkdir()
-    test_file.write_text('assert routed[0].startswith("git rev-parse")\n')
+    test_file.write_text(
+        'assert routed[0].startswith("git rev-parse")\n', encoding="utf-8"
+    )
     assert mod.main([str(test_file)]) == 1
     assert f"{test_file}:1:" in capsys.readouterr().err
 
@@ -214,7 +216,7 @@ def test_main_scans_a_real_test_path(tmp_path, capsys) -> None:
 def test_main_clean_file_exits_0(tmp_path) -> None:
     test_file = tmp_path / "tests" / "test_thing.py"
     test_file.parent.mkdir()
-    test_file.write_text('fetch, = git_calls(routed, "fetch")\n')
+    test_file.write_text('fetch, = git_calls(routed, "fetch")\n', encoding="utf-8")
     assert mod.main([str(test_file)]) == 0
 
 
@@ -232,7 +234,8 @@ def test_main_subcommand_flag_reaches_the_scan(tmp_path, capsys) -> None:
     test_file = tmp_path / "tests" / "test_thing.py"
     test_file.parent.mkdir()
     test_file.write_text(
-        "'case \"$1\" in\\n'\n'  house-verb) echo hi ;;\\n'\n'esac\\n'\n"
+        "'case \"$1\" in\\n'\n'  house-verb) echo hi ;;\\n'\n'esac\\n'\n",
+        encoding="utf-8",
     )
     assert mod.main([str(test_file)]) == 0
     assert mod.main(["--subcommand", "house-verb", str(test_file)]) == 1

@@ -152,7 +152,7 @@ def test_probe_heredoc_body_does_not_fire() -> None:
 # ── main() argv/exit-code contract ─────────────────────────────────────────
 def test_main_reports_and_exits_nonzero(tmp_path, capsys) -> None:
     p = tmp_path / "s.sh"
-    p.write_text('mkdir -p "$dir"\n')
+    p.write_text('mkdir -p "$dir"\n', encoding="utf-8")
     assert mod.main([str(p)]) == 1
     err = capsys.readouterr().err
     assert f"{p}:1:" in err
@@ -162,7 +162,7 @@ def test_main_reports_and_exits_nonzero(tmp_path, capsys) -> None:
 
 def test_main_clean_file_exits_zero(tmp_path) -> None:
     p = tmp_path / "s.sh"
-    p.write_text('mkdir "$dir"\n')
+    p.write_text('mkdir "$dir"\n', encoding="utf-8")
     assert mod.main([str(p)]) == 0
 
 

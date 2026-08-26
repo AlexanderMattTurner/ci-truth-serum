@@ -102,7 +102,7 @@ def test_the_reported_line_is_the_specifiers_own_line() -> None:
 def _write(tmp_path, rel: str, contents: str = "export const x = 1;\n"):
     path = tmp_path / rel
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(contents)
+    path.write_text(contents, encoding="utf-8")
     return path
 
 
@@ -114,12 +114,12 @@ def test_a_specifier_naming_an_existing_file_resolves_clean(tmp_path) -> None:
         "pkg/entry.mjs",
         'import { y } from "./inner.mjs";\nimport { x } from "../sibling.mjs";\n',
     )
-    assert mod.violations(entry.read_text(), str(entry)) == []
+    assert mod.violations(entry.read_text(encoding="utf-8"), str(entry)) == []
 
 
 def test_a_specifier_naming_no_file_is_reported(tmp_path) -> None:
     entry = _write(tmp_path, "pkg/entry.mjs", 'import { z } from "./missing.mjs";\n')
-    assert mod.violations(entry.read_text(), str(entry)) == [1]
+    assert mod.violations(entry.read_text(encoding="utf-8"), str(entry)) == [1]
 
 
 def test_an_extensionless_specifier_is_reported() -> None:
@@ -133,7 +133,7 @@ def test_a_specifier_naming_a_directory_is_reported(tmp_path) -> None:
     # Node has no directory-index fallback: ERR_UNSUPPORTED_DIR_IMPORT.
     (tmp_path / "pkg" / "nested").mkdir(parents=True)
     entry = _write(tmp_path, "pkg/entry.mjs", 'import x from "./nested";\n')
-    assert mod.violations(entry.read_text(), str(entry)) == [1]
+    assert mod.violations(entry.read_text(encoding="utf-8"), str(entry)) == [1]
 
 
 def test_a_cache_busting_query_or_fragment_is_stripped_before_resolution(
@@ -145,10 +145,10 @@ def test_a_cache_busting_query_or_fragment_is_stripped_before_resolution(
         "pkg/entry.mjs",
         'import { y } from "./inner.mjs?v=2";\nimport { z } from "./inner.mjs#frag";\n',
     )
-    assert mod.violations(entry.read_text(), str(entry)) == []
+    assert mod.violations(entry.read_text(encoding="utf-8"), str(entry)) == []
     # …and stripping must not make a genuinely missing file look present.
     bad = _write(tmp_path, "pkg/other.mjs", 'import z from "./gone.mjs?v=2";\n')
-    assert mod.violations(bad.read_text(), str(bad)) == [1]
+    assert mod.violations(bad.read_text(encoding="utf-8"), str(bad)) == [1]
 
 
 def test_the_wrong_depth_dotdot_is_caught(tmp_path) -> None:
@@ -159,12 +159,12 @@ def test_the_wrong_depth_dotdot_is_caught(tmp_path) -> None:
         "a/b/entry.mjs",
         'import x from "../sibling.mjs";\n',
     )
-    assert mod.violations(entry.read_text(), str(entry)) == [1]
+    assert mod.violations(entry.read_text(encoding="utf-8"), str(entry)) == [1]
 
 
 def test_a_non_js_path_has_no_specifiers_to_check(tmp_path) -> None:
     entry = _write(tmp_path, "notes.txt", 'import x from "./missing.mjs";\n')
-    assert mod.violations(entry.read_text(), str(entry)) == []
+    assert mod.violations(entry.read_text(encoding="utf-8"), str(entry)) == []
 
 
 # ── opt-out ─────────────────────────────────────────────────────────────────

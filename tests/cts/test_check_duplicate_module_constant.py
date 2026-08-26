@@ -157,7 +157,8 @@ def test_main_flags_a_duplicate_and_names_the_annotation(tmp_path, capsys) -> No
 def test_main_clean_file_exits_zero(tmp_path) -> None:
     ok = tmp_path / "ok.py"
     ok.write_text(
-        "X = 1\nY = X + 1\nZ = 1\nZ = 2  # allow-duplicate-constant: deliberate\n"
+        "X = 1\nY = X + 1\nZ = 1\nZ = 2  # allow-duplicate-constant: deliberate\n",
+        encoding="utf-8",
     )
     assert mod.main([str(ok)]) == 0
 

@@ -145,7 +145,9 @@ def test_main_flags_an_offending_file_and_names_both_remedies(tmp_path, capsys) 
 
 def test_main_clean_file_exits_zero(tmp_path) -> None:
     ok = tmp_path / "ok.py"
-    ok.write_text('p.read_text(encoding="utf-8")\nopen(p, encoding="utf-8")\n')
+    ok.write_text(
+        'p.read_text(encoding="utf-8")\nopen(p, encoding="utf-8")\n', encoding="utf-8"
+    )
     assert mod.main([str(ok)]) == 0
 
 

@@ -216,20 +216,20 @@ def test_python_non_vacuity_the_annotated_case_still_fires_when_stale() -> None:
 # ── main ─────────────────────────────────────────────────────────────────
 def test_main_reports_and_exits_nonzero(tmp_path: Path, capsys) -> None:
     p = tmp_path / "s.sh"
-    p.write_text('gh pr view "$PR" --json files\n')
+    p.write_text('gh pr view "$PR" --json files\n', encoding="utf-8")
     assert mod.main([str(p)]) == 1
     assert f"{p}:1:" in capsys.readouterr().err
 
 
 def test_main_clean_file_exits_zero(tmp_path: Path) -> None:
     p = tmp_path / "s.sh"
-    p.write_text('gh pr view "$PR" --json title,body\n')
+    p.write_text('gh pr view "$PR" --json title,body\n', encoding="utf-8")
     assert mod.main([str(p)]) == 0
 
 
 def test_main_field_flag_adds_a_hit(tmp_path: Path) -> None:
     p = tmp_path / "s.sh"
-    p.write_text("gh pr view 3 --json statusCheckRollup\n")
+    p.write_text("gh pr view 3 --json statusCheckRollup\n", encoding="utf-8")
     assert mod.main([str(p)]) == 0
     assert mod.main(["--field", "statusCheckRollup", str(p)]) == 1
 

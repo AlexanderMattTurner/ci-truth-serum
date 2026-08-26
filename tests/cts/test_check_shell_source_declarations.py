@@ -20,7 +20,7 @@ mod = load_hook("check_shell_source_declarations.py", "check_shell_source_declar
 def _mk(tmp_path: Path, rel: str, text: str) -> Path:
     path = tmp_path / rel
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -54,7 +54,7 @@ def test_directive_resolving_against_search_path_passes(tmp_path: Path) -> None:
 def test_search_path_given_as_absolute(tmp_path: Path) -> None:
     hooks = tmp_path / "elsewhere" / "hooks"
     hooks.mkdir(parents=True)
-    (hooks / "foo.sh").write_text("true\n")
+    (hooks / "foo.sh").write_text("true\n", encoding="utf-8")
     src = '# shellcheck source=foo.sh\nsource "$DIR/foo.sh"\n'
     path = _main_at(tmp_path, "bin/main.sh")
     assert mod.violations(path, src, tmp_path, [str(hooks)]) == []

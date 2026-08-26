@@ -22,7 +22,7 @@ def _repo(tmp_path: Path) -> Path:
 def _write(repo: Path, rel: str, text: str) -> Path:
     path = repo / rel
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
 
 

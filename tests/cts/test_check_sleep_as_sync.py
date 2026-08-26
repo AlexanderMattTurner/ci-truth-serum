@@ -220,7 +220,8 @@ def test_main_reports_and_exits_nonzero(tmp_path, capsys) -> None:
             "def test_x():",
             "    time.sleep(0.2)",
             "    assert done()",
-        )
+        ),
+        encoding="utf-8",
     )
     assert mod.main([str(p)]) == 1
     assert f"{p}:5:" in capsys.readouterr().err
@@ -236,7 +237,8 @@ def test_main_clean_file_exits_zero(tmp_path) -> None:
             "def test_x():",
             "    assert done()",
             "    time.sleep(0.2)",
-        )
+        ),
+        encoding="utf-8",
     )
     assert mod.main([str(p)]) == 0
 
