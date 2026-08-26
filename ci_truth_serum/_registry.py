@@ -140,6 +140,7 @@ CHECKS: tuple[Check, ...] = (
     _check("check_path_gate_deps", "2", WORKFLOW, REQUIRED_CHECKS),
     _check("check_reusable_permissions", "2", WORKFLOW, SECURITY),
     _check("check_failure_notifier_coverage", "2", WORKFLOW, ALERTING),
+    _check("check_failure_only_diagnostics", "2", WORKFLOW, ALERTING, CORRECTNESS),
     _check(
         "check_cancellable_required_check", "2", WORKFLOW, CONCURRENCY, REQUIRED_CHECKS
     ),
