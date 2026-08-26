@@ -50,6 +50,9 @@ reusable_permissions = load_hook(
 )
 job_timeout = load_hook("check_job_timeout.py", "fuzz_job_timeout")
 uncached_download = load_hook("check_uncached_download.py", "fuzz_uncached_download")
+failure_only_diagnostics = load_hook(
+    "check_failure_only_diagnostics.py", "fuzz_failure_only_diagnostics"
+)
 trusted_base = load_hook("check_trusted_base.py", "fuzz_trusted_base")
 untrusted_exec = load_hook("check_untrusted_exec.py", "fuzz_untrusted_exec")
 unscoped_tool_grant = load_hook(
@@ -80,6 +83,7 @@ WORKFLOW_CHECKS = [
     ("check_reusable_permissions", reusable_permissions.check_file, True),
     ("check_job_timeout", job_timeout.check_file, True),
     ("check_uncached_download", uncached_download.check_file, True),
+    ("check_failure_only_diagnostics", failure_only_diagnostics.check_file, True),
     ("check_trusted_base", trusted_base.check_file, True),
     ("check_untrusted_exec", untrusted_exec.check_file, True),
     ("check_unscoped_tool_grant", unscoped_tool_grant.check_file, True),
@@ -219,6 +223,30 @@ _WORKFLOW_FRAGMENTS = [
     ),
     "jobs:\n  m:\n    steps:\n      - run: claude --disallowedTools Read\n",
     "jobs:\n  m:\n    steps:\n      - with:\n          allowed_tools: Glob(./**)\n",
+    # failure-only-diagnostics shapes: the flagged upload, the two conditions
+    # that name cancellation, a per-step opt-out, a job-level gate, and a
+    # diagnostics script reached through an interpreter.
+    (
+        "jobs:\n  t:\n    steps:\n      - name: Upload the report\n"
+        "        if: failure()\n        uses: actions/upload-artifact@v4\n"
+    ),
+    (
+        "jobs:\n  t:\n    steps:\n      - if: ${{ failure() || cancelled() }}\n"
+        "        uses: actions/upload-artifact@v4\n"
+    ),
+    (
+        "jobs:\n  t:\n    steps:\n"
+        "      # failure-only-diagnostics-ok: the report is empty on a cancel\n"
+        "      - if: failure()\n        uses: actions/upload-artifact@v4\n"
+    ),
+    (
+        "jobs:\n  diagnose:\n    if: failure()\n    steps:\n"
+        "      - uses: ./.github/actions/collect-diagnostics\n"
+    ),
+    (
+        "jobs:\n  t:\n    steps:\n      - if: failure() && !cancelled()\n"
+        "        run: bash .github/scripts/collect-logs.sh\n"
+    ),
     "jobs:\n  exec:\n    steps: 'not-a-list'\n",
     "jobs:\n  exec:\n    steps:\n      - a string step\n      - null\n",
     "jobs:\n  exec:\n    steps:\n      - run: ${{ github.event.pull_request.title }}\n",

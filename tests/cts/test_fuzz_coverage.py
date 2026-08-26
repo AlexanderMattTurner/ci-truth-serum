@@ -106,6 +106,7 @@ FUZZ_REQUIRED = {
     "release_canary": "changelog_top_version",
     "check_job_timeout": "check_file",
     "check_uncached_download": "check_file",
+    "check_failure_only_diagnostics": "check_file",
     "check_trusted_base": "check_file",
     "check_untrusted_exec": "check_file",
     "check_unscoped_tool_grant": "check_file",

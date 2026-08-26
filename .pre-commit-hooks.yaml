@@ -324,6 +324,16 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-failure-only-diagnostics
+  name: "opinionated: a diagnostics step must also run when the job is cancelled"
+  description: A job that passes its timeout-minutes ends "cancelled", not "failed". An artifact upload or a log-collection script gated on failure() alone is skipped on that run, and the evidence dies with the runner. The check asks the step, or the job that holds it, to name always() or cancelled(). It reads a run body on the bash grammar, so a script name inside a printed message is not a call.
+  entry: python -m ci_truth_serum.check_failure_only_diagnostics
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 - id: check-conclusion-coverage
   name: "opinionated: one terminal-red conclusion set, which no consumer may narrow"
   description: A completed run also ends `timed_out`, `startup_failure` or `action_required`, so a listener, router or scanner that recognizes only `failure` lets a real red reach nobody. The check reads workflow expressions, shell tests and Python comparisons through their own parsers, and names the conclusions each site left out. `cancelled` is never required, because a superseded run is not a failure. Widen the set for the whole repository in `.github/conclusion-coverage.yml`.
