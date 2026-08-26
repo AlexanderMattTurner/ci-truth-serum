@@ -463,7 +463,14 @@
   description: "A `# shellcheck source=` comment naming a path the tree lacks, masked by a nearby `disable=SC1091`, makes shellcheck exit 0 having never read the library. Pass your shellcheck `-P` roots with `--search-path`."
   entry: python -m ci_truth_serum.check_shell_source_declarations
   language: python
-  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
   types: [shell]
 
 - id: check-sparse-checkout-closure
@@ -752,7 +759,7 @@
 
 - id: check-cwd-scoped-git
   name: "extra: a git argv built in Python must name its repository"
-  description: "`subprocess.run([\"git\", \"merge\", \"--abort\"])` with no `-C` and no `cwd=` acts on whatever directory the process sits in — a test driving that helper in-process aborts the developer's own merge."
+  description: '`subprocess.run(["git", "merge", "--abort"])` with no `-C` and no `cwd=` acts on whatever directory the process sits in — a test driving that helper in-process aborts the developer''s own merge.'
   entry: python -m ci_truth_serum.check_cwd_scoped_git
   language: python
   additional_dependencies: [PyYAML]
@@ -811,7 +818,14 @@
   description: "`git -c protocol.version=2 fetch` shifts `fetch` to $3, so an anchored assertion goes red and a `$1`-keyed stub goes silent — it stops intercepting and the test passes asserting nothing. Search the argv for the subcommand instead."
   entry: python -m ci_truth_serum.check_positional_git_argv
   language: python
-  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
   types: [python]
 
 - id: check-test-helper-kwargs
@@ -864,14 +878,30 @@
   description: Runs the default-on honesty + identity lints under one id.
   entry: python -m ci_truth_serum.run_tier 1
   language: python
-  additional_dependencies: [PyYAML, identify, tree-sitter, tree-sitter-bash]
+  additional_dependencies:
+    [
+      PyYAML,
+      identify,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
 
 - id: check-tier2
   name: "aggregate: every Tier 2 (opinionated) check"
   description: Runs the opinionated required-check-shape lints under one id; assumes that architecture.
   entry: python -m ci_truth_serum.run_tier 2
   language: python
-  additional_dependencies: [PyYAML, identify]
+  additional_dependencies:
+    [
+      PyYAML,
+      identify,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
 
 - id: check-extras
   name: "aggregate: every Extras (off-theme bonus) Python check"

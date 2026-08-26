@@ -74,7 +74,14 @@ repos:
         entry: python -m ci_truth_serum.run_tier 1
         language: python
         additional_dependencies:
-          [PyYAML, identify, tree-sitter, tree-sitter-bash]
+          [
+            PyYAML,
+            identify,
+            tree-sitter,
+            tree-sitter-bash,
+            tree-sitter-javascript,
+            tree-sitter-typescript,
+          ]
       - id: check-tier2
         name: "dogfood aggregate: every Tier 2 (opinionated) check"
         entry: python -m ci_truth_serum.run_tier 2
@@ -95,7 +102,14 @@ repos:
           - check_curl_retry=--retry-wrapper=retry_cmd
         language: python
         additional_dependencies:
-          [PyYAML, identify, tree-sitter, tree-sitter-bash]
+          [
+            PyYAML,
+            identify,
+            tree-sitter,
+            tree-sitter-bash,
+            tree-sitter-javascript,
+            tree-sitter-typescript,
+          ]
       - id: check-failure-notifier-coverage-strict
         name: "dogfood: the notifier must exist and every alert must state its urgency"
         entry: python -m ci_truth_serum.check_failure_notifier_coverage
