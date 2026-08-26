@@ -16,4 +16,4 @@ set -euo pipefail
 : "${GH_REPO:?GH_REPO required}"
 
 gh pr review "$PR" --approve --body \
-  "Automated approval: this PR type isn't Claude-reviewed (low-risk change or bot-authored), so it's approved here to satisfy a review-required ruleset. Add the \`needs-auto-review\` label to have Claude review it anyway."
+  "Automated approval: this PR type isn't Claude-reviewed (low-risk change or bot-authored), so it's approved here to satisfy a review-required ruleset."

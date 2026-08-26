@@ -8,7 +8,7 @@
 // footnote in place rather than posting a new comment.
 //
 // State lives in the body itself (two hidden markers), so no external store:
-//   <!-- review-cost usd=… -->   the reviewer's own cost (written by post-pr-review.mjs)
+//   <!-- review-cost usd=… -->   the reviewer's own cost (written by the reviewer)
 //   <!-- haiku-cost total=… runs=… -->   the follow-up tally this script maintains
 import {
   readRunCost,
