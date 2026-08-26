@@ -191,7 +191,7 @@ def report_unscanned(
         )
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] not in TIERS:
         print(
@@ -199,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
             "[--check-arg <check>=<flag>]... [files...]",
             file=sys.stderr,
         )
-        return 2
+        raise SystemExit(2)
     tier, rest = argv[0], argv[1:]
 
     skips: set[str] = set()
@@ -210,20 +210,20 @@ def main(argv: list[str] | None = None) -> int:
         if rest[i] == "--skip":
             if i + 1 >= len(rest):
                 print("error: --skip requires an argument", file=sys.stderr)
-                return 2
+                raise SystemExit(2)
             skips.add(rest[i + 1])
             i += 2
         elif rest[i] == "--check-arg":
             if i + 1 >= len(rest):
                 print("error: --check-arg requires an argument", file=sys.stderr)
-                return 2
+                raise SystemExit(2)
             module, sep, flag = rest[i + 1].partition("=")
             if not sep or not module or not flag:
                 print(
                     f"error: --check-arg takes <check>=<flag>, got {rest[i + 1]!r}",
                     file=sys.stderr,
                 )
-                return 2
+                raise SystemExit(2)
             extra.setdefault(module, []).append(flag)
             i += 2
         elif rest[i].startswith("--"):
@@ -231,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
             # otherwise pass two paths no member matches, and the tier would run
             # with the check the caller meant to drop still in it.
             print(f"error: unknown option {rest[i]!r}", file=sys.stderr)
-            return 2
+            raise SystemExit(2)
         else:
             files.append(rest[i])
             i += 1
@@ -247,7 +247,7 @@ def main(argv: list[str] | None = None) -> int:
             f"  valid: {', '.join(mod for mod, _ in TIERS[tier])}",
             file=sys.stderr,
         )
-        return 2
+        raise SystemExit(2)
 
     # A check both skipped and configured is a contradiction: the flags would
     # silently do nothing, and the caller believes they configured the check.
@@ -258,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{', '.join(sorted(contradictory))}",
             file=sys.stderr,
         )
-        return 2
+        raise SystemExit(2)
 
     members = [(m, k) for m, k in TIERS[tier] if m not in skips]
     rc, unscanned = run_members(members, files, extra)
@@ -268,8 +268,9 @@ def main(argv: list[str] | None = None) -> int:
         f"tier {tier} checks",
         f"python -m ci_truth_serum.run_tier {tier}",
     )
-    return rc
+    if rc != 0:
+        raise SystemExit(rc)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

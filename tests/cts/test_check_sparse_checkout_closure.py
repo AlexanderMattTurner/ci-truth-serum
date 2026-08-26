@@ -405,6 +405,20 @@ def test_main_extends_dep_dirs_with_a_repeated_flag(tmp_path: Path):
     assert mod.main(["--repo-root", str(repo), "--dep-dir", "config"]) == 1
 
 
+def test_main_flags_an_unreadable_workflow(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """The module's core no-false-green contract: a workflow that does not
+    parse as YAML is a VIOLATION, never a silent skip. `checkouts()` returns
+    None on `yaml.YAMLError`, which `main()` must turn into an error and a
+    nonzero exit — not read as "no checkouts to judge"."""
+    repo = _repo(tmp_path)
+    _write(repo, ".github/workflows/w.yaml", "jobs:\n  build:\n   x: [\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert "could not parse as YAML" in capsys.readouterr().out
+
+
 def test_main_is_silent_over_a_tree_with_no_sparse_checkout(tmp_path: Path):
     repo = _repo(tmp_path)
     _write(repo, ".github/workflows/w.yaml", "jobs:\n  build:\n    steps: []\n")

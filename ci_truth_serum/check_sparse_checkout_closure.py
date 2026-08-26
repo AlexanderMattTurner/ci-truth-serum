@@ -51,6 +51,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PathologicalInputError,
     command_arguments,
     command_name,
     command_words,
@@ -506,7 +507,18 @@ def main(argv: list[str] | None = None) -> int:
             )
             total += 1
         for checkout in found:
-            missing = uncovered(checkout, files, exempt, root, path_token_re)
+            # A step's `run:` block over _MAX_PIPE_BYTES of piped bytes fails the
+            # grammar loudly rather than silently: skipping it would false-green
+            # exactly the job this lint exists to read.
+            try:
+                missing = uncovered(checkout, files, exempt, root, path_token_re)
+            except PathologicalInputError as err:
+                print(
+                    f"::error file={rel},line={checkout.line}::job "
+                    f"{checkout.job_name}: {err}"
+                )
+                total += 1
+                continue
             for dep in missing:
                 print(
                     f"::error file={rel},line={checkout.line}::job "

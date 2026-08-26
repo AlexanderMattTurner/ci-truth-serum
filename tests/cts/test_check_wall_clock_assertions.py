@@ -329,6 +329,24 @@ def test_js_a_name_bound_to_a_duration_is_itself_a_duration() -> None:
     assert _js_violations(body) == [3]
 
 
+def test_js_a_duration_name_does_not_leak_across_functions() -> None:
+    """The measured false positive: one function's `elapsed` (a real duration)
+    must not make an unrelated function's same-named bare local a duration
+    too — a global name set would make BOTH asserts below fire."""
+    body = _py(
+        "function timedStep() {",
+        "  const started = Date.now();",
+        "  const elapsed = Date.now() - started;",
+        "  assert.ok(elapsed < 1000);",
+        "}",
+        "function countItems() {",
+        "  const elapsed = items.filter((x) => x.done).length;",
+        "  assert.ok(elapsed > 2);",
+        "}",
+    )
+    assert _js_violations(body) == [4]
+
+
 def test_js_a_relative_looking_clock_mention_in_a_string_is_not_a_reading() -> None:
     # The whole reason this half reads the grammar instead of a regex.
     body = _py(
