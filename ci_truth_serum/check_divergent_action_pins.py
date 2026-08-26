@@ -34,6 +34,7 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -43,6 +44,7 @@ from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # p
 from check_pin_comment_truth import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ACTIONS_DIR,
     REPO_ROOT,
+    Violation,
     WORKFLOWS_DIR,
 )
 
@@ -75,11 +77,32 @@ def _iter_uses_nodes(node):
             yield from _iter_uses_nodes(child)
 
 
-def pin_records(text: str) -> list[tuple[int, str, str, bool]]:
+class ActionPin(NamedTuple):
+    """One SHA-pinned `uses:` reference: where it sits, what it names, and
+    whether it opted out of this check."""
+
+    line: int
+    action: str
+    sha: str
+    opted_out: bool
+
+
+class ActionPinRecord(NamedTuple):
+    """An `ActionPin` with its source file attached, so divergence can be
+    compared across every file at once."""
+
+    path: str
+    line: int
+    action: str
+    sha: str
+    opted_out: bool
+
+
+def pin_records(text: str) -> list[ActionPin]:
     """(1-based line, action, sha, opted_out) for every SHA-pinned `uses:`
     reference composed from TEXT."""
     raw = text.splitlines()
-    records: list[tuple[int, str, str, bool]] = []
+    records: list[ActionPin] = []
     for value_node in _iter_uses_nodes(yaml.compose(text, Loader=yaml.SafeLoader)):
         m = _SHA_PIN.match(value_node.value)
         if not m:
@@ -87,12 +110,12 @@ def pin_records(text: str) -> list[tuple[int, str, str, bool]]:
         lineno = value_node.start_mark.line + 1
         line = raw[lineno - 1] if 0 < lineno <= len(raw) else ""
         records.append(
-            (lineno, m.group("ref"), m.group("sha"), annotated(line, OPT_OUT))
+            ActionPin(lineno, m.group("ref"), m.group("sha"), annotated(line, OPT_OUT))
         )
     return records
 
 
-def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
+def check_files(texts: list[tuple[str, str]]) -> list[Violation]:
     """(path, line, message) for every divergent pin across TEXTS ((path,
     content) pairs) — divergence is a property of the whole tree, so every
     reference (opted out or not) must be compared against every other one.
@@ -101,15 +124,15 @@ def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
     (line 1) rather than silently passed as clean — matching the sibling
     workflow lints (`check_always_reporter` &c.) — and does not stop the
     remaining files from being checked against each other."""
-    all_records: list[tuple[str, int, str, str, bool]] = []
-    parse_errors: list[tuple[str, int, str]] = []
+    all_records: list[ActionPinRecord] = []
+    parse_errors: list[Violation] = []
     for path, text in texts:
         try:
             records = pin_records(text)
         except yaml.YAMLError as err:
             first_line = str(err).partition("\n")[0]
             parse_errors.append(
-                (
+                Violation(
                     path,
                     1,
                     f"could not parse as YAML ({first_line}); cannot check for "
@@ -119,7 +142,8 @@ def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
             )
             continue
         all_records += [
-            (path, line, action, sha, opted) for line, action, sha, opted in records
+            ActionPinRecord(path, line, action, sha, opted)
+            for line, action, sha, opted in records
         ]
 
     shas_by_action: dict[str, set[str]] = defaultdict(set)
@@ -130,7 +154,7 @@ def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
         shas_by_action[action].add(sha)
         sites_by_action_sha[(action, sha)].append((path, line))
 
-    found: list[tuple[str, int, str]] = []
+    found: list[Violation] = []
     for path, line, action, sha, opted in all_records:
         if opted:
             continue
@@ -142,7 +166,7 @@ def check_files(texts: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
                 for other_path, other_line in sites_by_action_sha[(action, other_sha)]
             )
             found.append(
-                (
+                Violation(
                     path,
                     line,
                     f"divergent pin: `{action}` is pinned to `{sha}` here, and "

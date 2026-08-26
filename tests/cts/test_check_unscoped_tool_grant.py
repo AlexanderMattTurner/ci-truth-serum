@@ -29,7 +29,7 @@ _ABS = "//home/runner/work/_temp/review.json"
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -391,10 +391,11 @@ def test_main_reports_every_offending_line_and_exits_nonzero(
     (workflows / "bad.yaml").write_text(
         "on:\n  push:\njobs:\n  j:\n    steps:\n"
         '      - run: claude --allowedTools "Read,Grep,Glob"\n'
-        '      - run: claude --allowedTools "Read(./**),Glob(./**)"\n'
+        '      - run: claude --allowedTools "Read(./**),Glob(./**)"\n',
+        encoding="utf-8",
     )
     (workflows / "ok.yaml").write_text(
-        _run_wf('--allowedTools "Read(./**),Bash,Edit(./**)"')
+        _run_wf('--allowedTools "Read(./**),Bash,Edit(./**)"'), encoding="utf-8"
     )
 
     assert ug.main() == 1
@@ -412,7 +413,7 @@ def test_main_is_silent_and_exits_zero_when_every_grant_is_scoped(
     produce no diagnostic, so the exit status tracks the grants and not the run."""
     workflows = _point_at(tmp_path, monkeypatch)
     (workflows / "ok.yaml").write_text(
-        _run_wf('--allowedTools "Read(./**),Bash,Edit(./**)"')
+        _run_wf('--allowedTools "Read(./**),Bash,Edit(./**)"'), encoding="utf-8"
     )
 
     assert ug.main() == 0

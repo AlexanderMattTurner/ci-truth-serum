@@ -155,7 +155,7 @@ def test_compare_missing_changelog_is_a_failure() -> None:
 def _release_repo(tmp_path, tag: str, heading: str):
     repo = _tagged_repo(tmp_path, [tag])
     (repo / "CHANGELOG.md").write_text(
-        f"# C\n\n## Unreleased\n\n## [{heading}] - 2026-07-01\n"
+        f"# C\n\n## Unreleased\n\n## [{heading}] - 2026-07-01\n", encoding="utf-8"
     )
     return repo
 
@@ -197,14 +197,18 @@ def test_main_absent_changelog_is_a_missing_marker(tmp_path, capsys) -> None:
 
 def test_main_agreeing_pkgbuild_is_folded_in(tmp_path, capsys) -> None:
     repo = _release_repo(tmp_path, "v1.4.0", "1.4.0")
-    (repo / "PKGBUILD").write_text("pkgname=demo\npkgver=1.4.0\npkgrel=1\n")
+    (repo / "PKGBUILD").write_text(
+        "pkgname=demo\npkgver=1.4.0\npkgrel=1\n", encoding="utf-8"
+    )
     assert mod.main(["--repo-dir", str(repo)]) == 0
     assert "git tag, changelog, and AUR all say 1.4.0" in capsys.readouterr().out
 
 
 def test_main_pkgbuild_axis_mismatch_fails(tmp_path, capsys) -> None:
     repo = _release_repo(tmp_path, "v1.4.0", "1.4.0")
-    (repo / "PKGBUILD").write_text("pkgname=demo\npkgver=1.3.0\npkgrel=1\n")
+    (repo / "PKGBUILD").write_text(
+        "pkgname=demo\npkgver=1.3.0\npkgrel=1\n", encoding="utf-8"
+    )
     assert mod.main(["--repo-dir", str(repo)]) == 1
     assert "AUR (PKGBUILD pkgver): 1.3.0" in capsys.readouterr().err
 
@@ -214,7 +218,8 @@ def test_main_computed_pkgver_is_skipped_not_failed(tmp_path) -> None:
     # its presence must not fail an otherwise-agreeing release.
     repo = _release_repo(tmp_path, "v1.4.0", "1.4.0")
     (repo / "PKGBUILD").write_text(
-        "pkgname=demo-git\npkgver=1.4.0\npkgver() {\n  echo 9.9.9\n}\n"
+        "pkgname=demo-git\npkgver=1.4.0\npkgver() {\n  echo 9.9.9\n}\n",
+        encoding="utf-8",
     )
     assert mod.main(["--repo-dir", str(repo)]) == 0
 
@@ -222,7 +227,9 @@ def test_main_computed_pkgver_is_skipped_not_failed(tmp_path) -> None:
 def test_main_custom_pkgbuild_path(tmp_path) -> None:
     repo = _release_repo(tmp_path, "v1.4.0", "1.4.0")
     (repo / "aur").mkdir()
-    (repo / "aur" / "PKGBUILD").write_text("pkgver=1.3.0\n")  # would mismatch
+    (repo / "aur" / "PKGBUILD").write_text(
+        "pkgver=1.3.0\n", encoding="utf-8"
+    )  # would mismatch
     # Default path (./PKGBUILD) is absent → AUR skipped → passes.
     assert mod.main(["--repo-dir", str(repo)]) == 0
     # Pointed at the real PKGBUILD → the mismatch is caught.

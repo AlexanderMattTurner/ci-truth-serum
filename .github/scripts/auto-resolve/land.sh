@@ -44,14 +44,14 @@ export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
 export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 
 git_auth_header "$GITHUB_TOKEN"
-git fetch --no-tags origin \
+timeout --kill-after=15 60 git fetch --no-tags origin \
   "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" \
   "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}"
 
 # Unbundling fails closed when a prerequisite object is missing — the branch was
 # force-pushed since the resolution was computed, so the merge it describes is
 # against a tree that no longer exists.
-if ! git fetch "$bundle" "+${AUTO_RESOLVE_RESULT_REF}:${AUTO_RESOLVE_RESULT_REF}"; then
+if ! git fetch "$bundle" "+${AUTO_RESOLVE_RESULT_REF}:${AUTO_RESOLVE_RESULT_REF}"; then # allow-unbounded: $bundle is a local file (BUNDLE_DIR/merge.bundle), never a network endpoint
   fail "the resolved merge bundle does not apply to the current branches" \
     "the branch moved after the resolution was computed." "The next conflict scan will retry."
 fi
@@ -144,7 +144,7 @@ fi
 stand_down_if_already_resolved() {
   # A fetch that fails leaves this unable to tell, which is not evidence to
   # stand down on — fall through to the caller's normal failure path.
-  git fetch --no-tags origin "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" \
+  timeout --kill-after=15 60 git fetch --no-tags origin "+refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" \
     "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" || return 0
   [[ "$(git rev-parse "refs/remotes/origin/${HEAD_REF}")" == "$head_sha" ]] && return 0
   if git merge-tree --write-tree "refs/remotes/origin/${HEAD_REF}" "refs/remotes/origin/${BASE_REF}" >/dev/null 2>&1; then
@@ -178,7 +178,7 @@ git_auth_header "$TEMPLATE_SYNC_TOKEN"
 # push rejects — the run fails loud rather than clobbering their work. The
 # branch tip is the lock; there is no other reconciliation.
 push_rc=0
-push_out="$(git push origin "${merge_sha}:${HEAD_REF}" 2>&1)" || push_rc=$?
+push_out="$(timeout --kill-after=15 60 git push origin "${merge_sha}:${HEAD_REF}" 2>&1)" || push_rc=$?
 if [[ "$push_rc" -ne 0 ]]; then
   printf '%s\n' "$push_out" >&2
   if grep -qE 'refusing to allow .* workflow' <<<"$push_out"; then

@@ -27,6 +27,7 @@ files of its kind. The registry of checks, tiers and tags is
 
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -93,7 +94,15 @@ def resolve_all(selects: list[str], ignores: list[str]) -> list[Check]:
     return [c for c in CHECKS if c.module in keep]
 
 
-def parse_args(argv: list[str]) -> tuple[list[str], list[str], list[str]]:
+class ParsedArgs(NamedTuple):
+    """The selectors and file paths parsed from a hook's argv."""
+
+    selects: list[str]
+    ignores: list[str]
+    files: list[str]
+
+
+def parse_args(argv: list[str]) -> ParsedArgs:
     """Split ARGV into (selects, ignores, files).
 
     Raises SelectorError when a flag has no value after it.
@@ -117,7 +126,7 @@ def parse_args(argv: list[str]) -> tuple[list[str], list[str], list[str]]:
         else:
             files.append(arg)
             i += 1
-    return selects, ignores, files
+    return ParsedArgs(selects, ignores, files)
 
 
 def main(argv: list[str] | None = None) -> int:

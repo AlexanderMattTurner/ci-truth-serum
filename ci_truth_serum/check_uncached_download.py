@@ -50,6 +50,7 @@ is real but never fails loudly.
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -215,9 +216,19 @@ def _action_path(uses: str) -> Path | None:
     )
 
 
+class FlatStep(NamedTuple):
+    """One step a job really runs: the step mapping, the workflow line to
+    report it at, and the composite action file it came from (empty for a
+    step written directly in the workflow)."""
+
+    step: dict
+    line: int
+    origin: str
+
+
 def flatten(
     steps: list[dict], anchor: int, origin: str, seen: frozenset
-) -> list[tuple[dict, int, str]]:
+) -> list[FlatStep]:
     """Every step a job really runs, with the workflow line to report it at.
 
     A `uses: ./…` step is kept AND followed, because the composite action it names
@@ -227,10 +238,10 @@ def flatten(
     action file, so the message can still say where the install is written. SEEN
     breaks a cycle between two actions that use each other.
     """
-    flat: list[tuple[dict, int, str]] = []
+    flat: list[FlatStep] = []
     for step in steps:
         line = step.get("__line__", anchor) if not origin else anchor
-        flat.append((step, line, origin))
+        flat.append(FlatStep(step, line, origin))
         uses = step.get("uses")
         if not isinstance(uses, str) or not uses.startswith("./"):
             continue

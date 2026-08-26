@@ -139,7 +139,10 @@ def _install_uv_stub(bindir: Path, log: Path, exit_code: int) -> None:
     the canary run so the wrapper's own behavior is what's observed."""
     bindir.mkdir(parents=True, exist_ok=True)
     uv = bindir / "uv"
-    uv.write_text(f'#!/usr/bin/env bash\necho "$@" >>"{log}"\nexit {exit_code}\n')
+    uv.write_text(
+        f'#!/usr/bin/env bash\necho "$@" >>"{log}"\nexit {exit_code}\n',
+        encoding="utf-8",
+    )
     uv.chmod(0o755)
 
 
@@ -154,11 +157,11 @@ def _make_repo(tmp_path: Path, *, uv_exit: int, with_origin: bool = True) -> tup
     shutil.copy2(REPO_ROOT / SCRIPT_REL, scripts)
     (scripts / "release-canary.sh").chmod(0o755)
 
-    libdir = repo / "bin" / "lib"
+    libdir = scripts / "lib"
     libdir.mkdir(parents=True)
-    shutil.copy2(REPO_ROOT / "bin" / "lib" / "retry.bash", libdir)
+    shutil.copy2(REPO_ROOT / ".github" / "scripts" / "lib" / "retry.bash", libdir)
 
-    (repo / "seed").write_text("x\n")
+    (repo / "seed").write_text("x\n", encoding="utf-8")
     commit_all(repo, "seed")
 
     origin = tmp_path / "origin.git"
@@ -195,7 +198,11 @@ def test_wrapper_runs_the_packaged_canary_and_passes_on_agreement(
     repo, uv_log, bindir = _make_repo(tmp_path, uv_exit=0)
     result = _run(repo, bindir)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert uv_log.read_text().split() == ["run", "--frozen", "release-canary"]
+    assert uv_log.read_text(encoding="utf-8").split() == [
+        "run",
+        "--frozen",
+        "release-canary",
+    ]
 
 
 def test_wrapper_propagates_a_canary_failure(tmp_path: Path) -> None:
@@ -224,7 +231,7 @@ def test_wrapper_forwards_its_arguments_to_the_canary(tmp_path: Path) -> None:
     non-default changelog or PKGBUILD without a second copy of the invocation."""
     repo, uv_log, bindir = _make_repo(tmp_path, uv_exit=0)
     assert _run(repo, bindir, "--pkgbuild", "aur/PKGBUILD").returncode == 0
-    assert uv_log.read_text().split() == [
+    assert uv_log.read_text(encoding="utf-8").split() == [
         "run",
         "--frozen",
         "release-canary",

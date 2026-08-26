@@ -13,7 +13,7 @@ jt = load_hook("check_job_timeout.py", "check_job_timeout")
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -141,7 +141,8 @@ def test_non_dict_yaml_is_ignored(tmp_path):
 def test_main_reports_and_returns_nonzero(tmp_path, monkeypatch, capsys):
     bad = tmp_path / "bad.yaml"
     bad.write_text(
-        "name: x\non:\n  push:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n"
+        "name: x\non:\n  push:\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(jt, "WORKFLOWS_DIR", tmp_path)
     monkeypatch.setattr(jt, "REPO_ROOT", tmp_path)
@@ -154,7 +155,8 @@ def test_main_reports_and_returns_nonzero(tmp_path, monkeypatch, capsys):
 def test_main_clean_dir_returns_zero(tmp_path, monkeypatch):
     (tmp_path / "ok.yaml").write_text(
         "name: x\non:\n  push:\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
-        "    timeout-minutes: 5\n    steps: []\n"
+        "    timeout-minutes: 5\n    steps: []\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(jt, "WORKFLOWS_DIR", tmp_path)
     monkeypatch.setattr(jt, "REPO_ROOT", tmp_path)

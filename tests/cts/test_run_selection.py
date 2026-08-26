@@ -180,7 +180,8 @@ def _repo_with_pr_paths_violation(tmp_path: Path) -> Path:
     wf.mkdir(parents=True)
     # A paths: filter on pull_request — a check-pr-paths violation, tagged honesty.
     (wf / "bad.yaml").write_text(
-        "name: x\non:\n  pull_request:\n    paths: ['src/**']\njobs: {}\n"
+        "name: x\non:\n  pull_request:\n    paths: ['src/**']\njobs: {}\n",
+        encoding="utf-8",
     )
     return tmp_path
 

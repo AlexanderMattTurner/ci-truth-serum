@@ -20,7 +20,9 @@ from tests._helpers import REPO_ROOT, load_hook
 
 rt = load_hook("run_tier.py", "run_tier")
 
-MANIFEST = yaml.safe_load((REPO_ROOT / ".pre-commit-hooks.yaml").read_text())
+MANIFEST = yaml.safe_load(
+    (REPO_ROOT / ".pre-commit-hooks.yaml").read_text(encoding="utf-8")
+)
 
 # Map a name-prefix (the manifest encodes the tier in `name:`) to a TIERS key.
 PREFIX_TIER = {
@@ -97,48 +99,48 @@ def test_every_aggregate_id_has_a_tier():
 # ── matches ───────────────────────────────────────────────────────────────
 def test_matches_shell(tmp_path):
     p = tmp_path / "s.sh"
-    p.write_text("#!/usr/bin/env bash\necho hi\n")
+    p.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
     assert rt.matches(str(p), rt.SHELL) is True
     assert rt.matches(str(p), rt.PYTHON) is False
 
 
 def test_matches_python(tmp_path):
     p = tmp_path / "m.py"
-    p.write_text("x = 1\n")
+    p.write_text("x = 1\n", encoding="utf-8")
     assert rt.matches(str(p), rt.PYTHON) is True
 
 
 def test_matches_dockerfile(tmp_path):
     p = tmp_path / "Dockerfile"
-    p.write_text("FROM scratch\n")
+    p.write_text("FROM scratch\n", encoding="utf-8")
     assert rt.matches(str(p), rt.DOCKERFILE) is True
     assert rt.matches(str(p), rt.SHELL_OR_DOCKERFILE) is True
 
 
 def test_matches_shell_or_dockerfile_accepts_shell(tmp_path):
     p = tmp_path / "x.bash"
-    p.write_text("#!/usr/bin/env bash\n")
+    p.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     assert rt.matches(str(p), rt.SHELL_OR_DOCKERFILE) is True
 
 
 def test_matches_shell_or_workflow_yaml(tmp_path):
     sh = tmp_path / "s.sh"
-    sh.write_text("#!/usr/bin/env bash\n")
+    sh.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     assert rt.matches(str(sh), rt.SHELL_OR_WORKFLOW_YAML) is True
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
     for name in ("ci.yaml", "ci.yml"):
         p = wf / name
-        p.write_text("jobs: {}\n")
+        p.write_text("jobs: {}\n", encoding="utf-8")
         assert rt.matches(str(p), rt.SHELL_OR_WORKFLOW_YAML) is True, name
     other_yaml = tmp_path / "data.yaml"
-    other_yaml.write_text("x: 1\n")
+    other_yaml.write_text("x: 1\n", encoding="utf-8")
     assert rt.matches(str(other_yaml), rt.SHELL_OR_WORKFLOW_YAML) is False
 
 
 def test_matches_markdown(tmp_path):
     p = tmp_path / "notes.md"
-    p.write_text("# heading\n")
+    p.write_text("# heading\n", encoding="utf-8")
     assert rt.matches(str(p), rt.MARKDOWN) is True
     assert rt.matches(str(p), rt.COMMENTED_CODE) is False
 
@@ -151,7 +153,7 @@ def test_matches_commented_code_accepts_each_language(tmp_path):
         ("t.ts", "let x = 1;\n"),
     ]:
         p = tmp_path / name
-        p.write_text(body)
+        p.write_text(body, encoding="utf-8")
         assert rt.matches(str(p), rt.COMMENTED_CODE) is True, name
         assert rt.matches(str(p), rt.PROSE_OR_COMMENTED_CODE) is True, name
 
@@ -165,20 +167,20 @@ def test_matches_drift_accepts_python_js_ts_shell_only(tmp_path):
         ("s.sh", "#!/usr/bin/env bash\n"),
     ]:
         p = tmp_path / name
-        p.write_text(body)
+        p.write_text(body, encoding="utf-8")
         assert rt.matches(str(p), rt.DRIFT) is True, name
     md = tmp_path / "notes.md"
-    md.write_text("# heading\n")
+    md.write_text("# heading\n", encoding="utf-8")
     assert rt.matches(str(md), rt.DRIFT) is False
 
 
 def test_matches_prose_or_commented_code_accepts_prose(tmp_path):
     for name in ("notes.md", "doc.rst"):
         p = tmp_path / name
-        p.write_text("text\n")
+        p.write_text("text\n", encoding="utf-8")
         assert rt.matches(str(p), rt.PROSE_OR_COMMENTED_CODE) is True, name
     p = tmp_path / "Dockerfile"
-    p.write_text("FROM scratch\n")
+    p.write_text("FROM scratch\n", encoding="utf-8")
     assert rt.matches(str(p), rt.PROSE_OR_COMMENTED_CODE) is False
 
 
@@ -187,15 +189,15 @@ def test_a_content_lint_with_no_file_of_its_kind_cannot_run(tmp_path):
     """None, not an empty list: the caller must tell 'nothing to scan' from a
     pass, because both would otherwise be exit 0."""
     p = tmp_path / "m.py"
-    p.write_text("x = 1\n")
+    p.write_text("x = 1\n", encoding="utf-8")
     assert rt.selected_files(rt.SHELL, [str(p)]) is None
 
 
 def test_a_content_lint_receives_only_the_files_of_its_kind(tmp_path):
     py = tmp_path / "m.py"
-    py.write_text("x = 1\n")
+    py.write_text("x = 1\n", encoding="utf-8")
     sh = tmp_path / "s.sh"
-    sh.write_text("#!/usr/bin/env bash\necho hi\n")
+    sh.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
     assert rt.selected_files(rt.SHELL, [str(py), str(sh)]) == [str(sh)]
 
 
@@ -244,7 +246,7 @@ def test_skip_removes_named_member(tmp_path, monkeypatch):
     # A shell file triggers both SHELL members in tier 1 (check_exit_suppression
     # and check_stderr_suppression). Skipping one should leave the other called.
     shell_file = tmp_path / "s.sh"
-    shell_file.write_text("#!/usr/bin/env bash\necho hi\n")
+    shell_file.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
 
     called: list[str] = []
 
@@ -284,12 +286,125 @@ def test_skip_without_argument_exits_nonzero(capsys):
     assert "requires an argument" in capsys.readouterr().err
 
 
+# ── --check-arg ───────────────────────────────────────────────────────────
+def _record_argv(monkeypatch) -> dict[str, list[str]]:
+    """Capture the argv each member subprocess would have received."""
+    seen: dict[str, list[str]] = {}
+
+    class _Done:
+        returncode = 0
+
+    def _fake(cmd, check):
+        seen[cmd[2].removeprefix("ci_truth_serum.")] = cmd[3:]
+        return _Done()
+
+    monkeypatch.setattr(rt.subprocess, "run", _fake)
+    return seen
+
+
+def test_check_arg_reaches_only_its_member_and_precedes_the_files(
+    tmp_path, monkeypatch
+):
+    shell_file = tmp_path / "s.sh"
+    shell_file.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    seen = _record_argv(monkeypatch)
+
+    rc = rt.main(
+        [
+            "2",
+            "--check-arg",
+            "check_retry_loop=--wrapper=retry_cmd",
+            "--check-arg",
+            "check_retry_loop=--retry-helper=bin/lib/retry.bash",
+            str(shell_file),
+        ]
+    )
+
+    assert rc == 0
+    assert seen["check_retry_loop"] == [
+        "--wrapper=retry_cmd",
+        "--retry-helper=bin/lib/retry.bash",
+        str(shell_file),
+    ]
+    # A SHELL peer in the same tier gets the files and none of the flags.
+    assert seen["check_curl_retry"] == [str(shell_file)]
+
+
+def test_check_arg_reaches_a_workflow_member_that_takes_no_files(monkeypatch):
+    """A WORKFLOW member self-discovers `.github/*` and is passed no files, so
+    its flags are the whole argv."""
+    seen = _record_argv(monkeypatch)
+
+    rc = rt.main(
+        ["2", "--check-arg", "check_failure_notifier_coverage=--require-notifier"]
+    )
+
+    assert rc == 0
+    assert seen["check_failure_notifier_coverage"] == ["--require-notifier"]
+
+
+def test_check_arg_for_a_check_outside_the_tier_exits_nonzero(capsys):
+    rc = rt.main(["1", "--check-arg", "check_does_not_exist=--flag"])
+    assert rc == 2
+    assert "unknown" in capsys.readouterr().err
+
+
+def test_check_arg_without_an_equals_exits_nonzero(capsys):
+    """`--check-arg check_retry_loop --wrapper=x` would otherwise read the
+    check name as the flag and the flag as a filename."""
+    rc = rt.main(["2", "--check-arg", "check_retry_loop"])
+    assert rc == 2
+    assert "<check>=<flag>" in capsys.readouterr().err
+
+
+def test_check_arg_with_an_empty_half_exits_nonzero(capsys):
+    rc = rt.main(["2", "--check-arg", "check_retry_loop="])
+    assert rc == 2
+    assert "<check>=<flag>" in capsys.readouterr().err
+
+
+def test_check_arg_without_argument_exits_nonzero(capsys):
+    rc = rt.main(["2", "--check-arg"])
+    assert rc == 2
+    assert "requires an argument" in capsys.readouterr().err
+
+
+def test_check_arg_on_a_skipped_check_exits_nonzero(capsys):
+    """Silently dropping the flags would leave the caller believing they
+    configured a check that never ran."""
+    rc = rt.main(
+        [
+            "2",
+            "--skip",
+            "check_retry_loop",
+            "--check-arg",
+            "check_retry_loop=--wrapper=retry_cmd",
+        ]
+    )
+    assert rc == 2
+    assert "--skip removes" in capsys.readouterr().err
+
+
+def test_a_flag_value_may_itself_contain_an_equals(tmp_path, monkeypatch):
+    """The split is on the FIRST `=`, so `--wrapper=a=b` survives intact."""
+    shell_file = tmp_path / "s.sh"
+    shell_file.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    seen = _record_argv(monkeypatch)
+
+    assert (
+        rt.main(["2", "--check-arg", "check_retry_loop=--wrapper=a=b", str(shell_file)])
+        == 0
+    )
+    assert seen["check_retry_loop"][0] == "--wrapper=a=b"
+
+
 def _tmp_repo_with_pr_paths_violation(tmp_path: Path) -> Path:
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
     # A paths: filter on pull_request — a Tier 1 (check-pr-paths) violation.
     (wf / "bad.yaml").write_text(
-        "name: x\non:\n  pull_request:\n    paths: ['src/**']\njobs: {}\n"
+        "name: x\non:\n  pull_request:\n    paths: ['src/**']\njobs: {}\n",
+        encoding="utf-8",
     )
     return tmp_path
 
@@ -310,7 +425,8 @@ def test_a_hand_run_with_no_files_says_which_checks_did_not_run(
     every content lint sat out. The note is the only thing that says otherwise."""
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / ".github" / "workflows" / "ok.yaml").write_text(
-        "name: x\non:\n  push:\n    branches: [main]\n  pull_request:\njobs: {}\n"
+        "name: x\non:\n  push:\n    branches: [main]\n  pull_request:\njobs: {}\n",
+        encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     assert rt.main(["1"]) == 0
@@ -337,7 +453,7 @@ def test_the_whole_tree_remedy_is_absent_when_files_were_passed(
         {"1": [("check_pinned_base_images", rt.DOCKERFILE)]},
     )
     py = tmp_path / "m.py"
-    py.write_text("x = 1\n")
+    py.write_text("x = 1\n", encoding="utf-8")
     assert rt.main(["1", str(py)]) == 0
     err = capsys.readouterr().err
     assert "check_pinned_base_images" in err
@@ -379,7 +495,8 @@ def test_main_tier1_passes_on_clean_repo(tmp_path, monkeypatch):
     # Clean: a branches filter on PUSH is ignored (only pull_request is checked),
     # and the pull_request trigger itself carries no paths/branches filter.
     (tmp_path / ".github" / "workflows" / "ok.yaml").write_text(
-        "name: x\non:\n  push:\n    branches: [main]\n  pull_request:\njobs: {}\n"
+        "name: x\non:\n  push:\n    branches: [main]\n  pull_request:\njobs: {}\n",
+        encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     assert rt.main(["1"]) == 0

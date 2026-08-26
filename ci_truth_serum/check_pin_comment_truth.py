@@ -27,6 +27,7 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -51,12 +52,41 @@ _VERSION_COMMENT = re.compile(r"#\s*(?P<version>v\d+(?:\.\d+){0,2})(?:\s|$|#)")
 _ANY_COMMENT = re.compile(r"#\s*(?P<text>.*)$")
 
 
-def pin_records(text: str) -> list[tuple[int, str, str | None, bool]]:
+class PinComment(NamedTuple):
+    """One SHA-pinned `uses:` line: where it sits, what it pins, its version
+    comment (or None), and whether it opted out of this check."""
+
+    line: int
+    pin: str
+    version: "str | None"
+    opted_out: bool
+
+
+class Violation(NamedTuple):
+    """One reported line: the file, the line number, and the message."""
+
+    path: str
+    line: int
+    message: str
+
+
+class PinCommentRecord(NamedTuple):
+    """A `PinComment` with its source file attached, so consistency can be
+    compared across every file at once."""
+
+    path: str
+    line: int
+    pin: str
+    version: "str | None"
+    opted_out: bool
+
+
+def pin_records(text: str) -> list[PinComment]:
     """(1-based line, `owner/repo@sha`, version-comment-or-None, opted_out) for
     every SHA-pinned `uses:` line in TEXT. The version comment is the bare
     `vX[.Y[.Z]]` token; None when the trailing text carries no wellformed one
     (including when there is no comment at all)."""
-    records: list[tuple[int, str, str | None, bool]] = []
+    records: list[PinComment] = []
     for lineno, line in enumerate(text.splitlines(), 1):
         m = _USES_SHA.match(line)
         if not m:
@@ -64,7 +94,7 @@ def pin_records(text: str) -> list[tuple[int, str, str | None, bool]]:
         rest = m.group("rest")
         version = _VERSION_COMMENT.search(rest)
         records.append(
-            (
+            PinComment(
                 lineno,
                 f"{m.group('ref')}@{m.group('sha')}",
                 version.group("version") if version else None,
@@ -76,14 +106,14 @@ def pin_records(text: str) -> list[tuple[int, str, str | None, bool]]:
 
 def check_files(
     texts: list[tuple[str, str]],
-) -> list[tuple[str, int, str]]:
+) -> list[Violation]:
     """(path, line, message) for every pin-comment violation across TEXTS
     ((path, content) pairs) — the cross-file consistency rule needs the whole
     set at once."""
-    all_records: list[tuple[str, int, str, str | None, bool]] = []
+    all_records: list[PinCommentRecord] = []
     for path, text in texts:
         all_records += [
-            (path, line, pin, version, opted)
+            PinCommentRecord(path, line, pin, version, opted)
             for line, pin, version, opted in pin_records(text)
         ]
 
@@ -93,13 +123,13 @@ def check_files(
         if not opted and version is not None:
             comments_by_pin[pin].add(version)
 
-    found: list[tuple[str, int, str]] = []
+    found: list[Violation] = []
     for path, line, pin, version, opted in all_records:
         if opted:
             continue
         if version is None:
             found.append(
-                (
+                Violation(
                     path,
                     line,
                     f"SHA-pinned `{pin.split('@')[0]}` has no wellformed version "
@@ -111,7 +141,7 @@ def check_files(
         versions = comments_by_pin[pin]
         if len(versions) > 1:
             found.append(
-                (
+                Violation(
                     path,
                     line,
                     f"`{pin}` carries conflicting version comments across the repo: "

@@ -382,7 +382,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     silently passed as clean: "no findings" on unparseable input would be
     exactly the fail-open this lint exists to catch. (YAML *syntax* is
     actionlint's job — this only fires when PyYAML can't build a document.)"""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     try:
         doc = yaml.load(text, Loader=_LineLoader)
     except yaml.YAMLError as err:

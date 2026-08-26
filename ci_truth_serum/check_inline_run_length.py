@@ -110,7 +110,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     silent false-green, not a real result. (YAML *syntax* is actionlint's job —
     this only fires when PyYAML can't build a document to analyze at all.)"""
     try:
-        doc = yaml.load(path.read_text(), Loader=_LineLoader)
+        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=_LineLoader)
     except yaml.YAMLError as err:
         first_line = str(err).partition("\n")[0]
         return [

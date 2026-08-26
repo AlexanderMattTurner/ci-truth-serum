@@ -138,7 +138,7 @@ def test_files_are_sorted_and_deduped():
 # ── main() over a real git tree ──────────────────────────────────────────────
 def test_main_flags_violation_in_tree(tmp_path, monkeypatch, capsys):
     init_test_repo(tmp_path)
-    (tmp_path / "writer.sh").write_text("export GLOVEBOX_NEW=1\n")
+    (tmp_path / "writer.sh").write_text("export GLOVEBOX_NEW=1\n", encoding="utf-8")
     commit_all(tmp_path)
     monkeypatch.setattr(es, "REPO_ROOT", tmp_path)
     assert es.main(["--prefix", "GLOVEBOX_"]) == 1
@@ -149,7 +149,9 @@ def test_main_flags_violation_in_tree(tmp_path, monkeypatch, capsys):
 
 def test_main_clean_tree_returns_zero(tmp_path, monkeypatch):
     init_test_repo(tmp_path)
-    (tmp_path / "a.sh").write_text('export GLOVEBOX_OK=1\necho "$GLOVEBOX_OK"\n')
+    (tmp_path / "a.sh").write_text(
+        'export GLOVEBOX_OK=1\necho "$GLOVEBOX_OK"\n', encoding="utf-8"
+    )
     commit_all(tmp_path)
     monkeypatch.setattr(es, "REPO_ROOT", tmp_path)
     assert es.main(["--prefix", "GLOVEBOX_"]) == 0
@@ -158,9 +160,13 @@ def test_main_clean_tree_returns_zero(tmp_path, monkeypatch):
 def test_main_ignores_untracked_files(tmp_path, monkeypatch):
     """Only tracked files are scanned — an untracked scratch file can't trip it."""
     init_test_repo(tmp_path)
-    (tmp_path / "tracked.sh").write_text('export GLOVEBOX_OK=1\necho "$GLOVEBOX_OK"\n')
+    (tmp_path / "tracked.sh").write_text(
+        'export GLOVEBOX_OK=1\necho "$GLOVEBOX_OK"\n', encoding="utf-8"
+    )
     commit_all(tmp_path)
-    (tmp_path / "scratch.sh").write_text("export GLOVEBOX_UNTRACKED=1\n")
+    (tmp_path / "scratch.sh").write_text(
+        "export GLOVEBOX_UNTRACKED=1\n", encoding="utf-8"
+    )
     monkeypatch.setattr(es, "REPO_ROOT", tmp_path)
     assert es.main(["--prefix", "GLOVEBOX_"]) == 0
 

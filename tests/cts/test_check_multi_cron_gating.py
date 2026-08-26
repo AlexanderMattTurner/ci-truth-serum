@@ -449,7 +449,7 @@ def _tree(tmp_path: Path, monkeypatch, files: dict[str, str]) -> Path:
     wf_dir = tmp_path / ".github" / "workflows"
     wf_dir.mkdir(parents=True)
     for name, body in files.items():
-        (wf_dir / name).write_text(body)
+        (wf_dir / name).write_text(body, encoding="utf-8")
     monkeypatch.setattr(cmg, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(cmg, "WORKFLOWS_DIR", wf_dir)
     return wf_dir

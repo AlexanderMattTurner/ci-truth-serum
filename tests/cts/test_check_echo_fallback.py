@@ -90,14 +90,14 @@ def test_multiple_violations_report_each_line() -> None:
 # ── main ─────────────────────────────────────────────────────────────────
 def test_main_reports_path_line_and_exits_nonzero(tmp_path, capsys) -> None:
     p = tmp_path / "s.sh"
-    p.write_text('v=$(cmd || echo "error")\n')
+    p.write_text('v=$(cmd || echo "error")\n', encoding="utf-8")
     assert mod.main([str(p)]) == 1
     assert f"{p}:1:" in capsys.readouterr().err
 
 
 def test_main_clean_file_exits_zero(tmp_path) -> None:
     p = tmp_path / "s.sh"
-    p.write_text('cmd || { echo "failed" >&2; exit 1; }\n')
+    p.write_text('cmd || { echo "failed" >&2; exit 1; }\n', encoding="utf-8")
     assert mod.main([str(p)]) == 0
 
 
@@ -105,7 +105,7 @@ def test_main_reports_pathological_input_loudly(tmp_path, capsys) -> None:
     """An input the grammar refuses to parse fails the check, never passes it: a
     silent skip would false-green exactly the file an adversary controls."""
     p = tmp_path / "s.sh"
-    p.write_text("cmd " + "| cat " * 3000 + "\n")
+    p.write_text("cmd " + "| cat " * 3000 + "\n", encoding="utf-8")
     assert mod.main([str(p)]) == 1
     assert "pipe bytes" in capsys.readouterr().err
 

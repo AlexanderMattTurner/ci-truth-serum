@@ -65,14 +65,15 @@ def _pkg(repo, url: str | None):
     doc: dict = {"name": "x", "version": "1.0.0"}
     if url is not None:
         doc["repository"] = {"type": "git", "url": url}
-    (repo / "package.json").write_text(json.dumps(doc))
+    (repo / "package.json").write_text(json.dumps(doc), encoding="utf-8")
 
 
 def _publish_workflow(repo):
     wf = repo / ".github" / "workflows"
     wf.mkdir(parents=True)
     (wf / "release.yaml").write_text(
-        "jobs:\n  r:\n    steps:\n      - run: npm publish --provenance\n"
+        "jobs:\n  r:\n    steps:\n      - run: npm publish --provenance\n",
+        encoding="utf-8",
     )
 
 
@@ -94,7 +95,7 @@ def test_mismatched_package_json_fails(tmp_path) -> None:
 def test_string_form_repository_field_is_compared(tmp_path) -> None:
     repo = _repo(tmp_path)
     (repo / "package.json").write_text(
-        json.dumps({"repository": "https://github.com/other/thing"})
+        json.dumps({"repository": "https://github.com/other/thing"}), encoding="utf-8"
     )
     assert len(mod.check_repo(repo)) == 1
 
@@ -132,7 +133,8 @@ def test_publish_only_mentioned_in_a_comment_is_not_a_publish(tmp_path) -> None:
     (wf / "release.yaml").write_text(
         "jobs:\n  r:\n    steps:\n"
         "      # releases are manual; we never run npm publish here\n"
-        "      - run: echo done\n"
+        "      - run: echo done\n",
+        encoding="utf-8",
     )
     assert mod.check_repo(repo) == []
 
@@ -145,7 +147,8 @@ def test_publish_after_a_quoted_hash_is_still_seen(tmp_path) -> None:
     wf = repo / ".github" / "workflows"
     wf.mkdir(parents=True)
     (wf / "release.yaml").write_text(
-        'jobs:\n  r:\n    steps:\n      - run: "release #42 && npm publish"\n'
+        'jobs:\n  r:\n    steps:\n      - run: "release #42 && npm publish"\n',
+        encoding="utf-8",
     )
     assert len(mod.check_repo(repo)) == 1
 
@@ -160,7 +163,8 @@ def test_pyproject_repository_key_mismatch_fails(tmp_path) -> None:
     repo = _repo(tmp_path)
     (repo / "pyproject.toml").write_text(
         "[project]\nname = 'x'\n\n[project.urls]\n"
-        'Repository = "https://github.com/wrong/place"\n'
+        'Repository = "https://github.com/wrong/place"\n',
+        encoding="utf-8",
     )
     msgs = mod.check_repo(repo)
     assert len(msgs) == 1 and "pyproject.toml" in msgs[0]
@@ -170,7 +174,8 @@ def test_pyproject_homepage_is_never_compared(tmp_path) -> None:
     # Docs sites legitimately live elsewhere: only repository-ish keys count.
     repo = _repo(tmp_path)
     (repo / "pyproject.toml").write_text(
-        '[project.urls]\nHomepage = "https://github.com/upstream/docs"\n'
+        '[project.urls]\nHomepage = "https://github.com/upstream/docs"\n',
+        encoding="utf-8",
     )
     assert mod.check_repo(repo) == []
 
@@ -178,7 +183,8 @@ def test_pyproject_homepage_is_never_compared(tmp_path) -> None:
 def test_pyproject_matching_source_key_passes(tmp_path) -> None:
     repo = _repo(tmp_path)
     (repo / "pyproject.toml").write_text(
-        '[project.urls]\n"Source Code" = "https://github.com/real/owner-repo"\n'
+        '[project.urls]\n"Source Code" = "https://github.com/real/owner-repo"\n',
+        encoding="utf-8",
     )
     assert mod.check_repo(repo) == []
 
@@ -275,7 +281,8 @@ def _fake_git(tmp_path, monkeypatch, redirect_to: str | None, delay: float = 0):
         "    exit 0\n"
         "  fi\n"
         "done\n"
-        f'exec "{real_git}" "$@"\n'
+        f'exec "{real_git}" "$@"\n',
+        encoding="utf-8",
     )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
@@ -289,7 +296,7 @@ def test_renamed_repo_clears_the_mismatch(tmp_path, monkeypatch) -> None:
     _pkg(repo, "git+https://github.com/real/new-name.git")
     calls = _fake_git(tmp_path, monkeypatch, "https://github.com/real/new-name.git/")
     assert mod.check_repo(repo) == []
-    assert calls.read_text().count("\n") == 1
+    assert calls.read_text(encoding="utf-8").count("\n") == 1
 
 
 def test_a_url_that_is_not_the_redirect_target_still_fails(
@@ -318,11 +325,12 @@ def test_two_mismatches_probe_the_remote_once(tmp_path, monkeypatch) -> None:
     repo = _repo(tmp_path, origin="https://github.com/old/name")
     _pkg(repo, "git+https://github.com/upstream/template.git")
     (repo / "pyproject.toml").write_text(
-        '[project.urls]\nRepository = "https://github.com/upstream/template"\n'
+        '[project.urls]\nRepository = "https://github.com/upstream/template"\n',
+        encoding="utf-8",
     )
     calls = _fake_git(tmp_path, monkeypatch, "https://github.com/real/new-name.git/")
     assert len(mod.check_repo(repo)) == 2
-    assert calls.read_text().count("\n") == 1
+    assert calls.read_text(encoding="utf-8").count("\n") == 1
 
 
 def test_a_pinned_identity_never_probes_the_network(tmp_path, monkeypatch) -> None:

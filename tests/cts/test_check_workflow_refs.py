@@ -184,7 +184,7 @@ def test_allow_marker_requires_a_reason() -> None:
     assert _hits(line) == [(1, "ci-workflow.yaml")]
 
 
-def test_allow_marker_two_lines_above_does_not_suppress() -> None:
+def test_allow_marker_two_lines_above_does_not_suppress(monkeypatch) -> None:
     body = (
         "<!-- allow-workflow-ref: too far away -->\nfiller\n"
         "The CI job runs ci-workflow.yaml.\n"
@@ -195,24 +195,32 @@ def test_allow_marker_two_lines_above_does_not_suppress() -> None:
 # -- main(): CLI contract against a real git repo ---------------------------------
 
 
-def _repo(tmp_path: Path, files: dict[str, str]) -> Path:
-    """A committed git repo with FILES (repo-relative path → content)."""
+def _repo(tmp_path: Path, monkeypatch, files: dict[str, str]) -> Path:
+    """A committed git repo with FILES (repo-relative path → content).
+
+    The module's REPO_ROOT is repointed through MONKEYPATCH, which restores it
+    when the test ends. A plain assignment outlives the test: pytest-xdist runs
+    many tests in one worker that imported this module once, so the next test
+    would read a tmp_path that no longer exists."""
     init_test_repo(tmp_path)
     for rel, text in files.items():
         dest = tmp_path / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(text, encoding="utf-8")
     commit_all(tmp_path)
-    mod.REPO_ROOT = tmp_path
+    monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     return tmp_path
 
 
 WORKFLOW_YAML = "name: Evals\non: push\njobs: {}\n"
 
 
-def test_main_reports_path_line_name_and_remedy(tmp_path: Path, capsys) -> None:
+def test_main_reports_path_line_name_and_remedy(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
     repo = _repo(
         tmp_path,
+        monkeypatch,
         {
             ".github/workflows/evals.yaml": WORKFLOW_YAML,
             "docs/ci.md": "one\nThe CI job lives in ct-inspect-e2e.yaml today.\n",
@@ -239,10 +247,11 @@ def test_main_reports_path_line_name_and_remedy(tmp_path: Path, capsys) -> None:
     ],
 )
 def test_js_comments_come_from_the_grammar(
-    tmp_path: Path, name: str, source: str, flagged: bool
+    tmp_path: Path, name: str, source: str, flagged: bool, monkeypatch
 ) -> None:
     repo = _repo(
         tmp_path,
+        monkeypatch,
         {
             ".github/workflows/evals.yaml": WORKFLOW_YAML,
             "a.mjs": source + "\n",
@@ -251,9 +260,12 @@ def test_js_comments_come_from_the_grammar(
     assert mod.main([str(repo / "a.mjs")]) == int(flagged)
 
 
-def test_main_returns_zero_once_the_workflow_exists(tmp_path: Path, capsys) -> None:
+def test_main_returns_zero_once_the_workflow_exists(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
     repo = _repo(
         tmp_path,
+        monkeypatch,
         {
             ".github/workflows/evals.yaml": WORKFLOW_YAML,
             ".github/workflows/ct-inspect-e2e.yaml": WORKFLOW_YAML,
@@ -264,10 +276,14 @@ def test_main_returns_zero_once_the_workflow_exists(tmp_path: Path, capsys) -> N
     assert capsys.readouterr().err == ""
 
 
-def test_main_is_a_noop_in_a_repo_with_no_workflows(tmp_path: Path, capsys) -> None:
+def test_main_is_a_noop_in_a_repo_with_no_workflows(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
     """Nothing to resolve against, so the repo is out of scope rather than wholly
     in violation."""
-    repo = _repo(tmp_path, {"docs/ci.md": "The CI job lives in evals.yaml today.\n"})
+    repo = _repo(
+        tmp_path, monkeypatch, {"docs/ci.md": "The CI job lives in evals.yaml today.\n"}
+    )
     assert mod.main([str(repo / "docs" / "ci.md")]) == 0
     assert capsys.readouterr().err == ""
 
@@ -275,11 +291,14 @@ def test_main_is_a_noop_in_a_repo_with_no_workflows(tmp_path: Path, capsys) -> N
 @pytest.mark.parametrize(
     "rel", ["CHANGELOG.md", "docs/CHANGELOG.md", "changelog.d/42.added.md"]
 )
-def test_main_skips_the_changelog_surfaces(tmp_path: Path, rel: str) -> None:
+def test_main_skips_the_changelog_surfaces(
+    tmp_path: Path, rel: str, monkeypatch
+) -> None:
     """A released entry — and a pending fragment assembled into one verbatim — is
     an audit record: the workflow it names really did exist when it was written."""
     repo = _repo(
         tmp_path,
+        monkeypatch,
         {
             ".github/workflows/evals.yaml": WORKFLOW_YAML,
             rel: "The CI job moved out of ct-inspect-e2e.yaml.\n",
@@ -288,16 +307,19 @@ def test_main_skips_the_changelog_surfaces(tmp_path: Path, rel: str) -> None:
     assert mod.main([str(repo / rel)]) == 0
 
 
-def test_main_skips_an_unreadable_path(tmp_path: Path) -> None:
-    repo = _repo(tmp_path, {".github/workflows/evals.yaml": WORKFLOW_YAML})
+def test_main_skips_an_unreadable_path(tmp_path: Path, monkeypatch) -> None:
+    repo = _repo(tmp_path, monkeypatch, {".github/workflows/evals.yaml": WORKFLOW_YAML})
     assert mod.main([str(repo / "absent.md")]) == 0
 
 
-def test_main_treats_a_dot_github_file_as_workflow_context(tmp_path: Path) -> None:
+def test_main_treats_a_dot_github_file_as_workflow_context(
+    tmp_path: Path, monkeypatch
+) -> None:
     """The same sentence is a citation inside .github/ and ambiguous outside it."""
     body = "# superseded by cancel-on-pr-close.yaml\n"
     repo = _repo(
         tmp_path,
+        monkeypatch,
         {
             ".github/workflows/evals.yaml": WORKFLOW_YAML,
             ".github/scripts/x.sh": body,
@@ -311,11 +333,15 @@ def test_main_treats_a_dot_github_file_as_workflow_context(tmp_path: Path) -> No
 # -- end-to-end: the real CLI entrypoint -------------------------------------------
 
 
-def test_cli_invocation_flags_and_exits_nonzero(tmp_path: Path) -> None:
+def test_cli_invocation_flags_and_exits_nonzero(tmp_path: Path, monkeypatch) -> None:
     init_test_repo(tmp_path)
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
-    (tmp_path / ".github" / "workflows" / "evals.yaml").write_text(WORKFLOW_YAML)
-    (tmp_path / "docs.md").write_text("The CI job runs ct-inspect-e2e.yaml.\n")
+    (tmp_path / ".github" / "workflows" / "evals.yaml").write_text(
+        WORKFLOW_YAML, encoding="utf-8"
+    )
+    (tmp_path / "docs.md").write_text(
+        "The CI job runs ct-inspect-e2e.yaml.\n", encoding="utf-8"
+    )
     commit_all(tmp_path)
     proc = subprocess.run(
         [sys.executable, str(_SRC), "docs.md"],
@@ -328,7 +354,7 @@ def test_cli_invocation_flags_and_exits_nonzero(tmp_path: Path) -> None:
     assert "docs.md:1: `ct-inspect-e2e.yaml`" in proc.stderr
 
 
-def test_enforced_scope_is_clean() -> None:
+def test_enforced_scope_is_clean(monkeypatch) -> None:
     """Every tracked file this hook's types_or covers (minus the dogfood excludes,
     the one authoritative skip list) passes today. Non-vacuous: the gate cases
     above show `violations` fires, and the scope selection is asserted non-empty."""
@@ -358,5 +384,5 @@ def test_enforced_scope_is_clean() -> None:
         if rel and Path(rel).suffix in suffixes and not exclude.match(rel)
     ]
     assert scanned, "scope selection found nothing — the assertion would be vacuous"
-    mod.REPO_ROOT = REPO_ROOT
+    monkeypatch.setattr(mod, "REPO_ROOT", REPO_ROOT)
     assert mod.main(scanned) == 0

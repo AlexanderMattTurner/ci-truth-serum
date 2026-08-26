@@ -35,6 +35,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 REPO_ROOT = Path.cwd()
 
@@ -98,7 +99,17 @@ def collect_optouts(text: str) -> set[str]:
     return {m.group("name") for m in _OPT_OUT.finditer(text)}
 
 
-def analyze(sources: dict[str, str], prefix: str) -> list[tuple[str, str, list[str]]]:
+class Imbalance(NamedTuple):
+    """One prefixed env var missing a half: its name, which half is missing
+    (``"write-only"`` or ``"read-only"``), and the files carrying the present
+    half."""
+
+    name: str
+    kind: str
+    files: list[str]
+
+
+def analyze(sources: dict[str, str], prefix: str) -> list[Imbalance]:
     """Given a map of path→text, return (name, kind, files) for each prefixed var
     that is write-only or read-only.
 
@@ -117,14 +128,14 @@ def analyze(sources: dict[str, str], prefix: str) -> list[tuple[str, str, list[s
             reads.setdefault(n, set()).add(path)
         optouts |= collect_optouts(text)
 
-    results: list[tuple[str, str, list[str]]] = []
+    results: list[Imbalance] = []
     for name in sorted(set(writes) | set(reads)):
         if name in optouts:
             continue
         if name in writes and name not in reads:
-            results.append((name, "write-only", sorted(writes[name])))
+            results.append(Imbalance(name, "write-only", sorted(writes[name])))
         elif name in reads and name not in writes:
-            results.append((name, "read-only", sorted(reads[name])))
+            results.append(Imbalance(name, "read-only", sorted(reads[name])))
     return results
 
 

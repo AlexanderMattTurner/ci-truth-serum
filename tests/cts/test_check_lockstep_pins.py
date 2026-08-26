@@ -64,8 +64,8 @@ def test_errors_on_both_sides_are_both_reported() -> None:
 def _files(tmp_path, t1: str, t2: str) -> tuple[str, str]:
     a = tmp_path / "a.yaml"
     b = tmp_path / "b.yaml"
-    a.write_text(t1)
-    b.write_text(t2)
+    a.write_text(t1, encoding="utf-8")
+    b.write_text(t2, encoding="utf-8")
     return str(a), str(b)
 
 
@@ -94,9 +94,9 @@ def test_main_missing_file_fails(tmp_path, capsys) -> None:
 def test_main_repeatable_pairs_aggregate(tmp_path, capsys) -> None:
     a, b = _files(tmp_path, "rev: v1\n", "ci-truth-serum@v1\n")
     c = tmp_path / "c.txt"
-    c.write_text("pin=9\n")
+    c.write_text("pin=9\n", encoding="utf-8")
     d = tmp_path / "d.txt"
-    d.write_text("pin=8\n")
+    d.write_text("pin=8\n", encoding="utf-8")
     rc = mod.main(
         ["--pair", a, REV, b, AT, "--pair", str(c), r"pin=(\d+)", str(d), r"pin=(\d+)"]
     )

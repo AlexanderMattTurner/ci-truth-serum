@@ -69,7 +69,6 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/claude-oauth-ladder
 MAX_ROUNDS="${MERGE_DELTA_MAX_ROUNDS:-1}"
 TIMEOUT_SECONDS="${SELF_REVIEW_TIMEOUT_SECONDS:-240}"
 SELF_REVIEW_DIR="${SELF_REVIEW_DIR:-${RUNNER_TEMP:-/tmp}/self-review}"
-mkdir -p "$SELF_REVIEW_DIR"
 
 readonly _EXIT_CANNOT_VERIFY=2
 
@@ -77,6 +76,9 @@ die() {
   echo "::error::self-review: $1" >&2
   exit "$_EXIT_CANNOT_VERIFY"
 }
+
+mkdir -p "$SELF_REVIEW_DIR"
+[[ -d "$SELF_REVIEW_DIR" ]] || die "could not create the self-review directory ${SELF_REVIEW_DIR}."
 
 # render_delta — the merge commit's hand-authored delta on stdout, via the same
 # trusted renderer the post-push watchdog uses. Empty output means the merge
@@ -107,6 +109,7 @@ attempt_claude() {
   local token="$1" prompt_file="$2" log="$3" status=0
   export CLAUDE_CONFIG_DIR="${SELF_REVIEW_DIR}/config"
   mkdir -p "$CLAUDE_CONFIG_DIR"
+  [[ -d "$CLAUDE_CONFIG_DIR" ]] || die "could not create the model config dir ${CLAUDE_CONFIG_DIR}."
   CLAUDE_CODE_OAUTH_TOKEN="$token" timeout --kill-after=30 "$TIMEOUT_SECONDS" claude \
     -p "$(cat "$prompt_file")" \
     --model "$_SELF_REVIEW_MODEL" \

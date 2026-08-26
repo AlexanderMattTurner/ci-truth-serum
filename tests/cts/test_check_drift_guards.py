@@ -1176,9 +1176,13 @@ def test_phrase_pass_skips_production_shell(tmp_path) -> None:
     ("keeps the ruleset in sync"); only TEST files carry copies-agree tests, so
     the phrase pass must not fire outside them."""
     prod = tmp_path / "sync.sh"
-    prod.write_text("#!/bin/bash\n# keeps the ruleset in lockstep with main\n")
+    prod.write_text(
+        "#!/bin/bash\n# keeps the ruleset in lockstep with main\n", encoding="utf-8"
+    )
     assert mod.main([str(prod)]) == 0
     test_file = tmp_path / "tests" / "sync.test.mjs"
     test_file.parent.mkdir()
-    test_file.write_text("// this suite is a drift guard for the ruleset\n")
+    test_file.write_text(
+        "// this suite is a drift guard for the ruleset\n", encoding="utf-8"
+    )
     assert mod.main([str(test_file)]) == 1

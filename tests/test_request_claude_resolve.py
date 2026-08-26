@@ -21,7 +21,10 @@ def _install_gh_stub(bin_dir: Path, argv_file: Path) -> None:
     the script's `gh pr comment …` call is captured, not executed."""
     bin_dir.mkdir(parents=True, exist_ok=True)
     stub = bin_dir / "gh"
-    stub.write_text(f'#!/usr/bin/env bash\nprintf "%s\\0" "$@" > {argv_file}\nexit 0\n')
+    stub.write_text(
+        f'#!/usr/bin/env bash\nprintf "%s\\0" "$@" > {argv_file}\nexit 0\n',
+        encoding="utf-8",
+    )
     stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 

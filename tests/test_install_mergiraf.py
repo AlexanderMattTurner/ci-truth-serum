@@ -41,7 +41,8 @@ def _curl_stub(bindir: Path, payload: bytes) -> None:
         "  shift\n"
         "done\n"
         '[[ -n "$out" ]] || { echo "stub curl: no -o target" >&2; exit 2; }\n'
-        f'cp "{payload_file}" "$out"\n'
+        f'cp "{payload_file}" "$out"\n',
+        encoding="utf-8",
     )
     curl.chmod(0o755)
 

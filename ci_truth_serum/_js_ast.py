@@ -25,6 +25,8 @@ C scanner corrupts the heap on one). Reproduce with `resource.ru_maxrss` around
 `parse` on each shape.
 """
 
+from functools import lru_cache
+
 import tree_sitter_javascript
 import tree_sitter_typescript
 from tree_sitter import Language, Node, Parser
@@ -43,9 +45,15 @@ _GRAMMARS = {
     **dict.fromkeys(_TSX_SUFFIXES, tree_sitter_typescript.language_tsx),
 }
 
+
 # Building a Language and its Parser is the expensive part; reuse both across
-# every parse in a run, keyed by grammar rather than by path.
-_PARSERS: dict[object, Parser] = {}
+# every parse in a run, keyed by grammar rather than by path. `lru_cache` rather
+# than a module-level dict a function writes: the cache carries its own
+# `cache_clear`, so a caller that must not inherit a previous run's parser can
+# drop it.
+@lru_cache(maxsize=len(_GRAMMARS))
+def _parser_for(grammar) -> Parser:
+    return Parser(Language(grammar()))
 
 
 def _suffix(path: str) -> str:
@@ -66,10 +74,7 @@ def _parser(path: str) -> Parser:
     suffix = _suffix(path)
     if suffix not in _GRAMMARS:
         raise ValueError(f"{path!r} is not a JavaScript/TypeScript path")
-    grammar = _GRAMMARS[suffix]
-    if grammar not in _PARSERS:
-        _PARSERS[grammar] = Parser(Language(grammar()))
-    return _PARSERS[grammar]
+    return _parser_for(_GRAMMARS[suffix])
 
 
 def parse(source: str, path: str) -> Node:

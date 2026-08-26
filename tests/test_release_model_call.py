@@ -71,11 +71,11 @@ def _sandbox(tmp_path: Path, statuses: list[str]) -> dict[str, str]:
     bindir = tmp_path / "bin"
     bindir.mkdir(parents=True, exist_ok=True)
     stub = bindir / "curl"
-    stub.write_text(_CURL_STUB)
+    stub.write_text(_CURL_STUB, encoding="utf-8")
     stub.chmod(0o755)
 
     status_file = tmp_path / "statuses.txt"
-    status_file.write_text("\n".join(statuses) + "\n")
+    status_file.write_text("\n".join(statuses) + "\n", encoding="utf-8")
     return {
         "PATH": f"{bindir}:/usr/bin:/bin",
         "STUB_HEADER_LOG": str(tmp_path / "headers.log"),
@@ -105,7 +105,7 @@ def _run(body: str, env: dict[str, str]) -> subprocess.CompletedProcess:
 
 def _headers(env: dict[str, str]) -> list[str]:
     log = Path(env["STUB_HEADER_LOG"])
-    return log.read_text().splitlines() if log.exists() else []
+    return log.read_text(encoding="utf-8").splitlines() if log.exists() else []
 
 
 def _requests(env: dict[str, str]) -> list[list[str]]:
@@ -238,7 +238,7 @@ def test_first_healthy_rung_answers_and_no_later_rung_is_tried(tmp_path: Path) -
     assert len(_requests(env)) == 1
     assert "x-api-key: sk-ant-api03-first" in _requests(env)[0]
     assert "Model call succeeded on credential ANTHROPIC_API_KEY." in result.stderr
-    assert json.loads(out.read_text())["stop_reason"] == "tool_use"
+    assert json.loads(out.read_text(encoding="utf-8"))["stop_reason"] == "tool_use"
 
 
 def test_rejected_first_rung_falls_through_to_the_second_and_succeeds(
@@ -360,7 +360,7 @@ def test_rung_failure_report_names_the_variable_not_its_value(
     tmp_path: Path, credential: str
 ) -> None:
     env = _sandbox(tmp_path, ["401"]) | {"ANTHROPIC_API_KEY": credential}
-    (tmp_path / "err.json").write_text(ERR_BODY)
+    (tmp_path / "err.json").write_text(ERR_BODY, encoding="utf-8")
     result = _run(
         f'_report_rung_failure ANTHROPIC_API_KEY 401 "{tmp_path / "err.json"}"',
         env,
@@ -418,7 +418,7 @@ def test_a_rung_never_inherits_the_previous_rungs_error_message(
 def test_non_json_error_body_still_reports_the_rung(tmp_path: Path) -> None:
     env = _sandbox(tmp_path, ["502"])
     body = tmp_path / "gateway.html"
-    body.write_text("<html>502 Bad Gateway</html>")
+    body.write_text("<html>502 Bad Gateway</html>", encoding="utf-8")
     result = _run(f'_report_rung_failure CLAUDE_CODE_OAUTH_TOKEN 502 "{body}"', env)
     assert result.returncode == 0, result.stderr
     assert (
@@ -473,7 +473,7 @@ def test_bump_from_fragments(
     frag_dir = tmp_path / "changelog.d"
     frag_dir.mkdir()
     for name in fragments:
-        (frag_dir / name).write_text("- an entry\n")
+        (frag_dir / name).write_text("- an entry\n", encoding="utf-8")
     result = _run(f'bump_from_fragments "{frag_dir}"', env)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == expected
@@ -499,7 +499,7 @@ def test_bump_from_fragments_ignores_the_readme_alongside_real_fragments(
     env = _sandbox(tmp_path, ["200"])
     frag_dir = tmp_path / "changelog.d"
     frag_dir.mkdir()
-    (frag_dir / "README.md").write_text("how to write fragments\n")
-    (frag_dir / "a.fixed.md").write_text("- a fix\n")
+    (frag_dir / "README.md").write_text("how to write fragments\n", encoding="utf-8")
+    (frag_dir / "a.fixed.md").write_text("- a fix\n", encoding="utf-8")
     result = _run(f'bump_from_fragments "{frag_dir}"', env)
     assert result.stdout.strip() == "patch"

@@ -138,7 +138,7 @@ def _tree(tmp_path: Path, monkeypatch, files: dict[str, str]) -> Path:
     for rel, content in files.items():
         dest = root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content)
+        dest.write_text(content, encoding="utf-8")
     monkeypatch.setattr(crp, "REPO_ROOT", root)
     monkeypatch.setattr(crp, "WORKFLOWS_DIR", root / ".github" / "workflows")
     return root

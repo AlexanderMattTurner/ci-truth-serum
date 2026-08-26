@@ -47,8 +47,10 @@ def _write_repo(root: Path) -> None:
     """A minimal tree the committed planner can expand one shard from."""
     (root / "ci_truth_serum").mkdir()
     (root / "tests" / "cts").mkdir(parents=True)
-    (root / "ci_truth_serum" / "check_a.py").write_text("x = 1\n")
-    (root / "tests" / "cts" / "test_check_a.py").write_text("def test_x(): pass\n")
+    (root / "ci_truth_serum" / "check_a.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "tests" / "cts" / "test_check_a.py").write_text(
+        "def test_x(): pass\n", encoding="utf-8"
+    )
     (root / "cosmic-ray.toml").write_text(
         "[cosmic-ray]\n"
         'module-path = "ci_truth_serum"\n'
@@ -56,7 +58,8 @@ def _write_repo(root: Path) -> None:
         "timeout = 60.0\n"
         'test-command = "python -m pytest -x -q -p no:cacheprovider tests/cts"\n'
         '\n[cosmic-ray.distributor]\nname = "local"\n'
-        "\n[cosmic-ray.filters.operators-filter]\nexclude-operators = []\n"
+        "\n[cosmic-ray.filters.operators-filter]\nexclude-operators = []\n",
+        encoding="utf-8",
     )
     scripts = root / ".github" / "scripts"
     scripts.mkdir(parents=True)
@@ -75,7 +78,7 @@ def _write_stubs(root: Path) -> Path:
         ("cr-rate", RATE_STUB),
     ):
         path = stub_dir / name
-        path.write_text(body)
+        path.write_text(body, encoding="utf-8")
         path.chmod(0o755)
     (stub_dir / "python").symlink_to(sys.executable)
     return stub_dir
@@ -101,7 +104,7 @@ def _run(root: Path, shard_id: str, **extra: str) -> subprocess.CompletedProcess
 
 
 def _commands(root: Path) -> list[str]:
-    return (root / "commands.log").read_text().splitlines()
+    return (root / "commands.log").read_text(encoding="utf-8").splitlines()
 
 
 @pytest.fixture(name="repo")

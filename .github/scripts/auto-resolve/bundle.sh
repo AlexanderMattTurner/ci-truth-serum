@@ -255,6 +255,7 @@ fi
 # — the branch was force-pushed since — fails to unbundle rather than landing
 # against a tree that no longer exists.
 mkdir -p "$BUNDLE_DIR"
+[[ -d "$BUNDLE_DIR" ]] || fail "could not create the bundle directory '${BUNDLE_DIR}'" "the resolver job could not create its own working directory."
 git update-ref "$AUTO_RESOLVE_RESULT_REF" HEAD
 git bundle create "${BUNDLE_DIR}/merge.bundle" "$AUTO_RESOLVE_RESULT_REF" \
   --not "$head_sha" "$base_sha"

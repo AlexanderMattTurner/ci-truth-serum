@@ -110,12 +110,12 @@ def test_opt_out_on_line_above() -> None:
 # ── main ─────────────────────────────────────────────────────────────────
 def test_main_reports_and_exits_nonzero(tmp_path, capsys) -> None:
     p = tmp_path / "s.sh"
-    p.write_text(_case("  a)\n    : ;;\n"))
+    p.write_text(_case("  a)\n    : ;;\n"), encoding="utf-8")
     assert mod.main([str(p)]) == 1
     assert f"{p}:1:" in capsys.readouterr().err
 
 
 def test_main_clean_file_exits_zero(tmp_path) -> None:
     p = tmp_path / "s.sh"
-    p.write_text(_case("  a)\n    : ;;\n  *)\n    : ;;\n"))
+    p.write_text(_case("  a)\n    : ;;\n  *)\n    : ;;\n"), encoding="utf-8")
     assert mod.main([str(p)]) == 0

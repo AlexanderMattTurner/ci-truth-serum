@@ -32,6 +32,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import run_file_cli, run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -248,9 +249,16 @@ def _pin_from_line(line: str, resolve: Callable[[str], str]) -> str | None:
     return line[: m.start("rest")] + new_rest
 
 
-def fix_text(
-    text: str, resolve: Callable[[str], str] | None = None
-) -> tuple[str, list[int], list[tuple[int, str]]]:
+class FixResult(NamedTuple):
+    """The outcome of digest-pinning every unpinned `FROM` in a Dockerfile: the
+    rewritten text, which lines were fixed, and which could not be (with why)."""
+
+    new_text: str
+    fixed_linenos: list[int]
+    unfixed: list[tuple[int, str]]
+
+
+def fix_text(text: str, resolve: Callable[[str], str] | None = None) -> FixResult:
     """Digest-pin every unpinned FROM in TEXT.
 
     Returns (new_text, fixed_linenos, unfixed) where ``unfixed`` is the
@@ -280,7 +288,7 @@ def fix_text(
             continue
         lines[lineno - 1] = pinned + nl
         fixed.append(lineno)
-    return "".join(lines), fixed, unfixed
+    return FixResult("".join(lines), fixed, unfixed)
 
 
 def _run_fix(paths: list[str]) -> int:

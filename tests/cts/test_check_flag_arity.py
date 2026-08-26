@@ -299,10 +299,13 @@ def test_dollar_hash_is_not_mistaken_for_a_comment() -> None:
 
 def test_main_reads_files_from_argv_and_exit_code(tmp_path: Path) -> None:
     bad = tmp_path / "bad.sh"
-    bad.write_text(_parser('  --branch)\n    BRANCH="$2"\n    shift 2\n    ;;'))
+    bad.write_text(
+        _parser('  --branch)\n    BRANCH="$2"\n    shift 2\n    ;;'), encoding="utf-8"
+    )
     good = tmp_path / "good.sh"
     good.write_text(
-        _parser('  --branch)\n    B="${2:?need value}"\n    shift 2\n    ;;')
+        _parser('  --branch)\n    B="${2:?need value}"\n    shift 2\n    ;;'),
+        encoding="utf-8",
     )
     assert mod.main([str(bad)]) == 1
     assert mod.main([str(good)]) == 0

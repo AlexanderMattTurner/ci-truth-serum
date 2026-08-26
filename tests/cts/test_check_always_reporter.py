@@ -17,7 +17,7 @@ car = load_hook("check_always_reporter.py", "check_always_reporter")
 def _write(dirpath: Path, name: str, body: str) -> Path:
     dirpath.mkdir(parents=True, exist_ok=True)
     path = dirpath / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 

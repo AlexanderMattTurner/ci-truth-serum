@@ -405,7 +405,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     An unparseable workflow is reported as a violation rather than passed clean:
     this file IS the artifact under test, so "no findings" on it would be a
     false green."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     try:
         doc = yaml.load(text, Loader=_LineLoader)
     except yaml.YAMLError as err:

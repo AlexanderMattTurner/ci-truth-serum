@@ -222,7 +222,7 @@ def test_a_workflow_past_the_api_ceiling_is_reported_as_a_floor():
     # The scan reads the whole window, so the only thing that can shorten it is
     # the API's own pagination ceiling. The count is then a floor, and the report
     # must say which workflow it could not finish.
-    finding = mod.Finding(
+    finding = mod.StartupFailure(
         name="Lint",
         path=".github/workflows/lint.yaml",
         runs=[run(11, "startup_failure")],
@@ -243,7 +243,7 @@ def test_the_clean_report_says_nothing_failed_over_the_whole_window():
 
 
 def test_the_markdown_report_is_a_table_row_per_workflow():
-    finding = mod.Finding(
+    finding = mod.StartupFailure(
         name="Lint",
         path=".github/workflows/lint.yaml",
         runs=[run(11, "startup_failure", "2026-08-01T09:00:00Z")],

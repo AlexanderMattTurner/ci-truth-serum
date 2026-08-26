@@ -188,7 +188,13 @@ main() {
       ancestor=$(dirname "$ancestor")
     done
 
-    [[ "$parent_dir" != "." ]] && mkdir -p "$parent_dir"
+    if [[ "$parent_dir" != "." ]]; then
+      mkdir -p "$parent_dir"
+      [[ -d "$parent_dir" ]] || {
+        echo "Error: could not create ${parent_dir}." >&2
+        exit 1
+      }
+    fi
 
     # Case 1: new file in template.
     if [[ ! -f "$rel_path" ]]; then

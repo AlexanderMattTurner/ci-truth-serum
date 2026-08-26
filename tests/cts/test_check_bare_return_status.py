@@ -174,12 +174,12 @@ def test_a_similar_token_does_not_suppress() -> None:
 # ── main ─────────────────────────────────────────────────────────────────────
 def test_main_reports_and_exits_nonzero(tmp_path, capsys) -> None:
     p = tmp_path / "s.sh"
-    p.write_text('f() {\n  [[ -n "$x" ]] || return\n}\n')
+    p.write_text('f() {\n  [[ -n "$x" ]] || return\n}\n', encoding="utf-8")
     assert mod.main([str(p)]) == 1
     assert f"{p}:2:" in capsys.readouterr().err
 
 
 def test_main_clean_file_exits_zero(tmp_path) -> None:
     p = tmp_path / "s.sh"
-    p.write_text('f() {\n  [[ -n "$x" ]] || return 1\n}\n')
+    p.write_text('f() {\n  [[ -n "$x" ]] || return 1\n}\n', encoding="utf-8")
     assert mod.main([str(p)]) == 0

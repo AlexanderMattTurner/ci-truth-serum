@@ -34,6 +34,7 @@ Invoked by pre-commit with the staged shell files as arguments.
 
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -101,7 +102,16 @@ _BOTH_OPERATORS = frozenset({"&>", "&>>"})
 _DUP_OPERATOR = ">&"
 
 
-def _redirect_parts(redirect) -> tuple[str | None, str, str]:
+class RedirectParts(NamedTuple):
+    """A `file_redirect`'s pieces: the file descriptor it points (or None for
+    the default), the operator, and the destination."""
+
+    descriptor: "str | None"
+    operator: str
+    destination: str
+
+
+def _redirect_parts(redirect) -> RedirectParts:
     """(file descriptor, operator, destination) of a ``file_redirect``.
 
     The destination is the token right AFTER the operator, not the node's last
@@ -125,8 +135,10 @@ def _redirect_parts(redirect) -> tuple[str | None, str, str]:
         None,
     )
     if index is None or index + 1 >= len(children):
-        return descriptor, "", ""
-    return descriptor, children[index].type, unquote(node_text(children[index + 1]))
+        return RedirectParts(descriptor, "", "")
+    return RedirectParts(
+        descriptor, children[index].type, unquote(node_text(children[index + 1]))
+    )
 
 
 def _suppresses_stderr(redirects: list) -> bool:

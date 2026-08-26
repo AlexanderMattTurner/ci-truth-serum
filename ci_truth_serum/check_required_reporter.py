@@ -107,7 +107,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     A file that cannot be parsed as YAML is itself reported as a violation
     (line ``None``) rather than silently passed as clean — matching the sibling
     workflow lints (check_workflow_pipefail &c.)."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     try:
         doc = yaml.safe_load(text)
     except yaml.YAMLError as err:

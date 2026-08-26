@@ -18,8 +18,8 @@ set -euo pipefail
 # The retry helper is likewise sourced from the base branch's trusted copy the
 # workflow stages in $RETRY_LIB (same isolation as $ASSEMBLE_CHANGELOG), falling
 # back to the in-tree path only to bootstrap the very PR that first adds it.
-# shellcheck source=../../bin/lib/retry.bash disable=SC1091
-source "${RETRY_LIB:-$(git rev-parse --show-toplevel)/bin/lib/retry.bash}"
+# shellcheck source=lib/retry.bash disable=SC1091
+source "${RETRY_LIB:-$(git rev-parse --show-toplevel)/.github/scripts/lib/retry.bash}"
 # shellcheck source=../../bin/lib/release-model-call.bash disable=SC1091
 source "${MODEL_CALL_LIB:-$(git rev-parse --show-toplevel)/bin/lib/release-model-call.bash}"
 
@@ -49,7 +49,7 @@ sanitize_changelog_section() {
 }
 
 # Baseline = the released version on the PR's base branch.
-git fetch --quiet origin "$BASE_REF"
+timeout --kill-after=15 60 git fetch --quiet origin "$BASE_REF"
 BASE_VERSION=$(git show FETCH_HEAD:package.json | read_version)
 CURRENT_VERSION=$(read_version <package.json)
 
@@ -199,7 +199,7 @@ git commit -m "chore(release): v$NEW_VERSION"
 
 # Push the bump to the PR head branch (ordinary push, no force). Retried with
 # backoff; a failure fails the job loudly.
-if ! retry_cmd 4 2 git push origin "HEAD:$HEAD_REF"; then
+if ! retry_cmd 4 2 timeout --kill-after=15 60 git push origin "HEAD:$HEAD_REF"; then
   echo "Error: failed to push release bump to $HEAD_REF after 4 attempts" >&2
   exit 1
 fi

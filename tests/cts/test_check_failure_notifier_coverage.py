@@ -151,7 +151,7 @@ def _tree(tmp_path: Path, monkeypatch, files: dict[str, str]) -> Path:
     wf_dir = tmp_path / ".github" / "workflows"
     wf_dir.mkdir(parents=True)
     for name, body in files.items():
-        (wf_dir / name).write_text(body)
+        (wf_dir / name).write_text(body, encoding="utf-8")
     monkeypatch.setattr(cfnc, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(cfnc, "WORKFLOWS_DIR", wf_dir)
     return wf_dir
@@ -169,7 +169,7 @@ def _actions(tmp_path: Path, monkeypatch, actions: dict[str, str]) -> Path:
     actions_dir.mkdir(parents=True, exist_ok=True)
     for name, body in actions.items():
         (actions_dir / name).mkdir(parents=True)
-        (actions_dir / name / "action.yaml").write_text(body)
+        (actions_dir / name / "action.yaml").write_text(body, encoding="utf-8")
     monkeypatch.setattr(cfnc, "ACTIONS_DIR", actions_dir)
     return actions_dir
 

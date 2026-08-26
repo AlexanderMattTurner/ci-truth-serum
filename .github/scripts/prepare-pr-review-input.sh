@@ -32,6 +32,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib-ci-retry.sh"
 MAX_DIFF_LINES="${MAX_DIFF_LINES:-20000}"
 
 mkdir -p "$PR_INPUT_DIR"
+[[ -d "$PR_INPUT_DIR" ]] || {
+  echo "::error::could not create ${PR_INPUT_DIR}." >&2
+  exit 1
+}
 
 emit_output() {
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
@@ -69,7 +73,11 @@ sanitize <"$raw_diff" >"${PR_INPUT_DIR}/diff.txt" 2>"${PR_INPUT_DIR}/diff.report
 # the sanitizer — retrying gh directly inside the `| sanitize` pipe is unsafe (a
 # failing attempt would stream partial JSON into the sanitizer, and a SIGPIPE if
 # it exited early would trip pipefail).
-meta_json="$(retry_stdout gh pr view "$PR" --json title,body,author,files)"
+# title/body/author are single fields, not a paginated connection; `files` is
+# omitted deliberately — gh caps that connection at 100 with no cursor, and the
+# full changed-file list is already in diff.txt, which the oversized-diff guard
+# above already bounds.
+meta_json="$(retry_stdout gh pr view "$PR" --json title,body,author)"
 printf '%s' "$meta_json" |
   sanitize >"${PR_INPUT_DIR}/meta.txt" 2>"${PR_INPUT_DIR}/meta.report.txt"
 

@@ -90,7 +90,7 @@ _anthropic_status() {
   : >"$2"
   # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted
   curl -s -o "$2" -w "%{http_code}" \
-    --max-time 30 "$ANTHROPIC_API_URL" \
+    --max-time 30 --retry 3 --retry-delay 2 "$ANTHROPIC_API_URL" \
     -H "Content-Type: application/json" \
     "${AUTH_HEADERS[@]}" \
     -d "$1" || echo "000" # echo-fallback-ok: a curl transport error maps to the sentinel 000, which is reported and retried/laddered — never a value fed to a decision
@@ -117,6 +117,7 @@ anthropic_call() {
     rungs=$((rungs + 1))
     credential="${!name:-}"
     auth_headers_for "$credential"
+    # retry-loop-ok: early-exits on a terminal status (400/401/403) before the attempt budget is spent; retry_cmd has no early-exit hook and would burn sleeps on a credential that cannot succeed on retry
     for ((attempt = 1; attempt <= ANTHROPIC_MAX_ATTEMPTS; attempt++)); do
       code=$(_anthropic_status "$request_body" "$response_file")
       if [[ "$code" == "200" ]]; then

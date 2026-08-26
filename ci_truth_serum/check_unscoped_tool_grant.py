@@ -210,7 +210,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     a live grant from one quoted in a comment, and those spans are exactly what an
     untokenizable file cannot supply.
     """
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     try:
         yaml.safe_load(text)
     except yaml.YAMLError as err:

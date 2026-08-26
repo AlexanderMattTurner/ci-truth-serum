@@ -74,19 +74,42 @@ repos:
         entry: python -m ci_truth_serum.run_tier 1
         language: python
         additional_dependencies:
-          [PyYAML, identify, tree-sitter, tree-sitter-bash]
+          [
+            PyYAML,
+            identify,
+            tree-sitter,
+            tree-sitter-bash,
+            tree-sitter-javascript,
+            tree-sitter-typescript,
+          ]
       - id: check-tier2
         name: "dogfood aggregate: every Tier 2 (opinionated) check"
         entry: python -m ci_truth_serum.run_tier 2
-        # check_failure_notifier_coverage is skipped here and re-listed below in
-        # STRICT mode: the aggregate forwards no flags, so inside it the alert
-        # invariants that need one stay off. Shipping a strict mode we do not
-        # enable on ourselves is the same vacuous green the package exists to
-        # catch.
-        args: [--skip, check_failure_notifier_coverage]
+        # check_failure_notifier_coverage is skipped here and re-listed below
+        # with always_run, so it reports on a commit the aggregate's file
+        # filters would sit out. Shipping a strict mode we do not enable on
+        # ourselves is the same vacuous green the package exists to catch.
+        # The retry flags name this repo's one retry primitive, so a call that
+        # already delegates to it passes and the failure message points at it.
+        args:
+          - --skip
+          - check_failure_notifier_coverage
+          - --check-arg
+          - check_retry_loop=--retry-helper=.github/scripts/lib/retry.bash
+          - --check-arg
+          - check_retry_loop=--wrapper=retry_cmd
+          - --check-arg
+          - check_curl_retry=--retry-wrapper=retry_cmd
         language: python
         additional_dependencies:
-          [PyYAML, identify, tree-sitter, tree-sitter-bash]
+          [
+            PyYAML,
+            identify,
+            tree-sitter,
+            tree-sitter-bash,
+            tree-sitter-javascript,
+            tree-sitter-typescript,
+          ]
       - id: check-failure-notifier-coverage-strict
         name: "dogfood: the notifier must exist and every alert must state its urgency"
         entry: python -m ci_truth_serum.check_failure_notifier_coverage
@@ -113,7 +136,9 @@ repos:
         args:
           [--skip, check_global_stdio_swap, --skip, check_cron_alert_coverage]
         # Excluded files quote the banned idioms by necessity: the prose-honesty
-        # checks' test/fuzz fixtures embed un-annotated hits on purpose, the
+        # checks' test/fuzz fixtures embed un-annotated hits on purpose, a
+        # check's own suite must hold the argv shape it detects (a fixture that
+        # carried the opt-out would test nothing), the
         # README catalog must name each banned pattern to document its check,
         # and the inherited automation harness under .claude/ carries
         # deliberately illustrative `path/to/file.py:42` placeholders (it is
@@ -122,7 +147,8 @@ repos:
           (?x)^(
             README\.md
             |\.claude/.*
-            |tests/cts/test_check_(drift_guards|graceful_handwave|historical_comments|doc_line_refs|stray_tool_markup|workflow_refs)\.py
+            |tests/cts/test_check_(drift_guards|graceful_handwave|historical_comments|doc_line_refs|stray_tool_markup|workflow_refs|positional_git_argv)\.py
+            |tests/cts/test_fuzz_ported_checks\.py
             |tests/cts/test_fuzz_prose_checks\.py
           )$
         language: python

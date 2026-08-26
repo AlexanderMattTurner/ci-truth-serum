@@ -89,6 +89,10 @@ fi
 echo "${sha256}  ${tarball}" | sha256sum -c -
 
 mkdir -p "$DEST"
+[[ -d "$DEST" ]] || {
+  echo "Error: could not create ${DEST}." >&2
+  exit 1
+}
 # The archive nests both binaries under a uv-<target>/ directory; strip it so
 # DEST holds `uv` and `uvx` directly and can be prepended to PATH as-is.
 tar xzf "$tarball" -C "$DEST" --strip-components=1 \

@@ -31,7 +31,7 @@ def _yaml(*lines: str) -> str:
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     return path
 
 
@@ -335,15 +335,15 @@ def _point_at(tmp_path, monkeypatch):
 
 def test_main_returns_zero_when_clean(tmp_path, monkeypatch, capsys):
     wf = _point_at(tmp_path, monkeypatch)
-    (wf / "ok.yaml").write_text(_E2E_FIXED)
+    (wf / "ok.yaml").write_text(_E2E_FIXED, encoding="utf-8")
     assert fsc.main() == 0
     assert "ERROR" not in capsys.readouterr().out
 
 
 def test_main_reports_and_fails_on_violation(tmp_path, monkeypatch, capsys):
     wf = _point_at(tmp_path, monkeypatch)
-    (wf / "bad.yaml").write_text(_E2E_BROKEN)
-    (wf / "ok.yaml").write_text(_E2E_FIXED)
+    (wf / "bad.yaml").write_text(_E2E_BROKEN, encoding="utf-8")
+    (wf / "ok.yaml").write_text(_E2E_FIXED, encoding="utf-8")
     assert fsc.main() == 1
     out = capsys.readouterr().out
     assert "::error file=.github/workflows/bad.yaml,line=8::" in out
@@ -352,7 +352,7 @@ def test_main_reports_and_fails_on_violation(tmp_path, monkeypatch, capsys):
 
 def test_main_reports_unparseable_yaml_without_a_line(tmp_path, monkeypatch, capsys):
     wf = _point_at(tmp_path, monkeypatch)
-    (wf / "bad.yaml").write_text("on: [push\njobs: {\n")
+    (wf / "bad.yaml").write_text("on: [push\njobs: {\n", encoding="utf-8")
     assert fsc.main() == 1
     out = capsys.readouterr().out
     assert "::error file=.github/workflows/bad.yaml::" in out

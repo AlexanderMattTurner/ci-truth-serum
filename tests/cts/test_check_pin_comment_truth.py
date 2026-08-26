@@ -138,7 +138,7 @@ def test_opted_out_line_is_neither_flagged_nor_a_conflict_source() -> None:
 def _wire(tmp_path, monkeypatch, text: str):
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
-    (wf / "ci.yaml").write_text(text)
+    (wf / "ci.yaml").write_text(text, encoding="utf-8")
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(mod, "ACTIONS_DIR", tmp_path / ".github" / "actions")

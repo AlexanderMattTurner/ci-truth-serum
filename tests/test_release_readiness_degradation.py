@@ -68,7 +68,7 @@ INVOCATION_SEP = "\x01"
 
 
 def _write_stub(path: Path, body: str) -> None:
-    path.write_text(f"#!/usr/bin/env bash\n{body}")
+    path.write_text(f"#!/usr/bin/env bash\n{body}", encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -93,7 +93,7 @@ def _install_curl_stub(bin_dir: Path, status: str, body: str) -> None:
     """A `curl` honouring `-o <file>` (where the response body lands) and printing
     the HTTP status on stdout — exactly what `-w "%{http_code}"` yields."""
     body_file = bin_dir / "curl_body.json"
-    body_file.write_text(body)
+    body_file.write_text(body, encoding="utf-8")
     _write_stub(
         bin_dir / "curl",
         "out=''\nprev=''\n"
@@ -117,10 +117,13 @@ def _make_repo(tmp_path: Path, fragments: dict[str, str]) -> tuple[Path, Path, P
     shutil.copy2(REPO_ROOT / ".github" / "scripts" / "release-readiness.sh", scripts)
     (scripts / "release-readiness.sh").chmod(0o755)
 
+    (scripts / "lib").mkdir()
+    shutil.copy2(
+        REPO_ROOT / ".github" / "scripts" / "lib" / "retry.bash", scripts / "lib"
+    )
     libdir = repo / "bin" / "lib"
     libdir.mkdir(parents=True)
-    for lib in ("retry.bash", "release-model-call.bash"):
-        shutil.copy2(REPO_ROOT / "bin" / "lib" / lib, libdir)
+    shutil.copy2(REPO_ROOT / "bin" / "lib" / "release-model-call.bash", libdir)
 
     (repo / "scripts").mkdir()
     shutil.copy2(REPO_ROOT / "scripts" / "assemble-changelog.mjs", repo / "scripts")
@@ -128,13 +131,17 @@ def _make_repo(tmp_path: Path, fragments: dict[str, str]) -> tuple[Path, Path, P
 
     # A README with a consumer `rev:` pin, so the release path's pin step runs
     # for real here rather than taking its missing-file exit.
-    (repo / "README.md").write_text("# x\n\n```yaml\n- repo: x\n  rev: v1.0.0\n```\n")
-    (repo / "package.json").write_text('{"name": "x", "version": "1.0.0"}\n')
-    (repo / "CHANGELOG.md").write_text(CHANGELOG)
+    (repo / "README.md").write_text(
+        "# x\n\n```yaml\n- repo: x\n  rev: v1.0.0\n```\n", encoding="utf-8"
+    )
+    (repo / "package.json").write_text(
+        '{"name": "x", "version": "1.0.0"}\n', encoding="utf-8"
+    )
+    (repo / "CHANGELOG.md").write_text(CHANGELOG, encoding="utf-8")
     fragdir = repo / "changelog.d"
     fragdir.mkdir()
     for name, text in fragments.items():
-        (fragdir / name).write_text(text)
+        (fragdir / name).write_text(text, encoding="utf-8")
 
     bare = tmp_path / "origin.git"
     subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
@@ -181,7 +188,7 @@ def _gh_invocations(gh_log: Path) -> list[list[str]]:
     if not gh_log.exists():
         return []
     calls = []
-    for chunk in gh_log.read_text().split(INVOCATION_SEP):
+    for chunk in gh_log.read_text(encoding="utf-8").split(INVOCATION_SEP):
         if not chunk:
             continue
         args = [a for a in chunk.split("\0") if a != ""]
@@ -222,7 +229,7 @@ def test_total_credential_outage_still_opens_release_pr(tmp_path: Path) -> None:
     argv = _pr_create_argv(gh_log)
     assert "DEGRADED" in _flag(argv, "--body")
 
-    summary_text = summary.read_text()
+    summary_text = summary.read_text(encoding="utf-8")
     assert "> [!WARNING]" in summary_text, summary_text
     assert "degraded to the deterministic bump floor" in summary_text, summary_text
 
@@ -253,7 +260,7 @@ def test_every_rung_rejected_degrades_and_names_each_credential(
 
     argv = _pr_create_argv(gh_log)
     assert "DEGRADED" in _flag(argv, "--body")
-    assert "> [!WARNING]" in summary.read_text()
+    assert "> [!WARNING]" in summary.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -303,7 +310,7 @@ def test_healthy_first_rung_is_not_degraded(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Model call succeeded on credential ANTHROPIC_API_KEY." in result.stderr
 
-    summary_text = summary.read_text()
+    summary_text = summary.read_text(encoding="utf-8")
     argv = _pr_create_argv(gh_log)
     body = _flag(argv, "--body")
     for surface in (result.stdout, result.stderr, summary_text, body):

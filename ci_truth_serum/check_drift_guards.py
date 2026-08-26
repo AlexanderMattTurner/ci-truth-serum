@@ -191,7 +191,7 @@ _STRUCTURAL_ROUTE = "structural"
 _MODULE_ROUTE = "module"
 
 
-class Finding(NamedTuple):
+class DriftFinding(NamedTuple):
     """One unjustified guard: the line that DECLARES it, the test's name, and the
     route that found it.
 
@@ -627,7 +627,16 @@ def _outer_sources(
     )
 
 
-def _equality_pairs(node: ast.AST) -> list[tuple[ast.expr, ast.expr, bool]]:
+class EqualityPair(NamedTuple):
+    """One equality an assert makes: its two sides, and whether both sides
+    construct a collection."""
+
+    left: ast.expr
+    right: ast.expr
+    collection_shaped: bool
+
+
+def _equality_pairs(node: ast.AST) -> list[EqualityPair]:
     """(left, right, collection_shaped) for every equality NODE asserts.
 
     Two spellings: a bare `assert a == b`, and an `assertEqual`-family call. The
@@ -636,7 +645,7 @@ def _equality_pairs(node: ast.AST) -> list[tuple[ast.expr, ast.expr, bool]]:
     compares collections, which is the shape test the bare form has to make for
     itself.
     """
-    pairs: list[tuple[ast.expr, ast.expr, bool]] = []
+    pairs: list[EqualityPair] = []
     for child in ast.walk(node):
         if (
             isinstance(child, ast.Assert)
@@ -646,14 +655,14 @@ def _equality_pairs(node: ast.AST) -> list[tuple[ast.expr, ast.expr, bool]]:
         ):
             left, right = child.test.left, child.test.comparators[0]
             shaped = _is_collection_shaped(left) and _is_collection_shaped(right)
-            pairs.append((left, right, shaped))
+            pairs.append(EqualityPair(left, right, shaped))
         if (
             isinstance(child, ast.Call)
             and isinstance(child.func, ast.Attribute)
             and child.func.attr in _COLLECTION_ASSERTS
             and len(child.args) >= 2
         ):
-            pairs.append((child.args[0], child.args[1], True))
+            pairs.append(EqualityPair(child.args[0], child.args[1], True))
     return pairs
 
 
@@ -874,8 +883,8 @@ def _module_declaration(tree: ast.Module) -> int | None:
     return tree.body[0].lineno
 
 
-def violations(source: str) -> list[Finding]:
-    """A Finding for every test in SOURCE that reads as a drift guard — by intent
+def violations(source: str) -> list[DriftFinding]:
+    """A DriftFinding for every test in SOURCE that reads as a drift guard — by intent
     PHRASING, by a LAUNDERED-authority body comment, or by copies-agree STRUCTURE
     — but lacks a justified @pytest.mark.drift_guard marker. Each finding sits on
     the line that DECLARES the guard, and names the route that found it. A file
@@ -898,14 +907,14 @@ def violations(source: str) -> list[Finding]:
 
     sources = _module_sources(tree)
     lines = source.split("\n")
-    hits: list[Finding] = []
+    hits: list[DriftFinding] = []
     # pytest applies a module-level `pytestmark` to every test in the file, so a
     # justified one answers for each of them too — not only for the file-wide
     # declaration below.
     justified_file = _module_justification(tree)
     declared = _module_declaration(tree)
     if declared is not None and not justified_file:
-        hits.append(Finding(declared, _MODULE, _MODULE_ROUTE))
+        hits.append(DriftFinding(declared, _MODULE, _MODULE_ROUTE))
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -923,7 +932,7 @@ def violations(source: str) -> list[Finding]:
             continue
         route = _STRUCTURAL_ROUTE if declaring is None else _PHRASE_ROUTE
         anchor = node.lineno if declaring is None else declaring
-        hits.append(Finding(anchor, node.name, route))
+        hits.append(DriftFinding(anchor, node.name, route))
     return hits
 
 
@@ -968,7 +977,7 @@ def text_violations(
 _PREFER = "prefer removing the duplication (make one source authoritative)"
 
 
-def _remedy(finding: Finding) -> str:
+def _remedy(finding: DriftFinding) -> str:
     """The message FINDING prints, with the hatch its own route accepts.
 
     The route picks the sentence, because one sentence for all three routes can

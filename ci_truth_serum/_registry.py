@@ -39,6 +39,9 @@ DRIFT = "drift"
 # check_replacement_expansion reads a call's argument list in two languages, so it
 # takes the source files of both: JS/TS (including JSX/TSX) and Python.
 JS_OR_PYTHON = "js_or_python"
+# check_relative_imports resolves a specifier the way Node's ESM loader does, so it
+# reads JS/TS and nothing else — a Python file has no relative module specifier.
+JS = "js"
 # check_conclusion_coverage asks one question of three surfaces, because the
 # defect is three copies of one answer drifting apart: a workflow expression, a
 # shell test, and a Python comparison.
@@ -111,6 +114,7 @@ CHECKS: tuple[Check, ...] = (
     _check("check_pipefail_grep_pipe", "1", SHELL, HONESTY),
     _check("check_folded_scalar_comment", "1", WORKFLOW, HONESTY),
     _check("check_gh_slurp_jq", "1", SHELL_OR_WORKFLOW_YAML, HONESTY),
+    _check("check_truncating_pr_json", "1", SHELL_PYTHON_OR_WORKFLOW_YAML, HONESTY),
     _check("check_pr_paths", "1", WORKFLOW, HONESTY, REQUIRED_CHECKS),
     _check("check_pinned_base_images", "1", DOCKERFILE, SUPPLY_CHAIN),
     _check("check_pinned_downloads", "1", SHELL_OR_DOCKERFILE, SUPPLY_CHAIN),
@@ -152,6 +156,15 @@ CHECKS: tuple[Check, ...] = (
     _check("check_stderr_merge_parse", "2", SHELL_OR_WORKFLOW_YAML, HONESTY),
     _check("check_echo_fallback", "2", SHELL, HONESTY),
     _check("check_bare_return_status", "2", SHELL, HONESTY, CORRECTNESS),
+    _check("check_bare_mkdir", "2", SHELL, HONESTY, CORRECTNESS),
+    _check("check_env_arith", "2", SHELL, CORRECTNESS),
+    _check("check_curl_retry", "2", SHELL, CORRECTNESS, COST),
+    _check("check_retry_loop", "2", SHELL, MAINTAINABILITY),
+    _check("check_unbounded_waits", "2", SHELL, CORRECTNESS, COST),
+    _check("check_shell_source_declarations", "2", SHELL, CORRECTNESS, MAINTAINABILITY),
+    _check(
+        "check_sparse_checkout_closure", "2", WORKFLOW, CORRECTNESS, REQUIRED_CHECKS
+    ),
     # ── Extras · off-theme bonus ──
     _check("check_unnamed_regex_groups", "extras", PYTHON, MAINTAINABILITY),
     _check(
@@ -179,6 +192,25 @@ CHECKS: tuple[Check, ...] = (
     _check("check_toolchain_skips", "extras", PYTHON, TESTS, HONESTY),
     _check("check_stray_tool_markup", "extras", PROSE_OR_COMMENTED_CODE, AGENTS, DOCS),
     _check("check_test_predicate_shadow", "extras", SHELL, TESTS),
+    _check("check_dead_shell_functions", "extras", SHELL, MAINTAINABILITY),
+    _check("check_cwd_scoped_git", "extras", PYTHON, CORRECTNESS),
+    _check("check_unspecified_encoding", "extras", PYTHON, CORRECTNESS),
+    _check(
+        "check_duplicate_module_constant",
+        "extras",
+        PYTHON,
+        CORRECTNESS,
+        MAINTAINABILITY,
+    ),
+    _check("check_duplicate_class_names", "extras", PYTHON, MAINTAINABILITY),
+    _check("check_big_tuple_annotations", "extras", PYTHON, MAINTAINABILITY),
+    _check("check_unreset_module_state", "extras", PYTHON, TESTS, CORRECTNESS),
+    _check("check_sleep_as_sync", "extras", PYTHON, TESTS),
+    _check("check_positional_git_argv", "extras", PYTHON, TESTS),
+    _check("check_test_helper_kwargs", "extras", PYTHON, TESTS),
+    _check("check_wall_clock_assertions", "extras", JS_OR_PYTHON, TESTS),
+    _check("check_relative_imports", "extras", JS, CORRECTNESS),
+    _check("check_path_shadowed_interpreter", "extras", WORKFLOW, AGENTS, CORRECTNESS),
 )
 
 # The tier view the `check-tier1` / `check-tier2` / `check-extras` aggregates run.

@@ -21,6 +21,7 @@ Imported as a sibling: the scripts run as ``python3 ci_truth_serum/check_*.py`` 
 before importing this module; the tests load each script by path.
 """
 
+import ast
 import itertools
 import re
 import subprocess
@@ -365,6 +366,32 @@ def unparseable_shell_reason(path: str, text: str) -> str | None:
     return None
 
 
+def unparseable_python_reason(path: str, text: str) -> str | None:
+    """The refusal message when PATH names Python this interpreter cannot parse,
+    else None.
+
+    A detector that reads the tree never saw the constructs it matches on, so its
+    empty result is not a pass — the same reasoning as the shell refusal above.
+    The usual cause is an interpreter OLDER than the tree: a PEP 701 f-string
+    (nested quotes) is a syntax error before Python 3.12, and a scope-dependent
+    lint then reads a function-local statement as a module-level one. Naming the
+    running version is what points the reader at their hook environment.
+    """
+    if not is_python_source(path):
+        return None
+    try:
+        ast.parse(text)
+    except (SyntaxError, ValueError) as err:
+        version = ".".join(str(n) for n in sys.version_info[:3])
+        return (
+            f"Python {version} cannot parse this file ({err}), so this check "
+            f"never read it. Its result here is not a pass. Run the hook on the "
+            f"interpreter the tree targets — pre-commit takes it from "
+            f"`default_language_version:`."
+        )
+    return None
+
+
 def run_source_checks(
     argv: list[str],
     find_violations: Callable[[str, str], list[int]],
@@ -401,7 +428,9 @@ def run_source_checks(
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
             continue
-        reason = unparseable_shell_reason(path, text)
+        reason = unparseable_shell_reason(path, text) or unparseable_python_reason(
+            path, text
+        )
         if reason is not None:
             print(f"{path}: {reason}", file=sys.stderr)
             status = 1

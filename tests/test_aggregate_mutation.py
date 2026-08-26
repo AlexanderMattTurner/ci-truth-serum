@@ -70,6 +70,8 @@ def test_load_reports_reads_nested_dirs(tmp_path: Path) -> None:
     for i, sid in enumerate(_SHARD_IDS[:3]):
         d = tmp_path / f"mutation-report-{sid}"
         d.mkdir()
-        (d / f"{sid}.json").write_text(json.dumps({"id": sid, "rate": "0.0"}))
+        (d / f"{sid}.json").write_text(
+            json.dumps({"id": sid, "rate": "0.0"}), encoding="utf-8"
+        )
     loaded = agg._load_reports(tmp_path)
     assert {r["id"] for r in loaded} == set(_SHARD_IDS[:3])

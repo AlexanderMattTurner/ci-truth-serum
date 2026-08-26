@@ -339,6 +339,9 @@ def test_issue_pattern_does_not_backtrack_on_a_long_near_match():
     result = matcher.search(adversarial)
     elapsed = time.perf_counter() - start
     assert result is None
+    # allow-wall-clock: catastrophic backtracking runs for seconds to minutes,
+    # so the duration IS the subject here, and 1.0s is far above any
+    # scheduling noise a linear match can pick up.
     assert elapsed < 1.0, f"notifier matcher took {elapsed:.3f}s on a near-match"
 
 
@@ -370,7 +373,7 @@ def _tree(tmp_path: Path, monkeypatch, files: dict[str, str]) -> Path:
     wf_dir = tmp_path / ".github" / "workflows"
     wf_dir.mkdir(parents=True)
     for name, body in files.items():
-        (wf_dir / name).write_text(body)
+        (wf_dir / name).write_text(body, encoding="utf-8")
     monkeypatch.setattr(cac, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(cac, "WORKFLOWS_DIR", wf_dir)
     return wf_dir

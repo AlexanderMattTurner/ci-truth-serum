@@ -30,6 +30,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -165,13 +166,21 @@ def _check_script(script: str, shell: str | None, location: str) -> list[str]:
     ]
 
 
-def _iter_steps(
-    steps: object, workflow: dict, job: object
-) -> list[tuple[int | None, str, str | None, str]]:
+class StepScript(NamedTuple):
+    """One run/runCmd step: its source line, script, effective shell, and
+    kind (``"run"`` or ``"runCmd"``)."""
+
+    line: "int | None"
+    script: str
+    shell: "str | None"
+    kind: str
+
+
+def _iter_steps(steps: object, workflow: dict, job: object) -> list[StepScript]:
     """Yield (line, script, effective_shell, kind) for every run/runCmd step in
     STEPS. LINE is the step's 1-based source line (None if the doc was parsed
     without line tags, e.g. a hand-built dict in a unit test)."""
-    out: list[tuple[int | None, str, str | None, str]] = []
+    out: list[StepScript] = []
     if not isinstance(steps, list):
         return out
     for step in steps:
@@ -181,12 +190,12 @@ def _iter_steps(
         with_ = step.get("with")
         if isinstance(with_, dict) and isinstance(with_.get("runCmd"), str):
             # runCmd bypasses GitHub's pipefail-enabled shell entirely.
-            out.append((line, with_["runCmd"], "sh", "runCmd"))
+            out.append(StepScript(line, with_["runCmd"], "sh", "runCmd"))
         if isinstance(step.get("run"), str):
             shell = step.get("shell")
             if shell is None:
                 shell = _default_shell(job, workflow)
-            out.append((line, step["run"], shell, "run"))
+            out.append(StepScript(line, step["run"], shell, "run"))
     return out
 
 
@@ -224,7 +233,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     tool exists to catch. (YAML *syntax* is actionlint's job — this only fires
     when PyYAML can't build a document to analyze at all.)"""
     try:
-        doc = yaml.load(path.read_text(), Loader=_LineLoader)
+        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=_LineLoader)
     except yaml.YAMLError as err:
         first_line = str(err).partition("\n")[0]
         return [

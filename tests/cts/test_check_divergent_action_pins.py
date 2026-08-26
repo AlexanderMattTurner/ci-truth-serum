@@ -180,7 +180,7 @@ def _wire(tmp_path, monkeypatch, *files: tuple[str, str]):
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
     for name, text in files:
-        (wf / name).write_text(text)
+        (wf / name).write_text(text, encoding="utf-8")
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(mod, "ACTIONS_DIR", tmp_path / ".github" / "actions")
@@ -213,11 +213,14 @@ def test_composite_action_divergence_is_found(tmp_path, monkeypatch) -> None:
     SHA there that disagrees with a workflow's is the same defect."""
     wf = tmp_path / ".github" / "workflows"
     wf.mkdir(parents=True)
-    (wf / "ci.yaml").write_text(f"steps:\n  - uses: actions/checkout@{SHA_A}\n")
+    (wf / "ci.yaml").write_text(
+        f"steps:\n  - uses: actions/checkout@{SHA_A}\n", encoding="utf-8"
+    )
     actions = tmp_path / ".github" / "actions" / "my-action"
     actions.mkdir(parents=True)
     (actions / "action.yaml").write_text(
-        f"runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@{SHA_B}\n"
+        f"runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@{SHA_B}\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(mod, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(mod, "WORKFLOWS_DIR", wf)

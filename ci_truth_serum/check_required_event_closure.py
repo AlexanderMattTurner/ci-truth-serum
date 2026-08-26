@@ -310,7 +310,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     read is reported the same way: an unreadable condition on a required check's
     dependency could hide exactly the exclusion this lint exists to see.
     """
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     try:
         doc = yaml.safe_load(text)
     except yaml.YAMLError as err:

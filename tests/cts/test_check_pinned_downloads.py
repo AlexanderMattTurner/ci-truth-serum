@@ -496,7 +496,9 @@ def test_main_wires_empty_download_message(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     bad = tmp_path / "bad.sh"
-    bad.write_text('curl "$u" -o t https://x  # pin-exempt: r\nbash t\n')
+    bad.write_text(
+        'curl "$u" -o t https://x  # pin-exempt: r\nbash t\n', encoding="utf-8"
+    )
     assert mod.main([str(bad)]) == 1
     assert "empty file runs as a silent success" in capsys.readouterr().err
 
@@ -508,7 +510,7 @@ def test_main_wires_violations_and_message(
     message. The generic loop behaviour is covered once in test_linecheck.py;
     here we only pin that main() emits THIS message."""
     bad = tmp_path / "bad.sh"
-    bad.write_text("curl -o f https://x\nrun f\n")
+    bad.write_text("curl -o f https://x\nrun f\n", encoding="utf-8")
     assert mod.main([str(bad)]) == 1
     assert "not checksum/signature" in capsys.readouterr().err
 
