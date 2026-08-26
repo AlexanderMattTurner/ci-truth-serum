@@ -250,6 +250,91 @@ def test_main_follows_a_listed_entrypoints_local_imports(tmp_path: Path):
     assert mod.main(["--repo-root", str(repo)]) == 1
 
 
+_SOURCING_SCRIPT = (
+    "#!/usr/bin/env bash\n"
+    "# shellcheck source=.github/scripts/lib-retry.sh\n"
+    'source "$(dirname "${BASH_SOURCE[0]}")/lib-retry.sh"\n'
+)
+
+
+def test_main_follows_a_listed_shell_entrypoints_source(tmp_path: Path):
+    """The measured case: a list naming only the script, whose first `source`
+    then dies on the runner with "No such file or directory"."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts/approve.sh", "bash .github/scripts/approve.sh"),
+    )
+    _write(repo, ".github/scripts/approve.sh", _SOURCING_SCRIPT)
+    _write(repo, ".github/scripts/lib-retry.sh", "retry() { :; }\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+
+
+def test_main_passes_when_the_sourced_library_is_also_listed(tmp_path: Path):
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(
+            ".github/scripts/approve.sh\n            .github/scripts/lib-retry.sh",
+            "bash .github/scripts/approve.sh",
+        ),
+    )
+    _write(repo, ".github/scripts/approve.sh", _SOURCING_SCRIPT)
+    _write(repo, ".github/scripts/lib-retry.sh", "retry() { :; }\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+def test_main_follows_a_source_chain_to_its_end(tmp_path: Path):
+    """A library that sources a second library is the same hole one rung down."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(
+            ".github/scripts/approve.sh\n            .github/scripts/lib-retry.sh",
+            "bash .github/scripts/approve.sh",
+        ),
+    )
+    _write(repo, ".github/scripts/approve.sh", _SOURCING_SCRIPT)
+    _write(
+        repo,
+        ".github/scripts/lib-retry.sh",
+        '# shellcheck source=.github/scripts/lib-log.sh\nsource "$D/lib-log.sh"\n',
+    )
+    _write(repo, ".github/scripts/lib-log.sh", "log() { :; }\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+
+
+def test_a_source_target_no_tracked_file_answers_adds_nothing(tmp_path: Path):
+    """The last segment of an expansion-decided path is a GUESS. A guess that
+    names nothing in the tree must add no dependency, or the check would report
+    a hole no sparse-checkout list can close."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts/approve.sh", "bash .github/scripts/approve.sh"),
+    )
+    _write(
+        repo,
+        ".github/scripts/approve.sh",
+        '#!/usr/bin/env bash\nsource "${HOME}/.nvm/nvm.sh"\n',
+    )
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+def test_source_targets_reads_the_path_not_the_command_word(tmp_path: Path):
+    targets = mod._source_targets('source "$D/lib-retry.sh"\n')
+    assert "source" not in targets
+    assert targets == {"$D/lib-retry.sh"}
+
+
 def test_main_passes_when_the_import_is_also_listed(tmp_path: Path):
     repo = _repo(tmp_path)
     _write(

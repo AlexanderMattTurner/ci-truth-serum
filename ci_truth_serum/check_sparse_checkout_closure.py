@@ -51,9 +51,13 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    command_arguments,
+    command_name,
     command_words,
     iter_nodes,
+    node_text,
     parse as parse_bash,
+    unquote,
 )
 from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
@@ -277,6 +281,111 @@ def _imported(entrypoints: list[str], root: Path, files: frozenset[str]) -> set[
     } & files
 
 
+# A `# shellcheck source=<path>` directive. The one place a script states, in
+# text a tool can read, which file its `source` line reaches — `check-shell-
+# source-declarations` is what makes every `source` carry one.
+_SHELLCHECK_SOURCE = re.compile(r"#\s*shellcheck[^\n]*?\bsource=(?P<path>\S+)")
+
+_SHELL_INTERPRETER = re.compile(r"(?:ba|z|k)?sh")
+_SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
+
+
+def _shell_entrypoints(checkout: Checkout, files: frozenset[str]) -> list[str]:
+    """The tracked shell files this job runs.
+
+    The same two sources as the Python entry points: a script a step hands to
+    a shell (`bash .github/scripts/x.sh`) or runs directly (`./x.sh`), and the
+    sparse-checkout list's own entries — a step that runs a script through a
+    variable puts no readable path on the command.
+    """
+    found = {pattern.rstrip("/") for pattern in checkout.patterns}
+    for step in checkout.window:
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        for node in iter_nodes(parse_bash(run), "command"):
+            words = command_words(node)
+            if not words:
+                continue
+            name = words[0]
+            if name is not None and _SHELL_SUFFIX.search(name):
+                found.add(name.removeprefix("./"))
+            if name is None or not _SHELL_INTERPRETER.fullmatch(
+                name.rsplit("/", 1)[-1]
+            ):
+                continue
+            for candidate in words[1:]:
+                if candidate is None or candidate == "-c":
+                    break
+                if _SHELL_SUFFIX.search(candidate):
+                    found.add(candidate.removeprefix("./"))
+                    break
+    return sorted(dep for dep in found if _SHELL_SUFFIX.search(dep) and dep in files)
+
+
+def _source_targets(text: str) -> set[str]:
+    """The path each `source` / `.` line in TEXT names, as written.
+
+    A sourced path is almost never a bare literal: the idiom is
+    `source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"`, whose value no static
+    reader can compute. Two things are readable — the `# shellcheck source=`
+    directive the script carries, and the literal SEGMENT after the last
+    slash. `_resolve_source` decides which of those names a real file, so a
+    guess that names nothing adds nothing.
+    """
+    targets = {match.group("path") for match in _SHELLCHECK_SOURCE.finditer(text)}
+    for node in iter_nodes(parse_bash(text), "command"):
+        if command_name(node) not in ("source", "."):
+            continue
+        # `command_arguments` yields the command NAME first, so the sourced
+        # path is the word after it.
+        arguments = command_arguments(node)[1:]
+        if arguments:
+            targets.add(unquote(node_text(arguments[0])))
+    return targets
+
+
+def _resolve_source(target: str, importer: str, files: frozenset[str]) -> str | None:
+    """The tracked file TARGET names when IMPORTER sources it, else None.
+
+    Tried against the repo root first, then IMPORTER's own directory, then —
+    for a target an expansion decides — the last literal segment against that
+    same directory. Every candidate must be a tracked file, so an unresolvable
+    expansion drops out rather than becoming a hole nobody can close.
+    """
+    directory = importer.rsplit("/", 1)[0] if "/" in importer else ""
+    tail = target.rsplit("/", 1)[-1]
+    candidates = [
+        _normalize(target),
+        _normalize(f"{directory}/{target}" if directory else target),
+        _normalize(f"{directory}/{tail}" if directory else tail),
+    ]
+    return next((c for c in candidates if c in files), None)
+
+
+def _sourced(entrypoints: list[str], root: Path, files: frozenset[str]) -> set[str]:
+    """Every tracked shell file ENTRYPOINTS source, transitively.
+
+    A list that stops at the entry point serves a tree that dies on its first
+    `source`, exactly as a Python list that stops before an `import` does.
+    """
+    seen: set[str] = set()
+    pending = list(entrypoints)
+    while pending:
+        importer = pending.pop()
+        try:
+            text = (root / importer).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for target in _source_targets(text):
+            resolved = _resolve_source(target, importer, files)
+            if resolved is None or resolved in seen or resolved in entrypoints:
+                continue
+            seen.add(resolved)
+            pending.append(resolved)
+    return seen
+
+
 def _tracked(dep: str, files: frozenset[str]) -> bool:
     """A dependency exists when it is a tracked file or a tracked directory.
     `uses: ./actions/x` names a directory, so an exact-file test alone
@@ -314,6 +423,7 @@ def uncovered(
     does not cover, and no `# sparse-checkout-ok:` comment excuses."""
     deps = _dependencies(checkout.window, path_token_re)
     deps |= _imported(_entrypoints(checkout, files), root, files)
+    deps |= _sourced(_shell_entrypoints(checkout, files), root, files)
     return sorted(
         dep
         for dep in deps
