@@ -1,17 +1,24 @@
 name: Claude reviewers
 
-# Umbrella for the three automated PR reviewers: the first-pass reviewer (the
-# `review` job, a CALL into AlexanderMattTurner/agent-review, which now owns the
-# reviewer), the Sonnet merge-delta reviewer (the `merge_delta_review` job), and
-# the Haiku review-thread resolver (the `thread_resolve` job). One file holds all
-# three to cut the per-PR workflow fan-out on a shared, capped runner pool. Every
-# job stays self-contained and carries its own SECURITY header, `permissions:`,
-# base-only checkout posture, and `if:` guards. All three run on the reviewers'
-# shared pull_request_target trigger with a base-only checkout and a
-# least-privilege token. Each job is guarded by `github.event.action`, so it
-# fires on exactly its own event set. Concurrency is declared PER JOB (never
-# workflow-level), and each job holds its own group name so the jobs never
-# cancel one another.
+# Umbrella for the three automated PR reviewers, which share one file to cut the
+# per-PR workflow fan-out on a shared, capped runner pool. They are not alike in
+# where their code lives:
+#
+#   * `review` — the first-pass reviewer. It holds NO review logic. It is a call
+#     into AlexanderMattTurner/agent-review, pinned to a commit, and what it
+#     carries here is the `permissions:` CEILING that call is narrowed from, the
+#     `if:` that decides which PRs are worth a read, and the inputs and secrets
+#     the reviewer runs with. The base-only checkout, the sanitized input, the
+#     per-job least privilege and the concurrency group all live in that
+#     workflow's own file.
+#   * `merge_delta_review` — the Sonnet merge-delta reviewer, and
+#   * `thread_resolve` — the Haiku review-thread resolver.
+#
+# Those two stay self-contained here: each carries its own SECURITY header,
+# `permissions:`, base-only checkout posture, `if:` guard and concurrency group,
+# declared PER JOB and never workflow-level, so the jobs never cancel one
+# another. All three run on the shared pull_request_target trigger, and each
+# job's `if:` re-scopes it to its own events.
 #
 # The merge-conflict auto-resolver stays a SEPARATE file
 # (auto-resolve-conflicts.yaml): it checks out the PR HEAD to merge into it, and
