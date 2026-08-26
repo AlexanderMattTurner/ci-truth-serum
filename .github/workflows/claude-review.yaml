@@ -101,7 +101,7 @@ jobs:
       statuses: write # a caller's post-review command re-posts the head's verdict
       actions: read # the owed-review re-check lists this workflow's in-flight runs
       checks: read # the reviewer's jobs may read another check run on the head
-    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@e83eca5edcfb43a2dc4ffcdf58c16f7ce783ee84 # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
+    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@6b45ac4a10f713eeee766898e25b0df589008928 # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
     with:
       reviewer-repository: AlexanderMattTurner/agent-review
       # Leave `reviewer-ref` unset. The workflow reads the sha the `uses:` line
