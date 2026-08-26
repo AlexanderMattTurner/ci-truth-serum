@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 // A reviewer body with the machine-readable review-cost marker + visible line +
-// the initial plans line, as post-pr-review.mjs would post it (reviewer cost $1,
+// the initial plans line, as the reviewer would post it (reviewer cost $1,
 // weekly $2000 -> 2000 PRs).
 const REVIEWER_BODY = [
   "looks good",

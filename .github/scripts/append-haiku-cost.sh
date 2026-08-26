@@ -5,7 +5,7 @@
 # final line stay current.
 #
 # Finds the reviewer's costed review (authored by REVIEWER_LOGIN, carrying the
-# hidden "review-cost" marker post-pr-review.mjs writes into the cost footer),
+# hidden "review-cost" marker the reviewer writes into the cost footer),
 # rewrites its body via compute-haiku-cost-footer.mjs
 # (which maintains the tally markers), and PUTs it back. No costed reviewer review
 # (e.g. the cost log was missing when it posted) -> nothing to annotate, exit 0.

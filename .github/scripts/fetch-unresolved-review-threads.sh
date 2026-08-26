@@ -3,8 +3,8 @@
 # PR, so a Haiku pass can judge whether later commits addressed each one.
 #
 # A "reviewer thread" is a review thread whose ROOT comment was authored by the
-# reviewer bot (REVIEWER_LOGIN, default github-actions[bot] — the identity that
-# posts the review in post-pr-review.sh). Human threads and the PR author's own
+# reviewer bot (REVIEWER_LOGIN, default github-actions[bot] — the identity the
+# reviewer posts its review with). Human threads and the PR author's own
 # replies are never touched: we key on the root comment's author only.
 #
 # Writes $PR_INPUT_DIR/threads.json — a JSON array of
