@@ -63,6 +63,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     _job_blocks,
     workflow_files,
 )
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -135,7 +136,7 @@ def filter_patterns(filters_value: object) -> list[str]:
     patterns. A dorny change-type entry (`- added|modified: 'x'`) contributes its
     pattern value(s).
     """
-    spec = yaml.safe_load(filters_value) if isinstance(filters_value, str) else None
+    spec = safe_load(filters_value) if isinstance(filters_value, str) else None
     if not isinstance(spec, dict):
         return []
     patterns: list[str] = []

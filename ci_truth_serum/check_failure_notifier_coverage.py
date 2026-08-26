@@ -92,6 +92,7 @@ from _failure_routing import (  # noqa: E402,I001  # pylint: disable=wrong-impor
     notifier_list,
     routing,
 )
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -240,7 +241,7 @@ def defaults_an_input(action_dir: Path, input_name: str) -> bool:
         if not path.exists():
             continue
         try:
-            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            doc = safe_load(path.read_text(encoding="utf-8"))
         except (yaml.YAMLError, OSError):
             return False
         inputs = doc.get("inputs") if isinstance(doc, dict) else None

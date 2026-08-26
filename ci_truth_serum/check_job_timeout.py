@@ -32,6 +32,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import _job_blocks, workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -64,7 +65,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     passed as clean — matching the sibling workflow lints (check_concurrency &c.)."""
     text = path.read_text(encoding="utf-8")
     try:
-        doc = yaml.safe_load(text)
+        doc = safe_load(text)
     except yaml.YAMLError as err:
         first_line = str(err).partition("\n")[0]
         return [

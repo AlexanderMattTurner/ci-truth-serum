@@ -41,6 +41,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _fastyaml import compose  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from check_pin_comment_truth import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ACTIONS_DIR,
     REPO_ROOT,
@@ -103,7 +104,7 @@ def pin_records(text: str) -> list[ActionPin]:
     reference composed from TEXT."""
     raw = text.splitlines()
     records: list[ActionPin] = []
-    for value_node in _iter_uses_nodes(yaml.compose(text, Loader=yaml.SafeLoader)):
+    for value_node in _iter_uses_nodes(compose(text)):
         m = _SHA_PIN.match(value_node.value)
         if not m:
             continue

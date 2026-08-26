@@ -46,6 +46,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     workflow_files,
     workflow_triggers,
 )
+from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -175,7 +176,7 @@ def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for the `workflow_run` filter violations in one
     workflow's source. Empty when the workflow has no `workflow_run` trigger."""
     try:
-        doc = yaml.safe_load(text)
+        doc = safe_load(text)
     except yaml.YAMLError as err:
         return [
             (

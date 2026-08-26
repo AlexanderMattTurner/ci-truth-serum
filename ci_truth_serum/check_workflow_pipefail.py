@@ -37,24 +37,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
-
-
-class _LineLoader(yaml.SafeLoader):
-    """SafeLoader that tags every mapping with `__line__` (the 1-based source line
-    of its first key) so a flagged step can be reported with a navigable
-    file/line annotation instead of a bare, unclickable `::error::`."""
-
-
-def _mapping_with_line(loader: _LineLoader, node: yaml.MappingNode) -> dict:
-    mapping = loader.construct_mapping(node, deep=True)
-    mapping["__line__"] = node.start_mark.line + 1
-    return mapping
-
-
-_LineLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_with_line
-)
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
