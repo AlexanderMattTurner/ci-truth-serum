@@ -28,7 +28,7 @@ on: # zizmor: ignore[dangerous-triggers] — reviewer jobs are base-only checkou
   # base branch, these reviewers only take effect once merged to the default
   # branch.
   pull_request_target: # not-required-check
-    types: [opened, ready_for_review, synchronize]
+    types: [opened, ready_for_review, synchronize, labeled]
 
 permissions: {}
 
@@ -73,7 +73,12 @@ jobs:
   # that still owes a read.
   # ────────────────────────────────────────────────────────────────────────────
   review:
+    # The skip set below, OR the on-demand label the skip notice offers. The
+    # reviewer's own decide script answers a `labeled` event only for that
+    # label, so every other label edit costs one skipped job.
     if: >-
+      github.event.label.name == 'needs-auto-review' ||
+      (
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.type != 'Bot' &&
       !startsWith(github.event.pull_request.title, 'chore:') &&
@@ -82,6 +87,7 @@ jobs:
       !startsWith(github.event.pull_request.title, 'style(') &&
       !startsWith(github.event.pull_request.title, 'release:') &&
       !startsWith(github.event.pull_request.title, 'release(')
+      )
     permissions:
       contents: read # the reviewer checks out this repository's default branch
       pull-requests: write # post the review
