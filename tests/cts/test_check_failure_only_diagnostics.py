@@ -224,7 +224,7 @@ def test_unparseable_yaml_is_a_violation_not_a_pass(tmp_path):
     assert len(findings) == 1
     line, message = findings[0]
     assert line == 1
-    assert "could not parse as YAML" in message
+    assert "could not parse this workflow or an action it uses as YAML" in message
 
 
 def test_a_document_that_is_not_a_mapping_is_clean(tmp_path):
@@ -253,3 +253,140 @@ def test_covers_cancellation_rejects_a_negated_mention():
     assert fod.covers_cancellation("failure() || cancelled()") is True
     assert fod.covers_cancellation("failure() && !cancelled()") is False
     assert fod.covers_cancellation("failure()") is False
+
+
+@pytest.mark.parametrize(
+    ("condition", "covers"),
+    [
+        ("failure() || cancelled()", True),
+        ("always()", True),
+        ("failure() && !cancelled()", False),
+        # The `!` reaches its call through the parentheses, so this is the same
+        # condition as the one above and skips the cancelled run too.
+        ("failure() && !(cancelled())", False),
+        ("failure() && ! ( cancelled() )", False),
+        ("failure() && !(always())", False),
+        # A `(` that opens a group rather than following a `!` is not a negation.
+        ("failure() && (cancelled())", True),
+        ("success() && !failure() || cancelled()", True),
+    ],
+)
+def test_covers_cancellation_reads_a_parenthesized_negation(condition, covers):
+    assert fod.covers_cancellation(condition) is covers
+
+
+# ── running a script, versus naming one ──────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "rm ci/collect-logs.sh",
+        "cat ci/collect-logs.sh",
+        "tool --exclude ci/collect-logs.sh",
+        "git add ci/collect-logs.sh",
+        "shellcheck ci/collect-logs.sh",
+    ],
+)
+def test_a_command_that_only_names_a_script_is_clean(tmp_path, script):
+    """Deleting, printing or listing a diagnostics script does not run it, so
+    reading every argument as a call would flag all three."""
+    assert _messages(_write(tmp_path, _job(_step("failure()", run=script)))) == []
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "sudo bash ci/collect-logs.sh",
+        "bash -e ci/collect-logs.sh",
+        "env ./ci/collect-logs.sh",
+    ],
+)
+def test_a_wrapped_or_flagged_invocation_is_still_a_call(tmp_path, script):
+    assert len(_messages(_write(tmp_path, _job(_step("failure()", run=script))))) == 1
+
+
+# ── a composite action hides the upload ──────────────────────────────────────
+
+
+def _composite(tmp_path, body: str, name: str = "playwright") -> None:
+    directory = tmp_path / ".github" / "actions" / name
+    directory.mkdir(parents=True)
+    (directory / "action.yaml").write_text(body, encoding="utf-8")
+
+
+UPLOADING_COMPOSITE = (
+    "name: playwright\nruns:\n  using: composite\n  steps:\n"
+    "      - run: pnpm test\n"
+    "      - uses: actions/upload-artifact@v4\n"
+)
+
+
+def test_a_composite_that_uploads_is_judged_at_its_caller(tmp_path, monkeypatch):
+    """The directory name says nothing about evidence, so only following the
+    action finds the upload the caller's gate skips."""
+    monkeypatch.setattr(fod, "REPO_ROOT", tmp_path)
+    _composite(tmp_path, UPLOADING_COMPOSITE)
+    step = _step("failure()", uses="./.github/actions/playwright")
+    messages = _messages(_write(tmp_path, _job(step)))
+    assert len(messages) == 1
+    assert "./.github/actions/playwright, which uploads an artifact" in messages[0]
+
+
+def test_a_composite_that_collects_nothing_is_clean(tmp_path, monkeypatch):
+    monkeypatch.setattr(fod, "REPO_ROOT", tmp_path)
+    _composite(
+        tmp_path,
+        "name: build\nruns:\n  using: composite\n  steps:\n      - run: pnpm build\n",
+        "build",
+    )
+    step = _step("failure()", uses="./.github/actions/build")
+    assert _messages(_write(tmp_path, _job(step))) == []
+
+
+def test_two_actions_that_use_each_other_terminate(tmp_path, monkeypatch):
+    monkeypatch.setattr(fod, "REPO_ROOT", tmp_path)
+    _composite(
+        tmp_path,
+        "name: a\nruns:\n  using: composite\n  steps:\n"
+        "      - uses: ./.github/actions/b\n",
+        "a",
+    )
+    _composite(
+        tmp_path,
+        "name: b\nruns:\n  using: composite\n  steps:\n"
+        "      - uses: ./.github/actions/a\n",
+        "b",
+    )
+    step = _step("failure()", uses="./.github/actions/a")
+    assert _messages(_write(tmp_path, _job(step))) == []
+
+
+# ── the opt-out must be a real YAML comment ──────────────────────────────────
+
+
+def test_a_marker_inside_a_string_value_does_not_suppress(tmp_path):
+    """A step could otherwise turn the check off by naming its own opt-out."""
+    step = (
+        '      - name: "# failure-only-diagnostics-ok: not a comment"\n'
+        "        if: failure()\n"
+        f"        uses: {UPLOAD}\n"
+    )
+    assert len(_messages(_write(tmp_path, _job(step)))) == 1
+
+
+def test_a_marker_a_run_body_echoes_does_not_suppress(tmp_path):
+    step = (
+        "      - if: failure()\n"
+        "        run: |\n"
+        '          echo "# failure-only-diagnostics-ok: not a comment"\n'
+        "          bash ci/collect-logs.sh\n"
+    )
+    assert len(_messages(_write(tmp_path, _job(step)))) == 1
+
+
+def test_comment_view_keeps_only_yaml_comments():
+    """Code becomes blanks rather than vanishing, so every column — and so every
+    line number a finding reports — still lines up with the source."""
+    text = 'name: "# x"  # real: why\nrun: echo hi\n'
+    assert fod.comment_view(text) == [" " * 13 + "# real: why", " " * 12]

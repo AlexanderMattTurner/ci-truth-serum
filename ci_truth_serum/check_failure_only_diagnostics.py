@@ -31,20 +31,30 @@ WHAT COUNTS AS A DIAGNOSTICS STEP, and nothing else does:
 
   * a step that uploads an artifact (`actions/upload-artifact`, or a fork or
     local action whose name ends the same way);
-  * a step that runs a script whose file name says it collects evidence —
+  * a step that RUNS a script whose file name says it collects evidence —
     `collect-logs.sh`, `dump-artifacts.py`, `diagnostics.sh`, `triage.mjs`;
-  * a `uses: ./…` local action whose directory name says the same.
+  * a `uses: ./…` local action whose directory name says the same, or whose
+    steps hold any of the above.
 
 The `run:` body is read on the real bash grammar (`_bash_ast`), so a script name
 inside a message a command prints, or inside a heredoc, is text and not a call.
-See `.claude/rules/shell-lint-parsing.md`.
+See `.claude/rules/shell-lint-parsing.md`. Running a script is also not the same
+as naming one: the program is the command's NAME, or an interpreter's first
+non-flag operand. `rm ci/collect-logs.sh` deletes that file and `tool --exclude
+ci/collect-logs.sh` passes it as an option value, so neither is a call.
+
+A composite action is followed, because it hides its steps behind one `uses:`
+line. `uses: ./.github/actions/playwright` around an `actions/upload-artifact`
+step loses the report on a cancel exactly as an inline upload does, and its
+directory name says nothing about evidence.
 
 A GitHub `if:` expression is not YAML and GitHub ships no grammar for it, so the
 condition is read with a regex, the way `check_conclusion_coverage` and
 `check_multi_cron_gating` read theirs. The check reads a MENTION of
 cancellation, not the truth value of the whole expression: it cannot know what
 `steps.x.outcome` holds. A negated mention does not count, because
-`failure() && !cancelled()` still cannot run on a cancel.
+`failure() && !cancelled()` and `failure() && !(cancelled())` still cannot run
+on a cancel.
 
 The job's own `if:` is judged too. A gate at the job level skips every step
 under it, so a diagnostics job gated `if: failure()` loses its artifacts in
@@ -61,7 +71,10 @@ Opt out with `# failure-only-diagnostics-ok: <reason>` on the flagged step, or
 in the comment block directly above it. The reason is REQUIRED; a bare
 annotation does not suppress. The annotation is scoped to the ONE step it sits
 on, so a job that keeps a deliberate `failure()` upload still gets a finding on
-its next diagnostics step.
+its next diagnostics step. It must also be a real YAML comment: the token is
+read out of the comment spans PyYAML itself reports (`comment_view`), so a
+`name: "# failure-only-diagnostics-ok: …"` string value cannot turn this check
+off.
 """
 
 import re
@@ -73,9 +86,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
-    command_arguments,
+    command_words,
     iter_nodes,
-    node_text,
     parse,
     unquote,
 )
@@ -83,6 +95,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     annotated_near,
     LineLoader,
     MESSAGE_PREFIX,
+    strip_yaml_comments,
     workflow_files,
     _job_blocks,
 )
@@ -104,11 +117,28 @@ MESSAGE = (
 
 # GitHub's status functions, read out of an `if:` scalar. `always()` runs the
 # step on every conclusion, cancellation included; `cancelled()` names it
-# outright. A `!` in front of either flips it, and a negated mention leaves the
-# step just as unable to run on a cancel — hence the captured `neg` group.
+# outright. The lookbehind keeps a property path out of it: `steps.x.cancelled()`
+# is not the function.
 _FAILURE = re.compile(r"(?<![\w.])failure\s*\(\s*\)")
-_CANCELLED = re.compile(r"(?P<neg>!\s*)?(?<![\w.])cancelled\s*\(\s*\)")
-_ALWAYS = re.compile(r"(?P<neg>!\s*)?(?<![\w.])always\s*\(\s*\)")
+# Every character `str.splitlines()` treats as a line boundary. `comment_view`
+# keeps them, so its line count matches the text it was built from.
+_LINE_BOUNDARY = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+_COVERING_CALL = re.compile(r"(?<![\w.])(?:cancelled|always)\s*\(\s*\)")
+
+
+def _negated(prefix: str) -> bool:
+    """True when PREFIX — the text before a status call — negates that call.
+
+    A `!` reaches its call through any number of opening parentheses:
+    `!cancelled()` and `!(cancelled())` say the same thing, and both keep the
+    step off the cancelled run. The walk therefore drops trailing whitespace and
+    `(` before it looks for the `!`.
+    """
+    trimmed = prefix.rstrip()
+    while trimmed.endswith("("):
+        trimmed = trimmed[:-1].rstrip()
+    return trimmed.endswith("!")
+
 
 # An action that writes a run's files out where a human can read them after the
 # runner is gone. Matched on the action path with its ref stripped, so a fork
@@ -129,19 +159,49 @@ _DIAGNOSTIC_NAME = re.compile(
     r")(?:-|$)"
 )
 
+# A word that stands in FRONT of the real program and runs it: the program is the
+# next word, not this one.
+_WRAPPERS = frozenset({"sudo", "command", "env", "nohup", "time", "exec", "retry"})
+# A program whose first non-flag operand is the script it runs. Anything else is
+# read as the program itself, so `rm x.sh` names a program called `rm`.
+_INTERPRETERS = frozenset(
+    {
+        "bash",
+        "sh",
+        "dash",
+        "ksh",
+        "zsh",
+        "python",
+        "python2",
+        "python3",
+        "node",
+        "deno",
+        "bun",
+        "ruby",
+        "perl",
+        "pwsh",
+        "powershell",
+    }
+)
+
 
 def covers_cancellation(condition: object) -> bool:
     """True when CONDITION can be true on a cancelled run.
 
     A mention of `always()` or of `cancelled()` is the evidence that the author
-    decided what happens on a cancel. A negated mention is not: `!cancelled()`
-    and `failure() && !cancelled()` both keep the step off the cancelled run.
+    decided what happens on a cancel. A negated mention is not: `!cancelled()`,
+    `!(cancelled())` and `failure() && !cancelled()` all keep the step off the
+    cancelled run.
+
+    KNOWN GAP: a `!` that negates a whole GROUP rather than one call —
+    `!(failure() || cancelled())` — reads here as a plain mention, so such a
+    condition passes. Judging it needs the value of the group, and this check
+    reads a mention rather than evaluating an expression GitHub ships no grammar
+    for. The two shapes an author writes in practice are covered above.
     """
     text = str(condition)
     return any(
-        match.group("neg") is None
-        for pattern in (_CANCELLED, _ALWAYS)
-        for match in pattern.finditer(text)
+        not _negated(text[: match.start()]) for match in _COVERING_CALL.finditer(text)
     )
 
 
@@ -160,28 +220,85 @@ def _normalize(token: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", stem.lower()).strip("-")
 
 
-def _script_names(script: str) -> list[str]:
-    """The evidence-collecting scripts SCRIPT calls, named for the message.
+def _invoked(words: list[str]) -> str | None:
+    """The program WORDS runs, once its wrapper prefixes and its interpreter are
+    stripped, or None when WORDS runs no program of its own.
 
-    Every word of every command is a candidate, so a call reached through an
-    interpreter (`bash .github/scripts/collect-logs.sh`) is read at the script
-    rather than at `bash`. A command whose first word only prints text holds no
-    call at all — its arguments are the message.
+    This is the difference between running a script and naming one. `rm
+    ci/collect-logs.sh` deletes the file, `cat ci/collect-logs.sh` prints it, and
+    `tool --exclude ci/collect-logs.sh` passes it as an option value. None of the
+    three runs it, so reading every argument as a call would flag all three. The
+    program is the command's NAME, or the first non-flag operand when that name
+    is an interpreter — the one position a script actually runs from.
+    """
+    rest = [word for word in words if word]
+    while rest and PurePosixPath(rest[0]).name in _WRAPPERS:
+        rest = rest[1:]
+    if not rest:
+        return None
+    if PurePosixPath(rest[0]).name not in _INTERPRETERS:
+        return rest[0]
+    return next((word for word in rest[1:] if not word.startswith("-")), None)
+
+
+def _script_names(script: str) -> list[str]:
+    """The evidence-collecting scripts SCRIPT runs, named for the message.
+
+    A command whose first word only prints text runs nothing — its arguments are
+    the message, not a call.
     """
     found: list[str] = []
+    # `command_words` keeps the command's NAME one word, which `_invoked` reads
+    # off the head; `command_arguments` would hand back `bin/foo` in pieces.
     for command in iter_nodes(parse(script), "command"):
-        tokens = [unquote(node_text(node)) for node in command_arguments(command)]
-        if not tokens or MESSAGE_PREFIX.match(tokens[0]):
+        words = [unquote(word) for word in command_words(command)]
+        if not words or MESSAGE_PREFIX.match(words[0]):
             continue
-        found += [
-            PurePosixPath(token).name
-            for token in tokens
-            if _DIAGNOSTIC_NAME.search(_normalize(token))
-        ]
+        program = _invoked(words)
+        if program and _DIAGNOSTIC_NAME.search(_normalize(program)):
+            found.append(PurePosixPath(program).name)
     return found
 
 
-def diagnostic_work(step: dict) -> str | None:
+def _action_path(uses: str) -> Path | None:
+    """The definition file of the local composite action USES names."""
+    directory = REPO_ROOT / uses.removeprefix("./").rstrip("/")
+    return next(
+        (
+            p
+            for p in (directory / "action.yaml", directory / "action.yml")
+            if p.is_file()
+        ),
+        None,
+    )
+
+
+def _action_work(uses: str, seen: frozenset) -> str | None:
+    """What the local composite action USES collects, or None when it collects
+    nothing.
+
+    A composite hides its steps behind one `uses:` line, so a caller gated on
+    failure() skips an upload written inside it — and the directory name need not
+    say so: `uses: ./.github/actions/playwright` around an `actions/upload-artifact`
+    step loses the report exactly the same way. SEEN breaks a cycle between two
+    actions that use each other.
+    """
+    target = _action_path(uses)
+    if target is None or target in seen:
+        return None
+    doc = yaml.safe_load(target.read_text(encoding="utf-8"))
+    runs = doc.get("runs") if isinstance(doc, dict) else None
+    return next(
+        (
+            work
+            for step in _steps(runs)
+            if (work := diagnostic_work(step, seen | {target})) is not None
+        ),
+        None,
+    )
+
+
+def diagnostic_work(step: dict, seen: frozenset = frozenset()) -> str | None:
     """What STEP does with a run's evidence, phrased for the message, or None
     when the step collects none."""
     uses = step.get("uses")
@@ -189,8 +306,12 @@ def diagnostic_work(step: dict) -> str | None:
         action = uses.split("@", 1)[0].strip().rstrip("/")
         if _UPLOAD_ACTION.search(action):
             return f"uploads an artifact through {action}"
-        if action.startswith(".") and _DIAGNOSTIC_NAME.search(_normalize(action)):
-            return f"runs the diagnostics action {action}"
+        if action.startswith("."):
+            if _DIAGNOSTIC_NAME.search(_normalize(action)):
+                return f"runs the diagnostics action {action}"
+            nested = _action_work(action, seen)
+            if nested is not None:
+                return f"runs {action}, which {nested}"
     script = step.get("run")
     if isinstance(script, str):
         names = _script_names(script)
@@ -234,30 +355,53 @@ def _span_ends(steps: list[dict], last_line: int) -> dict[int, int]:
     return ends
 
 
+def comment_view(text: str) -> list[str]:
+    """TEXT's lines with everything that is not a YAML COMMENT blanked out.
+
+    The opt-out is a comment by contract, and a raw line scan cannot hold that
+    line: `name: "# failure-only-diagnostics-ok: example"` is a string value, and
+    honouring it would let any step turn this check off by naming it. The comment
+    spans come from PyYAML's own scanner (`strip_yaml_comments`), so what counts
+    as a comment here is what GitHub parses as one. Line boundaries survive, so a
+    caller's line numbers still index this view.
+    """
+    blanked = strip_yaml_comments(text)
+    view = "".join(
+        original if original != stripped or original in _LINE_BOUNDARY else " "
+        for original, stripped in zip(text, blanked)
+    )
+    return view.splitlines()
+
+
 def check_file(path: Path) -> list[tuple[int, str]]:
     """(line, message) for every diagnostics step this workflow or composite
     action skips on a cancelled run.
 
-    A file that cannot be parsed as YAML is itself reported as a violation
-    rather than passed as clean, so a syntax error can never read as "every
-    diagnostics step here survives a cancel"."""
-    text = path.read_text(encoding="utf-8")
+    A file this check cannot parse — the workflow itself, or a composite action
+    one of its steps uses — is reported as a violation rather than passed as
+    clean, so a syntax error can never read as "every diagnostics step here
+    survives a cancel"."""
     try:
-        doc = yaml.load(text, Loader=LineLoader)
+        return _check_parsed(path)
     except yaml.YAMLError as err:
         first_line = str(err).partition("\n")[0]
         return [
             (
                 1,
-                f"could not parse as YAML ({first_line}); cannot check whether its "
-                "diagnostics steps survive a cancelled run — fix the syntax (or run "
-                "actionlint) and re-check.",
+                f"could not parse this workflow or an action it uses as YAML "
+                f"({first_line}); cannot check whether its diagnostics steps survive "
+                "a cancelled run — fix the syntax (or run actionlint) and re-check.",
             )
         ]
+
+
+def _check_parsed(path: Path) -> list[tuple[int, str]]:
+    text = path.read_text(encoding="utf-8")
+    doc = yaml.load(text, Loader=LineLoader)
     if not isinstance(doc, dict):
         return []
 
-    lines = text.splitlines()
+    lines = comment_view(text)
     blocks = _job_blocks(text)
     violations: list[tuple[int, str]] = []
     for name, container in _containers(doc):
