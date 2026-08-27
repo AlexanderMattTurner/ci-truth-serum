@@ -12,7 +12,7 @@ from pathlib import Path
 from tests._helpers import load_hook
 
 rs = load_hook("run_selection.py", "run_selection")
-reg = load_hook("_registry.py", "_registry_for_selection")
+reg = load_hook("_cts_registry.py", "_registry_for_selection")
 
 
 # ── resolve ───────────────────────────────────────────────────────────────

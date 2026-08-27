@@ -19,7 +19,7 @@ close after it:
   * ``_sha256_verify`` (a common verify-helper naming)
   * ``ADD --checksum=sha256:<digest>`` (Docker's own built-in pin)
 
-The scan runs on the REAL bash grammar (``_bash_ast``), walking ``command`` nodes,
+The scan runs on the REAL bash grammar (``_cts_bash_ast``), walking ``command`` nodes,
 so the questions that sink a text scan are answered by structure instead of
 guessed at:
 
@@ -73,7 +73,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
     PathologicalInputError,
     command_arguments,
@@ -82,7 +82,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
 )

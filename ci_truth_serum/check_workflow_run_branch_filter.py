@@ -40,13 +40,13 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     is_placeholder_reason,
     key_block_lines,
     workflow_files,
     workflow_triggers,
 )
-from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -62,7 +62,7 @@ WILDCARDS = frozenset({"*", "**"})
 
 # An annotation READER (it extracts the reason so a placeholder can be
 # rejected), not a boolean opt-out predicate. The lead mirrors
-# `_linecheck.annotation_re`: the token may follow the `#` directly, or after
+# `_cts_linecheck.annotation_re`: the token may follow the `#` directly, or after
 # same-line comment text whose last character cannot belong to a token, so a
 # longer slug never satisfies it.
 _MARKER_READER = re.compile(

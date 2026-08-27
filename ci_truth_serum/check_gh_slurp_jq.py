@@ -26,7 +26,7 @@ filter in a SEPARATE ``jq`` invocation over the captured document — which is
 also what the surrounding code usually wants, since ``--slurp`` yields one array
 element per page and the filter must flatten (``.[][]``) before it selects.
 
-Scanning runs on the REAL bash grammar (``_bash_ast``), walking ``command``
+Scanning runs on the REAL bash grammar (``_cts_bash_ast``), walking ``command``
 nodes: the question "which flags belong to THIS ``gh api``?" is a structural one,
 and the grammar answers it exactly. One ``command`` node spans a
 backslash-continued invocation whole, so a ``--jq`` on a later line is judged as
@@ -60,7 +60,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_arguments,
     iter_nodes,
@@ -68,7 +68,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     MESSAGE_PREFIX,
     annotation_re,

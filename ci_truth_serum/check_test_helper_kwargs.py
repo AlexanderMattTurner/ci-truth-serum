@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
 )

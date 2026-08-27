@@ -90,7 +90,7 @@ def test_main_wires_violations_and_message(
 ) -> None:
     """main() runs this script's detector through the shared loop with its own
     message. The generic loop behaviour (skip-unreadable, exit codes) is covered
-    once in test_linecheck.py; here we only pin that main() emits THIS message."""
+    once in test_cts_linecheck.py; here we only pin that main() emits THIS message."""
     bad = tmp_path / "bad.sh"
     bad.write_text("# now uses the new path\n", encoding="utf-8")
     assert mod.main([str(bad)]) == 1

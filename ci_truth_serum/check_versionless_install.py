@@ -22,7 +22,7 @@ carries no version, for four families —
   * global Node (`npm install -g`, `npm i --global`, `pnpm add -g`,
     `yarn global add`) — `pkg@1.2.3`.
 
-The scan runs on the REAL bash grammar (``_bash_ast``), walking ``command`` nodes,
+The scan runs on the REAL bash grammar (``_cts_bash_ast``), walking ``command`` nodes,
 so the questions that sink a text scan are answered by structure instead of
 guessed at: a redirection is a ``file_redirect`` sibling and never an argument; a
 quoted message is a ``string`` argument of the command that prints it, holding no
@@ -71,7 +71,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_arguments,
     iter_nodes,
@@ -79,7 +79,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     MESSAGE_PREFIX,
     annotated_near,

@@ -9,7 +9,7 @@ These tests pin the two properties that made it invisible:
   * the canary runs on the live release path (a step in tag-release.yaml's job),
     and its failure is neither swallowed nor gated off the failure path; and
   * that workflow's failures reach a human, judged by the repo's OWN routing
-    SSOT (`ci_truth_serum/_failure_routing.py`) over the real workflow tree
+    SSOT (`ci_truth_serum/_cts_failure_routing.py`) over the real workflow tree
     rather than by a string match on the notifier's list.
 
 The wrapper itself is driven for real in a sandbox repo with a stubbed `uv`, so
@@ -31,8 +31,8 @@ SCRIPT_REL = ".github/scripts/release-canary.sh"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 TAG_RELEASE = WORKFLOWS / "tag-release.yaml"
 
-routing_mod = load_hook("_failure_routing.py", "release_canary_wiring_routing")
-linecheck = load_hook("_linecheck.py", "release_canary_wiring_linecheck")
+routing_mod = load_hook("_cts_failure_routing.py", "release_canary_wiring_routing")
+linecheck = load_hook("_cts_linecheck.py", "release_canary_wiring_linecheck")
 
 
 def _steps_running(doc: dict, needle: str) -> list[tuple[str, dict]]:

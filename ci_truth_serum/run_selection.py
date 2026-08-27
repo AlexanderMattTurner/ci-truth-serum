@@ -22,7 +22,7 @@ checks and reports success is the false green this pack exists to refuse.
 Members run exactly as under ``run_tier``: a workflow lint self-discovers
 ``.github/{workflows,actions}``, and a content lint receives only the passed
 files of its kind. The registry of checks, tiers and tags is
-``ci_truth_serum/_registry.py``.
+``ci_truth_serum/_cts_registry.py``.
 """
 
 import sys
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     CHECKS,
     TAGS,
     TIERS,

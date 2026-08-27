@@ -14,7 +14,7 @@ non-zero, so the actual cause was unrecoverable. Fires on:
     ``DC=(docker compose -p foo …)`` then ``"${DC[@]}" up`` — caught by a
     two-pass scan so the indirection can't smuggle a suppressed launch past us.
 
-The script is parsed with the real bash grammar (``_bash_ast``), which answers
+The script is parsed with the real bash grammar (``_cts_bash_ast``), which answers
 both halves of the question directly. A redirect is a ``file_redirect`` node
 beside the command, so its file descriptor, operator and destination are read off
 the tree instead of being reconstructed from co-occurring text — and their ORDER
@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
     PathologicalInputError,
     command_words,
@@ -46,7 +46,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
     run_file_cli,
     run_line_checks,

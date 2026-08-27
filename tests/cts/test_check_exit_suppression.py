@@ -187,7 +187,7 @@ def test_main_wires_violations_and_message(
 ) -> None:
     """main() runs this script's detector through the shared loop with its own
     message. The generic loop behaviour (skip-unreadable, exit codes) is covered
-    once in test_linecheck.py; here we only pin that main() emits THIS message."""
+    once in test_cts_linecheck.py; here we only pin that main() emits THIS message."""
     bad = tmp_path / "bad.sh"
     bad.write_text("teardown || true\n", encoding="utf-8")
     assert mod.main([str(bad)]) == 1
@@ -338,7 +338,7 @@ def test_every_declared_mutating_verb_is_actually_refused() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        # an arbitrary project logger, in neither this lint's nor _linecheck's list
+        # an arbitrary project logger, in neither this lint's nor _cts_linecheck's list
         'gb_warn "do not write cmd || true here"',
         "gb_warn 'do not write cmd || true here'",
         'cg_note "cmd || true is banned"',

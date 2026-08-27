@@ -1,4 +1,4 @@
-"""Property/fuzz tests for ci_truth_serum/_comments and its ci_truth_serum/_js_ast
+"""Property/fuzz tests for ci_truth_serum/_cts_comments and its ci_truth_serum/_cts_js_ast
 parser — the shared "which lines carry narration" layer under the four
 comment-reading lints.
 
@@ -21,8 +21,8 @@ from hypothesis import strategies as st
 
 from tests._helpers import load_hook
 
-comments = load_hook("_comments.py", "fuzz_comments")
-js_ast = load_hook("_js_ast.py", "fuzz_js_ast")
+comments = load_hook("_cts_comments.py", "fuzz_comments")
+js_ast = load_hook("_cts_js_ast.py", "fuzz_js_ast")
 
 # Fragments that exercise the constructs a text scan gets wrong: delimiters
 # opened inside strings, block comments split over lines, heredocs, and a

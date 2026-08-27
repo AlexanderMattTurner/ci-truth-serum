@@ -98,7 +98,7 @@ def _texts(draw) -> str:
 
 
 # The comment-reading lints number physical lines by `\n`, matching the grammars
-# they locate comments with (`_comments`); the two that never read a comment still
+# they locate comments with (`_cts_comments`); the two that never read a comment still
 # number with `str.splitlines()`, which also breaks on `\v`, `\f` and U+2028. Each
 # assertion below passes the list its lint actually enumerates, so a hit is checked
 # against the line the lint would print.

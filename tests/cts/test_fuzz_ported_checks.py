@@ -1,4 +1,4 @@
-"""Property/fuzz tests for the 21 lints ported alongside `_py_imports`:
+"""Property/fuzz tests for the 21 lints ported alongside `_cts_py_imports`:
 `check_bare_mkdir`, `check_big_tuple_annotations`, `check_curl_retry`,
 `check_cwd_scoped_git`, `check_dead_shell_functions`,
 `check_duplicate_class_names`, `check_duplicate_module_constant`,
@@ -14,7 +14,7 @@ Same contract as the sibling fuzz suites: the public parsing entry point must
 never crash on adversarial text, every reported line number must be a real
 line of the input, and the result stays well-typed. A handful of these
 entrypoints call `ast.parse`/`yaml.load` directly with no try/except of their
-own (unlike the ones routed through `_py_ast.trees` or a self-catching
+own (unlike the ones routed through `_cts_py_ast.trees` or a self-catching
 `yaml.load`) — those properties restrict the generated text to what the
 function's own contract covers (parseable Python, parseable YAML) via
 ``assume``, mirroring the yaml_text() pattern in test_fuzz_parsers.py.
@@ -29,7 +29,7 @@ from hypothesis import strategies as st
 
 from tests._helpers import commit_all, init_test_repo, load_hook
 
-py_imports = load_hook("_py_imports.py", "fuzz_py_imports")
+py_imports = load_hook("_cts_py_imports.py", "fuzz_py_imports")
 bare_mkdir = load_hook("check_bare_mkdir.py", "fuzz_bare_mkdir")
 big_tuple = load_hook("check_big_tuple_annotations.py", "fuzz_big_tuple_annotations")
 curl_retry = load_hook("check_curl_retry.py", "fuzz_curl_retry")
@@ -180,7 +180,7 @@ _PATHS = st.sampled_from(
 
 
 # ── entrypoints that are already crash-proof on ANY text: routed through
-# `_bash_ast.parse`, `_py_ast.trees`, `_js_ast.parse`, or a self-caught
+# `_cts_bash_ast.parse`, `_cts_py_ast.trees`, `_cts_js_ast.parse`, or a self-caught
 # `yaml.load`/`ast.parse` ───────────────────────────────────────────────────
 
 _TOTAL_LINE_DETECTORS = [
@@ -447,7 +447,7 @@ def test_findings_is_total(tmp_path, helper_text: str, caller_text: str) -> None
         assert isinstance(finding.problem, str) and finding.problem
 
 
-# ── _py_imports.interpreter_scripts: a pure function over a word list ──────
+# ── _cts_py_imports.interpreter_scripts: a pure function over a word list ──────
 
 _WORDS = st.lists(
     st.one_of(

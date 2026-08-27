@@ -10,7 +10,7 @@ is the same artifact class, so these tests pin the same properties:
   * neither the step nor its job is taken off the failure path, so a finding
     fails the run instead of reporting green; and
   * that workflow's own failures reach a human, judged by the repo's routing
-    SSOT (`ci_truth_serum/_failure_routing.py`) over the real workflow tree.
+    SSOT (`ci_truth_serum/_cts_failure_routing.py`) over the real workflow tree.
 
 The wrapper's exit-status propagation is driven for real against a stubbed `uv`,
 so the behavior is observed and not asserted about the source text.
@@ -29,8 +29,8 @@ SCRIPT_REL = ".github/scripts/startup-failure-scan.sh"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 SCAN_WORKFLOW = WORKFLOWS / "startup-failure-scan.yaml"
 
-routing_mod = load_hook("_failure_routing.py", "startup_scan_wiring_routing")
-linecheck = load_hook("_linecheck.py", "startup_scan_wiring_linecheck")
+routing_mod = load_hook("_cts_failure_routing.py", "startup_scan_wiring_routing")
+linecheck = load_hook("_cts_linecheck.py", "startup_scan_wiring_linecheck")
 
 
 def _scan_doc() -> dict:

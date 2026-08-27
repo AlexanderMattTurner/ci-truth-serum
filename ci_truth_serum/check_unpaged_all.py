@@ -37,7 +37,7 @@ that reads the API, names a listing key and reduces some list with ``all`` is
 judged even when a reader can see the two lists are different. That is the one
 approximation here, and it is why the opt-out takes a reason.
 
-Each language is read through its own grammar (``_py_ast``, ``_js_ast``). A text
+Each language is read through its own grammar (``_cts_py_ast``, ``_cts_js_ast``). A text
 scan would count a key inside a string literal or a comment as a read, and an
 opt-out spelled inside a string would disarm the lint that reads it.
 
@@ -57,12 +57,12 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # `iter_nodes` walks any tree-sitter tree, whichever grammar built it — the same
-# reason `check_replacement_expansion` reaches into `_bash_ast` for it.
-from _bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import annotated_near, is_python_source  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import run_file_cli, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _py_ast import lines, name_of, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+# reason `check_replacement_expansion` reaches into `_cts_bash_ast` for it.
+from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import annotated_near, is_python_source  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import run_file_cli, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, name_of, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-unpaged-all"
 

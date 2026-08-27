@@ -10,7 +10,7 @@ hand-maintained duplication. Two halves, each with its own invariant:
   * FRESHNESS — every listed name must name a workflow that exists. A name no
     workflow in the tree carries notifies on nothing, wherever it sits.
   * EXHAUSTIVENESS — every workflow whose failure reaches a human by no other
-    route must be listed. That residual is `_failure_routing.needs_tree_notifier`
+    route must be listed. That residual is `_cts_failure_routing.needs_tree_notifier`
     over the push/schedule workflows: the ones that neither notify themselves,
     nor surface on a pull request, nor carry a reasoned `# cron-alert: false`.
 
@@ -32,7 +32,7 @@ it likes (`ci-failure-notify.yaml` in the shared template, but also
 `build-publish-notify.yaml`, `alerts.yaml`), and a check that recognizes only one
 spelling reports success while checking nothing in every repo that chose
 another — the exact failure mode this package exists to catch. Discovery is
-`_failure_routing.is_notifier`: a `workflow_run` trigger plus a named
+`_cts_failure_routing.is_notifier`: a `workflow_run` trigger plus a named
 notification sink, both halves required. Teach it a house sink with
 `--notifier-pattern REGEX` (repeatable); the flag EXTENDS the built-in patterns
 rather than replacing them.
@@ -79,20 +79,20 @@ from typing import NamedTuple
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     has_trigger,
     notifier_matcher,
     workflow_files,
 )
-from _failure_routing import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_failure_routing import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     is_notifier,
     MONITORED_TRIGGERS,
     needs_tree_notifier,
     notifier_list,
     routing,
 )
-from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -155,7 +155,7 @@ def residual_names(
     monitored workflows in DOCS (the notifiers excluded by the caller).
 
     The residual is every push/schedule workflow whose failure reaches nobody by
-    any other route — `_failure_routing.needs_tree_notifier`. A workflow that
+    any other route — `_cts_failure_routing.needs_tree_notifier`. A workflow that
     self-notifies, surfaces on a pull request, or carries a reasoned
     `# cron-alert: false` is somebody else's responsibility already, and adding
     it here would double-page or silently overrule the opt-out. A marker that

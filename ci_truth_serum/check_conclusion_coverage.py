@@ -42,11 +42,11 @@ THREE SURFACES, THREE PARSERS:
     and an `env:` value all count. A GitHub expression is not YAML, so a regex
     reads the comparison INSIDE the scalar. `check_multi_cron_gating` treats an
     `if:` the same way, and for the same reason: GitHub ships no grammar for it.
-  * Shell — `_bash_ast`. Is this a test, or a string a command prints? Does this
+  * Shell — `_cts_bash_ast`. Is this a test, or a string a command prints? Does this
     `elif` continue the same decision? Is this word a case pattern, or the body
     behind it? Each question is about shell STRUCTURE, and a text scan gets its
     own subset of them wrong (see `.claude/rules/shell-lint-parsing.md`).
-  * Python — `_py_ast`. An `if`/`elif` chain is ONE decision, so this check
+  * Python — `_cts_py_ast`. An `if`/`elif` chain is ONE decision, so this check
     judges the chain whole. It also resolves a set of conclusions bound to a
     constant, so `conclusion in FAILING` is read against what `FAILING` holds.
     That resolution follows Python's own scoping: two functions may each bind
@@ -95,24 +95,24 @@ from typing import NamedTuple
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     iter_nodes,
     node_text,
     parse as bash_parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     is_python_source,
     is_shell_source,
     unparseable_shell_reason,
 )
-from _py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     lines as py_lines,
     name_of,
     trees,
 )
-from _fastyaml import compose, safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import compose, safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-conclusion-subset"
 

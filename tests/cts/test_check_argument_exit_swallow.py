@@ -391,8 +391,8 @@ def test_repo_shell_tree_is_clean() -> None:
 
 def test_the_module_parses_the_grammar_rather_than_the_text() -> None:
     """Meta-contract (.claude/rules/shell-lint-parsing.md): every structural
-    question here is answered by `_bash_ast`, so the module must import the
+    question here is answered by `_cts_bash_ast`, so the module must import the
     parser and must not carry a quote-state scanner or `shlex`."""
     source = _SRC.read_text(encoding="utf-8")
-    assert "from _bash_ast import" in source
+    assert "from _cts_bash_ast import" in source
     assert "shlex" not in source

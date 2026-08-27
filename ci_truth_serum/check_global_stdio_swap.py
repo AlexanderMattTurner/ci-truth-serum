@@ -10,7 +10,7 @@ in another thread's buffer. That is the silent "produced no output" failure mode
 The fix is to PARAMETERIZE the I/O (pass the input in, return the output) or bind
 it per-thread, not to swap globals.
 
-The source is read through Python's own grammar (``_py_ast``), so "is this stream
+The source is read through Python's own grammar (``_cts_py_ast``), so "is this stream
 being ASSIGNED, or merely read?" is answered by whether it is an assignment
 TARGET — not by whether it sits left of the first ``=`` on its line. That is what
 keeps a read (``saved = sys.stdout``, ``print(x, file=sys.stdout)``) clean while
@@ -35,9 +35,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import annotated_near, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _py_ast import lines, name_of, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import annotated_near, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, name_of, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-stdio-swap"
 

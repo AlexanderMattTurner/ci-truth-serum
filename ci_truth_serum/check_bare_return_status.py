@@ -36,7 +36,7 @@ nesting. A bare `return` in an `if` body or a `case` arm has an implicit status
 too, but no operator states the intent, and this pack keeps no baseline to hold
 the noise.
 
-The block is found with tree-sitter-bash (the shared ``_bash_ast`` grammar), so a
+The block is found with tree-sitter-bash (the shared ``_cts_bash_ast`` grammar), so a
 continued list, a nested list, and a `return` quoted inside a string or a heredoc
 are all read the way bash reads them.
 
@@ -50,14 +50,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_name,
     command_words,
     iter_nodes,
     parse,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
     run_line_checks,

@@ -41,7 +41,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_arguments,
     iter_nodes,
@@ -49,7 +49,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     MESSAGE_PREFIX,
     annotation_re,
@@ -57,7 +57,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     is_shell_source,
     run_file_cli,
 )
-from _py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     lines as py_lines,
     name_of,
     trees,

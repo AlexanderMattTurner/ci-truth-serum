@@ -31,7 +31,7 @@ workflow's events, not only a group that names no key at all. GitHub leaves
 default branch on an event that carries no ref of its own. So
 `${{ github.workflow }}-${{ github.head_ref || github.ref }}` is per-PR on a
 pull-request run and one fixed string on every `schedule` run. The message names
-the event that flattens the group. See `_linecheck.group_collapse_event`.
+the event that flattens the group. See `_cts_linecheck.group_collapse_event`.
 
 Keyed off the explicit `# required-check: true` marker (mandatory on such
 workflows), so false positives are low: this repo's required-check workflows all
@@ -48,7 +48,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     declared_events,
     group_is_per_ref,
     opted_out,
@@ -56,7 +56,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     static_group_reason,
     workflow_files,
 )
-from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "cancellable-required-check-ok"
 REPO_ROOT = Path.cwd()

@@ -15,7 +15,7 @@ They fall back to the pure-Python loader when the wheel was built without
 libyaml, which is a speed difference and never a behavior one: both loaders
 implement the same safe subset and raise the same `yaml.YAMLError` subclasses.
 
-The name is `_fastyaml`, not `_yaml`, because `_yaml` is PyYAML's own libyaml
+The name is `_cts_fastyaml`, not `_yaml`, because `_yaml` is PyYAML's own libyaml
 binding. Every check prepends this directory to `sys.path`, so a module of that
 name here would shadow the extension this one depends on.
 """

@@ -198,7 +198,7 @@ def test_main_wires_violations_and_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """main() runs this detector through the shared loop with its own message.
-    The loop itself is covered in test_linecheck.py."""
+    The loop itself is covered in test_cts_linecheck.py."""
     bad = tmp_path / "bad.mjs"
     bad.write_text(f"const body = 1;\n{ASSEMBLER}", encoding="utf-8")
     clean = tmp_path / "clean.mjs"

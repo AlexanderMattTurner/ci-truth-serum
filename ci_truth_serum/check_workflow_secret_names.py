@@ -28,8 +28,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import strip_yaml_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import strip_yaml_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.

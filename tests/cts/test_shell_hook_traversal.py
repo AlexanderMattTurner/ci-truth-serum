@@ -5,8 +5,8 @@ its own sees one physical line at a time, so any construct wrapped across
 lines (a trailing ``|``/``\\`` continuation, a multi-line ``$(…)`` capture, a
 single-line ``case … esac``) slips past it — each hook re-growing its own
 half-correct joiner was how the evasions crept in one hook at a time. The two
-sanctioned traversals are the real bash grammar (``_bash_ast``) and the one
-shared continuation joiner (``_linecheck.logical_lines``); every shell lint
+sanctioned traversals are the real bash grammar (``_cts_bash_ast``) and the one
+shared continuation joiner (``_cts_linecheck.logical_lines``); every shell lint
 registered in ``run_tier.TIERS`` must use one of them.
 
 The enumeration is driven from ``run_tier.TIERS`` (the SSOT for which lints
@@ -50,7 +50,7 @@ def test_every_shell_lint_uses_a_shared_traversal() -> None:
     offenders = []
     for module in _shell_lints():
         src = (HOOKS_DIR / f"{module}.py").read_text(encoding="utf-8")
-        uses_ast = "from _bash_ast import" in src
+        uses_ast = "from _cts_bash_ast import" in src
         uses_joiner = bool(re.search(r"\blogical_lines\b", src))
         if not (uses_ast or uses_joiner):
             offenders.append(module)
@@ -76,13 +76,13 @@ def test_no_shell_lint_scans_physical_lines_directly() -> None:
 def test_the_one_joiner_lives_in_linecheck_and_nowhere_else() -> None:
     """The shared joiner exists exactly once; a lint growing a private
     ``def _logical_lines`` copy is the duplication this contract eliminates."""
-    assert "def logical_lines(" in (HOOKS_DIR / "_linecheck.py").read_text(
+    assert "def logical_lines(" in (HOOKS_DIR / "_cts_linecheck.py").read_text(
         encoding="utf-8"
     )
     copies = [
         path.name
         for path in HOOKS_DIR.glob("*.py")
-        if path.name != "_linecheck.py"
+        if path.name != "_cts_linecheck.py"
         and re.search(r"def _?logical_lines\(", path.read_text(encoding="utf-8"))
     ]
     assert copies == [], f"private logical-line joiner copies: {copies}"

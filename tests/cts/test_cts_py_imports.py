@@ -1,4 +1,4 @@
-"""Example-based tests (mutation oracle) for ci_truth_serum/_py_imports.py — the
+"""Example-based tests (mutation oracle) for ci_truth_serum/_cts_py_imports.py — the
 helper that walks a Python entry point's own local imports the way the plain
 interpreter would resolve them.
 
@@ -15,7 +15,7 @@ import pytest
 
 from tests._helpers import load_hook
 
-py_imports = load_hook("_py_imports.py", "check_py_imports")
+py_imports = load_hook("_cts_py_imports.py", "check_py_imports")
 
 
 def write(root: Path, rel: str, body: str) -> Path:

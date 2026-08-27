@@ -34,7 +34,7 @@ Blind spots, each deliberate:
     which is what Node does. Stat'ing the raw specifier would report a
     working import as broken.
 
-The specifier comes from the ECMAScript/TypeScript grammar (``_js_ast``),
+The specifier comes from the ECMAScript/TypeScript grammar (``_cts_js_ast``),
 never from a text scan: "is this string a module specifier?" is a question
 about the tree, and a relative-looking path inside a comment, a message, or a
 template literal is not an import.
@@ -54,9 +54,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import annotated_near, run_file_cli, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import annotated_near, run_file_cli, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-dangling-import"
 

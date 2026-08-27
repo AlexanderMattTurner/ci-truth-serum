@@ -120,7 +120,7 @@ def test_two_calls_on_one_line_report_that_line_twice() -> None:
 
 def test_unparseable_file_falls_back_to_a_best_effort_scan() -> None:
     # Ported behaviour difference: upstream raised SyntaxError here. This pack's
-    # `_py_ast.trees` never reports "no findings" on source it was actually
+    # `_cts_py_ast.trees` never reports "no findings" on source it was actually
     # handed, so an unparseable file gets a per-line best-effort scan instead —
     # here it finds nothing because neither line is valid Python on its own.
     assert mod.violations("def (:\n") == []

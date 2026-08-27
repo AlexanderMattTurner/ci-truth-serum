@@ -144,7 +144,7 @@ def test_main_wires_violations_and_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """main() runs this script's detector through the shared loop with its own
-    message. The generic loop behaviour is covered once in test_linecheck.py;
+    message. The generic loop behaviour is covered once in test_cts_linecheck.py;
     here we only pin that main() emits THIS message."""
     bad = tmp_path / "bad.sh"
     bad.write_text("docker build -t img . 2>/dev/null\n", encoding="utf-8")

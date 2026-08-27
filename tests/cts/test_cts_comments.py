@@ -1,4 +1,4 @@
-"""Example-based tests (mutation oracle) for ci_truth_serum/_comments.py — the one
+"""Example-based tests (mutation oracle) for ci_truth_serum/_cts_comments.py — the one
 place the comment-reading lints ask "which lines carry narration".
 
 Pins each extractor against the text scan it replaces: the cases here are the
@@ -12,7 +12,7 @@ import pytest
 
 from tests._helpers import load_hook
 
-comments = load_hook("_comments.py", "check_comments")
+comments = load_hook("_cts_comments.py", "check_comments")
 
 
 # ── python_comments ──────────────────────────────────────────────────────

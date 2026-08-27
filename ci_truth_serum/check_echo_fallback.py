@@ -7,7 +7,7 @@ command had succeeded. Real incidents: a `|| echo "error"` and a
 `|| echo "Unable to get diff"` each fed a release-version decision — the
 literal fallback text became the input the release logic ranked.
 
-The scan runs on the REAL bash grammar (``_bash_ast``): the vice is a ``list``
+The scan runs on the REAL bash grammar (``_cts_bash_ast``): the vice is a ``list``
 node whose operator is ``||`` and whose right operand is a ``command`` named
 ``echo``/``printf``. Asking the grammar instead of the text is what keeps the
 lint off everything that merely CONTAINS the idiom — a quoted message
@@ -60,14 +60,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_name,
     iter_nodes,
     node_text,
     parse,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
 )

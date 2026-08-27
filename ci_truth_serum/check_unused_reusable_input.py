@@ -50,7 +50,7 @@ from typing import NamedTuple
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader as _LineLoader,
     is_placeholder_reason,
     workflow_files,
@@ -64,7 +64,7 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 OPT_OUT = "unused-input-ok"
 # `# unused-input-ok: <reason>` — per-input suppression; reason mandatory.
 # An annotation READER (it extracts the reason so a placeholder can be rejected),
-# not a boolean opt-out predicate. The lead mirrors `_linecheck.annotation_re`:
+# not a boolean opt-out predicate. The lead mirrors `_cts_linecheck.annotation_re`:
 # the token may follow the `#` directly, or after same-line comment text whose
 # last character cannot belong to a token, so a longer slug never satisfies it.
 _OPT_OUT = re.compile(rf"#(?:[^\r\n]*[^\w\r\n-])?{OPT_OUT}\s*:\s*(?P<reason>[^\r\n]*)$")

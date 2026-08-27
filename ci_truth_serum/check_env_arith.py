@@ -18,7 +18,7 @@ builtins (`SECONDS`, `RANDOM`, `LINENO`, `BASHPID`, `PPID`, `UID`, `EUID`) are
 exempt outright — they are never a caller's env.
 
 Both questions the check asks are structural, so both are put to the real
-bash grammar (`_bash_ast`) rather than to a regex: whether a span is a
+bash grammar (`_cts_bash_ast`) rather than to a regex: whether a span is a
 `$(( ))` arithmetic expansion at all, and whether a name is bound earlier by
 a `variable_assignment`, a `for` header, a `declare`/`export`/`local`
 variable, or a `read`/`mapfile`/`readarray`/`printf -v` target. A name spelled
@@ -54,7 +54,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_name,
     command_words,
@@ -63,7 +63,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
     run_line_checks,

@@ -9,7 +9,7 @@ the secret. The correct idiom creates the file private from the start —
 ``printf … >file`` run under a standing ``umask 077`` — so no readable window
 exists.
 
-The script is parsed with the real bash grammar (``_bash_ast``). This lint's whole
+The script is parsed with the real bash grammar (``_cts_bash_ast``). This lint's whole
 question is about ORDER and SCOPE — does a chmod follow this create, and does a
 ``umask`` cover it? — and the grammar answers both as structure rather than as a
 line-distance proxy: "the next few statements" is the create's statement plus its
@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_words,
     iter_nodes,
@@ -53,7 +53,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotation_re,
     run_file_cli,
     run_line_checks,

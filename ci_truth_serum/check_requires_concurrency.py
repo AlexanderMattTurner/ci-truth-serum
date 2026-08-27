@@ -40,8 +40,8 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import opted_out, workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import opted_out, workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "concurrency-not-required"
 PR_TRIGGERS = ("pull_request", "pull_request_target")

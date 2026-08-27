@@ -1,4 +1,4 @@
-"""Tests for ci_truth_serum/_fastyaml.py — the one loader the pack parses through.
+"""Tests for ci_truth_serum/_cts_fastyaml.py — the one loader the pack parses through.
 
 Two properties matter. The pack must reach libyaml when the installed PyYAML has
 it, because every selector member re-parses the workflow tree in its own
@@ -20,11 +20,11 @@ from hypothesis import strategies as st
 
 from tests._helpers import HOOKS_DIR, REPO_ROOT, load_hook
 
-mod = load_hook("_fastyaml.py", "_fastyaml")
-lc = load_hook("_linecheck.py", "_linecheck")
+mod = load_hook("_cts_fastyaml.py", "_cts_fastyaml")
+lc = load_hook("_cts_linecheck.py", "_cts_linecheck")
 cwp = load_hook("check_workflow_pipefail.py", "check_workflow_pipefail")
 
-# A pure-Python twin of the shared line-tagging loader. It reuses `_linecheck`'s
+# A pure-Python twin of the shared line-tagging loader. It reuses `_cts_linecheck`'s
 # own mapping constructor, so the two loaders differ in exactly one thing: the
 # parser underneath.
 PureLineLoader = type("PureLineLoader", (yaml.SafeLoader,), {})
@@ -76,7 +76,7 @@ def test_falls_back_to_the_python_loader_without_libyaml(
     """A PyYAML built from source has no `CSafeLoader`; the pack still parses."""
     monkeypatch.delattr(yaml, "CSafeLoader", raising=False)
     spec = importlib.util.spec_from_file_location(
-        "_fastyaml_nolibyaml", HOOKS_DIR / "_fastyaml.py"
+        "_fastyaml_nolibyaml", HOOKS_DIR / "_cts_fastyaml.py"
     )
     fallback = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fallback)

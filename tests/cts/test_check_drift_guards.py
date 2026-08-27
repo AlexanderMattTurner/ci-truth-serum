@@ -294,7 +294,7 @@ def test_an_annotation_line_never_flags_itself(token: str) -> None:
 
 
 # ── comments come from the grammar, not from text that looks like one ──
-# (`_comments` owns the extractors and their unit oracle; these pin the effect
+# (`_cts_comments` owns the extractors and their unit oracle; these pin the effect
 # on this check's verdicts.)
 
 

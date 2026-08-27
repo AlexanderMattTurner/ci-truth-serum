@@ -6,7 +6,7 @@ Tacking ``|| true`` onto a command discards its exit status: a real failure
 readiness wait that timed out) becomes a silent success. In a security tool that
 must *fail loud*, every such suppression should be a conscious, reviewed choice.
 
-The script is parsed with the real bash grammar (``_bash_ast``), so what the lint
+The script is parsed with the real bash grammar (``_cts_bash_ast``), so what the lint
 sees is what bash would run: a suppressor is a ``||`` ``list`` node whose right
 operand is the ``true``/``:`` builtin, never a ``|| true`` found in the text. That
 is what answers the questions a text scan can only guess at — a ``|| true`` inside
@@ -85,7 +85,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
     PathologicalInputError,
     command_name,
@@ -95,7 +95,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
     run_line_checks,

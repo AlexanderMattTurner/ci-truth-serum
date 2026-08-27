@@ -323,7 +323,7 @@ def _residual_tree(tmp_path, monkeypatch, body: str) -> None:
 def test_a_workflow_routed_to_a_human_is_not_demanded(
     tmp_path, monkeypatch, capsys, body
 ):
-    # One case per route in _failure_routing. Each already reaches a human, so
+    # One case per route in _cts_failure_routing. Each already reaches a human, so
     # the notifier is not required to watch it as well.
     _residual_tree(tmp_path, monkeypatch, body)
     assert _main(monkeypatch) == 0

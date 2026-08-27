@@ -91,7 +91,7 @@ def _base_config(repo_root: Path) -> dict:
 def _test_file(stem: str) -> str:
     """The example suite that is a module's mutation oracle. `ci_truth_serum/check_x.py`
     -> `tests/cts/test_check_x.py`; the shared `ci_truth_serum/_linecheck.py` ->
-    `tests/cts/test_linecheck.py` (the leading underscore is dropped, matching
+    `tests/cts/test_cts_linecheck.py` (the leading underscore is dropped, matching
     the committed test filename)."""
     return f"{TEST_DIR}/test_{stem.lstrip('_')}.py"
 

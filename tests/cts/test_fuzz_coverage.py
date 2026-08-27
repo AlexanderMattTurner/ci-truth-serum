@@ -38,16 +38,16 @@ FUZZ_DIR = REPO_ROOT / "tests" / "cts"
 #   - run_tier, sync_required_checks, sync_merge_queue: orchestrators. run_tier
 #     dispatches argv to other hooks (each fuzzed on its own); the two sync tools
 #     are network/REST plumbing, and the only parser of the first,
-#     required_check_contexts (in _linecheck), IS fuzzed here.
+#     required_check_contexts (in _cts_linecheck), IS fuzzed here.
 #   - check_absolute_symlinks.sh: a shell hook, not a Python parser.
 FUZZ_REQUIRED = {
-    "_bash_ast": "parse",
-    "_js_ast": "parse",
-    "_py_ast": "trees",
-    "_comments": "comment_lines",
-    "_fastyaml": "safe_load",
-    "_linecheck": "required_check_contexts",
-    "_failure_routing": "routing",
+    "_cts_bash_ast": "parse",
+    "_cts_js_ast": "parse",
+    "_cts_py_ast": "trees",
+    "_cts_comments": "comment_lines",
+    "_cts_fastyaml": "safe_load",
+    "_cts_linecheck": "required_check_contexts",
+    "_cts_failure_routing": "routing",
     "check_exit_suppression": "violations",
     "check_stderr_suppression": "violations",
     "check_pipefail_grep_pipe": "violations",
@@ -116,7 +116,7 @@ FUZZ_REQUIRED = {
     "check_unused_reusable_input": "check_repo",
     "check_workflow_run_branch_filter": "violations",
     "check_test_predicate_shadow": "pure_predicates",
-    "_py_imports": "interpreter_scripts",
+    "_cts_py_imports": "interpreter_scripts",
     "check_bare_mkdir": "violations",
     "check_big_tuple_annotations": "violations",
     "check_curl_retry": "violations",
@@ -148,12 +148,12 @@ FUZZ_REQUIRED = {
 # rather than be tolerated, so it has no untrusted-input surface to fuzz.
 # Orchestrators, not input parsers: each drives the GitHub REST API or dispatches
 # other hooks, so there is no attacker-shaped text for a property to fuzz.
-# ``_registry`` is data, not a parser: it declares which checks ship, in which
+# ``_cts_registry`` is data, not a parser: it declares which checks ship, in which
 # tier, with which tags, and it reads no input at all.
 _NON_PARSER_HOOKS = {
     "run_tier",
     "run_selection",
-    "_registry",
+    "_cts_registry",
     "sync_required_checks",
     "sync_merge_queue",
     "startup_failure_scan",
@@ -243,7 +243,7 @@ def test_non_parser_hooks_expose_no_fuzzable_parser_symbol() -> None:
         loaded = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(loaded)
         # Only symbols DEFINED in this module count -- an imported helper (e.g.
-        # sync_required_checks importing _linecheck.required_check_contexts) keeps
+        # sync_required_checks importing _cts_linecheck.required_check_contexts) keeps
         # its origin module's __module__ and is fuzzed under that module's own
         # entry, not this one.
         own_symbols = {

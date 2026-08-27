@@ -1,4 +1,4 @@
-"""Example-based tests (mutation oracle) for ci_truth_serum/_js_ast.py — the shared
+"""Example-based tests (mutation oracle) for ci_truth_serum/_cts_js_ast.py — the shared
 tree-sitter wrapper the JS/TS-reading lints parse through.
 
 Pins the exact contract of ``is_js_source`` and ``parse``: which suffixes have a
@@ -10,7 +10,7 @@ import pytest
 
 from tests._helpers import load_hook
 
-js_ast = load_hook("_js_ast.py", "check_js_ast")
+js_ast = load_hook("_cts_js_ast.py", "check_js_ast")
 
 
 @pytest.mark.parametrize(

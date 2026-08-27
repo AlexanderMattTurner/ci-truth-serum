@@ -8,7 +8,7 @@ indistinguishable from one that has been passing. Every scheduled workflow must
 therefore EITHER route its failures to a human, OR carry an explicit opt-out
 marker that states why nobody needs to know.
 
-"Routed to a human" is `_failure_routing`, shared with
+"Routed to a human" is `_cts_failure_routing`, shared with
 check_failure_notifier_coverage so the two lints cannot demand contradictory
 things of the same workflow. A scheduled workflow satisfies this check when any
 of these holds:
@@ -18,7 +18,7 @@ of these holds:
     `on.workflow_run.workflows`, so the notifier pages on its behalf; or
   * it carries a reasoned `# cron-alert: false` marker.
 
-The PR surface — the fourth route in `_failure_routing`, and the reason the
+The PR surface — the fourth route in `_cts_failure_routing`, and the reason the
 notifier lint excuses a workflow that also runs on `pull_request` — is
 deliberately NOT accepted here: a cron fire has no pull request, so a green
 check on somebody's PR says nothing about the run that failed at 3am.
@@ -27,11 +27,11 @@ The load-bearing half of the first route is REACHABILITY, not presence. A
 notification step gated `if: success()`, or living in a job gated
 `needs.build.result == 'success'`, looks exactly like coverage in review and
 fires exactly never on the path it exists for — the inert-feature bug wearing a
-fix's clothes. `_failure_routing.gate_direction` is what decides; its docstring
+fix's clothes. `_cts_failure_routing.gate_direction` is what decides; its docstring
 carries the full gate grammar.
 
 What counts as a notification is configurable, never hardcoded to one vendor.
-The default patterns live in `_linecheck.NOTIFIER_PATTERNS` — shared with
+The default patterns live in `_cts_linecheck.NOTIFIER_PATTERNS` — shared with
 check_failure_notifier_coverage, which uses the same list to recognize the
 notifier workflow itself — and match case-insensitively against a step's
 `uses:`, `name:`, and `run:`. They cover the common human-routing sinks:
@@ -77,13 +77,13 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     has_trigger,
     notifier_matcher,
     workflow_files,
 )
-from _failure_routing import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_failure_routing import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     is_failure_blocked,
     MARKER,
     notifier_steps,

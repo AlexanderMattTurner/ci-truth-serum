@@ -44,13 +44,13 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     iter_nodes,
     node_text,
     parse,
     strip_comments,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     is_shell_source,
     is_test_path,
     run_file_cli,

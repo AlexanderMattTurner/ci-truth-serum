@@ -158,7 +158,7 @@ def test_lint_ignores_an_annotation_two_lines_above() -> None:
 
 def test_an_unparseable_fragment_falls_back_to_a_text_scan_not_a_crash() -> None:
     """The stdlib tokenizer call inside the original hand-rolled comment pass
-    raised straight through a syntax error. ``_comments`` falls back to a text
+    raised straight through a syntax error. ``_cts_comments`` falls back to a text
     scan instead, so a half-written test file still gets scanned rather than
     crashing the whole run."""
     broken = 'def broken(:\nassert routed[0].startswith("git rev-parse")\n'
