@@ -143,7 +143,7 @@ environment for each hook, so pre-commit is the only prerequisite.
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v1.0.0 # the release tag; matches the package version (vX.Y.Z)
+    rev: v1.1.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       # ── Tier 1 · Honesty (default-on) ──
       - id: check-workflow-pipefail
@@ -232,7 +232,7 @@ later arrives with **no change to your config**:
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v1.0.0 # the release tag; matches the package version (vX.Y.Z)
+    rev: v1.1.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       - id: check-tier1 # every honesty + identity check (the safe default-on set)
       # - id: check-tier2   # every opinionated check: it assumes the decide-gate + reporter architecture
@@ -259,7 +259,7 @@ Select on either axis with `check-select`. It takes `--select` (repeatable, unio
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v1.0.0
+    rev: v1.1.0
     hooks:
       - id: check-select
         args: [--select, "tag:security", --select, "tag:secrets"]
@@ -315,7 +315,7 @@ as a standalone hook with the usual pre-commit `files:` and `exclude:` filters:
 
 ```yaml
 - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-  rev: v1.0.0
+  rev: v1.1.0
   hooks:
     - id: check-tier1
       args: [--skip, check_exit_suppression] # drop it from the aggregate...

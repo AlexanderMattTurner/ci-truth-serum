@@ -1,1 +1,0 @@
-- `check-path-gate-deps` now reads a `paths-regex:` one alternative per LINE, the way `grep -qE` reads it at runtime. A generator that writes one alternative per line — so two branches adding different files edit different lines instead of conflicting — no longer reports every dependency uncovered.

@@ -1,1 +1,0 @@
-- The release path now moves the README's `rev:` pins with the version bump. Before this, every release pull request was born red on `test_readme_rev.py`, so no release after `v1.0.0` could land and the consumer-facing pin stayed at a tag one release behind.
