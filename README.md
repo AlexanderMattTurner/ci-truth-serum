@@ -327,7 +327,7 @@ as a standalone hook with the usual pre-commit `files:` and `exclude:` filters:
 `--skip` is repeatable: pass one `--skip <name>` pair per check you drop. **An
 unknown name is a hard error**, which catches a typo that would otherwise
 include the check again in silence. Module names use underscores and match the
-registry in `ci_truth_serum/_registry.py`. Write `check_exit_suppression`,
+registry in `ci_truth_serum/_cts_registry.py`. Write `check_exit_suppression`,
 not `check-exit-suppression`.
 
 This keeps the property that matters. A new check added to the tier upstream

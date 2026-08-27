@@ -72,7 +72,9 @@ def test_a_bare_sibling_import_names_a_prefixed_module(module: str) -> None:
     """
     unprefixed = [
         name
-        for name in _flat_sibling_imports((PACKAGE_DIR / f"{module}.py").read_text())
+        for name in _flat_sibling_imports(
+            (PACKAGE_DIR / f"{module}.py").read_text(encoding="utf-8")
+        )
         if name.startswith("_") and not name.startswith(PREFIX)
     ]
     assert not unprefixed, (
@@ -91,7 +93,7 @@ def _shadow_dir(where: Path, names: list[str]) -> Path:
         # exports — which is what agent-glovebox's module was. A module that
         # raised on import would kill the consumer's own import instead.
         (where / f"{name}.py").write_text(
-            "SHADOW = 'a consumer module, not this package'\n"
+            "SHADOW = 'a consumer module, not this package'\n", encoding="utf-8"
         )
     return where
 
@@ -146,7 +148,12 @@ def test_a_consumer_holding_the_PREFIXED_names_still_breaks_it(tmp_path: Path) -
     """
     shadow = _shadow_dir(tmp_path / "hostile", [f"{PREFIX}fastyaml"])
     done = _import_every_module_with(shadow, [f"{PREFIX}fastyaml"])
-    assert done.returncode != 0, (
+    # The shadowed name must be what failed. A bare `returncode != 0` is also what a
+    # broken harness gives — a bad `cwd`, an unimportable `ci_truth_serum`, a typo in
+    # the injected program — and that harness is shared with the positive case above,
+    # so this case would go green on the very mistake it is placed here to catch.
+    assert done.returncode != 0 and f"{PREFIX}fastyaml" in done.stdout, (
         "shadowing the prefixed name changed nothing, so these imports no longer "
-        "read sys.path and this file is testing a property the code lost."
+        f"read sys.path and this file is testing a property the code lost. "
+        f"exit={done.returncode} stdout={done.stdout!r} stderr={done.stderr!r}"
     )
