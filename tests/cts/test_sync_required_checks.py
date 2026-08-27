@@ -5,8 +5,8 @@ the workflows.
 
 Loads the hook by path and drives each function directly, plus main() with
 github_request / urlopen stubbed so no real network or ruleset is touched. The
-marker-scoping and matrix-expansion machinery lives in `_linecheck` and is tested
-in test_linecheck.py; here we cover the desired-set aggregation, the REST
+marker-scoping and matrix-expansion machinery lives in `_cts_linecheck` and is tested
+in test_cts_linecheck.py; here we cover the desired-set aggregation, the REST
 round-trip, the ruleset helpers, and main()'s three modes.
 """
 

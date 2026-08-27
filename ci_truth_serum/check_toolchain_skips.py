@@ -8,7 +8,7 @@ skip must FAIL (not skip) in CI, e.g.::
 
     shutil.which("node") is None and not os.environ.get("CI")
 
-The source is read through Python's own grammar (``_py_ast``): a skip is an
+The source is read through Python's own grammar (``_cts_py_ast``): a skip is an
 ``ast.Call``, so its argument list ends where the grammar says it ends rather
 than where a balanced-paren walk with its own quote state guesses, and the
 condition examined is the ``skipif`` CONDITION rather than the whole call text —
@@ -32,12 +32,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     is_test_path,
     run_file_cli,
 )
-from _py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     lines,
     name_of,
     trees,

@@ -45,10 +45,10 @@ global_stdio_swap = load_hook("check_global_stdio_swap.py", "fuzz_global_stdio_s
 secret_file_perms = load_hook("check_secret_file_perms.py", "fuzz_secret_file_perms")
 workflow_pipefail = load_hook("check_workflow_pipefail.py", "fuzz_workflow_pipefail")
 inline_run_length = load_hook("check_inline_run_length.py", "fuzz_inline_run_length")
-linecheck = load_hook("_linecheck.py", "fuzz_linecheck")
+linecheck = load_hook("_cts_linecheck.py", "fuzz_linecheck")
 env_symmetry = load_hook("check_env_symmetry.py", "fuzz_env_symmetry")
 gh_slurp_jq = load_hook("check_gh_slurp_jq.py", "fuzz_gh_slurp_jq")
-py_ast = load_hook("_py_ast.py", "fuzz_py_ast")
+py_ast = load_hook("_cts_py_ast.py", "fuzz_py_ast")
 
 # `violations(text) -> list[int]` line-oriented detectors. Each maps text to the
 # 1-based physical line numbers it flags.
@@ -270,7 +270,7 @@ def test_line_detectors_never_crash_and_report_real_lines(text: str) -> None:
 
 @given(text=source_text())
 def test_py_ast_trees_stay_inside_the_source(text: str) -> None:
-    """Every node ``_py_ast.trees`` hands back must anchor on a line the SOURCE
+    """Every node ``_cts_py_ast.trees`` hands back must anchor on a line the SOURCE
     has — the per-line recovery shifts line numbers, and an off-by-one there would
     make its callers report a line the file does not contain."""
     count = len(py_ast.lines(text))
@@ -353,7 +353,7 @@ def test_doc_analyzers_tolerate_arbitrary_parsed_objects(obj: object) -> None:
     assert isinstance(inline_run_length.analyze(obj), list)
 
 
-# --- Shared _linecheck machinery ---------------------------------------------
+# --- Shared _cts_linecheck machinery ---------------------------------------------
 
 
 @given(text=yaml_text())

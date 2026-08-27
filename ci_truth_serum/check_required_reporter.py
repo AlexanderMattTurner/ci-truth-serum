@@ -48,7 +48,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
     _classification_text,
     _job_blocks,
@@ -56,7 +56,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     is_always_reporter,
     workflow_files as _workflow_files,
 )
-from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "not-required-check"
 MARKER = "required-check"

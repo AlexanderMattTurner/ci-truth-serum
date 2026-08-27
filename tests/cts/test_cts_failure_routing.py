@@ -1,4 +1,4 @@
-"""Tests for ci_truth_serum/_failure_routing.py — the one predicate answering
+"""Tests for ci_truth_serum/_cts_failure_routing.py — the one predicate answering
 "is this workflow's failure routed to a human?", consumed by both
 check_cron_alert_coverage and check_failure_notifier_coverage.
 
@@ -20,8 +20,8 @@ from hypothesis import strategies as st
 
 from tests._helpers import load_hook
 
-routing = load_hook("_failure_routing.py", "_failure_routing")
-linecheck = load_hook("_linecheck.py", "_linecheck_for_routing")
+routing = load_hook("_cts_failure_routing.py", "_cts_failure_routing")
+linecheck = load_hook("_cts_linecheck.py", "_linecheck_for_routing")
 
 MATCHER = linecheck.notifier_matcher([])
 

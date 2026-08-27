@@ -19,7 +19,7 @@ returned by a helper the same module defines. NOT flagged: a deadline poll
 (``while time.monotonic() < deadline``), and a comparison against a
 non-literal (the subject's own budget can't be moved by runner load).
 
-Both halves — Python (stdlib ``ast``) and JavaScript/TypeScript (``_js_ast``,
+Both halves — Python (stdlib ``ast``) and JavaScript/TypeScript (``_cts_js_ast``,
 tree-sitter) — read the real grammar, never text: a clock mention inside a
 string or a comment is not a reading, and an opt-out spelled inside one must
 not disarm the check that reads it.
@@ -41,10 +41,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import annotated_near, is_python_source, is_test_path, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _py_ast import lines, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import annotated_near, is_python_source, is_test_path, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-wall-clock"
 

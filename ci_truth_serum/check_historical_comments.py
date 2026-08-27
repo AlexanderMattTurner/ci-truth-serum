@@ -17,7 +17,7 @@ cached digest". Gating on them would flag legitimate comments wholesale, so they
 are left to review. This check guards the unambiguous class so it can't reappear.
 
 Only true COMMENTS are scanned, located by the language's own grammar (see
-``_comments``): docstrings, string literals and template literals are NOT
+``_cts_comments``): docstrings, string literals and template literals are NOT
 comments, so test provenance strings and user-facing copy are spared, and a
 ``/* … */`` block in a JS suite IS scanned even though no line of it starts with
 a delimiter.
@@ -34,11 +34,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     comment_lines,
     text_comments,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
     run_source_checks,

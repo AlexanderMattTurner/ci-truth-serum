@@ -1,6 +1,6 @@
 # Shell lints parse the grammar, not the text
 
-**When a lint's question is about shell _structure_, answer it with `_bash_ast`
+**When a lint's question is about shell _structure_, answer it with `_cts_bash_ast`
 (tree-sitter-bash). Never with a regex, a quote-state scanner, or `shlex`.**
 
 Structural questions — the ones a text scan cannot answer, only approximate:
@@ -26,7 +26,7 @@ You are on the wrong side of this rule the moment you write any of these:
 - a filter dropping `>&2`-shaped tokens from an argument list.
 
 Each is a re-implementation of the grammar, and each one gets a different subset
-of real shell wrong. `_bash_ast`'s own docstring records the first round of this:
+of real shell wrong. `_cts_bash_ast`'s own docstring records the first round of this:
 two lints' hand-rolled quote/heredoc state machines "mis-parsed real shell", which
 is why the module exists. `check-versionless-install` grew every one of the five
 above and shipped four false positives in a day — help text read as a command, a
@@ -36,7 +36,7 @@ the grammar, after which the class disappeared rather than shrinking by one.
 
 ## Text scanning is still right for text
 
-Use the line-oriented helpers (`_linecheck`) when the question is genuinely about
+Use the line-oriented helpers (`_cts_linecheck`) when the question is genuinely about
 text rather than structure: reading an `# annotation:` out of a comment, judging
 prose in a doc, matching a version string's shape, or scanning a file format that
 is not shell at all. `strip_comments` is not a substitute for parsing — it uses
@@ -127,19 +127,19 @@ verdicts.
 "Where is the comment" is the same structural question in every language, and a
 delimiter scan gets each one wrong in its own way. All four lints that read
 narration — `check_drift_guards`, `check_graceful_handwave`,
-`check_historical_comments`, `check_workflow_refs` — now ask `_comments`, which
+`check_historical_comments`, `check_workflow_refs` — now ask `_cts_comments`, which
 picks the parser the PATH names:
 
 | language | the parser  | what the text scan got wrong                                                        |
 | -------- | ----------- | ----------------------------------------------------------------------------------- |
 | Python   | `tokenize`  | a `#` in a string literal — and an opt-out token there SUPPRESSED, failing open     |
-| shell    | `_bash_ast` | a heredoc body read as a run of comments                                            |
-| JS/TS    | `_js_ast`   | a `//` inside a string or template literal; a `/* … */` after code on the same line |
+| shell    | `_cts_bash_ast` | a heredoc body read as a run of comments                                            |
+| JS/TS    | `_cts_js_ast`   | a `//` inside a string or template literal; a `/* … */` after code on the same line |
 | YAML     | none        | nothing — its parsers discard comments, so the delimiter scan is the decision       |
 
 Nor is it only about comments. The lints that read PYTHON ask the same shape of
 structural question, and answered it the same wrong way until they were moved onto
-`_py_ast` (stdlib `ast`, no new dependency):
+`_cts_py_ast` (stdlib `ast`, no new dependency):
 
 | Lint                      | The structural question                   | What the text scan got wrong                                                                                           |
 | ------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |

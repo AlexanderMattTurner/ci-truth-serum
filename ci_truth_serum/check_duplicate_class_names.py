@@ -13,7 +13,7 @@ The rule, kept literal on purpose:
   * SCOPE is every tracked `.py` file under `--repo-root` (default: `git
     rev-parse --show-toplevel`), restricted to `--scope DIR` (repeatable) when
     given, else the whole tracked tree. A test file never joins scope
-    (`_linecheck.is_test_path`) — a file given on argv is scanned for its own
+    (`_cts_linecheck.is_test_path`) — a file given on argv is scanned for its own
     classes regardless, since judging it needs to know what it defines.
   * EXEMPT: `# allow-duplicate-class: <reason>` anywhere in the class HEADER —
     the `class` line, or the `):` line `ruff format` may split it onto. Per
@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotation_re,
     is_test_path,
     run_file_cli,

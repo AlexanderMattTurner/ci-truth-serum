@@ -10,7 +10,7 @@ in this pack reasons about:
     run with no jobs gives it nothing to name;
   * `check-required-reporter`'s `if: always()` reporter is a job, so it does not
     run either, and a required check stays "Expected — Waiting" instead of red;
-  * `_failure_routing` credits route 2 (WATCHED) to a workflow that some
+  * `_cts_failure_routing` credits route 2 (WATCHED) to a workflow that some
     notifier lists. That credit is real for every failure a job produces, and
     empty for this one. The hole is in the SHAPE of the run, not in the notifier
     list, so no static read of the tree can close it.

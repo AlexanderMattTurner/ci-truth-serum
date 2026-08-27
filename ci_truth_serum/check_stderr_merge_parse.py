@@ -25,7 +25,7 @@ the stream the later read sees is the success path's. Opt out with a
 command, the line above it, or (for rule b) the capturing assignment.
 
 Every question this lint asks is about shell STRUCTURE, so it asks the real bash
-grammar (``_bash_ast``) rather than the text: `2>&1` is a ``file_redirect``
+grammar (``_cts_bash_ast``) rather than the text: `2>&1` is a ``file_redirect``
 (never a `2>&1` inside an argument's text), "piped into a parser" is a later
 ``pipeline`` stage whose ``command_name`` is one of the parsers, "captured" is a
 ``variable_assignment`` whose value is a ``command_substitution``, and
@@ -50,13 +50,13 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     iter_nodes,
     node_text,
     parse,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     annotated,
     run_file_cli,

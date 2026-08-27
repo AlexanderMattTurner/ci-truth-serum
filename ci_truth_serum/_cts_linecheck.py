@@ -32,7 +32,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _fastyaml import SafeLoader, safe_load, scan  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import SafeLoader, safe_load, scan  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # Lines whose first word only prints text — a command quoted inside them is an
 # example or hint, not executed code. Shared by the stderr- and download-pinning
@@ -148,7 +148,7 @@ def annotated(line: str, token: str, require_reason: bool = True) -> bool:
 # A line whose first non-blank character opens a comment in one of the languages
 # this pack reads. Used only to walk the run of comment lines attached to a
 # construct — never to decide whether a `#` inside code is a comment, which is
-# the structural question `_comments` answers with each language's own grammar.
+# the structural question `_cts_comments` answers with each language's own grammar.
 _COMMENT_ONLY = re.compile(r"^[ \t]*(?:#|//|/\*|\*(?!/)|<!--)")
 
 
@@ -262,7 +262,7 @@ def logical_lines(text: str) -> list[tuple[int, str]]:
     lint in this package scans through, so a construct wrapped across physical
     lines cannot evade any of them; the meta-test in
     tests/cts/test_shell_hook_traversal.py holds each shell lint to it (or to the
-    full ``_bash_ast`` grammar)."""
+    full ``_cts_bash_ast`` grammar)."""
     out: list[tuple[int, str]] = []
     pending = ""
     start = 0
@@ -336,7 +336,7 @@ def run_line_checks(
     message: str,
 ) -> int:
     """``run_source_checks`` for a detector that needs only the text. Most
-    line-oriented lints do; a lint that must pick a parser (see ``_comments``)
+    line-oriented lints do; a lint that must pick a parser (see ``_cts_comments``)
     needs the path and calls the two-argument form directly."""
     return run_source_checks(argv, lambda text, _path: find_violations(text), message)
 
@@ -349,7 +349,7 @@ def unparseable_shell_reason(path: str, text: str) -> str | None:
     most of them read YAML or Python and are handed no shell at all; a module-
     scope import would put `tree_sitter_bash` in every one of their pre-commit
     environments. A check that IS handed shell still gets the loud ImportError
-    `_bash_ast` raises, so the deferral costs no fail-closed behaviour.
+    `_cts_bash_ast` raises, so the deferral costs no fail-closed behaviour.
     """
     if not is_shell_source(path, text.split("\n", 1)[0]):
         return None
@@ -357,7 +357,7 @@ def unparseable_shell_reason(path: str, text: str) -> str | None:
     # so a sibling import needs this directory on the path first — the same prelude
     # every check script carries.
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from _bash_ast import (  # pylint: disable=import-outside-toplevel
+    from _cts_bash_ast import (  # pylint: disable=import-outside-toplevel
         UnparseableShellError,
         assert_parseable,
     )

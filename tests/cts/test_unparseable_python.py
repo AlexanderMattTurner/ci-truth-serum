@@ -23,7 +23,7 @@ REPO_ROOT = Path(
 )
 sys.path.insert(0, str(REPO_ROOT / "ci_truth_serum"))
 
-import _linecheck as linecheck  # noqa: E402
+import _cts_linecheck as linecheck  # noqa: E402
 
 from ci_truth_serum import check_duplicate_module_constant as dmc  # noqa: E402
 

@@ -36,7 +36,7 @@ WHAT COUNTS AS A DIAGNOSTICS STEP, and nothing else does:
   * a `uses: ./…` local action whose directory name says the same, or whose
     steps hold any of the above.
 
-The `run:` body is read on the real bash grammar (`_bash_ast`), so a script name
+The `run:` body is read on the real bash grammar (`_cts_bash_ast`), so a script name
 inside a message a command prints, or inside a heredoc, is text and not a call.
 See `.claude/rules/shell-lint-parsing.md`. Running a script is also not the same
 as naming one: the program is the command's NAME, or an interpreter's first
@@ -84,14 +84,14 @@ from pathlib import Path, PurePosixPath
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_words,
     iter_nodes,
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     LineLoader,
     MESSAGE_PREFIX,
@@ -99,7 +99,7 @@ from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-posi
     workflow_files,
     _job_blocks,
 )
-from _fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"

@@ -3,7 +3,7 @@
 The bug class this pins closed: a hook testing ``"some-token-ok" in line`` (a
 bare substring) honors the token ANYWHERE in the byte stream — inside a
 ``group: "<token>"`` string value, a printed message, a URL — so live data can
-silently disable the lint (a fail-open). The shared ``_linecheck.annotation_re``
+silently disable the lint (a fail-open). The shared ``_cts_linecheck.annotation_re``
 / ``annotated`` matcher scopes the token to a real comment (and, where the
 hook's contract demands it, requires a ``: <reason>``); every hook that
 recognizes a per-line annotation must build its predicate there.
@@ -32,7 +32,7 @@ import re
 
 from tests._helpers import HOOKS_DIR, load_hook
 
-lc = load_hook("_linecheck.py", "lc_for_annotation_contract")
+lc = load_hook("_cts_linecheck.py", "lc_for_annotation_contract")
 
 # The bare-substring predicate this contract bans: an annotation-shaped string
 # literal (or the conventional ALLOW/OPT_OUT constant naming one) used with a
@@ -88,7 +88,7 @@ def test_no_hook_hand_rolls_the_shared_annotation_matcher() -> None:
     }
     assert offenders == {}, (
         "these compiled patterns reimplement annotation_re(token) — build the "
-        f"matcher with _linecheck.annotation_re instead: {offenders}"
+        f"matcher with _cts_linecheck.annotation_re instead: {offenders}"
     )
 
 
@@ -205,7 +205,7 @@ def test_no_hook_hand_rolls_the_annotation_window() -> None:
     }
     assert offenders == {}, (
         "these reach for a neighbouring line by hand instead of asking "
-        f"_linecheck.annotation_window (via annotated_near): {offenders}"
+        f"_cts_linecheck.annotation_window (via annotated_near): {offenders}"
     )
 
 

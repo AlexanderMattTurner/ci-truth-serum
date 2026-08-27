@@ -120,7 +120,7 @@ def test_total_matches_line_count_ceiling() -> None:
         ("check_pipefail_grep_pipe", "tests/cts/test_check_pipefail_grep_pipe.py"),
         ("check_pr_paths", "tests/cts/test_check_pr_paths.py"),
         # the shared lib drops its leading underscore to match the committed file
-        ("_linecheck", "tests/cts/test_linecheck.py"),
+        ("_cts_linecheck", "tests/cts/test_cts_linecheck.py"),
     ],
 )
 def test_test_file_convention(stem: str, expected: str) -> None:

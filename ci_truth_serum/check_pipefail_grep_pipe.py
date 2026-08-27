@@ -47,7 +47,7 @@ hits are reported at the enclosing file's line numbers, which is where a reader
 goes to fix them. The descent is one level: a generator that writes a generator is
 not a shape this pack has met.
 
-The script is parsed with tree-sitter-bash (the shared ``_bash_ast`` grammar), so
+The script is parsed with tree-sitter-bash (the shared ``_cts_bash_ast`` grammar), so
 what the lint sees is what bash would run: a pipeline wrapped across physical lines
 is ONE pipeline node, and a reader name inside a string or a comment is text.
 Pipefail must be IN EFFECT where the pipeline runs: the first ``set`` command that
@@ -80,7 +80,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
     command_words,
     iter_nodes,
@@ -88,7 +88,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
     run_line_checks,

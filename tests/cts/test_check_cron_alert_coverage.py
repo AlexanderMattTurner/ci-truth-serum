@@ -8,7 +8,7 @@ workflows never leak into a case). The non-vacuity pairs assert the same
 workflow flips from clean to flagged when only its gate regresses to
 `== 'success'`, and from flagged to clean when only the tree's notifier starts
 listing it. The gate grammar and the four routes to a human belong to
-``_failure_routing`` and are pinned in ``test_failure_routing.py``.
+``_cts_failure_routing`` and are pinned in ``test_cts_failure_routing.py``.
 """
 
 import sys

@@ -1,4 +1,4 @@
-"""Tests for ci_truth_serum/_registry.py — the metadata SSOT that says which
+"""Tests for ci_truth_serum/_cts_registry.py — the metadata SSOT that says which
 checks this pack ships, what tier each sits in, and what each one is about.
 
 The contract tests pin the registry to the two surfaces that must agree with it:
@@ -11,7 +11,7 @@ import yaml
 
 from tests._helpers import REPO_ROOT, load_hook
 
-reg = load_hook("_registry.py", "_registry")
+reg = load_hook("_cts_registry.py", "_cts_registry")
 
 MANIFEST = yaml.safe_load(
     (REPO_ROOT / ".pre-commit-hooks.yaml").read_text(encoding="utf-8")

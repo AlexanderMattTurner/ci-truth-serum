@@ -1,6 +1,6 @@
 """Python source as a tree, for the lints whose question is about Python STRUCTURE.
 
-The shell lints ask ``_bash_ast`` "is this a command or a string a command
+The shell lints ask ``_cts_bash_ast`` "is this a command or a string a command
 prints?"; the Python lints ask the same shape of question — "is this name an
 assignment TARGET, or a value on the right?", "where does this call's argument
 list end?", "is this ``shutil.which`` executed, or spelled inside a ``reason=``

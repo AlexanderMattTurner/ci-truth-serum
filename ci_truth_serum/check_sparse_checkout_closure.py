@@ -14,7 +14,7 @@ checkout, or its end): a repo-relative path token under one of `--dep-dir`'s
 directories names a file the tree must contain, and a local composite action
 (`uses: ./dir`) names its whole directory. A Python file among them — or one
 the sparse-checkout list names itself and a step hands to an interpreter — is
-followed further through its own local imports (`_py_imports.walk_imports`),
+followed further through its own local imports (`_cts_py_imports.walk_imports`),
 since a list that stops at the entry point still serves a tree that dies on
 its first `import`.
 
@@ -50,7 +50,7 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_arguments,
     command_name,
@@ -60,11 +60,11 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse as parse_bash,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     workflow_files,
 )
-from _py_imports import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_imports import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     interpreter_scripts,
     walk_imports,
 )

@@ -48,7 +48,7 @@ class UnparseableShellError(ValueError):
     3 of an otherwise identical file.
 
     This refusal is what stops that empty result from reading as a pass. It is
-    the rule `_linecheck.run_source_checks` already states for an unparseable
+    the rule `_cts_linecheck.run_source_checks` already states for an unparseable
     YAML workflow — "no findings" is a false-green on the very file under test —
     applied to shell, which had been the exception.
 

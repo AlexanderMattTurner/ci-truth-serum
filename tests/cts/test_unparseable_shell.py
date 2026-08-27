@@ -19,8 +19,8 @@ import pytest
 
 from tests._helpers import load_hook
 
-bash_ast = load_hook("_bash_ast.py", "bash_ast_for_unparseable")
-linecheck = load_hook("_linecheck.py", "linecheck_for_unparseable")
+bash_ast = load_hook("_cts_bash_ast.py", "bash_ast_for_unparseable")
+linecheck = load_hook("_cts_linecheck.py", "linecheck_for_unparseable")
 exit_suppression = load_hook(
     "check_exit_suppression.py", "exit_suppression_for_unparseable"
 )
@@ -126,7 +126,7 @@ print(module.run_source_checks([{yaml!r}], lambda t, p: [], "msg"))
 
 
 def test_the_driver_loads_and_runs_without_the_bash_grammar(tmp_path: Path) -> None:
-    """About fifty checks import `_linecheck`, and most read YAML or Python and
+    """About fifty checks import `_cts_linecheck`, and most read YAML or Python and
     are handed no shell. A module-scope grammar import puts `tree_sitter_bash`
     in every one of their pre-commit environments, and each one without it dies
     on import — which is how two hooks broke in CI."""

@@ -507,7 +507,7 @@ def test_main_wires_violations_and_message(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """main() runs this script's detector through the shared loop with its own
-    message. The generic loop behaviour is covered once in test_linecheck.py;
+    message. The generic loop behaviour is covered once in test_cts_linecheck.py;
     here we only pin that main() emits THIS message."""
     bad = tmp_path / "bad.sh"
     bad.write_text("curl -o f https://x\nrun f\n", encoding="utf-8")
@@ -724,7 +724,7 @@ def test_pathological_input_fails_loudly(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # tree-sitter-bash allocates quadratically on chained pipelines, so
-    # `_bash_ast.parse` refuses such input. main() must report it and FAIL rather
+    # `_cts_bash_ast.parse` refuses such input. main() must report it and FAIL rather
     # than skip the file — a silent skip would false-green exactly the input an
     # adversary controls.
     hostile = tmp_path / "hostile.sh"

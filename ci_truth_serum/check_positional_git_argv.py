@@ -22,7 +22,7 @@ Locate the subcommand instead of indexing to it. Fix by searching the
 recorded argv for the subcommand token rather than a fixed index, or by
 keying a stub on the subcommand it reads out of its own argv, not on ``$1``.
 
-Comments are read through ``_comments`` (Python's own tokenizer under it), so
+Comments are read through ``_cts_comments`` (Python's own tokenizer under it), so
 a mention of the banned form in a docstring or a ``#`` note is prose, never an
 instance of it. Locating where a flagged shell fragment's text starts on its
 line uses Python's tokenizer too (the STRING token's own start column),
@@ -34,7 +34,7 @@ at a time), so this stays a line-oriented scan of the DECODED literal, never a
 tree.
 
 Only files a test path names are scanned (``tests/``, ``test_*.py``,
-``*_test.py`` — see ``_linecheck.is_test_path``): the defect is a test
+``*_test.py`` — see ``_cts_linecheck.is_test_path``): the defect is a test
 modelling host git's argv, and production code never indexes its own argv
 this way.
 
@@ -58,8 +58,8 @@ import tokenize
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _comments import comment_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import comment_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     is_test_path,
     run_file_cli,

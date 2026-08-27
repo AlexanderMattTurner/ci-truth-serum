@@ -14,7 +14,7 @@ running, under a report that said the halt was complete.
 can catch or block. That is what turns the request into a limit. A bound that
 sends SIGKILL first (`-s KILL`) is a limit too, and passes.
 
-The whole decision is a node shape (``_bash_ast``), never a text match. Three
+The whole decision is a node shape (``_cts_bash_ast``), never a text match. Three
 executed positions count, and a text scan gets each of them wrong:
 
   * a `command` whose name is `timeout` — ``timeout 60 cmd``;
@@ -51,7 +51,7 @@ from typing import NamedTuple
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
     PathologicalInputError,
     iter_nodes,
@@ -59,7 +59,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
     annotated_near,
     run_file_cli,

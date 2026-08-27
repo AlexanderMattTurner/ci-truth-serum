@@ -53,7 +53,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     _classification_text,
     _job_blocks,
@@ -90,7 +90,7 @@ _SCHEDULE_EQ = re.compile(
 # An annotation READER (it extracts the reason so a placeholder can be
 # rejected), not a boolean opt-out predicate — the value grammar is this
 # module's own, like `# gate-deps: <paths>`. The lead mirrors
-# `_linecheck.annotation_re`: the token may follow the `#` directly or after
+# `_cts_linecheck.annotation_re`: the token may follow the `#` directly or after
 # same-line comment text whose last character cannot belong to a token, so a
 # longer slug (`# not-multi-cron-ok:`) never satisfies this marker.
 _MARKER_READER = re.compile(

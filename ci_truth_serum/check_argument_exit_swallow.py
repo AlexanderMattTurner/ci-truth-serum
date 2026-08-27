@@ -34,7 +34,7 @@ resolved by its trailing literal name — first as a sibling of the sourcing fil
 then against the tracked shell files — so the common
 ``source "${SCRIPT_DIR}/lib.sh"`` idiom still contributes its functions.
 
-The whole decision is a node shape (``_bash_ast``), never a text match:
+The whole decision is a node shape (``_cts_bash_ast``), never a text match:
 
   * The substitution must be an ARGUMENT. The walk from the
     ``command_substitution`` up to its ``command`` passes only value wrappers
@@ -70,7 +70,7 @@ from pathlib import Path
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_name,
     command_words,
@@ -79,7 +79,7 @@ from _bash_ast import (  # pylint: disable=wrong-import-position
     parse,
     unquote,
 )
-from _linecheck import (  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
     tracked_shell_files,

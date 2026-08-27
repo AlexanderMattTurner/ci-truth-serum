@@ -77,11 +77,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     comment_lines,
     text_comments,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
 )

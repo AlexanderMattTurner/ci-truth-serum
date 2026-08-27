@@ -3,8 +3,8 @@
 A check that scanned no file returns 0, which is the exit code of a real pass.
 These two tests drive every member of the tier registry to prove no check can
 report that silently. Both are cross-module contracts, not unit tests of one
-function, so they live here rather than in ``test_linecheck.py`` — that file is
-``_linecheck.py``'s mutation oracle and is re-run once per mutant, where 50
+function, so they live here rather than in ``test_cts_linecheck.py`` — that file is
+``_cts_linecheck.py``'s mutation oracle and is re-run once per mutant, where 50
 subprocess spawns per run would exhaust the shard.
 """
 

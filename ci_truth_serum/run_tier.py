@@ -32,7 +32,7 @@ repo's configuration for every consumer. The contract test in
 ``tests/cts/test_run_tier.py`` asserts the registry stays in sync with
 ``.pre-commit-hooks.yaml`` so a newly added hook can't silently escape its tier.
 
-The registry itself is ``ci_truth_serum/_registry.py``, which also carries each
+The registry itself is ``ci_truth_serum/_cts_registry.py``, which also carries each
 check's tags. ``run_selection`` runs a selection over those tags.
 """
 
@@ -44,7 +44,7 @@ from pathlib import Path
 from identify import identify
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     COMMENTED_CODE,
     DOCKERFILE,
     DRIFT,

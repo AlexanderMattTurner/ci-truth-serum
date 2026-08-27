@@ -25,7 +25,7 @@ name is shared by ``Path.open``, ``tarfile.open(p, "w:gz")`` and
 
 INVARIANT — ``encoding=None`` is no encoding; it selects the platform
 default. A file that does not parse whole falls back to a per-line
-best-effort scan (``_py_ast.trees``) rather than being reported clean.
+best-effort scan (``_cts_py_ast.trees``) rather than being reported clean.
 
 Every hit here fails: this check ships no baseline and no grandfathering.
 Exempt a justified case with ``# allow-unspecified-encoding: <reason>`` on
@@ -38,13 +38,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
     run_file_cli,
     run_line_checks,
 )
-from _py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _py_ast import trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-unspecified-encoding"
 
@@ -146,7 +146,7 @@ def violations(text: str) -> list[int]:
     expression spans lines the `Call` node starts where the RECEIVER starts, while the
     callee's end line is where the method name — and the fix — sits.
 
-    Parsed through ``_py_ast.trees``: a file that does not parse as a whole
+    Parsed through ``_cts_py_ast.trees``: a file that does not parse as a whole
     still gets a per-line best-effort scan rather than reporting "no
     findings" — the false green this pack refuses to produce for source it
     was actually handed.

@@ -21,7 +21,7 @@ This lint reports a pinned install in a job whose steps hold **no cache at all**
 Local composite actions (`uses: ./.github/actions/foo`) are inlined first, so a
 job that gets its caching from a shared setup action counts as cached.
 
-The scan runs on the real bash grammar (`_bash_ast`), so an install written in a
+The scan runs on the real bash grammar (`_cts_bash_ast`), so an install written in a
 comment, or inside a message a command prints, is not a command.
 
 Deliberately NOT reported, because the download is the point or has no stable key:
@@ -55,7 +55,7 @@ from typing import NamedTuple
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_arguments,
     iter_nodes,
@@ -63,7 +63,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
     LineLoader,
     MESSAGE_PREFIX,

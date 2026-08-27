@@ -1,4 +1,4 @@
-"""Property/fuzz test for ci_truth_serum/_bash_ast — the shared tree-sitter-bash wrapper
+"""Property/fuzz test for ci_truth_serum/_cts_bash_ast — the shared tree-sitter-bash wrapper
 both shell lints parse through.
 
 The whole point of swapping the hand-rolled tokenizers for a real grammar is
@@ -17,7 +17,7 @@ from hypothesis import strategies as st
 
 from tests._helpers import load_hook
 
-bash_ast = load_hook("_bash_ast.py", "fuzz_bash_ast")
+bash_ast = load_hook("_cts_bash_ast.py", "fuzz_bash_ast")
 
 # Shell tokens that exercise the constructs the old tokenizers mis-handled — the
 # ones that must parse into real structure rather than desync a quote counter.

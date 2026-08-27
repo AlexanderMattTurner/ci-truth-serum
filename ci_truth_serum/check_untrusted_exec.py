@@ -51,13 +51,13 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import check_trusted_base as _trusted_base  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     iter_nodes,
     parse as _parse_bash,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader as _LineLoader,
     annotation_re,
     _job_blocks,

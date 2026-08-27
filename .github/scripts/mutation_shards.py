@@ -90,8 +90,8 @@ def _base_config(repo_root: Path) -> dict:
 
 def _test_file(stem: str) -> str:
     """The example suite that is a module's mutation oracle. `ci_truth_serum/check_x.py`
-    -> `tests/cts/test_check_x.py`; the shared `ci_truth_serum/_linecheck.py` ->
-    `tests/cts/test_linecheck.py` (the leading underscore is dropped, matching
+    -> `tests/cts/test_check_x.py`; the shared `ci_truth_serum/_cts_linecheck.py` ->
+    `tests/cts/test_cts_linecheck.py` (the leading underscore is dropped, matching
     the committed test filename)."""
     return f"{TEST_DIR}/test_{stem.lstrip('_')}.py"
 
@@ -99,7 +99,7 @@ def _test_file(stem: str) -> str:
 def _direct_dependencies(repo_root: Path, module: str) -> set[str]:
     """The package's own modules that MODULE imports.
 
-    A check module reaches its shared helpers as ``from _linecheck import …``
+    A check module reaches its shared helpers as ``from _cts_linecheck import …``
     after putting its own directory on ``sys.path``, so an imported top-level
     name is a local dependency exactly when a sibling ``.py`` of that name
     exists. Every other imported name is a third-party or stdlib package, whose

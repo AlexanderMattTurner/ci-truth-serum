@@ -30,7 +30,7 @@ The definition, kept literal on purpose:
   * A VIOLATION is a function defined in a test shell file whose name is also
     defined, as a pure predicate, in some production shell file.
 
-Purity is decided on the real bash grammar (the shared ``_bash_ast`` parser), so
+Purity is decided on the real bash grammar (the shared ``_cts_bash_ast`` parser), so
 a body wrapped across continuations, a one-liner, and a `$(…)` hiding inside a
 `[[ … ]]` are all read exactly as bash reads them. Anything the grammar does not
 recognise as one of the shapes above (an `if`, a `case`, a nested brace group, a
@@ -54,8 +54,8 @@ from typing import NamedTuple
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     is_test_path,
     run_file_cli,

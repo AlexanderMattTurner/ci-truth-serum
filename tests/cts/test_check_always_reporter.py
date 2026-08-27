@@ -22,7 +22,7 @@ def _write(dirpath: Path, name: str, body: str) -> Path:
 
 
 # The required-check-shape probes (has_decide_gate / has_always_reporter) now
-# live in _linecheck and are unit-tested in test_linecheck.py; here they are
+# live in _cts_linecheck and are unit-tested in test_cts_linecheck.py; here they are
 # exercised end-to-end through check_file below.
 
 

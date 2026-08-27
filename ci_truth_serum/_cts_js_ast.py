@@ -15,7 +15,7 @@ exists to catch, so the ImportError propagates rather than being swallowed. The
 bindings are pinned as a hook runtime dependency (pyproject `dependencies`, and
 each reading hook's `additional_dependencies`).
 
-Neither pathological-input guard `_bash_ast` carries applies here, measured on
+Neither pathological-input guard `_cts_bash_ast` carries applies here, measured on
 all three grammars (tree-sitter-javascript 0.25, tree-sitter-typescript 0.23)
 rather than assumed: 20k-deep parenthesis nesting and 20k-stage `|` / `+` / `&&`
 chains all parse inside the baseline RSS (tree-sitter-bash needs ~3.3 GB at 20k

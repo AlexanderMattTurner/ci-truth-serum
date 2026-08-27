@@ -35,10 +35,10 @@ from typing import NamedTuple
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.

@@ -15,7 +15,7 @@ Correct pattern — capture then iterate, so the producer's failure is observed:
     out="$(jq -r '.providers[]' "$file")" || die "jq failed"
     while IFS= read -r d; do …; done <<<"$out"
 
-The script is parsed with the real bash grammar (``_bash_ast``), so both constructs
+The script is parsed with the real bash grammar (``_cts_bash_ast``), so both constructs
 are node shapes rather than text: the redirect form is a ``process_substitution``
 sitting inside an INPUT ``file_redirect`` — which is what tells it apart from
 ``diff <(jq a) <(jq b)``, where the same substitutions are the command's arguments —
@@ -43,13 +43,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_words,
     iter_nodes,
     parse,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotation_re,
     run_file_cli,
     run_line_checks,

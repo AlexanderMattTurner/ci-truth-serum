@@ -15,7 +15,7 @@ wrapper (`sudo mkdir -p x`, `as_root mkdir -p x`) still counts, since bash
 parses the wrapped call as one `command` node whose word list still carries
 both `mkdir` and `-p`.
 
-The command is found with tree-sitter-bash (the shared `_bash_ast` grammar),
+The command is found with tree-sitter-bash (the shared `_cts_bash_ast` grammar),
 so `mkdir -p` written in a comment, or as part of a string a command prints
 (`gb_warn "use mkdir -p here"`), never becomes a `command` node and is never
 flagged.
@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     command_words,
     iter_nodes,
@@ -53,7 +53,7 @@ from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-posit
     parse,
     unquote,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
     run_line_checks,

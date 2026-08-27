@@ -364,7 +364,7 @@ def test_a_python_elif_chain_is_one_decision() -> None:
 
 
 def test_a_python_file_that_does_not_parse_still_reports_its_real_lines() -> None:
-    """`_py_ast.trees` falls back to a per-line parse, so a half-written edit
+    """`_cts_py_ast.trees` falls back to a per-line parse, so a half-written edit
     does not turn the file into a silent pass."""
     src = 'def broken(\nif run["conclusion"] == "failure":\n    n()\n'
     assert [line for line, _ in mod.violations(src, "scan.py")] == [2]

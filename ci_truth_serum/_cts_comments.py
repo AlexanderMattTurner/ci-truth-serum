@@ -34,15 +34,15 @@ from tree_sitter import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # `iter_nodes` walks any tree-sitter tree, bash or not, so both grammars below
 # share the one traversal rather than each growing a copy of it.
-from _bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     iter_nodes,
     parse as _parse_bash,
 )
-from _js_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_js_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     is_js_source,
     parse as _parse_js,
 )
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     comment_body,
     is_python_source,
     is_shell_source,
@@ -119,7 +119,7 @@ def js_comments(source: str, path: str) -> dict[int, str]:
 
     Both comment shapes come from the grammar, so a `//` inside a string or a
     template literal is not one, and every line of a `/* … */` block is — the two
-    the text heuristic inverts. PATH picks the grammar (see ``_js_ast``); it is
+    the text heuristic inverts. PATH picks the grammar (see ``_cts_js_ast``); it is
     never sniffed from the content, because a `.ts` file's type annotations parse
     as ERROR nodes under the JavaScript grammar and would drop the comments
     after them.

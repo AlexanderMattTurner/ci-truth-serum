@@ -1,4 +1,4 @@
-"""Tests for ci_truth_serum/_linecheck.py — the machinery shared by the line-oriented
+"""Tests for ci_truth_serum/_cts_linecheck.py — the machinery shared by the line-oriented
 pre-commit lints (the read-each-path loop, the skip-on-unreadable, the
 ``<path>:<lineno>: <message>`` print loop and exit code) and the workflow-file
 discovery glob shared by the YAML lints.
@@ -17,7 +17,7 @@ import yaml
 
 from tests._helpers import HOOKS_DIR, load_hook
 
-lc = load_hook("_linecheck.py", "_linecheck")
+lc = load_hook("_cts_linecheck.py", "_cts_linecheck")
 
 
 def _wf(body: str) -> str:
@@ -789,13 +789,13 @@ def test_exactly_one_definition_of_the_predicate_exists() -> None:
         path.name: path.read_text(encoding="utf-8").count("def is_test_path(")
         for path in sorted(HOOKS_DIR.glob("*.py"))
     }
-    assert {k: v for k, v in definitions.items() if v} == {"_linecheck.py": 1}, (
-        f"is_test_path must be defined exactly once, in _linecheck: {definitions}"
+    assert {k: v for k, v in definitions.items() if v} == {"_cts_linecheck.py": 1}, (
+        f"is_test_path must be defined exactly once, in _cts_linecheck: {definitions}"
     )
 
 
 # ── comment_body / is_python_source ──────────────────────────────────────
-# `comment_body` is the no-grammar fallback behind `_comments.text_comments`;
+# `comment_body` is the no-grammar fallback behind `_cts_comments.text_comments`;
 # its cases lived duplicated in the check_graceful_handwave and
 # check_historical_comments suites, which consume the helper rather than own it.
 

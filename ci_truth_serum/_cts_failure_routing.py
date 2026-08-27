@@ -49,7 +49,7 @@ either: GitHub abandons a job at its first failed step, so a notify step with no
 `if:` never runs on the failure it is meant to report.
 
 What counts as a notification is configurable, never hardcoded to one vendor:
-the patterns live in `_linecheck.NOTIFIER_PATTERNS` and both lints extend them
+the patterns live in `_cts_linecheck.NOTIFIER_PATTERNS` and both lints extend them
 through `--notifier-pattern`.
 """
 
@@ -59,7 +59,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     has_trigger,
     key_block_lines,
     parse_optout_marker,
@@ -258,7 +258,7 @@ def watched_names(docs: list[dict], matcher: "re.Pattern[str]") -> set[str]:
 
 def optout_marker(text: str) -> tuple[str | None, str | None]:
     """The `# cron-alert: false  # <reason>` opt-out on this workflow's monitored
-    trigger keys, as `(reason, error)` — see `_linecheck.parse_optout_marker`.
+    trigger keys, as `(reason, error)` — see `_cts_linecheck.parse_optout_marker`.
 
     The marker is read from the `schedule:` and `push:` key blocks, so one
     marker means the same thing to both lints: this workflow's failures are

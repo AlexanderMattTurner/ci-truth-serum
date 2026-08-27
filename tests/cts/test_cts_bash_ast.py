@@ -1,4 +1,4 @@
-"""Example-based tests (mutation oracle) for ci_truth_serum/_bash_ast.py — the shared
+"""Example-based tests (mutation oracle) for ci_truth_serum/_cts_bash_ast.py — the shared
 tree-sitter-bash wrapper every shell lint parses through.
 
 Pins the exact contract of ``parse`` and ``iter_nodes`` (a real bash tree, node
@@ -17,7 +17,7 @@ import pytest
 
 from tests._helpers import load_hook
 
-bash_ast = load_hook("_bash_ast.py", "check_bash_ast")
+bash_ast = load_hook("_cts_bash_ast.py", "check_bash_ast")
 
 
 def _types(script: str, *types: str) -> list[str]:

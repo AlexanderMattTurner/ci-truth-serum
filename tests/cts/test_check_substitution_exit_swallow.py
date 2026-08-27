@@ -181,7 +181,7 @@ def test_main_wires_violations_and_message(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """main() runs this script's detector through the shared loop with its own
-    message. The generic loop behaviour is covered in test_linecheck.py; here we
+    message. The generic loop behaviour is covered in test_cts_linecheck.py; here we
     only pin that main() emits THIS message with a navigable file:line prefix."""
     bad = tmp_path / "bad.sh"
     bad.write_text(

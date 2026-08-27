@@ -13,7 +13,7 @@ though a multi-pattern arm containing a bare `*` alternative (`x|*)`) does
 count. The default may reject the value (`*) die "unknown: $1" ;;`) — the
 point is that SOMETHING runs.
 
-The block is found with tree-sitter-bash (the shared ``_bash_ast`` grammar),
+The block is found with tree-sitter-bash (the shared ``_cts_bash_ast`` grammar),
 so a single-line ``case … esac``, a block wrapped in continuations, and a
 nested ``case`` are all analyzed exactly as bash parses them, and a ``case``
 quoted inside a string or comment is data, never a block.
@@ -28,8 +28,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
     run_line_checks,

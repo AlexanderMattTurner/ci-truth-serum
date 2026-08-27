@@ -39,9 +39,9 @@ from typing import NamedTuple
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _fastyaml import compose  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import compose  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from check_pin_comment_truth import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ACTIONS_DIR,
     REPO_ROOT,

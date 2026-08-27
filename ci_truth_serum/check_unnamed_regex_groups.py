@@ -7,7 +7,7 @@ Skips f-strings and other non-literal patterns it can't statically evaluate.
 Resolves how the file reaches ``re`` before matching call targets, so an aliased
 import can't smuggle an unnamed group past the check: ``import re as x`` (``x.compile``)
 and ``from re import compile`` (a bare ``compile(...)``) are inspected too. That
-resolver lives in ``_py_ast``, shared with every other lint that matches ``re.*``.
+resolver lives in ``_cts_py_ast``, shared with every other lint that matches ``re.*``.
 """
 
 import ast
@@ -16,8 +16,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _py_ast import re_bindings, re_call_target  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import re_bindings, re_call_target  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 _RE_FUNCS = frozenset(
     {

@@ -1,4 +1,4 @@
-"""Example-based tests (mutation oracle) for ci_truth_serum/_py_ast.py — the shared
+"""Example-based tests (mutation oracle) for ci_truth_serum/_cts_py_ast.py — the shared
 stdlib-``ast`` wrapper the Python-reading lints parse through.
 
 Pins the two contracts its callers depend on: node line numbers index the
@@ -14,7 +14,7 @@ import pytest
 
 from tests._helpers import load_hook
 
-py_ast = load_hook("_py_ast.py", "check_py_ast")
+py_ast = load_hook("_cts_py_ast.py", "check_py_ast")
 
 
 def _assignments(source: str) -> list[tuple[int, str]]:

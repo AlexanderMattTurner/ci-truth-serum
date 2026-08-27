@@ -29,13 +29,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     is_test_path,
     run_file_cli,
 )
-from _py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _py_ast import trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "big-tuple-ok"
 DEFAULT_MIN_ELEMENTS = 3
@@ -104,7 +104,7 @@ def violations(
     """(1-based line, element count) for every unexempted fixed tuple[...] of
     at least MIN_ELEMENTS elements.
 
-    Parsed through ``_py_ast.trees``: a file that does not parse as a whole
+    Parsed through ``_cts_py_ast.trees``: a file that does not parse as a whole
     still gets a per-line best-effort scan rather than reporting "no
     findings" — the false green this pack refuses to produce for source it
     was actually handed.

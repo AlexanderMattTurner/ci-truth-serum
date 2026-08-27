@@ -14,7 +14,7 @@ Keep the guard here when all three hold:
 
 - The defect class comes from a tool every consumer uses: GitHub Actions, shell, Python, pre-commit, a package manager.
 - A consumer with no knowledge of the originating repository would still want the check.
-- The detector needs no per-repository configuration. A check that needs a project prefix or a file pair is config-driven, and those stay out of the aggregates (see `ci_truth_serum/_registry.py`).
+- The detector needs no per-repository configuration. A check that needs a project prefix or a file pair is config-driven, and those stay out of the aggregates (see `ci_truth_serum/_cts_registry.py`).
 
 Otherwise the guard belongs in the repository that found the defect. Say which repository you chose and why, in one sentence, then stop if it is not this one.
 
@@ -32,10 +32,10 @@ Then answer both:
 In order. Take the first one that works:
 
 1. **A type or a data shape** that makes the defect impossible to write.
-2. **A grammar rule.** `_bash_ast` for shell, `_py_ast` for Python, `_js_ast` for JavaScript and TypeScript, `yaml` for workflows.
+2. **A grammar rule.** `_cts_bash_ast` for shell, `_cts_py_ast` for Python, `_cts_js_ast` for JavaScript and TypeScript, `yaml` for workflows.
 3. **A line or regex scan** over text.
 
-The order tracks the false-positive rate. **A question about shell STRUCTURE always uses `_bash_ast`, never text** — is this a command or a string a command prints, one command or two, an argument or a redirect. A regex, a quote-state scanner, or `shlex` answering one of those is a partial re-implementation of bash. `.claude/rules/shell-lint-parsing.md` holds the full rule.
+The order tracks the false-positive rate. **A question about shell STRUCTURE always uses `_cts_bash_ast`, never text** — is this a command or a string a command prints, one command or two, an argument or a redirect. A regex, a quote-state scanner, or `shlex` answering one of those is a partial re-implementation of bash. `.claude/rules/shell-lint-parsing.md` holds the full rule.
 
 Read narration with `comment_body`, not the raw line: a pattern inside a string literal is a value the program builds, not a claim about the tree.
 
@@ -45,7 +45,7 @@ New module: `ci_truth_serum/check_<slug>.py`.
 
 - Module docstring states **what the check prevents** and **the measured defect it comes from**, with real numbers where you have them.
 - Export `violations(text: str) -> list[int]` — the 1-based line numbers that violate.
-- Drive it through `run_line_checks(argv, violations, MESSAGE)` from `_linecheck`. A check that picks a parser by path uses `run_source_checks`.
+- Drive it through `run_line_checks(argv, violations, MESSAGE)` from `_cts_linecheck`. A check that picks a parser by path uses `run_source_checks`.
 - `MESSAGE` names the remedy. A reader must learn what to change from the failure text alone.
 - Opt out with `annotated_near(lines, line, OPT_OUT)` and `OPT_OUT = "allow-<slug>"`. **The reason is required.** Never write a bare `token in line` test — `annotation_re` owns token boundaries, and the meta-test in `tests/cts/test_annotation_predicates.py` bans the substring form.
 
@@ -55,12 +55,12 @@ New module: `ci_truth_serum/check_<slug>.py`.
 
 A missing one is silent:
 
-| Place                                  | What breaks without it                                                         |
-| -------------------------------------- | ------------------------------------------------------------------------------ |
-| `.pre-commit-hooks.yaml`               | No consumer can enable the hook.                                               |
-| `ci_truth_serum/_registry.py` `CHECKS` | The hook escapes its tier aggregate and carries no tag. A contract test fails. |
-| The `README.md` table for that tier    | `tests/cts/test_readme_hook_coverage.py` fails.                                |
-| `changelog.d/<id>.added.md`            | Consumers never learn the hook exists.                                         |
+| Place                                      | What breaks without it                                                         |
+| ------------------------------------------ | ------------------------------------------------------------------------------ |
+| `.pre-commit-hooks.yaml`                   | No consumer can enable the hook.                                               |
+| `ci_truth_serum/_cts_registry.py` `CHECKS` | The hook escapes its tier aggregate and carries no tag. A contract test fails. |
+| The `README.md` table for that tier        | `tests/cts/test_readme_hook_coverage.py` fails.                                |
+| `changelog.d/<id>.added.md`                | Consumers never learn the hook exists.                                         |
 
 Scope the manifest entry with `files:` and `types:` so the hook reads only where the failure bites. A workflow lint sets `pass_filenames: false` and self-discovers.
 

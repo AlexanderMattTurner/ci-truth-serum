@@ -1,6 +1,6 @@
 """Tests for ci_truth_serum/check_wall_clock_assertions.py — the check that bans a
 test assertion comparing a wall-clock duration against a numeric literal, in
-Python (stdlib ``ast``) and JavaScript/TypeScript (``_js_ast``, tree-sitter).
+Python (stdlib ``ast``) and JavaScript/TypeScript (``_cts_js_ast``, tree-sitter).
 """
 
 import subprocess

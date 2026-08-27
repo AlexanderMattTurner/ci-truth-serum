@@ -33,8 +33,8 @@ A call that must pass an assembled string (the replacement is known to hold no
 pattern character, or the expansion is the point) opts out with a same-line or
 immediately-preceding-line ``allow-replacement-expansion: <reason>`` comment.
 
-Structure is read with each language's own grammar — ``_js_ast`` (tree-sitter)
-and ``_py_ast`` (stdlib ``ast``) — never with a text scan, per
+Structure is read with each language's own grammar — ``_cts_js_ast`` (tree-sitter)
+and ``_cts_py_ast`` (stdlib ``ast``) — never with a text scan, per
 ``.claude/rules/shell-lint-parsing.md``. "Is this argument the replacement?" and
 "does this template interpolate?" are questions about the tree.
 
@@ -47,11 +47,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # `iter_nodes` walks any tree-sitter tree, whichever grammar built it — the same
-# reason `_comments` reaches into `_bash_ast` for it.
-from _bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _linecheck import annotated_near, is_python_source, run_file_cli, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _py_ast import lines, name_of, re_bindings, re_call_target, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+# reason `_cts_comments` reaches into `_cts_bash_ast` for it.
+from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (
+    annotated_near,
+    is_python_source,
+    run_file_cli,
+    run_source_checks,
+)  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, name_of, re_bindings, re_call_target, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-replacement-expansion"
 
