@@ -61,6 +61,7 @@ FUZZ_REQUIRED = {
     "check_global_stdio_swap": "violations",
     "check_replacement_expansion": "violations",
     "check_unpaged_all": "violations",
+    "check_runner_var_foreign_shell": "violations",
     "check_workflow_pipefail": "analyze",
     "check_inline_run_length": "analyze",
     "check_always_reporter": "check_file",

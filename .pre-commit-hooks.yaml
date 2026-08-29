@@ -116,6 +116,16 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-runner-var-foreign-shell
+  name: "honesty: no runner variable in a shell GitHub does not set up"
+  description: GITHUB_OUTPUT, GITHUB_ENV, GITHUB_PATH and GITHUB_STEP_SUMMARY name files on the runner. A shell GitHub does not set up can run the script in a container or on another host. The write then reaches no file the runner reads. The step still exits 0, and the result stays empty.
+  entry: python -m ci_truth_serum.check_runner_var_foreign_shell
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 - id: check-truncating-pr-json
   name: "honesty: refuse a `gh pr` --json read of a field GitHub truncates at 100"
   description: "`gh pr view --json files` asks GraphQL for `files(first: 100)` with no cursor, so past 100 entries gh exits 0 with a short list and nothing in the response says so. Reads shell, inline workflow `run:` blocks, and Python `subprocess` calls."
