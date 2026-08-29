@@ -383,10 +383,3 @@ def test_a_marker_a_run_body_echoes_does_not_suppress(tmp_path):
         "          bash ci/collect-logs.sh\n"
     )
     assert len(_messages(_write(tmp_path, _job(step)))) == 1
-
-
-def test_comment_view_keeps_only_yaml_comments():
-    """Code becomes blanks rather than vanishing, so every column — and so every
-    line number a finding reports — still lines up with the source."""
-    text = 'name: "# x"  # real: why\nrun: echo hi\n'
-    assert fod.comment_view(text) == [" " * 13 + "# real: why", " " * 12]

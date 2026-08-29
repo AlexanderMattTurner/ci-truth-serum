@@ -101,6 +101,9 @@ _COMMENT_INTRO = r"(?:#|<!--|//)"
 # lint — a fail-open on every hook whose opt-out scan runs over multi-line text
 # (a job block, a whole file) rather than one line at a time.
 _LINE_BOUNDARY_CLASS = r"\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+# The same characters as a set, for the code that walks text rather than matching
+# it. `test_line_boundary_spellings_agree` pins the two spellings together.
+_LINE_BOUNDARY = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 # The characters an annotation token may not be glued to on either side. `\b`
@@ -1213,6 +1216,24 @@ def _job_blocks(text: str) -> dict[str, tuple[int, str]]:
         blocks[name] = (i + 1, "\n".join(lines[i:end]))
         i = end
     return blocks
+
+
+def yaml_comment_view(text: str) -> list[str]:
+    """TEXT's lines with everything that is not a YAML COMMENT blanked out.
+
+    An opt-out is a comment by contract, and a raw line scan cannot hold that
+    line: `name: "# some-check-ok: example"` is a string VALUE, and honouring it
+    would let any step turn a check off by naming it. The comment spans come from
+    PyYAML's own scanner (`strip_yaml_comments`), so what counts as a comment
+    here is what GitHub parses as one. Line boundaries survive, so a caller's
+    line numbers still index this view.
+    """
+    blanked = strip_yaml_comments(text)
+    view = "".join(
+        original if original != stripped or original in _LINE_BOUNDARY else " "
+        for original, stripped in zip(text, blanked)
+    )
+    return view.splitlines()
 
 
 def default_run_shell(*scopes: object) -> str | None:

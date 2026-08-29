@@ -8,6 +8,7 @@ The per-script test modules keep only their own detection cases plus one thin
 duplicated across them.
 """
 
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -225,6 +226,35 @@ def test_has_always_reporter(jobs: dict, expected: bool) -> None:
 )
 def test_is_always_reporter(if_value: str, expected: bool) -> None:
     assert lc.is_always_reporter(if_value) is expected
+
+
+# ── yaml_comment_view ────────────────────────────────────────────────────────
+# What may carry an opt-out: a real YAML comment, never a string value.
+
+
+def test_yaml_comment_view_keeps_only_yaml_comments() -> None:
+    """Code becomes blanks rather than vanishing, so every column — and so every
+    line number a finding reports — still lines up with the source."""
+    text = 'name: "# x"  # real: why\nrun: echo hi\n'
+    assert lc.yaml_comment_view(text) == [" " * 13 + "# real: why", " " * 12]
+
+
+def test_yaml_comment_view_blanks_a_marker_inside_a_block_scalar() -> None:
+    """A `run:` script is a string value, so a comment introducer in it is data."""
+    text = "run: |\n  // allow-x: not a comment\n"
+    assert lc.yaml_comment_view(text) == ["      ", " " * 27]
+
+
+def test_line_boundary_spellings_agree() -> None:
+    """The set, the regex class, and Python's own idea of a line boundary agree.
+
+    Derived from `splitlines`, not pasted, so a character Python adds later fails
+    here instead of silently escaping one of the two spellings.
+    """
+    real = {chr(n) for n in range(0x3000) if len(f"a{chr(n)}b".splitlines()) > 1}
+    assert real, "splitlines probe found nothing — the derivation broke"
+    assert lc._LINE_BOUNDARY == real
+    assert all(re.fullmatch(f"[{lc._LINE_BOUNDARY_CLASS}]", c) for c in real)
 
 
 # ── default_run_shell ────────────────────────────────────────────────────────

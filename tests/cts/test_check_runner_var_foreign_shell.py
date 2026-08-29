@@ -189,6 +189,21 @@ def test_a_foreign_shell_that_reads_no_runner_variable_is_clean():
     assert rv.violations(body) == []
 
 
+def test_a_lower_case_spelling_is_the_same_variable_on_windows():
+    """A Windows runner looks an environment variable up without regard to case,
+    and so do the runtimes a foreign shell starts there."""
+    body = HEADER + (
+        "      - shell: perl {0}\n        run: print $ENV{github_output};\n"
+    )
+    found = rv.violations(body)
+    assert len(found) == 1
+    assert "`$GITHUB_OUTPUT`" in found[0][1]
+
+
+def test_two_spellings_of_one_variable_are_one_entry():
+    assert rv.runner_vars("GITHUB_ENV github_env Github_Env") == ["GITHUB_ENV"]
+
+
 def test_a_longer_name_containing_a_runner_variable_is_not_one():
     body = HEADER + (
         "      - shell: perl {0}\n"
@@ -214,14 +229,29 @@ def test_a_uses_step_has_no_script():
 # ── the opt-out ──────────────────────────────────────────────────────────────
 
 
-def test_an_annotation_in_the_script_body_suppresses():
+def test_an_annotation_in_the_script_body_does_not_suppress():
+    """The `run:` script is a YAML string value, not a comment.
+
+    A foreign language gives this check no grammar to tell its comments from its
+    data, so honouring the marker there would let a printed string turn the
+    check off.
+    """
     body = HEADER + (
         "      - shell: node {0}\n"
         "        run: |\n"
         "          // allow-runner-var-foreign-shell: node runs on the runner itself\n"
         "          require('fs').appendFileSync(process.env.GITHUB_OUTPUT, 'a=b\\n');\n"
     )
-    assert rv.violations(body) == []
+    assert len(rv.violations(body)) == 1
+
+
+def test_a_marker_printed_by_the_script_does_not_suppress():
+    body = HEADER + (
+        "      - shell: node {0}\n"
+        '        run: console.log("// allow-runner-var-foreign-shell: doc"); '
+        "process.env.GITHUB_OUTPUT\n"
+    )
+    assert len(rv.violations(body)) == 1
 
 
 def test_an_annotation_above_the_step_suppresses():

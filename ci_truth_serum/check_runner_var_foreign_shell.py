@@ -39,6 +39,14 @@ The remedies, in the order to prefer them:
    foreign shell demonstrably runs on the runner's own filesystem, as
    `shell: node {0}` does.
 
+WHERE THE OPT-OUT GOES. In a YAML comment, above the step or on a comment line
+inside it — never in the `run:` script. The script is a YAML string value, and a
+foreign language gives this check no grammar to tell that language's comments
+from its data. Honouring the marker anywhere in the script text would let
+`console.log("// allow-runner-var-foreign-shell: …")` turn the check off, which
+is a fail-open. `yaml_comment_view` blanks everything PyYAML does not report as
+a comment, so what suppresses a finding is what GitHub parses as a comment.
+
 WHY THIS PARSES YAML BUT SCANS THE SCRIPT AS TEXT. The two questions have
 different answers. "What is this step's shell?" is structural — a `shell:` key
 in a comment is not a shell, and a step's own `shell:` beats the job's
@@ -72,6 +80,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     default_run_shell,
     step_span_ends,
     workflow_files as _workflow_files,
+    yaml_comment_view,
     _job_blocks,
 )
 
@@ -91,7 +100,10 @@ NATIVE_SHELLS = frozenset(
 
 # The four files the runner writes for a step and reads back after it.
 RUNNER_VARS = ("GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_PATH", "GITHUB_STEP_SUMMARY")
-_RUNNER_VAR_RE = re.compile(rf"\b(?:{'|'.join(RUNNER_VARS)})\b")
+# Matched without regard to case. A Windows runner looks an environment variable
+# up case-insensitively, and so do the runtimes a foreign shell starts there, so
+# `$ENV{github_output}` in Perl on Windows reads the same file as the capitals do.
+_RUNNER_VAR_RE = re.compile(rf"\b(?:{'|'.join(RUNNER_VARS)})\b", re.IGNORECASE)
 
 # A `${{ … }}` expression: where it sits decides whether this check can read the
 # shell. In the FIRST word it hides the program's name, so the shell is unknown.
@@ -127,11 +139,16 @@ def is_foreign_shell(shell: str | None) -> bool:
 
 
 def runner_vars(script: str) -> list[str]:
-    """Every runner variable SCRIPT names, in first-appearance order, once each."""
+    """Every runner variable SCRIPT names, in first-appearance order, once each.
+
+    Reported by its canonical capitals whatever case the script spells, so one
+    variable named twice in two spellings is one entry.
+    """
     seen: list[str] = []
     for match in _RUNNER_VAR_RE.finditer(script):
-        if match.group() not in seen:
-            seen.append(match.group())
+        name = match.group().upper()
+        if name not in seen:
+            seen.append(name)
     return seen
 
 
@@ -186,11 +203,12 @@ def _message(location: str, shell: str, names: list[str]) -> str:
 def analyze(doc: object, text: str) -> list[tuple[int, str]]:
     """Every violation in one parsed document, as (step's 1-based line, message).
 
-    TEXT is the file's own source, which the opt-out lookup reads.
+    TEXT is the file's own source. The opt-out lookup reads it through
+    `yaml_comment_view`, so only a real YAML comment can suppress a finding.
     """
     if not isinstance(doc, dict):
         return []
-    lines = text.splitlines()
+    lines = yaml_comment_view(text)
     last_line = max(len(lines), 1)
     blocks = _job_blocks(text)
 

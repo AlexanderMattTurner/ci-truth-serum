@@ -95,9 +95,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     LineLoader,
     MESSAGE_PREFIX,
-    strip_yaml_comments,
     container_block_end,
     step_span_ends,
+    yaml_comment_view,
     workflow_files,
     _job_blocks,
 )
@@ -125,7 +125,6 @@ MESSAGE = (
 _FAILURE = re.compile(r"(?<![\w.])failure\s*\(\s*\)")
 # Every character `str.splitlines()` treats as a line boundary. `comment_view`
 # keeps them, so its line count matches the text it was built from.
-_LINE_BOUNDARY = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 _COVERING_CALL = re.compile(r"(?<![\w.])(?:cancelled|always)\s*\(\s*\)")
 
 
@@ -342,24 +341,6 @@ def _containers(doc: dict) -> list[tuple[str, dict]]:
     return [("runs", runs)] if isinstance(runs, dict) else []
 
 
-def comment_view(text: str) -> list[str]:
-    """TEXT's lines with everything that is not a YAML COMMENT blanked out.
-
-    The opt-out is a comment by contract, and a raw line scan cannot hold that
-    line: `name: "# failure-only-diagnostics-ok: example"` is a string value, and
-    honouring it would let any step turn this check off by naming it. The comment
-    spans come from PyYAML's own scanner (`strip_yaml_comments`), so what counts
-    as a comment here is what GitHub parses as one. Line boundaries survive, so a
-    caller's line numbers still index this view.
-    """
-    blanked = strip_yaml_comments(text)
-    view = "".join(
-        original if original != stripped or original in _LINE_BOUNDARY else " "
-        for original, stripped in zip(text, blanked)
-    )
-    return view.splitlines()
-
-
 def check_file(path: Path) -> list[tuple[int, str]]:
     """(line, message) for every diagnostics step this workflow or composite
     action skips on a cancelled run.
@@ -388,7 +369,7 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
     if not isinstance(doc, dict):
         return []
 
-    lines = comment_view(text)
+    lines = yaml_comment_view(text)
     blocks = _job_blocks(text)
     violations: list[tuple[int, str]] = []
     for name, container in _containers(doc):
