@@ -8,6 +8,7 @@ The per-script test modules keep only their own detection cases plus one thin
 duplicated across them.
 """
 
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -225,6 +226,93 @@ def test_has_always_reporter(jobs: dict, expected: bool) -> None:
 )
 def test_is_always_reporter(if_value: str, expected: bool) -> None:
     assert lc.is_always_reporter(if_value) is expected
+
+
+# ── yaml_comment_view ────────────────────────────────────────────────────────
+# What may carry an opt-out: a real YAML comment, never a string value.
+
+
+def test_yaml_comment_view_keeps_only_yaml_comments() -> None:
+    """Code becomes blanks rather than vanishing, so every column — and so every
+    line number a finding reports — still lines up with the source."""
+    text = 'name: "# x"  # real: why\nrun: echo hi\n'
+    assert lc.yaml_comment_view(text) == [" " * 13 + "# real: why", " " * 12]
+
+
+def test_yaml_comment_view_blanks_a_marker_inside_a_block_scalar() -> None:
+    """A `run:` script is a string value, so a comment introducer in it is data."""
+    text = "run: |\n  // allow-x: not a comment\n"
+    assert lc.yaml_comment_view(text) == ["      ", " " * 27]
+
+
+def test_line_boundary_spellings_agree() -> None:
+    """The set, the regex class, and Python's own idea of a line boundary agree.
+
+    Derived from `splitlines`, not pasted, so a character Python adds later fails
+    here instead of silently escaping one of the two spellings.
+    """
+    real = {chr(n) for n in range(0x3000) if len(f"a{chr(n)}b".splitlines()) > 1}
+    assert real, "splitlines probe found nothing — the derivation broke"
+    assert lc._LINE_BOUNDARY == real
+    assert all(re.fullmatch(f"[{lc._LINE_BOUNDARY_CLASS}]", c) for c in real)
+
+
+# ── default_run_shell ────────────────────────────────────────────────────────
+# GitHub's `defaults.run.shell` precedence, shared by check_workflow_pipefail and
+# check_runner_var_foreign_shell — two lints that must read one rule the same way.
+
+
+def test_default_run_shell_finds_job_then_workflow() -> None:
+    job = {"defaults": {"run": {"shell": "sh"}}}
+    workflow = {"defaults": {"run": {"shell": "bash"}}}
+    assert lc.default_run_shell(job, workflow) == "sh"
+    assert lc.default_run_shell({}, workflow) == "bash"
+
+
+def test_default_run_shell_skips_non_dict_scope_and_keeps_scanning() -> None:
+    # The `continue` past a non-dict scope must NOT be a `break`: a malformed first
+    # scope cannot abort the walk before a valid later scope sets the shell.
+    assert (
+        lc.default_run_shell("notadict", {"defaults": {"run": {"shell": "sh"}}}) == "sh"
+    )
+
+
+def test_default_run_shell_none_when_unset_or_malformed() -> None:
+    assert lc.default_run_shell({}, {}) is None
+    assert lc.default_run_shell(None, "notadict") is None
+    assert lc.default_run_shell({"defaults": None}) is None
+    assert lc.default_run_shell({"defaults": {"run": None}}) is None
+    assert lc.default_run_shell({"defaults": {"run": {"shell": ["x"]}}}) is None
+
+
+# ── step_span_ends / container_block_end ─────────────────────────────────────
+# Where an opt-out may be written for a step. The bound is the step's OWN
+# container, so an opt-out cannot reach across a job boundary.
+
+
+def test_step_span_ends_ends_each_step_before_the_next() -> None:
+    steps = [{"__line__": 8}, {"__line__": 14}, {"__line__": 20}]
+    assert lc.step_span_ends(steps, 30) == {8: 13, 14: 19, 20: 30}
+
+
+def test_step_span_ends_ignores_a_step_with_no_line() -> None:
+    assert lc.step_span_ends([{"__line__": 5}, {"name": "x"}], 9) == {5: 9}
+
+
+def test_step_span_ends_of_no_steps_is_empty() -> None:
+    assert lc.step_span_ends([], 9) == {}
+
+
+def test_container_block_end_is_the_jobs_last_line() -> None:
+    text = "jobs:\n  a:\n    steps:\n      - run: x\n  b:\n    steps:\n      - run: y\n"
+    blocks = lc._job_blocks(text)
+    assert lc.container_block_end(blocks, "a", 7) == 4
+    assert lc.container_block_end(blocks, "b", 7) == 7
+
+
+def test_container_block_end_falls_back_for_a_block_that_is_not_a_job() -> None:
+    """A composite action's `runs:` has no job block, so the file bounds it."""
+    assert lc.container_block_end({}, "runs", 12) == 12
 
 
 # ── _job_blocks / _classification_text ───────────────────────────────────────

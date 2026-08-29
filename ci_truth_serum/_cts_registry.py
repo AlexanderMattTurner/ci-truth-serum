@@ -113,6 +113,7 @@ CHECKS: tuple[Check, ...] = (
     _check("check_soft_timeout", "1", SHELL, HONESTY, COST),
     _check("check_pipefail_grep_pipe", "1", SHELL, HONESTY),
     _check("check_folded_scalar_comment", "1", WORKFLOW, HONESTY),
+    _check("check_runner_var_foreign_shell", "1", WORKFLOW, HONESTY),
     _check("check_gh_slurp_jq", "1", SHELL_OR_WORKFLOW_YAML, HONESTY),
     _check("check_truncating_pr_json", "1", SHELL_PYTHON_OR_WORKFLOW_YAML, HONESTY),
     _check("check_pr_paths", "1", WORKFLOW, HONESTY, REQUIRED_CHECKS),
