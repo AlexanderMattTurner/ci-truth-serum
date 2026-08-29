@@ -1215,6 +1215,57 @@ def _job_blocks(text: str) -> dict[str, tuple[int, str]]:
     return blocks
 
 
+def default_run_shell(*scopes: object) -> str | None:
+    """The first `defaults.run.shell` in SCOPES, or None when none sets one.
+
+    GitHub resolves a step's shell in one order: the step's own `shell:`, then
+    the job's `defaults.run.shell`, then the workflow's. The caller owns the
+    step, and passes the remaining scopes here in that order. One definition,
+    because two lints ask this and a second encoding of the precedence would
+    drift. Tolerant of a null or non-mapping `defaults:`, which a workflow can
+    hold and which is actionlint's finding, not this pack's.
+    """
+    for scope in scopes:
+        if not isinstance(scope, dict):
+            continue
+        defaults = scope.get("defaults")
+        run = defaults.get("run") if isinstance(defaults, dict) else None
+        shell = run.get("shell") if isinstance(run, dict) else None
+        if isinstance(shell, str):
+            return shell
+    return None
+
+
+def step_span_ends(steps: list[dict], last_line: int) -> dict[int, int]:
+    """The last line of each step's block, keyed by the step's own line.
+
+    A step ends where the next one starts, and the final step ends at LAST_LINE.
+    The caller supplies LAST_LINE as the end of the CONTAINER — the job's block
+    in a workflow, the file in a composite action — never the end of the
+    document. A span that ran to the next JOB's first step would swallow that
+    job's header, so an opt-out written for one job's step would suppress the
+    previous job's last step, which is a false green.
+
+    The span is what an opt-out may be written inside (see ``annotation_window``).
+    """
+    starts = sorted(
+        line for step in steps if isinstance(line := step.get("__line__"), int)
+    )
+    ends = {start: nxt - 1 for start, nxt in zip(starts, starts[1:])}
+    if starts:
+        ends[starts[-1]] = last_line
+    return ends
+
+
+def container_block_end(
+    blocks: dict[str, tuple[int, str]], name: str, last_line: int
+) -> int:
+    """The last source line of the job named NAME, or LAST_LINE when BLOCKS has
+    no entry for it — a composite action's `runs:` block, which is not a job."""
+    key_line, block = blocks.get(name, (0, ""))
+    return key_line + len(block.splitlines()) - 1 if block else last_line
+
+
 def _classification_text(block: str) -> str:
     """The lines of a job block where a classification comment may live: the key
     line plus the job's direct-child lines (a trailing comment on a child, or a

@@ -255,6 +255,35 @@ def test_an_annotation_does_not_drift_onto_the_next_step():
     assert "`$GITHUB_ENV`" in found[0][1]
 
 
+def test_an_annotation_does_not_drift_onto_the_previous_job():
+    """A step's window stops at its own job's block, not at the next job's step.
+
+    Without that bound, job `a`'s last step would span up to job `b`'s first
+    step, so `b`'s opt-out would suppress `a`'s real violation — a false green.
+    """
+    body = (
+        "name: x\n"  # 1
+        "on:\n"  # 2
+        "  push:\n"  # 3
+        "jobs:\n"  # 4
+        "  a:\n"  # 5
+        "    runs-on: ubuntu-latest\n"  # 6
+        "    steps:\n"  # 7
+        "      - shell: perl {0}\n"  # 8
+        "        run: print $ENV{GITHUB_ENV};\n"  # 9
+        "  b:\n"  # 10
+        "    runs-on: ubuntu-latest\n"  # 11
+        "    steps:\n"  # 12
+        "      # allow-runner-var-foreign-shell: node runs on the runner\n"  # 13
+        "      - shell: node {0}\n"  # 14
+        "        run: process.env.GITHUB_OUTPUT\n"  # 15
+    )
+    found = rv.violations(body)
+    assert len(found) == 1
+    assert found[0][0] == 8
+    assert "`$GITHUB_ENV`" in found[0][1]
+
+
 # ── unparseable input is a finding, never a clean pass ───────────────────────
 
 

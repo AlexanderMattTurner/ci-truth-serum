@@ -37,6 +37,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import default_run_shell  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -115,20 +116,6 @@ def _pipelines(script: str) -> list[str]:
     return [lines[node.start_point[0]].strip() for node in nodes]
 
 
-def _default_shell(*scopes: object) -> str | None:
-    """First `defaults.run.shell` found walking the given scopes (job, then
-    workflow); None if none set it. Tolerant of a null/non-mapping `defaults:`."""
-    for scope in scopes:
-        if not isinstance(scope, dict):
-            continue
-        run = scope.get("defaults")
-        run = run.get("run") if isinstance(run, dict) else None
-        shell = run.get("shell") if isinstance(run, dict) else None
-        if isinstance(shell, str):
-            return shell
-    return None
-
-
 def _check_script(script: str, shell: str | None, location: str) -> list[str]:
     """Return a one-element message list when SCRIPT pipes under a shell that lacks
     pipefail and neither opts out nor sets pipefail itself; else empty."""
@@ -178,7 +165,7 @@ def _iter_steps(steps: object, workflow: dict, job: object) -> list[StepScript]:
         if isinstance(step.get("run"), str):
             shell = step.get("shell")
             if shell is None:
-                shell = _default_shell(job, workflow)
+                shell = default_run_shell(job, workflow)
             out.append(StepScript(line, step["run"], shell, "run"))
     return out
 

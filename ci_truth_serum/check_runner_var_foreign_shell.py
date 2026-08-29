@@ -60,6 +60,7 @@ Globs every workflow and composite action; the passed file list is ignored.
 import re
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -67,7 +68,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     annotated_near,
+    container_block_end,
+    default_run_shell,
+    step_span_ends,
     workflow_files as _workflow_files,
+    _job_blocks,
 )
 
 REPO_ROOT = Path.cwd()
@@ -130,20 +135,6 @@ def runner_vars(script: str) -> list[str]:
     return seen
 
 
-def _default_shell(*scopes: object) -> str | None:
-    """The first `defaults.run.shell` in SCOPES, which the caller passes in
-    precedence order (the job, then the workflow). None when neither sets one."""
-    for scope in scopes:
-        if not isinstance(scope, dict):
-            continue
-        defaults = scope.get("defaults")
-        run = defaults.get("run") if isinstance(defaults, dict) else None
-        shell = run.get("shell") if isinstance(run, dict) else None
-        if isinstance(shell, str):
-            return shell
-    return None
-
-
 def _steps(container: object) -> list[dict]:
     """The mapping steps of a job or a composite action's `runs:` block."""
     steps = container.get("steps") if isinstance(container, dict) else None
@@ -152,33 +143,29 @@ def _steps(container: object) -> list[dict]:
     return [step for step in steps if isinstance(step, dict)]
 
 
-def _all_step_lines(doc: dict) -> list[int]:
-    """Every step's 1-based source line in the whole document, sorted.
+class Container(NamedTuple):
+    """One block that holds steps: a job, or a composite action's `runs:` block.
 
-    A step's opt-out may sit anywhere inside the step, so the check needs the
-    step's span. The line before the NEXT step starts ends this one. For a job's
-    last step the span runs on to the next job's first step, which is a few lines
-    of that job's header — a wider window than the step, and the one place an
-    annotation could suppress a neighbour.
+    NAME is the key `_job_blocks` uses, so a step's opt-out window can be bounded
+    by its OWN job's block. A composite action's `runs:` block is not a job and
+    has no such entry, so it takes the file as its bound. LABEL is what a finding
+    calls the block, and MAPPING holds the steps.
     """
-    containers: list[object] = []
+
+    name: str
+    label: str
+    mapping: object
+
+
+def _containers(doc: dict) -> list[Container]:
+    """Every block of DOC that holds steps, in source order."""
     jobs = doc.get("jobs")
     if isinstance(jobs, dict):
-        containers += list(jobs.values())
-    containers.append(doc.get("runs"))
-    lines = {
-        step["__line__"]
-        for container in containers
-        for step in _steps(container)
-        if isinstance(step.get("__line__"), int)
-    }
-    return sorted(lines)
-
-
-def _span_end(step_line: int, step_lines: list[int], last_line: int) -> int:
-    """The last source line that still belongs to the step opening at STEP_LINE."""
-    later = [line for line in step_lines if line > step_line]
-    return later[0] - 1 if later else last_line
+        return [Container(str(n), f"job {n}", job) for n, job in jobs.items()]
+    runs = doc.get("runs")
+    return (
+        [Container("runs", "composite action", runs)] if isinstance(runs, dict) else []
+    )
 
 
 def _message(location: str, shell: str, names: list[str]) -> str:
@@ -196,34 +183,33 @@ def _message(location: str, shell: str, names: list[str]) -> str:
     )
 
 
-def analyze(doc: object, lines: list[str]) -> list[tuple[int, str]]:
+def analyze(doc: object, text: str) -> list[tuple[int, str]]:
     """Every violation in one parsed document, as (step's 1-based line, message).
 
-    LINES is the file's own physical lines, which the opt-out lookup reads.
+    TEXT is the file's own source, which the opt-out lookup reads.
     """
     if not isinstance(doc, dict):
         return []
-    step_lines = _all_step_lines(doc)
+    lines = text.splitlines()
     last_line = max(len(lines), 1)
+    blocks = _job_blocks(text)
 
     found: list[tuple[int, str]] = []
-    # Each scope is the label a finding names, and the mapping that holds the
-    # steps: a job, or a composite action's `runs:` block.
-    scopes: list[tuple[str, object]] = []
-    jobs = doc.get("jobs")
-    if isinstance(jobs, dict):
-        scopes += [(f"job {job_id}", job) for job_id, job in jobs.items()]
-    if isinstance(doc.get("runs"), dict):
-        scopes.append(("composite action", doc["runs"]))
-
-    for label, container in scopes:
-        for step in _steps(container):
+    for name, label, container in _containers(doc):
+        steps = _steps(container)
+        if not steps:
+            continue
+        # Bound each step's opt-out window by its OWN job's block. A window that
+        # ran to the next job's first step would swallow that job's header, so an
+        # opt-out written there would suppress this job's last step.
+        ends = step_span_ends(steps, container_block_end(blocks, name, last_line))
+        for step in steps:
             script = step.get("run")
             if not isinstance(script, str):
                 continue
             shell = step.get("shell")
             if shell is None:
-                shell = _default_shell(container, doc)
+                shell = default_run_shell(container, doc)
             if shell is not None and not isinstance(shell, str):
                 continue
             if not is_foreign_shell(shell):
@@ -234,12 +220,7 @@ def analyze(doc: object, lines: list[str]) -> list[tuple[int, str]]:
             step_line = step.get("__line__")
             if not isinstance(step_line, int):
                 step_line = 1
-            if annotated_near(
-                lines,
-                step_line,
-                ALLOW,
-                span_end=_span_end(step_line, step_lines, last_line),
-            ):
+            if annotated_near(lines, step_line, ALLOW, span_end=ends.get(step_line)):
                 continue
             found.append((step_line, _message(label, shell.strip(), names)))
     return sorted(found)
@@ -264,7 +245,7 @@ def violations(text: str) -> list[tuple[int, str]]:
                 "(or run actionlint) and re-check.",
             )
         ]
-    return analyze(doc, text.splitlines())
+    return analyze(doc, text)
 
 
 def check_file(path: Path) -> list[tuple[int, str]]:
