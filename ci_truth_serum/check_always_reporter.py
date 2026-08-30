@@ -104,7 +104,11 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     if not isinstance(jobs, dict):
         return None
 
-    if not has_decide_gate(jobs) or has_always_reporter(jobs) or has_fail_closed_twin(jobs):
+    if (
+        not has_decide_gate(jobs)
+        or has_always_reporter(jobs)
+        or has_fail_closed_twin(jobs)
+    ):
         return None
 
     return pr_line, (

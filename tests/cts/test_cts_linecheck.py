@@ -245,11 +245,23 @@ def test_is_always_reporter(if_value: str, expected: bool) -> None:
             True,
         ),
         ("always()", False),  # a bare reporter runs on every conclusion
-        ("always() && needs.decide.outputs.run == 'true'", False),  # gate output, not result
-        ("always() && needs.decide.result == 'success'", False),  # runs on success: fail-open
+        (
+            "always() && needs.decide.outputs.run == 'true'",
+            False,
+        ),  # gate output, not result
+        (
+            "always() && needs.decide.result == 'success'",
+            False,
+        ),  # runs on success: fail-open
         ("success() && needs.decide.result != 'success'", False),  # wrong prefix
-        ("needs.decide.result != 'success'", False),  # no always(): a failed gate skips it
-        ("always() && needs.a.result != 'success' && extra", False),  # trailing conjunct
+        (
+            "needs.decide.result != 'success'",
+            False,
+        ),  # no always(): a failed gate skips it
+        (
+            "always() && needs.a.result != 'success' && extra",
+            False,
+        ),  # trailing conjunct
         ("", False),
     ],
 )

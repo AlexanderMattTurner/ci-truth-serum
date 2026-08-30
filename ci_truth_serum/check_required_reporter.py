@@ -105,7 +105,10 @@ def _reporter_names(jobs: dict) -> list[str]:
         name
         for name, cfg in jobs.items()
         if isinstance(cfg, dict)
-        and (is_always_reporter(cfg.get("if", "")) or is_fail_closed_twin(cfg.get("if", "")))
+        and (
+            is_always_reporter(cfg.get("if", ""))
+            or is_fail_closed_twin(cfg.get("if", ""))
+        )
     ]
 
 
