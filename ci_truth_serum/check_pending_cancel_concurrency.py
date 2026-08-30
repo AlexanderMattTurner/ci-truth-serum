@@ -190,7 +190,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     if not isinstance(jobs, dict):
         return []
     blocks = _job_blocks(text)
-    heuristic = required_check_shape(jobs)
+    heuristic = required_check_shape(jobs, doc)
     marked = _marked_jobs(blocks, jobs)
     if not (heuristic or marked):
         return []  # not a required-check shape — a reddened cancel self-describes
@@ -212,7 +212,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     else:
         names = set(marked)
         if heuristic == TWIN_SHAPE:
-            names |= decide_gate_names(jobs) | set(valid_twin_names(jobs))
+            names |= decide_gate_names(jobs) | set(valid_twin_names(jobs, doc))
         judged = {name: jobs[name] for name in names if name in jobs}
     for name, cfg in judged.items():
         if not isinstance(cfg, dict):

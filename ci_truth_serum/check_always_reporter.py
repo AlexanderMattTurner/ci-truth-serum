@@ -129,7 +129,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     if not twins:
         return pr_line, _no_fail_closed_shape()
 
-    defects = {name: twin_defects(cfg, gate_names) for name, cfg in twins.items()}
+    defects = {name: twin_defects(cfg, gate_names, doc) for name, cfg in twins.items()}
     if any(not found for found in defects.values()):
         return None  # one twin closes the hole — that is all the workflow needs
     closest = min(defects, key=lambda name: len(defects[name]))

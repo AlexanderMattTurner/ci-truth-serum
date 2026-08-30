@@ -897,7 +897,7 @@ ALWAYS_REPORTER_SHAPE = "decide gate + always() reporter"
 TWIN_SHAPE = "decide gate + fail-closed twin"
 
 
-def required_check_shape(jobs: dict) -> str | None:
+def required_check_shape(jobs: dict, workflow: dict) -> str | None:
     """Which required-check shape a workflow's jobs form, or None for neither.
 
     A gated workflow reports through a job that runs when the gate breaks. That
@@ -914,10 +914,10 @@ def required_check_shape(jobs: dict) -> str | None:
         return None
     if has_always_reporter(jobs):
         return ALWAYS_REPORTER_SHAPE
-    return TWIN_SHAPE if valid_twin_names(jobs) else None
+    return TWIN_SHAPE if valid_twin_names(jobs, workflow) else None
 
 
-def valid_twin_names(jobs: dict) -> list[str]:
+def valid_twin_names(jobs: dict, workflow: dict) -> list[str]:
     """The names of the fail-closed twins that really do fail closed."""
     gate_names = decide_gate_names(jobs)
     if not gate_names:
@@ -927,11 +927,11 @@ def valid_twin_names(jobs: dict) -> list[str]:
         for name, cfg in jobs.items()
         if isinstance(cfg, dict)
         and is_fail_closed_twin(cfg.get("if", ""))
-        and not twin_defects(cfg, gate_names)
+        and not twin_defects(cfg, gate_names, workflow)
     ]
 
 
-def twin_defects(cfg: dict, gate_names: set[str]) -> list[str]:
+def twin_defects(cfg: dict, gate_names: set[str], workflow: dict) -> list[str]:
     """Why this twin-shaped job does not in fact fail closed. Empty means it does."""
     refs = set(twin_gate_refs(cfg.get("if", "")) or [])
     defects = []
@@ -965,7 +965,7 @@ def twin_defects(cfg: dict, gate_names: set[str]) -> list[str]:
             "the run that needs it red"
         )
         return defects
-    shell = step_shell(cfg, step)
+    shell = step_shell(cfg, step, workflow)
     if shell not in READABLE_SHELLS:
         defects.append(
             f"its last `run:` step declares `shell: {shell}`, which this check reads "
@@ -998,11 +998,12 @@ def continues_on_error(value: object) -> bool:
 
 
 def last_run_step(job_cfg: dict) -> dict | None:
-    """A job's last `run:` step whose failure can fail the job, else None.
+    """A job's last `run:` step whose failure is GUARANTEED to fail the job.
 
-    `continue-on-error` on a step reports its failure as success, so such a step
-    can never be what makes a twin red: an earlier `run:` step has to decide, or
-    the job runs none that can.
+    Two keys break that guarantee, so a step carrying either can never be what
+    makes a twin red. `continue-on-error` reports the step's failure as success.
+    An `if:` can skip the step entirely, and a skipped step fails nothing — so
+    an earlier `run:` step has to decide, or the job runs none that can.
     """
     steps = job_cfg.get("steps")
     if not isinstance(steps, list):
@@ -1013,6 +1014,7 @@ def last_run_step(job_cfg: dict) -> dict | None:
         if isinstance(step, dict)
         and isinstance(step.get("run"), str)
         and not continues_on_error(step.get("continue-on-error"))
+        and "if" not in step
     ]
     return runs[-1] if runs else None
 
@@ -1022,17 +1024,22 @@ def last_run_step(job_cfg: dict) -> dict | None:
 READABLE_SHELLS = ("bash", "sh")
 
 
-def step_shell(job_cfg: dict, step: dict) -> str:
-    """Which shell runs STEP, under GitHub's own precedence.
+def step_shell(job_cfg: dict, step: dict, workflow: dict) -> str:
+    """Which shell runs STEP, named by its executable alone.
 
-    The step's own `shell:` wins, then the job's `defaults.run.shell`. GitHub's
-    default on a runner is bash, which is what an absent key means here.
+    `default_run_shell` owns the scope precedence: the step's own `shell:`, then
+    the job's `defaults.run.shell`, then the workflow's. GitHub's default on a
+    runner is bash, which is what an absent key means here.
+
+    A value may be a custom template rather than a keyword —
+    `bash --noprofile --norc -eo pipefail {0}`, `/bin/bash {0}` — and bash still
+    runs the script, so the leading word's basename is what names the shell.
     """
-    defaults = job_cfg.get("defaults")
-    job_shell = None
-    if isinstance(defaults, dict) and isinstance(defaults.get("run"), dict):
-        job_shell = defaults["run"].get("shell")
-    return str(step.get("shell") or job_shell or "bash").strip()
+    value = str(
+        step.get("shell") or default_run_shell(job_cfg, workflow) or "bash"
+    ).strip()
+    first = value.split()[0] if value.split() else value
+    return first.rpartition("/")[2] or first
 
 
 def script_ends_in_failure(script: str) -> bool:
@@ -1064,11 +1071,28 @@ def script_ends_in_failure(script: str) -> bool:
         parse as bash_parse,
     )
 
+    def defined_functions(node, found: set[str]) -> set[str]:
+        """Every function name the script defines, at any depth.
+
+        A script that defines `false` or `exit` redefines the only two commands
+        this analysis reads as unconditional failures, so neither can be trusted
+        there.
+        """
+        if node.type == "function_definition":
+            names = [child for child in node.children if child.type == "word"]
+            if names:
+                found.add(names[0].text.decode())
+        for child in node.children:
+            defined_functions(child, found)
+        return found
+
     def command_always_fails(command) -> bool:
         words = command_words(command)
         if not words:
             return False
         name, args = words[0], [unquote(word) for word in words[1:]]
+        if name in shadowed:
+            return False
         if name == "false":
             return True
         # Bare `exit` re-raises the previous command's status, so it fails only
@@ -1095,10 +1119,10 @@ def script_ends_in_failure(script: str) -> bool:
             return bool(inner) and always_fails(inner[-1])
         return False
 
+    root = bash_parse(_neutralized(script))
+    shadowed = defined_functions(root, set()) & {"false", "exit"}
     statements = [
-        node
-        for node in bash_parse(_neutralized(script)).children
-        if node.is_named and node.type != "comment"
+        node for node in root.children if node.is_named and node.type != "comment"
     ]
     return bool(statements) and always_fails(statements[-1])
 

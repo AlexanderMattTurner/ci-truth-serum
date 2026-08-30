@@ -285,6 +285,10 @@ TWIN_WITH_CONTINUE_ON_ERROR_JOB = GATED_WITH_TWIN.replace(
     "    continue-on-error: true\n    steps:\n      - run: |\n",
 )
 
+TWIN_IN_A_WORKFLOW_SHELL = GATED_WITH_TWIN.replace(
+    "jobs:\n", "defaults:\n  run:\n    shell: python\njobs:\n"
+)
+
 TWIN_IN_UNREADABLE_SHELL = GATED_WITH_TWIN.replace(
     '          echo "the decide gate did not succeed"\n          exit 1\n',
     "          if [ -f x ]; then\n          exit 1\n",
@@ -351,12 +355,45 @@ def test_a_continue_on_error_step_cannot_be_what_makes_the_twin_red(tmp_path):
     assert "no `run:` step" in found[1]
 
 
+def test_a_conditional_step_is_not_the_guaranteed_failure(tmp_path):
+    # The `exit 1` step can be skipped, and the step after it cannot red, so no
+    # step is guaranteed to fail on the run that needs the twin red.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n"
+        '          echo "the decide gate did not succeed"\n'
+        "          exit 1\n",
+        "      - if: ${{ false }}\n        run: exit 1\n"
+        "      - continue-on-error: true\n        run: echo cleanup\n",
+    )
+    found = car.check_file(_write(tmp_path, "wf.yaml", body))
+    assert found is not None
+    assert "no `run:` step" in found[1]
+
+
+def test_a_custom_bash_template_is_still_bash(tmp_path):
+    # `shell: bash --noprofile --norc -eo pipefail {0}` still runs bash, so the
+    # twin must be accepted rather than refused as unreadable.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n",
+        "      - shell: bash --noprofile --norc -eo pipefail {0}\n        run: |\n",
+    )
+    assert car.check_file(_write(tmp_path, "wf.yaml", body)) is None
+
+
 def test_a_continue_on_error_job_is_flagged(tmp_path):
     # Job-level `continue-on-error` reports EVERY step's failure as success, so
     # the same fail-open arrives one level up.
     found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_WITH_CONTINUE_ON_ERROR_JOB))
     assert found is not None
     assert "continue-on-error" in found[1]
+
+
+def test_a_workflow_level_shell_reaches_the_twin(tmp_path):
+    # The job sets no shell, so it inherits the workflow default. A job-only read
+    # resolves "bash" here and parses a python body with the bash grammar.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_IN_A_WORKFLOW_SHELL))
+    assert found is not None
+    assert "shell: python" in found[1]
 
 
 def test_a_twin_whose_shell_does_not_parse_is_refused_as_unverifiable(tmp_path):
