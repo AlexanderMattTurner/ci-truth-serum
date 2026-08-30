@@ -49,6 +49,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     static_group_reason,
     workflow_files,
 )
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PathologicalInputError,
+)
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "static-concurrency-ok"
@@ -88,7 +91,7 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     jobs = doc.get("jobs", {})
     if not isinstance(jobs, dict):
         return None
-    shape = required_check_shape(jobs)
+    shape = required_check_shape(jobs, doc)
     if shape is None:
         return None  # not a required-check shape — a static lock is fine here
 
@@ -110,11 +113,16 @@ def main() -> int:
     files = workflow_files(WORKFLOWS_DIR)
     total = 0
     for path in files:
-        found = check_file(path)
+        rel = path.relative_to(REPO_ROOT)
+        try:
+            found = check_file(path)
+        except PathologicalInputError as err:
+            print(f"::error file={rel}::{err}")
+            total += 1
+            continue
         if found is None:
             continue
         line, message = found
-        rel = path.relative_to(REPO_ROOT)
         loc = f"file={rel},line={line}" if line else f"file={rel}"
         print(f"::error {loc}::{message}")
         total += 1

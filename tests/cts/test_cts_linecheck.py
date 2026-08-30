@@ -423,7 +423,7 @@ def test_has_fail_closed_twin_requires_the_gate_in_needs() -> None:
     ],
 )
 def test_required_check_shape(jobs: dict, expected: str | None) -> None:
-    assert lc.required_check_shape(jobs) == expected
+    assert lc.required_check_shape(jobs, {}) == expected
 
 
 @pytest.mark.parametrize(
@@ -444,17 +444,48 @@ def test_last_run_step(cfg: dict, expected: str | None) -> None:
 
 
 @pytest.mark.parametrize(
-    "cfg, step, expected",
+    "cfg, step, workflow, expected",
     [
-        ({}, {"run": "exit 1"}, "bash"),
-        ({}, {"run": "x", "shell": "python"}, "python"),
-        ({"defaults": {"run": {"shell": "pwsh"}}}, {"run": "x"}, "pwsh"),
+        ({}, {"run": "exit 1"}, {}, "bash"),
+        ({}, {"run": "x", "shell": "python"}, {}, "python"),
+        ({"defaults": {"run": {"shell": "pwsh"}}}, {"run": "x"}, {}, "pwsh"),
         # The step's own key wins over the job default.
-        ({"defaults": {"run": {"shell": "pwsh"}}}, {"run": "x", "shell": "sh"}, "sh"),
+        (
+            {"defaults": {"run": {"shell": "pwsh"}}},
+            {"run": "x", "shell": "sh"},
+            {},
+            "sh",
+        ),
+        # A job that sets none inherits the WORKFLOW default, which is the scope
+        # a job-only read would miss.
+        ({}, {"run": "x"}, {"defaults": {"run": {"shell": "python"}}}, "python"),
+        (
+            {"defaults": {"run": {"shell": "pwsh"}}},
+            {"run": "x"},
+            {"defaults": {"run": {"shell": "python"}}},
+            "pwsh",
+        ),
     ],
 )
-def test_step_shell(cfg: dict, step: dict, expected: str) -> None:
-    assert lc.step_shell(cfg, step) == expected
+def test_step_shell(cfg: dict, step: dict, workflow: dict, expected: str) -> None:
+    assert lc.step_shell(cfg, step, workflow) == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, False),
+        (False, False),
+        ("false", False),
+        ("False", False),
+        (True, True),
+        # No offline check can resolve an expression, so it is refused rather
+        # than accepted on a guess about what it evaluates to.
+        ("${{ github.event_name == 'push' }}", True),
+    ],
+)
+def test_continues_on_error(value: object, expected: bool) -> None:
+    assert lc.continues_on_error(value) is expected
 
 
 @pytest.mark.parametrize(
@@ -466,6 +497,10 @@ def test_step_shell(cfg: dict, step: dict, expected: str) -> None:
         ("( exit 1 )", True),
         # `&&` short-circuits to the left status on failure, so both paths fail.
         ("echo a && exit 1", True),
+        # A script that redefines the command this analysis reads as an
+        # unconditional failure is no longer read that way.
+        ("false() { return 0; }\nfalse && echo reached", False),
+        ("exit() { return 0; }\nexit 1", False),
         # A left operand that ALWAYS fails decides the list on its own: the right
         # one never runs, and the status is the left one's.
         ("false && echo unreachable", True),
