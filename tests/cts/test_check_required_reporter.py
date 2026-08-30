@@ -240,6 +240,42 @@ def test_quoted_reporter_key_is_classified(tmp_path):
     assert crr.check_file(_write(tmp_path, "wf.yaml", QUOTED_REPORTER_KEY)) == []
 
 
+TWIN_UNCLASSIFIED = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  work:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+  gate-failed:
+    needs: [decide]
+    if: always() && needs.decide.result != 'success'
+    runs-on: ubuntu-latest
+"""
+
+TWIN_CLASSIFIED = TWIN_UNCLASSIFIED.replace(
+    "  gate-failed:", "  gate-failed:  # required-check: true"
+)
+
+
+def test_flags_unclassified_fail_closed_twin(tmp_path):
+    # A fail-closed twin (`if: always() && needs.<gate>.result != 'success'`)
+    # is the check run branch protection reads when the gate fails, so it
+    # demands the same classification an always() reporter does.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", TWIN_UNCLASSIFIED))
+    assert len(found) == 1
+    assert "gate-failed" in found[0][1]
+    assert "unclassified" in found[0][1]
+
+
+def test_passes_classified_fail_closed_twin(tmp_path):
+    assert crr.check_file(_write(tmp_path, "wf.yaml", TWIN_CLASSIFIED)) == []
+
+
 LIST_FORM_UNCLASSIFIED = """\
 name: x
 on: [pull_request, push]

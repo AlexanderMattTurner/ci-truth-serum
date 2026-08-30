@@ -3,14 +3,18 @@
 Enforce an always() reporter job on gated GitHub Actions workflows.
 
 A workflow with a decide gate (uses decide-reusable.yaml, or conditions jobs
-on needs.decide.outputs.*) can strand required status checks at "Expected —
-Waiting" when the gate skips all work jobs — GitHub never receives a
-conclusion. The fix is a reporter job with `if: always()` that always reports.
+on needs.decide.outputs.*) fails open when the gate job itself fails: every
+gated work job skips, a skipped check run satisfies branch protection, and the
+merge greens over a gate that verified nothing. Two shapes close that hole. A
+reporter job with `if: always()` always runs and reds when the gate failed. A
+fail-closed twin (`if: always() && needs.<gate>.result != 'success'`) is
+SKIPPED on every healthy run — booting no runner, still satisfying required
+checks — and runs red only when a gate did not succeed; the gated work jobs
+themselves then carry the required-check markers.
 
-This lint is opinionated: it assumes the decide-job + reporter architecture
-(a `decide` job exposing `outputs.*`, work jobs gated on `needs.decide.outputs.*`,
-and a final `if: always()` reporter that aggregates them). Enable it only if you
-follow that pattern.
+This lint is opinionated: it assumes the decide-job architecture (a `decide`
+job exposing `outputs.*` and work jobs gated on `needs.decide.outputs.*`).
+Enable it only if you follow that pattern.
 
 Opt out with "# not-required-check" on the pull_request: trigger line when the
 workflow is deliberately advisory and never a required status check.
@@ -27,6 +31,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated,
     has_always_reporter,
     has_decide_gate,
+    has_fail_closed_twin,
 )
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -99,14 +104,16 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     if not isinstance(jobs, dict):
         return None
 
-    if not has_decide_gate(jobs) or has_always_reporter(jobs):
+    if not has_decide_gate(jobs) or has_always_reporter(jobs) or has_fail_closed_twin(jobs):
         return None
 
     return pr_line, (
-        "workflow has a decide gate but no job with `if: always()` — "
-        "gated work jobs are skipped when nothing relevant changed, leaving "
-        "required checks at 'Expected — Waiting'. Add an always() reporter job "
-        "that aggregates the work jobs, or add "
+        "workflow has a decide gate but nothing that fails closed when the "
+        "gate itself fails — every gated work job then skips, and skipped "
+        "satisfies a required check, so the merge greens over a broken gate. "
+        "Add an always() reporter job that aggregates the work jobs, add a "
+        "fail-closed twin (`if: always() && needs.<gate>.result != "
+        "'success'`), or add "
         f"'# {OPT_OUT}' to the pull_request: trigger if this workflow is "
         "never a required check."
     )

@@ -228,6 +228,48 @@ def test_is_always_reporter(if_value: str, expected: bool) -> None:
     assert lc.is_always_reporter(if_value) is expected
 
 
+@pytest.mark.parametrize(
+    "if_value, expected",
+    [
+        ("always() && needs.decide.result != 'success'", True),
+        ("${{ always() && needs.decide.result != 'success' }}", True),
+        (
+            "always() && (needs.a.result != 'success' || needs.b.result != 'success')",
+            True,
+        ),
+        # Unparenthesized disjuncts are still fail-closed: `&&` binds tighter
+        # than `||`, and always() is constant true, so the job runs exactly
+        # when some gate did not succeed.
+        (
+            "always() && needs.a.result != 'success' || needs.b.result != 'success'",
+            True,
+        ),
+        ("always()", False),  # a bare reporter runs on every conclusion
+        ("always() && needs.decide.outputs.run == 'true'", False),  # gate output, not result
+        ("always() && needs.decide.result == 'success'", False),  # runs on success: fail-open
+        ("success() && needs.decide.result != 'success'", False),  # wrong prefix
+        ("needs.decide.result != 'success'", False),  # no always(): a failed gate skips it
+        ("always() && needs.a.result != 'success' && extra", False),  # trailing conjunct
+        ("", False),
+    ],
+)
+def test_is_fail_closed_twin(if_value: str, expected: bool) -> None:
+    assert lc.is_fail_closed_twin(if_value) is expected
+
+
+@pytest.mark.parametrize(
+    "jobs, expected",
+    [
+        ({"twin": {"if": "always() && needs.decide.result != 'success'"}}, True),
+        ({"report": {"if": "always()"}}, False),
+        ({"odd": "scalar"}, False),  # non-dict job config is skipped
+        ({}, False),
+    ],
+)
+def test_has_fail_closed_twin(jobs: dict, expected: bool) -> None:
+    assert lc.has_fail_closed_twin(jobs) is expected
+
+
 # ── yaml_comment_view ────────────────────────────────────────────────────────
 # What may carry an opt-out: a real YAML comment, never a string value.
 
