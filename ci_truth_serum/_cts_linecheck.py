@@ -1257,6 +1257,49 @@ def default_run_shell(*scopes: object) -> str | None:
     return None
 
 
+# A `${{ … }}` expression inside the program's name: the name is computed, so no
+# lint can read which program the runner starts. Where the expression sits decides
+# this — later in the template it is only an argument, as in a bind mount's path.
+_SHELL_EXPRESSION = re.compile(r"\$\{\{")
+
+
+def shell_program(shell: str) -> str | None:
+    """The lower-case basename of the program a `shell:` template starts.
+
+    None when the template names no program, or when a `${{ }}` expression hides
+    it — an unknown program, which a caller must not read as a known one.
+
+    The grammar answers this, not a whitespace split. "Which word is the command's
+    NAME?" is the structural question `.claude/rules/shell-lint-parsing.md` names,
+    and a split gets a quoted path wrong: `"/opt/my tools/bash" -e {0}` runs bash,
+    but its first whitespace word is `"/opt/my`. GitHub does not run the template
+    through a shell, so this borrows bash only to tokenize it; the two agree on
+    every template GitHub accepts, because such a template is one command line.
+
+    A Windows separator counts, because a `cmd` template on a Windows runner spells
+    its path with backslashes, and `.exe` is dropped for the same reason.
+
+    The grammar is imported HERE, not at module scope, for the reason
+    `unparseable_shell_reason` states: around fifty checks import this module and
+    most are handed no shell, so a module-scope import would put
+    `tree_sitter_bash` in every one of their pre-commit environments.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _cts_bash_ast import (  # pylint: disable=import-outside-toplevel
+        command_name,
+        iter_nodes,
+        parse,
+        unquote,
+    )
+
+    commands = iter_nodes(parse(shell), "command")
+    name = next((command_name(node) for node in commands), None)
+    if not name or _SHELL_EXPRESSION.search(name):
+        return None
+    base = unquote(name).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return base.removesuffix(".exe") or None
+
+
 def step_span_ends(steps: list[dict], last_line: int) -> dict[int, int]:
     """The last line of each step's block, keyed by the step's own line.
 

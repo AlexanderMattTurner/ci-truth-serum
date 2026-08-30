@@ -47,15 +47,18 @@ from its data. Honouring the marker anywhere in the script text would let
 is a fail-open. `yaml_comment_view` blanks everything PyYAML does not report as
 a comment, so what suppresses a finding is what GitHub parses as a comment.
 
-WHY THIS PARSES YAML BUT SCANS THE SCRIPT AS TEXT. The two questions have
-different answers. "What is this step's shell?" is structural — a `shell:` key
-in a comment is not a shell, and a step's own `shell:` beats the job's
-`defaults.run.shell`, which beats the workflow's — so PyYAML answers it. "Does
-this script name `GITHUB_OUTPUT`?" is a question about text in an UNKNOWN
-language: the script under a foreign shell may be Perl, Ruby, a Dockerfile
-`RUN` body, or anything else, so there is no grammar to pick. That is the
-carve-out `.claude/rules/shell-lint-parsing.md` names, and the name is the same
-literal string in every language.
+WHY THIS PARSES TWICE BUT SCANS THE SCRIPT AS TEXT. Three questions, and only
+one of them is about text. "What is this step's shell?" is structural — a
+`shell:` key in a comment is not a shell, and a step's own `shell:` beats the
+job's `defaults.run.shell`, which beats the workflow's — so PyYAML answers it.
+"Which program does that shell template start?" is structural too, so the bash
+grammar answers it in `shell_program`: a whitespace split reads
+`"/opt/my tools/bash" -e {0}` as a program named `"/opt/my` and reports a step
+that runs plain bash. "Does this script name `GITHUB_OUTPUT`?" is the one
+question about text in an UNKNOWN language: the script under a foreign shell may
+be Perl, Ruby, a Dockerfile `RUN` body, or anything else, so there is no grammar
+to pick. That is the carve-out `.claude/rules/shell-lint-parsing.md` names, and
+the name is the same literal string in every language.
 
 Known blind spots, both false-negative: a `shell:` value that holds a `${{ }}`
 expression is computed, so this cannot read it and skips the step; and a step
@@ -78,6 +81,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     container_block_end,
     default_run_shell,
+    shell_program,
     step_span_ends,
     workflow_files as _workflow_files,
     yaml_comment_view,
@@ -92,7 +96,7 @@ ALLOW = "allow-runner-var-foreign-shell"
 
 # The six shells GitHub itself sets up, by the keyword a `shell:` names. A custom
 # template that re-invokes one of them with different flags (`bash -e {0}`) still
-# runs THAT interpreter on the runner, so it is judged by its first word.
+# runs THAT interpreter on the runner, so it is judged by the program it starts.
 # `python3` is here for the template form; it is not a keyword GitHub accepts.
 NATIVE_SHELLS = frozenset(
     {"bash", "sh", "pwsh", "powershell", "python", "python3", "cmd"}
@@ -105,32 +109,15 @@ RUNNER_VARS = ("GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_PATH", "GITHUB_STEP_SUMMAR
 # `$ENV{github_output}` in Perl on Windows reads the same file as the capitals do.
 _RUNNER_VAR_RE = re.compile(rf"\b(?:{'|'.join(RUNNER_VARS)})\b", re.IGNORECASE)
 
-# A `${{ … }}` expression: where it sits decides whether this check can read the
-# shell. In the FIRST word it hides the program's name, so the shell is unknown.
-# Later in the template it is only an argument, as in a bind mount's path.
-_EXPRESSION = re.compile(r"\$\{\{")
-
-
-def shell_program(shell: str) -> str | None:
-    """The lower-case basename of the program SHELL starts, or None when a `${{ }}`
-    expression hides it. Windows separators count, because a `cmd` template on a
-    Windows runner spells its path with backslashes."""
-    words = shell.strip().split()
-    if not words or _EXPRESSION.search(words[0]):
-        return None
-    name = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name.removesuffix(".exe")
-
 
 def is_foreign_shell(shell: str | None) -> bool:
     """True when GitHub does not set this shell up, so it may run off the runner.
 
     False in the three cases this check must not flag. An unset or empty shell is
     the job's default (`bash` on Linux and macOS, `pwsh` on Windows). A custom
-    template is judged by its first word, because that word names the program the
-    runner starts, so `bash -e {0}` is still bash. And a `${{ }}` expression in
-    that first word hides the program, which this check reads as unknown rather
-    than as foreign.
+    template is judged by the program it starts, so `bash -e {0}` is still bash.
+    And a `${{ }}` expression that hides that program leaves it unknown, which
+    this check reads as unknown rather than as foreign.
     """
     if shell is None:
         return False

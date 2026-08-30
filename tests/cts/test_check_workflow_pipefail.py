@@ -462,3 +462,17 @@ def test_run_as_main_exits_nonzero_on_violation(tmp_path):
     )
     assert result.returncode == 1
     assert "1 pipefail violation(s) found" in result.stdout
+
+
+def test_a_quoted_bash_path_with_a_space_is_still_a_posix_shell() -> None:
+    """The step runs bash, so its pipe CAN mask a failure and must be reported.
+
+    A whitespace split read the program's name as `"/opt/my`, which is in no list
+    of POSIX shells, so the check skipped the step — a missed finding, the failure
+    mode this pack exists to refuse.
+    """
+    shell = '"/opt/my tools/bash" -e {0}'
+    assert cwp._is_posix_shell(shell) is True
+    assert len(cwp._check_script("false | tee log", shell, "job x")) == 1
+    # Non-vacuity: the same script under a genuinely non-POSIX shell is skipped.
+    assert cwp._check_script("false | tee log", "node {0}", "job x") == []

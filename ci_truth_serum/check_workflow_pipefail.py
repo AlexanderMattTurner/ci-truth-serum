@@ -26,7 +26,6 @@ a deliberate step with a `# allow-no-pipefail: <reason>` comment in the script b
 Globs every workflow + composite action like check_pr_paths; argv is ignored.
 """
 
-import os
 import re
 import sys
 from pathlib import Path
@@ -38,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import iter_nodes, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import default_run_shell  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import shell_program  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -59,13 +59,15 @@ _SHELL_BASENAMES = {"bash", "sh", "dash", "zsh", "ksh"}
 
 def _is_posix_shell(shell: str | None) -> bool:
     """True when the step's shell runs POSIX pipelines (so a `|` is a pipe). The
-    GitHub default (shell unset) is bash; an explicit python/pwsh/node is not."""
-    if shell is None:
+    GitHub default (shell unset) is bash; an explicit python/pwsh/node is not.
+
+    `shell_program` reads the program off the grammar. The whitespace split this
+    used to do read `"/opt/my tools/bash" {0}` as a program named `"/opt/my`, so
+    this check skipped a step that DOES run POSIX pipelines — a missed finding.
+    """
+    if shell is None or not shell.strip():
         return True
-    tok = shell.strip().split()
-    if not tok:
-        return True
-    return os.path.basename(tok[0]) in _SHELL_BASENAMES
+    return shell_program(shell) in _SHELL_BASENAMES
 
 
 def _shell_has_pipefail(shell: str | None) -> bool:

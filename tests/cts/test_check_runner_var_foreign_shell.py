@@ -10,6 +10,7 @@ shell's script has no grammar this pack can pick.
 
 from pathlib import Path
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -341,10 +342,43 @@ def test_is_foreign_shell():
     assert rv.is_foreign_shell("docker run --rm img bash {0}") is True
 
 
-def test_shell_program_reads_the_first_word_only():
+def test_shell_program_reads_the_program_the_template_starts():
     assert rv.shell_program("docker run --rm img bash {0}") == "docker"
     assert rv.shell_program("/usr/bin/perl -w {0}") == "perl"
     assert rv.shell_program("${{ inputs.shell }} {0}") is None
+
+
+@pytest.mark.parametrize(
+    "shell",
+    [
+        '"/opt/my tools/bash" -e {0}',
+        "'/opt/my tools/bash' -e {0}",
+        '"C:\\Program Files\\Git\\bin\\bash.exe" {0}',
+    ],
+)
+def test_a_quoted_interpreter_path_with_a_space_is_not_foreign(shell: str) -> None:
+    """The program runs ON the runner, so its runner variables reach the runner.
+
+    A whitespace split read the program's name as `"/opt/my`, which is in no list
+    of native shells, and the step was reported. That finding is false: the step
+    runs bash. The bash grammar keeps the quoted path as one word.
+    """
+    assert rv.shell_program(shell) == "bash"
+    assert rv.is_foreign_shell(shell) is False
+    workflow = (
+        "jobs:\n"
+        "  build:\n"
+        "    steps:\n"
+        "      - shell: |-\n"
+        f"          {shell}\n"
+        "        run: echo x=1 >> $GITHUB_OUTPUT\n"
+    )
+    assert rv.violations(workflow) == []
+    # Non-vacuity: the same workflow under a genuinely foreign shell IS reported,
+    # so the clean verdict above comes from the shell, not from an unreached path.
+    assert (
+        len(rv.violations(workflow.replace(shell, "docker run --rm img sh {0}"))) == 1
+    )
 
 
 def test_runner_vars_keeps_first_appearance_order():

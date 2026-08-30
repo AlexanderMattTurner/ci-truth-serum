@@ -945,3 +945,33 @@ def test_annotation_window_spans_a_wrapped_comment_block() -> None:
 def test_annotation_window_stops_at_a_blank_line() -> None:
     lines = ["# tok: about something else", "", "code()"]
     assert lc.annotation_window(lines, 3) == [2, 3]
+
+
+# ── shell_program: the program a `shell:` template starts ────────────────────
+
+
+@pytest.mark.parametrize(
+    ("shell", "expected"),
+    [
+        ("bash", "bash"),
+        ("bash -e {0}", "bash"),
+        ("/usr/bin/perl -w {0}", "perl"),
+        ("docker run --rm img bash {0}", "docker"),
+        # A quoted path keeps its spaces: this is the case a whitespace split got
+        # wrong, reading the program's name as `"/opt/my`.
+        ('"/opt/my tools/bash" -e {0}', "bash"),
+        ("'/opt/my tools/bash' -e {0}", "bash"),
+        # A Windows runner spells a path with backslashes and names the `.exe`.
+        ("C:\\Windows\\System32\\cmd.exe /C {0}", "cmd"),
+        ('"C:\\Program Files\\Git\\bin\\bash.exe" {0}', "bash"),
+        # A `${{ }}` expression hides the program, wherever in the name it sits.
+        ("${{ inputs.shell }} {0}", None),
+        ("/opt/${{ inputs.tool }}/bash {0}", None),
+        # …but one in an ARGUMENT is not the program, so the program is still read.
+        ("docker run -v ${{ github.workspace }}:/w img bash {0}", "docker"),
+        ("", None),
+        ("   ", None),
+    ],
+)
+def test_shell_program(shell: str, expected: str | None) -> None:
+    assert lc.shell_program(shell) == expected
