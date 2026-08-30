@@ -12,9 +12,12 @@ read loop instead, because ``run_line_checks`` cannot surface
 
 The workflow lints (``check_pr_paths``, ``check_workflow_pipefail``,
 ``check_inline_run_length``, ``check_always_reporter``) share a byte-identical
-``workflow_files()`` discovery glob; it lives here too. The two
-required-check-shape probes (``has_decide_gate``, ``has_always_reporter``) are
-shared by ``check_always_reporter`` and ``check_concurrency`` and live here too.
+``workflow_files()`` discovery glob; it lives here too. The required-check-shape
+probes (``decide_gate_names``, ``has_always_reporter``, ``has_fail_closed_twin``,
+``required_check_shape``) are shared by ``check_always_reporter``,
+``check_required_reporter`` and the two concurrency lints, and live here too. One
+copy is the point: a lint that grew its own matcher for the twin shape would
+answer "does this workflow back a required check?" differently from its siblings.
 
 Imported as a sibling: the scripts run as ``python3 ci_truth_serum/check_*.py`` (or
 ``python -m ci_truth_serum.check_*``), so each script prepends its own dir to ``sys.path``
@@ -756,16 +759,54 @@ def parse_optout_marker(lines: list[str], token: str) -> tuple[str | None, str |
     return None, None
 
 
-def has_decide_gate(jobs: dict) -> bool:
-    """True if any job uses decide-reusable.yaml or conditions on needs.decide.outputs.*"""
-    for job_cfg in jobs.values():
+def decide_gate_names(jobs: dict) -> set[str]:
+    """The names of the decide gates a workflow declares.
+
+    Two spellings name a gate. A job that calls `decide-reusable.yaml` IS one,
+    under its own job name. A job conditioned on `needs.decide.outputs.*` names
+    the gate `decide` in the expression itself, so that name counts even when
+    the workflow declares no job by that name — a twin pointed at a gate job
+    that does not exist is a fail-open this set is what makes visible.
+    """
+    names: set[str] = set()
+    for name, job_cfg in jobs.items():
         if not isinstance(job_cfg, dict):
             continue
         if "decide-reusable.yaml" in str(job_cfg.get("uses", "")):
-            return True
+            names.add(str(name))
         if "needs.decide.outputs" in str(job_cfg.get("if", "")):
-            return True
-    return False
+            names.add("decide")
+    return names
+
+
+def has_decide_gate(jobs: dict) -> bool:
+    """True if any job uses decide-reusable.yaml or conditions on needs.decide.outputs.*"""
+    return bool(decide_gate_names(jobs))
+
+
+def job_needs(job_cfg: dict) -> list[str]:
+    """A job's declared dependencies. GitHub accepts a scalar (`needs: decide`)
+    and a list (`needs: [decide, lint]`); both read the same here."""
+    needs = job_cfg.get("needs")
+    if isinstance(needs, str):
+        return [needs]
+    if isinstance(needs, list):
+        return [str(item) for item in needs]
+    return []
+
+
+def gated_work_jobs(jobs: dict, gate_names: Iterable[str]) -> list[str]:
+    """The jobs a decide gate switches on and off — every job whose `if:` reads
+    `needs.<gate>.outputs`, excluding the gates themselves."""
+    gates = set(gate_names)
+    tokens = {f"needs.{gate}.outputs" for gate in gates}
+    return [
+        str(name)
+        for name, cfg in jobs.items()
+        if isinstance(cfg, dict)
+        and str(name) not in gates
+        and any(token in str(cfg.get("if", "")) for token in tokens)
+    ]
 
 
 def is_always_reporter(if_value: object) -> bool:
@@ -793,31 +834,167 @@ _TWIN_DISJUNCTS = (
     r"(?:\s*\|\|\s*needs\.[A-Za-z0-9_-]+\.result\s*!=\s*'success')*"
 )
 _TWIN_TAIL = re.compile(rf"(?:{_TWIN_DISJUNCTS}|\(\s*{_TWIN_DISJUNCTS}\s*\))")
+# One disjunct, with the gate name it reads.
+_TWIN_REF = re.compile(r"needs\.(?P<gate>[A-Za-z0-9_-]+)\.result\s*!=\s*'success'")
 
 
-def is_fail_closed_twin(if_value: object) -> bool:
+def twin_gate_refs(if_value: object) -> list[str] | None:
+    """The gate names a twin-shaped `if:` reads, or None when it is not twin-shaped.
+
+    Shape: `always() && needs.<gate>.result != 'success'`, with `||` between
+    disjuncts when several gates share the twin.
+    """
+    expression = unwrap_expression(if_value)
+    prefix, sep, rest = expression.partition("&&")
+    if not sep or prefix.strip() != "always()":
+        return None
+    tail = rest.strip()
+    if _TWIN_TAIL.fullmatch(tail) is None:
+        return None
+    return [match.group("gate") for match in _TWIN_REF.finditer(tail)]
+
+
+def is_fail_closed_twin(
+    if_value: object, gate_names: Iterable[str] | None = None
+) -> bool:
     """True if a job `if:` runs exactly when a decide gate did not succeed.
 
     The zero-boot counterpart of a bare always() reporter. On a healthy run the
     job is SKIPPED, which boots no runner and still satisfies a required check;
     it runs (and must fail) only when a gate itself did not succeed — the one
     case where every gated work job skips and a merge would otherwise green
-    over a broken gate. Shape: `always() && needs.<gate>.result != 'success'`,
-    with `||` between disjuncts when several gates share the twin.
+    over a broken gate.
+
+    With GATE_NAMES the disjuncts must cover exactly that set. Shape alone is
+    not enough to accept a twin: a twin naming only one of two gates leaves the
+    other free to fail unreported, and a twin naming a job that is no gate reds
+    every healthy run. Pass None to ask the shape question on its own, which is
+    what a caller that only CLASSIFIES the job wants.
     """
-    expression = unwrap_expression(if_value)
-    prefix, sep, rest = expression.partition("&&")
-    if not sep or prefix.strip() != "always()":
+    refs = twin_gate_refs(if_value)
+    if refs is None:
         return False
-    return _TWIN_TAIL.fullmatch(rest.strip()) is not None
+    return gate_names is None or set(refs) == set(gate_names)
 
 
-def has_fail_closed_twin(jobs: dict) -> bool:
-    """True if any job is a fail-closed twin — the other required-check shape."""
+def has_fail_closed_twin(jobs: dict, gate_names: Iterable[str] | None = None) -> bool:
+    """True if any job is a fail-closed twin — the other required-check shape.
+
+    With GATE_NAMES the twin must also `needs:` every gate it names. A gate a
+    job does not depend on has an empty `result` in that job's expression, so
+    the disjunct never fires and the twin stays skipped when that gate breaks.
+    """
+    gates = None if gate_names is None else set(gate_names)
     return any(
-        isinstance(job_cfg, dict) and is_fail_closed_twin(job_cfg.get("if", ""))
+        isinstance(job_cfg, dict)
+        and is_fail_closed_twin(job_cfg.get("if", ""), gates)
+        and (gates is None or gates <= set(job_needs(job_cfg)))
         for job_cfg in jobs.values()
     )
+
+
+ALWAYS_REPORTER_SHAPE = "decide gate + always() reporter"
+TWIN_SHAPE = "decide gate + fail-closed twin"
+
+
+def required_check_shape(jobs: dict) -> str | None:
+    """Which required-check shape a workflow's jobs form, or None for neither.
+
+    A gated workflow reports through a job that runs when the gate breaks. That
+    job is either an always() reporter or a fail-closed twin, and every lint
+    that asks "does this workflow back a required check?" must accept both — a
+    lint that knows only the reporter mis-reads a twin-shaped workflow as
+    ordinary and drops its protection.
+    """
+    if not has_decide_gate(jobs):
+        return None
+    if has_always_reporter(jobs):
+        return ALWAYS_REPORTER_SHAPE
+    return TWIN_SHAPE if has_fail_closed_twin(jobs) else None
+
+
+def last_run_script(job_cfg: dict) -> str | None:
+    """The shell of a job's last `run:` step, or None when the job runs none."""
+    steps = job_cfg.get("steps")
+    if not isinstance(steps, list):
+        return None
+    scripts = [
+        str(step["run"])
+        for step in steps
+        if isinstance(step, dict) and isinstance(step.get("run"), str)
+    ]
+    return scripts[-1] if scripts else None
+
+
+def script_ends_in_failure(script: str) -> bool:
+    """True when SCRIPT's last statement exits nonzero however its earlier
+    commands went.
+
+    A fail-closed twin runs only on a broken gate, so it has to FAIL there. A
+    twin whose script ends in `echo` exits 0 and greens the merge over the very
+    gate it exists to redden. The bash grammar answers this, never a regex:
+    `cmd && exit 1` always fails, `cmd || exit 1` fails only when `cmd` does
+    too, and only the parse tree tells the two apart
+    (.claude/rules/shell-lint-parsing.md).
+
+    A `${{ … }}` expression is GitHub Actions syntax, not bash, so each span is
+    replaced by an inert word of the same length before the parse. tree-sitter
+    recovers from a construct it cannot read by dropping nodes for the REST of
+    the input, so one un-neutralized expression on line 1 hides the `exit 1` on
+    line 2 and reports a compliant twin as failing open.
+    """
+    # Imported here, not at module scope: around fifty checks load this module
+    # and most are handed no shell at all — the same deferral
+    # `unparseable_shell_reason` above documents.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _cts_bash_ast import (  # pylint: disable=import-outside-toplevel
+        command_words,
+        unquote,
+    )
+    from _cts_bash_ast import (
+        parse as bash_parse,
+    )
+
+    def command_always_fails(command) -> bool:
+        words = command_words(command)
+        if not words:
+            return False
+        name, args = words[0], [unquote(word) for word in words[1:]]
+        if name == "false":
+            return True
+        # Bare `exit` re-raises the previous command's status, so it fails only
+        # when that command did. `exit 256` wraps to 0 and is no failure either.
+        if name != "exit" or len(args) != 1 or not args[0].isdigit():
+            return False
+        return int(args[0]) % 256 != 0
+
+    def always_fails(node) -> bool:
+        if node.type == "command":
+            return command_always_fails(node)
+        if node.type == "list":
+            operands = [child for child in node.children if child.is_named]
+            if len(operands) != 2:
+                return False
+            left, right = operands
+            if any(child.type == "&&" for child in node.children):
+                # A failing left short-circuits to its own status; otherwise the
+                # right one decides.
+                return always_fails(right)
+            return always_fails(left) and always_fails(right)
+        if node.type in ("subshell", "compound_statement"):
+            inner = [child for child in node.children if child.is_named]
+            return bool(inner) and always_fails(inner[-1])
+        return False
+
+    # A function replacer, never a built string: `re.sub` reads `\1` and
+    # `\g<name>` in a string replacement (the check-replacement-expansion rule).
+    readable = _EXPR_SPAN.sub(lambda match: "_" * len(match.group(0)), script)
+    statements = [
+        node
+        for node in bash_parse(readable).children
+        if node.is_named and node.type != "comment"
+    ]
+    return bool(statements) and always_fails(statements[-1])
 
 
 # A concurrency group keyed by any of these is per-ref / per-PR / per-run, so a

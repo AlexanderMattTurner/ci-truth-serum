@@ -31,6 +31,25 @@ REQUIRED_CHECK_JOBS = (
     "    steps: []\n"
 )
 
+
+# The other required-check shape: decide gate + a fail-closed twin, no reporter.
+TWIN_SHAPE_JOBS = (
+    "jobs:\n"
+    "  decide:\n"
+    "    uses: ./.github/workflows/decide-reusable.yaml\n"
+    "  work:\n"
+    "    needs: decide\n"
+    "    if: needs.decide.outputs.run == 'true'\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps: []\n"
+    "  gate-failed:\n"
+    "    needs: [decide]\n"
+    "    if: always() && needs.decide.result != 'success'\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps:\n"
+    "      - run: exit 1\n"
+)
+
 STORM_TRIGGER = "name: x\non:\n  pull_request:\n    types: [opened, labeled]\n"
 DEFAULT_TRIGGER = "name: x\non:\n  pull_request:\n    types: [opened, synchronize]\n"
 
@@ -424,3 +443,38 @@ def test_all_shipped_workflows_pass(monkeypatch, capsys):
     monkeypatch.setattr(pc, "WORKFLOWS_DIR", REPO_ROOT / ".github" / "workflows")
     monkeypatch.setattr(pc, "ACTIONS_DIR", REPO_ROOT / ".github" / "actions")
     assert pc.main() == 0, capsys.readouterr().out
+
+
+def test_twin_shape_is_a_required_check_route(tmp_path):
+    """The twin shape is a funnel like the reporter: the GATE's cancellation is
+    what decides whether the twin runs, so an unmarked gate job's ref-keyed group
+    still reddens the required check on a current-SHA sibling."""
+    body = STORM_TRIGGER + REF_GROUP + TWIN_SHAPE_JOBS
+    violations = pc.check_file(_write(tmp_path, body))
+    assert len(violations) == 1
+    _line, message = violations[0]
+    assert "workflow-level" in message
+    assert "decide gate + fail-closed twin" in message
+
+
+def test_twin_shape_judges_the_unmarked_gate_job(tmp_path):
+    """Under the marker route only MARKED jobs are judged, and a gate carries no
+    marker — so a job-level group on `decide` would escape. The twin route judges
+    every job, which is what catches it."""
+    jobs = TWIN_SHAPE_JOBS.replace(
+        "    uses: ./.github/workflows/decide-reusable.yaml\n",
+        "    uses: ./.github/workflows/decide-reusable.yaml\n"
+        "    concurrency:\n"
+        "      group: ${{ github.head_ref }}\n",
+    )
+    violations = pc.check_file(_write(tmp_path, STORM_TRIGGER + jobs))
+    assert [m for _line, m in violations if "job 'decide'" in m]
+
+
+def test_shapeless_twin_is_not_a_required_check_route(tmp_path):
+    """Non-vacuity for the two rows above: drop the twin's `if:` and the same
+    workflow stops backing a required check."""
+    jobs = TWIN_SHAPE_JOBS.replace(
+        "    if: always() && needs.decide.result != 'success'\n", ""
+    )
+    assert pc.check_file(_write(tmp_path, STORM_TRIGGER + REF_GROUP + jobs)) == []
