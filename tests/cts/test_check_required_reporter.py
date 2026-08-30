@@ -284,6 +284,27 @@ REPORTER_AND_TWIN = TWIN_CLASSIFIED.replace(
 )
 
 
+# An `always()` job that aggregates nothing: a cleanup, marked advisory. It
+# answers the SHAPE question yes while posting no required check.
+TWIN_WITH_ADVISORY_ALWAYS_JOB = TWIN_WITH_UNCLASSIFIED_WORK.replace(
+    "  work:",
+    "  cleanup:  # required-check: false  # tears down the scratch bucket\n"
+    "    needs: [decide, work]\n"
+    "    if: always()\n"
+    "    runs-on: ubuntu-latest\n"
+    "  work:",
+)
+
+
+def test_an_advisory_always_job_does_not_exempt_the_work_jobs(tmp_path):
+    # Without this, any `if: always()` job — even one marked advisory — suppresses
+    # work-job classification, the sync requires only the twin, and the twin is
+    # skipped on every healthy run. A failing `work` then satisfies protection.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", TWIN_WITH_ADVISORY_ALWAYS_JOB))
+    messages = [message for _line, message in found]
+    assert any("work" in m and "unclassified" in m for m in messages), messages
+
+
 def test_flags_unclassified_fail_closed_twin(tmp_path):
     # A fail-closed twin (`if: always() && needs.<gate>.result != 'success'`)
     # is the check run branch protection reads when the gate fails, so it
@@ -318,7 +339,12 @@ def test_advisory_work_job_under_a_twin_needs_only_a_reason(tmp_path):
 def test_advisory_work_job_without_a_reason_is_flagged(tmp_path):
     found = crr.check_file(_write(tmp_path, "wf.yaml", TWIN_WITH_UNJUSTIFIED_WORK))
     assert len(found) == 1
-    assert "no reason" in found[0][1]
+    message = found[0][1]
+    assert "no reason" in message
+    assert "'work'" in message
+    # A gated work job is not a reporter, and calling it one sends the reader
+    # looking for a reporter this workflow does not have.
+    assert "reporter" not in message
 
 
 def test_work_jobs_go_unjudged_when_an_always_reporter_is_present(tmp_path):

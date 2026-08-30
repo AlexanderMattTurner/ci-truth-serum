@@ -62,7 +62,6 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _marked_jobs,
     decide_gate_names,
     gated_work_jobs,
-    has_always_reporter,
     has_fail_closed_twin,
     is_always_reporter,
     is_fail_closed_twin,
@@ -187,8 +186,21 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     # A twin-only workflow reports through its WORK jobs on every healthy run,
     # because the twin is skipped there. Each work job therefore owes the same
     # classification the reporter owes.
+    #
+    # `has_always_reporter` is a SHAPE question, so an advisory `always()` job —
+    # a cleanup, a notifier — answers it yes while aggregating nothing. Only a
+    # reporter carrying `# required-check: true` is the aggregate that exempts
+    # the work jobs; anything else leaves the hole this branch closes.
     gate_names = decide_gate_names(jobs)
-    if gate_names and not has_always_reporter(jobs) and has_fail_closed_twin(jobs):
+    marked = set(_marked_jobs(blocks, jobs))
+    aggregate = [
+        name
+        for name, cfg in jobs.items()
+        if name in marked
+        and isinstance(cfg, dict)
+        and is_always_reporter(cfg.get("if", ""))
+    ]
+    if gate_names and not aggregate and has_fail_closed_twin(jobs):
         for name in gated_work_jobs(jobs, gate_names):
             line, block = blocks.get(name, (pr_line, ""))
             defect = _classification_defect(block)
@@ -232,7 +244,7 @@ def _unclassified_work(name: str) -> str:
 
 def _no_reason(name: str) -> str:
     return (
-        f"reporter job '{name}' is marked '# {MARKER}: false' but gives "
+        f"job '{name}' is marked '# {MARKER}: false' but gives "
         "no reason — append '# <reason>' explaining why it is deliberately not a "
         "required check."
     )

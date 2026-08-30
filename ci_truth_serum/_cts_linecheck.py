@@ -905,25 +905,134 @@ def required_check_shape(jobs: dict) -> str | None:
     that asks "does this workflow back a required check?" must accept both — a
     lint that knows only the reporter mis-reads a twin-shaped workflow as
     ordinary and drops its protection.
+
+    A twin counts only when it is VALID. A twin that omits a gate, names a job
+    that is no gate, or exits 0 protects nothing, so reading it as a shape would
+    have every caller here defend a required check the workflow does not have.
     """
     if not has_decide_gate(jobs):
         return None
     if has_always_reporter(jobs):
         return ALWAYS_REPORTER_SHAPE
-    return TWIN_SHAPE if has_fail_closed_twin(jobs) else None
+    return TWIN_SHAPE if valid_twin_names(jobs) else None
 
 
-def last_run_script(job_cfg: dict) -> str | None:
-    """The shell of a job's last `run:` step, or None when the job runs none."""
+def valid_twin_names(jobs: dict) -> list[str]:
+    """The names of the fail-closed twins that really do fail closed."""
+    gate_names = decide_gate_names(jobs)
+    if not gate_names:
+        return []
+    return [
+        name
+        for name, cfg in jobs.items()
+        if isinstance(cfg, dict)
+        and is_fail_closed_twin(cfg.get("if", ""))
+        and not twin_defects(cfg, gate_names)
+    ]
+
+
+def twin_defects(cfg: dict, gate_names: set[str]) -> list[str]:
+    """Why this twin-shaped job does not in fact fail closed. Empty means it does."""
+    refs = set(twin_gate_refs(cfg.get("if", "")) or [])
+    defects = []
+    uncovered = sorted(gate_names - refs)
+    if uncovered:
+        defects.append(
+            f"its condition reads no result for the decide gate(s) {', '.join(uncovered)}, "
+            "so each of those can fail with this job skipped"
+        )
+    foreign = sorted(refs - gate_names)
+    if foreign:
+        defects.append(
+            f"its condition reads {', '.join(foreign)}, which is no decide gate of this "
+            "workflow — the job then reds on healthy runs and skips on broken gates"
+        )
+    unneeded = sorted((refs & gate_names) - set(job_needs(cfg)))
+    if unneeded:
+        defects.append(
+            f"it does not `needs:` {', '.join(unneeded)}, so that gate's result reads as "
+            "empty here and the disjunct never fires"
+        )
+    if continues_on_error(cfg.get("continue-on-error")):
+        defects.append(
+            "it declares `continue-on-error`, so every step's failure is reported as "
+            "success and the job concludes green on the run that needs it red"
+        )
+    step = last_run_step(cfg)
+    if step is None:
+        defects.append(
+            "it runs no `run:` step whose failure can fail the job, so it succeeds on "
+            "the run that needs it red"
+        )
+        return defects
+    shell = step_shell(cfg, step)
+    if shell not in READABLE_SHELLS:
+        defects.append(
+            f"its last `run:` step declares `shell: {shell}`, which this check reads "
+            "as bash — whether it exits nonzero cannot be verified, so the twin is "
+            "not accepted"
+        )
+    elif unreadable_run_script(str(step["run"])):
+        defects.append(
+            "the bash grammar cannot read its last `run:` step, so whether that step "
+            "exits nonzero cannot be verified and the twin is not accepted"
+        )
+    elif not script_ends_in_failure(str(step["run"])):
+        defects.append(
+            "its last `run:` step does not end in a failing command, so the job exits 0 "
+            "on the run that needs it red"
+        )
+    return defects
+
+
+def continues_on_error(value: object) -> bool:
+    """True when a `continue-on-error:` value can divorce a status from the job's.
+
+    GitHub accepts an expression here, which no offline check can resolve, so
+    anything but a literal false counts — the twin is then refused rather than
+    accepted on a guess about what the expression evaluates to.
+    """
+    if value is None or value is False:
+        return False
+    return str(value).strip().lower() != "false"
+
+
+def last_run_step(job_cfg: dict) -> dict | None:
+    """A job's last `run:` step whose failure can fail the job, else None.
+
+    `continue-on-error` on a step reports its failure as success, so such a step
+    can never be what makes a twin red: an earlier `run:` step has to decide, or
+    the job runs none that can.
+    """
     steps = job_cfg.get("steps")
     if not isinstance(steps, list):
         return None
-    scripts = [
-        str(step["run"])
+    runs = [
+        step
         for step in steps
-        if isinstance(step, dict) and isinstance(step.get("run"), str)
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and not continues_on_error(step.get("continue-on-error"))
     ]
-    return scripts[-1] if scripts else None
+    return runs[-1] if runs else None
+
+
+# The shells `script_ends_in_failure` can read. The bash grammar covers both;
+# any other value names a language this check would misparse as bash.
+READABLE_SHELLS = ("bash", "sh")
+
+
+def step_shell(job_cfg: dict, step: dict) -> str:
+    """Which shell runs STEP, under GitHub's own precedence.
+
+    The step's own `shell:` wins, then the job's `defaults.run.shell`. GitHub's
+    default on a runner is bash, which is what an absent key means here.
+    """
+    defaults = job_cfg.get("defaults")
+    job_shell = None
+    if isinstance(defaults, dict) and isinstance(defaults.get("run"), dict):
+        job_shell = defaults["run"].get("shell")
+    return str(step.get("shell") or job_shell or "bash").strip()
 
 
 def script_ends_in_failure(script: str) -> bool:
@@ -978,23 +1087,45 @@ def script_ends_in_failure(script: str) -> bool:
             left, right = operands
             if any(child.type == "&&" for child in node.children):
                 # A failing left short-circuits to its own status; otherwise the
-                # right one decides.
-                return always_fails(right)
+                # right one decides. So either side failing always is enough.
+                return always_fails(left) or always_fails(right)
             return always_fails(left) and always_fails(right)
         if node.type in ("subshell", "compound_statement"):
             inner = [child for child in node.children if child.is_named]
             return bool(inner) and always_fails(inner[-1])
         return False
 
-    # A function replacer, never a built string: `re.sub` reads `\1` and
-    # `\g<name>` in a string replacement (the check-replacement-expansion rule).
-    readable = _EXPR_SPAN.sub(lambda match: "_" * len(match.group(0)), script)
     statements = [
         node
-        for node in bash_parse(readable).children
+        for node in bash_parse(_neutralized(script)).children
         if node.is_named and node.type != "comment"
     ]
     return bool(statements) and always_fails(statements[-1])
+
+
+def _neutralized(script: str) -> str:
+    """SCRIPT with each `${{ … }}` span replaced by an inert word of its length.
+
+    A function replacer, never a built string: `re.sub` reads `\\1` and
+    `\\g<name>` in a string replacement (the check-replacement-expansion rule).
+    """
+    return _EXPR_SPAN.sub(lambda match: "_" * len(match.group(0)), script)
+
+
+def unreadable_run_script(script: str) -> bool:
+    """True when the bash grammar cannot read this `run:` body.
+
+    A twin whose script the grammar cannot read is refused as unverifiable, not
+    reported as ending in a passing command: those are different faults with
+    different fixes, and the misdiagnosis is what `unparseable_shell_reason`
+    exists to prevent for a whole file.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _cts_bash_ast import (  # pylint: disable=import-outside-toplevel
+        parse as bash_parse,
+    )
+
+    return bash_parse(_neutralized(script)).has_error
 
 
 # A concurrency group keyed by any of these is per-ref / per-PR / per-run, so a

@@ -460,7 +460,7 @@ def test_twin_shape_is_a_required_check_route(tmp_path):
 def test_twin_shape_judges_the_unmarked_gate_job(tmp_path):
     """Under the marker route only MARKED jobs are judged, and a gate carries no
     marker — so a job-level group on `decide` would escape. The twin route judges
-    every job, which is what catches it."""
+    the gates too, which is what catches it."""
     jobs = TWIN_SHAPE_JOBS.replace(
         "    uses: ./.github/workflows/decide-reusable.yaml\n",
         "    uses: ./.github/workflows/decide-reusable.yaml\n"
@@ -469,6 +469,22 @@ def test_twin_shape_judges_the_unmarked_gate_job(tmp_path):
     )
     violations = pc.check_file(_write(tmp_path, STORM_TRIGGER + jobs))
     assert [m for _line, m in violations if "job 'decide'" in m]
+
+
+def test_twin_route_leaves_an_unrelated_job_alone(tmp_path):
+    """A twin reads only its GATES' results. Cancelling a notifier that nothing
+    reports on cannot redden the twin or any required context, so its ref-keyed
+    group is no violation — unlike under an always() reporter, which aggregates
+    every job."""
+    jobs = TWIN_SHAPE_JOBS + (
+        "  notify:  # required-check: false  # posts to chat, blocks nothing\n"
+        "    runs-on: ubuntu-latest\n"
+        "    concurrency:\n"
+        "      group: ${{ github.head_ref }}\n"
+        "    steps: []\n"
+    )
+    violations = pc.check_file(_write(tmp_path, STORM_TRIGGER + jobs))
+    assert [m for _line, m in violations if "notify" in m] == []
 
 
 def test_shapeless_twin_is_not_a_required_check_route(tmp_path):

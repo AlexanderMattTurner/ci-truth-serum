@@ -23,16 +23,16 @@ current SHA → red). The safe fixes are to drop the group or key it on
 A workflow "backs a required check" by EITHER of two routes. The heuristic
 route is a decide gate plus one of the shapes that fail closed on a broken gate:
 an `always()` reporter, or a fail-closed twin (`if: always() &&
-needs.<gate>.result != 'success'`). Both are funnels — the gate's cancellation
-is what reddens the reporter, and the twin's gate dependencies are what decide
-whether it runs — so an unmarked gate job's group matters under either. A
-workflow can also declare a required check with nothing but a
-`# required-check: true` marker on one job — the mandatory SSOT marker
-check_required_reporter enforces and sync_required_checks reads — and that shape
-has no decide gate to find. The heuristic route judges every job of the
-workflow; the marker route judges the workflow-level block plus the MARKED jobs
-only, because an advisory job's group in a marked workflow reddens no required
-check.
+needs.<gate>.result != 'success'`). A workflow can also declare a required check
+with nothing but a `# required-check: true` marker on one job — the mandatory
+SSOT marker check_required_reporter enforces and sync_required_checks reads —
+and that shape has no decide gate to find.
+
+Which jobs each route judges follows from what reads their results. An always()
+reporter is a funnel every job feeds, so that route judges every job. A twin
+reads only its gates' results, so that route judges the gates, the twins and the
+MARKED jobs; an unrelated job's cancellation reddens no check the twin posts.
+The marker route judges the workflow-level block plus the marked jobs alone.
 
 This lint is deliberately scoped to per-ref/per-PR groups (the key polarity
 check_static_concurrency calls safe). A STATIC group shares the failure mode but
@@ -53,13 +53,20 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ALWAYS_REPORTER_SHAPE,
+    TWIN_SHAPE,
     _job_blocks,
     _marked_jobs,
     concurrency_line,
+    decide_gate_names,
     job_concurrency_line,
     opted_out,
     required_check_shape,
+    valid_twin_names,
     workflow_files,
+)
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PathologicalInputError,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -195,11 +202,18 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
             (concurrency_line(text), f"workflow-level {_message(storm, basis)}")
         )
 
-    # A heuristic shape is a funnel that every job feeds: an always() reporter
-    # reads each job's result, and a twin reads its gates', so any job's group can
-    # redden the required check. A marker-only workflow has no such funnel: only a
-    # marked job's own cancellation posts a required-check status.
-    judged = jobs if heuristic else {name: jobs[name] for name in marked}
+    # An always() reporter is a funnel every job feeds: it reads each job's
+    # result, so any job's cancellation can strand the required check. A TWIN
+    # reads only its gates' results, so an unrelated job's cancel reddens nothing
+    # it reports — under that shape the judged set is the gates, the twins, and
+    # whatever carries the marker. A marker-only workflow has no funnel at all.
+    if heuristic == ALWAYS_REPORTER_SHAPE:
+        judged = jobs
+    else:
+        names = set(marked)
+        if heuristic == TWIN_SHAPE:
+            names |= decide_gate_names(jobs) | set(valid_twin_names(jobs))
+        judged = {name: jobs[name] for name in names if name in jobs}
     for name, cfg in judged.items():
         if not isinstance(cfg, dict):
             continue
@@ -215,7 +229,13 @@ def main() -> int:
     total = 0
     for path in workflow_files(WORKFLOWS_DIR, ACTIONS_DIR):
         rel = path.relative_to(REPO_ROOT)
-        for line, message in check_file(path):
+        try:
+            findings = check_file(path)
+        except PathologicalInputError as err:
+            print(f"::error file={rel}::{err}")
+            total += 1
+            continue
+        for line, message in findings:
             loc = f"file={rel},line={line}" if line else f"file={rel}"
             print(f"::error {loc}::{message}")
             total += 1
