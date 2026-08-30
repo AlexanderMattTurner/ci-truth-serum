@@ -201,10 +201,10 @@
 # These prescribe a specific architecture. Enable only if you follow it.
 - id: check-always-reporter
   name: "opinionated: require an always() reporter on gated workflows"
-  description: Assumes the decide-job + reporter pattern; a skipped gate strands a required check.
+  description: "Assumes the decide-job pattern. A gated workflow needs an always() reporter, or a fail-closed twin that names every gate and exits nonzero. Without one, a failed gate skips every work job and the merge greens over it."
   entry: python -m ci_truth_serum.check_always_reporter
   language: python
-  additional_dependencies: [PyYAML]
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
   types: [yaml]

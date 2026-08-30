@@ -259,21 +259,75 @@ jobs:
 
 TWIN_CLASSIFIED = TWIN_UNCLASSIFIED.replace(
     "  gate-failed:", "  gate-failed:  # required-check: true"
+).replace("  work:", "  work:  # required-check: true")
+
+TWIN_WITH_UNCLASSIFIED_WORK = TWIN_UNCLASSIFIED.replace(
+    "  gate-failed:", "  gate-failed:  # required-check: true"
+)
+
+TWIN_WITH_ADVISORY_WORK = TWIN_CLASSIFIED.replace(
+    "  work:  # required-check: true",
+    "  work:  # required-check: false  # covered by the nightly suite",
+)
+
+TWIN_WITH_UNJUSTIFIED_WORK = TWIN_CLASSIFIED.replace(
+    "  work:  # required-check: true", "  work:  # required-check: false"
+)
+
+REPORTER_AND_TWIN = TWIN_CLASSIFIED.replace(
+    "  work:  # required-check: true",
+    "  report:  # required-check: true\n"
+    "    needs: [decide, work]\n"
+    "    if: always()\n"
+    "    runs-on: ubuntu-latest\n"
+    "  work:",
 )
 
 
 def test_flags_unclassified_fail_closed_twin(tmp_path):
     # A fail-closed twin (`if: always() && needs.<gate>.result != 'success'`)
     # is the check run branch protection reads when the gate fails, so it
-    # demands the same classification an always() reporter does.
+    # demands the same classification an always() reporter does. The gated work
+    # job owes one too — see the next test for why.
     found = crr.check_file(_write(tmp_path, "wf.yaml", TWIN_UNCLASSIFIED))
+    messages = [message for _line, message in found]
+    assert len(found) == 2
+    assert any("gate-failed" in m and "unclassified" in m for m in messages)
+
+
+def test_flags_unclassified_gated_work_job_under_a_twin(tmp_path):
+    # The twin is SKIPPED on a healthy run, so the check run branch protection
+    # reads there is `work`'s own. Leave it unmarked and sync_required_checks
+    # requires only the twin — which is green-by-skip on every passing run.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", TWIN_WITH_UNCLASSIFIED_WORK))
     assert len(found) == 1
-    assert "gate-failed" in found[0][1]
-    assert "unclassified" in found[0][1]
+    line, message = found[0]
+    assert line == 7  # `work:` key line
+    assert "work" in message
+    assert "unclassified" in message
 
 
 def test_passes_classified_fail_closed_twin(tmp_path):
     assert crr.check_file(_write(tmp_path, "wf.yaml", TWIN_CLASSIFIED)) == []
+
+
+def test_advisory_work_job_under_a_twin_needs_only_a_reason(tmp_path):
+    assert crr.check_file(_write(tmp_path, "wf.yaml", TWIN_WITH_ADVISORY_WORK)) == []
+
+
+def test_advisory_work_job_without_a_reason_is_flagged(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", TWIN_WITH_UNJUSTIFIED_WORK))
+    assert len(found) == 1
+    assert "no reason" in found[0][1]
+
+
+def test_work_jobs_go_unjudged_when_an_always_reporter_is_present(tmp_path):
+    # The reporter runs on every conclusion, so IT is the required check and the
+    # work jobs need no marker of their own. Only the twin-ONLY shape moves the
+    # check run onto them.
+    assert "if: always()\n" in REPORTER_AND_TWIN  # non-vacuity: the reporter is there
+    assert "  work:\n" in REPORTER_AND_TWIN  # and `work` carries no marker
+    assert crr.check_file(_write(tmp_path, "wf.yaml", REPORTER_AND_TWIN)) == []
 
 
 LIST_FORM_UNCLASSIFIED = """\

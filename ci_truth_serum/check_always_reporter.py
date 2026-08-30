@@ -12,6 +12,15 @@ SKIPPED on every healthy run — booting no runner, still satisfying required
 checks — and runs red only when a gate did not succeed; the gated work jobs
 themselves then carry the required-check markers.
 
+A twin is accepted only when it really closes the hole, which its `if:` shape
+alone does not prove. Its disjuncts must name EVERY decide gate this workflow
+declares and no other job: a twin that names one of two gates leaves the other
+free to fail unreported, and a twin that names a work job reds every healthy
+run. It must `needs:` each gate it names, because an unneeded job's `result` is
+empty in that expression. Its last `run:` step must end in a failing command,
+because a twin that runs and exits 0 greens the merge on the one run it exists
+to redden.
+
 This lint is opinionated: it assumes the decide-job architecture (a `decide`
 job exposing `outputs.*` and work jobs gated on `needs.decide.outputs.*`).
 Enable it only if you follow that pattern.
@@ -29,9 +38,13 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
+    decide_gate_names,
     has_always_reporter,
-    has_decide_gate,
-    has_fail_closed_twin,
+    is_fail_closed_twin,
+    job_needs,
+    last_run_script,
+    script_ends_in_failure,
+    twin_gate_refs,
 )
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -104,14 +117,62 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     if not isinstance(jobs, dict):
         return None
 
-    if (
-        not has_decide_gate(jobs)
-        or has_always_reporter(jobs)
-        or has_fail_closed_twin(jobs)
-    ):
+    gate_names = decide_gate_names(jobs)
+    if not gate_names or has_always_reporter(jobs):
         return None
 
-    return pr_line, (
+    twins = {
+        str(name): cfg
+        for name, cfg in jobs.items()
+        if isinstance(cfg, dict) and is_fail_closed_twin(cfg.get("if", ""))
+    }
+    if not twins:
+        return pr_line, _no_fail_closed_shape()
+
+    defects = {name: _twin_defects(cfg, gate_names) for name, cfg in twins.items()}
+    if any(not found for found in defects.values()):
+        return None  # one twin closes the hole — that is all the workflow needs
+    closest = min(defects, key=lambda name: len(defects[name]))
+    return pr_line, _twin_fails_open(closest, defects[closest], gate_names)
+
+
+def _twin_defects(cfg: dict, gate_names: set[str]) -> list[str]:
+    """Why this twin-shaped job does not in fact fail closed. Empty means it does."""
+    refs = set(twin_gate_refs(cfg.get("if", "")) or [])
+    defects = []
+    uncovered = sorted(gate_names - refs)
+    if uncovered:
+        defects.append(
+            f"its condition reads no result for the decide gate(s) {', '.join(uncovered)}, "
+            "so each of those can fail with this job skipped"
+        )
+    foreign = sorted(refs - gate_names)
+    if foreign:
+        defects.append(
+            f"its condition reads {', '.join(foreign)}, which is no decide gate of this "
+            "workflow — the job then reds on healthy runs and skips on broken gates"
+        )
+    unneeded = sorted((refs & gate_names) - set(job_needs(cfg)))
+    if unneeded:
+        defects.append(
+            f"it does not `needs:` {', '.join(unneeded)}, so that gate's result reads as "
+            "empty here and the disjunct never fires"
+        )
+    script = last_run_script(cfg)
+    if script is None:
+        defects.append(
+            "it runs no `run:` step, so it succeeds on the run that needs it red"
+        )
+    elif not script_ends_in_failure(script):
+        defects.append(
+            "its last `run:` step does not end in a failing command, so the job exits 0 "
+            "on the run that needs it red"
+        )
+    return defects
+
+
+def _no_fail_closed_shape() -> str:
+    return (
         "workflow has a decide gate but nothing that fails closed when the "
         "gate itself fails — every gated work job then skips, and skipped "
         "satisfies a required check, so the merge greens over a broken gate. "
@@ -120,6 +181,19 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
         "'success'`), or add "
         f"'# {OPT_OUT}' to the pull_request: trigger if this workflow is "
         "never a required check."
+    )
+
+
+def _twin_fails_open(name: str, defects: list[str], gate_names: set[str]) -> str:
+    gates = ", ".join(sorted(gate_names))
+    return (
+        f"job '{name}' is shaped like a fail-closed twin but fails open: "
+        + "; ".join(defects)
+        + ". A twin must name exactly the decide gate(s) "
+        f"{gates}, `needs:` each one, and end its last `run:` step in a failing "
+        "command such as `exit 1`. Add an always() reporter job instead, or add "
+        f"'# {OPT_OUT}' to the pull_request: trigger if this workflow is never a "
+        "required check."
     )
 
 
@@ -142,8 +216,9 @@ def main() -> int:
     if total:
         print(f"\nERROR: {total} violation(s) found.")
         print(
-            "A gated workflow without an always() reporter strands a required "
-            "check at 'Expected — Waiting'."
+            "A gated workflow needs one of two shapes that fail closed when the "
+            "gate itself fails: an always() reporter, or a fail-closed twin that "
+            "names every gate and exits nonzero."
         )
         return 1
     return 0

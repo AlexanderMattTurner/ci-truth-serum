@@ -21,11 +21,14 @@ the PR branch on a pull-request run, and one fixed string on every
 `workflow_run` run of the same workflow. The lint reports that group as static
 and names the event that flattens it.
 
-A workflow "backs a required check" here when it has both a decide gate and an
-`always()` reporter (the decide-job + reporter architecture). When global
-serialization is genuinely needed (e.g. a shared volume), put the `concurrency:`
-block on the expensive **job** instead: the run always starts, decide + the
-reporter always execute, and a superseded run surfaces as a definitive red.
+A workflow "backs a required check" here when it has a decide gate plus one of
+the two shapes that fail closed on a broken gate: an `always()` reporter, or a
+fail-closed twin (`if: always() && needs.<gate>.result != 'success'`), whose
+gated work jobs post the required check runs. A cancelled pending run starts
+zero jobs, so neither shape ever reports and the check hangs either way. When
+global serialization is genuinely needed (e.g. a shared volume), put the
+`concurrency:` block on the expensive **job** instead: the run always starts,
+every job executes, and a superseded run surfaces as a definitive red.
 
 Opt out with "# static-concurrency-ok" for a serialized workflow that is
 deliberately never a required check.
@@ -41,9 +44,8 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     concurrency_line,
     declared_events,
     group_is_per_ref,
-    has_always_reporter,
-    has_decide_gate,
     opted_out,
+    required_check_shape,
     static_group_reason,
     workflow_files,
 )
@@ -56,7 +58,7 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 def check_file(path: Path) -> tuple[int | None, str] | None:
     """Return (line, message) if the workflow has a static workflow-level lock
-    on a required-check (decide gate + always() reporter) shape.
+    on a required-check shape (a decide gate plus a reporter or a twin).
 
     A file that cannot be parsed as YAML is itself reported as a violation
     (line ``None``) rather than silently passed as clean — matching the sibling
@@ -86,19 +88,20 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     jobs = doc.get("jobs", {})
     if not isinstance(jobs, dict):
         return None
-    if not (has_decide_gate(jobs) and has_always_reporter(jobs)):
+    shape = required_check_shape(jobs)
+    if shape is None:
         return None  # not a required-check shape — a static lock is fine here
 
     line = concurrency_line(text)
     return line, (
         f"{static_group_reason(group, events)} This workflow backs a required "
-        "check (decide gate + always() reporter). A sibling ref's run can cancel "
-        "this one's *pending* run wholesale — zero jobs start, the always() "
-        "reporter never runs, and the required check hangs at 'Expected — "
-        "Waiting' forever. Key the group on something that holds a distinct "
-        "value on EVERY event this workflow declares (github.run_id always does), "
-        "move the concurrency: block onto the expensive job "
-        "to serialize there while the run + reporter always execute, or add "
+        f"check ({shape}). A sibling ref's run can cancel "
+        "this one's *pending* run wholesale — zero jobs start, so nothing this "
+        "workflow declares ever reports and the required check hangs at "
+        "'Expected — Waiting' forever. Key the group on something that holds a "
+        "distinct value on EVERY event this workflow declares (github.run_id "
+        "always does), move the concurrency: block onto the expensive job "
+        "to serialize there while the run and its jobs always execute, or add "
         f"'# {OPT_OUT}' if this workflow is never a required check."
     )
 

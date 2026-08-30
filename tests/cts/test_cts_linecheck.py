@@ -282,6 +282,168 @@ def test_has_fail_closed_twin(jobs: dict, expected: bool) -> None:
     assert lc.has_fail_closed_twin(jobs) is expected
 
 
+# ── twin gate-name awareness ─────────────────────────────────────────────
+# The `if:` shape says WHEN a twin runs and nothing about WHICH gates it covers.
+# These are the fail-opens that shape alone accepts.
+
+
+@pytest.mark.parametrize(
+    "jobs, expected",
+    [
+        ({"decide": {"uses": "./.github/workflows/decide-reusable.yaml"}}, {"decide"}),
+        # A gate under another name is still a gate — its own job name.
+        (
+            {"decide-docs": {"uses": "./.github/workflows/decide-reusable.yaml"}},
+            {"decide-docs"},
+        ),
+        # The expression names the gate `decide` even with no job by that name,
+        # which is what makes a twin pointed at a missing job visible.
+        ({"work": {"if": "needs.decide.outputs.run == 'true'"}}, {"decide"}),
+        ({"build": {"runs-on": "ubuntu-latest"}}, set()),
+        ({"odd": "scalar"}, set()),
+    ],
+)
+def test_decide_gate_names(jobs: dict, expected: set) -> None:
+    assert lc.decide_gate_names(jobs) == expected
+
+
+@pytest.mark.parametrize(
+    "cfg, expected",
+    [
+        ({"needs": "decide"}, ["decide"]),  # GitHub accepts the scalar form
+        ({"needs": ["decide", "lint"]}, ["decide", "lint"]),
+        ({}, []),
+        ({"needs": None}, []),
+    ],
+)
+def test_job_needs(cfg: dict, expected: list) -> None:
+    assert lc.job_needs(cfg) == expected
+
+
+def test_gated_work_jobs_excludes_the_gates_themselves() -> None:
+    jobs = {
+        "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+        "work": {"if": "needs.decide.outputs.run == 'true'"},
+        "twin": {"if": "always() && needs.decide.result != 'success'"},
+        "always-runs": {"runs-on": "ubuntu-latest"},
+    }
+    assert lc.gated_work_jobs(jobs, {"decide"}) == ["work"]
+
+
+@pytest.mark.parametrize(
+    "if_value, expected",
+    [
+        ("always() && needs.decide.result != 'success'", ["decide"]),
+        (
+            "always() && (needs.a.result != 'success' || needs.b.result != 'success')",
+            ["a", "b"],
+        ),
+        ("always()", None),  # not twin-shaped at all
+        ("", None),
+    ],
+)
+def test_twin_gate_refs(if_value: str, expected: list | None) -> None:
+    assert lc.twin_gate_refs(if_value) == expected
+
+
+@pytest.mark.parametrize(
+    "if_value, gate_names, expected",
+    [
+        ("always() && needs.decide.result != 'success'", {"decide"}, True),
+        # One gate of two: `docs` can fail with the twin skipped.
+        ("always() && needs.decide.result != 'success'", {"decide", "docs"}, False),
+        # A job that is no gate: reds every healthy run, skips every broken one.
+        ("always() && needs.work.result != 'success'", {"decide"}, False),
+        # gate_names=None keeps the shape-only question a classifier asks.
+        ("always() && needs.work.result != 'success'", None, True),
+    ],
+)
+def test_is_fail_closed_twin_against_gate_names(
+    if_value: str, gate_names: set | None, expected: bool
+) -> None:
+    assert lc.is_fail_closed_twin(if_value, gate_names) is expected
+
+
+def test_has_fail_closed_twin_requires_the_gate_in_needs() -> None:
+    # `needs.decide.result` reads as empty in a job that does not depend on
+    # `decide`, so the disjunct never fires and the twin never runs.
+    twin = {"if": "always() && needs.decide.result != 'success'"}
+    assert lc.has_fail_closed_twin({"twin": twin}, {"decide"}) is False
+    assert lc.has_fail_closed_twin({"twin": {**twin, "needs": "decide"}}, {"decide"})
+
+
+@pytest.mark.parametrize(
+    "jobs, expected",
+    [
+        (
+            {
+                "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+                "report": {"if": "always()"},
+            },
+            lc.ALWAYS_REPORTER_SHAPE,
+        ),
+        (
+            {
+                "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+                "twin": {"if": "always() && needs.decide.result != 'success'"},
+            },
+            lc.TWIN_SHAPE,
+        ),
+        ({"decide": {"uses": "./.github/workflows/decide-reusable.yaml"}}, None),
+        ({"report": {"if": "always()"}}, None),  # no gate → nothing to fail closed on
+    ],
+)
+def test_required_check_shape(jobs: dict, expected: str | None) -> None:
+    assert lc.required_check_shape(jobs) == expected
+
+
+@pytest.mark.parametrize(
+    "cfg, expected",
+    [
+        ({"steps": [{"run": "exit 1"}]}, "exit 1"),
+        # The LAST run step is the one that decides the job's conclusion.
+        ({"steps": [{"run": "echo a"}, {"run": "exit 1"}]}, "exit 1"),
+        # A `uses:` step after it runs only if that step succeeded.
+        ({"steps": [{"run": "exit 1"}, {"uses": "actions/checkout@v4"}]}, "exit 1"),
+        ({"steps": []}, None),
+        ({}, None),
+    ],
+)
+def test_last_run_script(cfg: dict, expected: str | None) -> None:
+    assert lc.last_run_script(cfg) == expected
+
+
+@pytest.mark.parametrize(
+    "script, expected",
+    [
+        ("exit 1", True),
+        ('echo "the gate failed"\nexit 1', True),
+        ("false", True),
+        ("( exit 1 )", True),
+        # `&&` short-circuits to the left status on failure, so both paths fail.
+        ("echo a && exit 1", True),
+        # `||` runs the right side ONLY when the left failed — `echo` succeeds,
+        # so this whole script exits 0. A regex cannot separate it from the line
+        # above; the grammar can.
+        ("echo a || exit 1", False),
+        ("false || exit 1", True),
+        ('echo "the gate failed"', False),
+        ("exit 0", False),
+        ("exit", False),  # bare exit re-raises the previous status
+        ("exit 256", False),  # wraps to 0
+        ('echo "exit 1"', False),  # a string a command prints, not a command
+        # A `${{ … }}` span is GitHub syntax, not bash. tree-sitter drops nodes
+        # for the REST of the input once it hits one, so an un-neutralized
+        # expression on line 1 used to hide this `exit 1` on line 2.
+        ('echo "${{ github.sha }} gate failed"\nexit 1', True),
+        ("exit ${{ env.CODE }}", False),  # a computed status is no fixed failure
+        ("", False),
+    ],
+)
+def test_script_ends_in_failure(script: str, expected: bool) -> None:
+    assert lc.script_ends_in_failure(script) is expected
+
+
 # ── yaml_comment_view ────────────────────────────────────────────────────────
 # What may carry an opt-out: a real YAML comment, never a string value.
 

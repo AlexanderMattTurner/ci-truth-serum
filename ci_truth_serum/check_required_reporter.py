@@ -3,12 +3,12 @@
 Force every always() reporter on a gated workflow to declare whether it is a
 required status check.
 
-`check-always-reporter` guarantees a gated workflow *has* an `if: always()`
-reporter so it can be a required check without hanging at "Expected — Waiting".
-But the workflow YAML (which produces the check) and branch protection (which
-decides whether the check blocks merges) drift independently: a freshly added,
-green reporter silently escapes the required-status-check set, and nothing in
-the repo records that it was meant to. This lint closes that gap.
+`check-always-reporter` guarantees a gated workflow carries one of two shapes
+that fail closed when the gate itself fails: an `if: always()` reporter, or a
+fail-closed twin. But the workflow YAML (which produces the check) and branch
+protection (which decides whether the check blocks merges) drift independently:
+a freshly added, green reporter silently escapes the required-status-check set,
+and nothing in the repo records that it was meant to. This lint closes that gap.
 
 For every workflow with a pull_request / pull_request_target trigger, each
 `if: always()` reporter job — and each fail-closed twin
@@ -21,6 +21,11 @@ classification comment inside its job block:
 
 The comment must be trailing on the job's key line, or on its own line within
 the job body. An unclassified reporter — or a `false` with no reason — fails.
+
+A workflow whose only fail-closed shape is a twin needs the same comment on
+each gated WORK job. The twin is SKIPPED on a healthy run, so the check runs
+branch protection reads there are the work jobs' own. Leave one unclassified
+and the ruleset requires nothing that a real failure can turn red.
 
 This lint is the local, deterministic half of a pair: a consumer's apply
 workflow derives the required-set from these `required-check: true` annotations
@@ -55,6 +60,10 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _classification_text,
     _job_blocks,
     _marked_jobs,
+    decide_gate_names,
+    gated_work_jobs,
+    has_always_reporter,
+    has_fail_closed_twin,
     is_always_reporter,
     is_fail_closed_twin,
     workflow_files as _workflow_files,
@@ -169,12 +178,35 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
     for name in _reporter_names(jobs):
         line, block = blocks.get(name, (pr_line, ""))
-        match = _CLASSIFY.search(_classification_text(block))
-        if match is None:
+        defect = _classification_defect(block)
+        if defect == "unclassified":
             violations.append((line, _unclassified(name)))
-        elif match.group(1) == "false" and not _REASON.search(match.group("rest")):
+        elif defect == "no-reason":
             violations.append((line, _no_reason(name)))
+
+    # A twin-only workflow reports through its WORK jobs on every healthy run,
+    # because the twin is skipped there. Each work job therefore owes the same
+    # classification the reporter owes.
+    gate_names = decide_gate_names(jobs)
+    if gate_names and not has_always_reporter(jobs) and has_fail_closed_twin(jobs):
+        for name in gated_work_jobs(jobs, gate_names):
+            line, block = blocks.get(name, (pr_line, ""))
+            defect = _classification_defect(block)
+            if defect == "unclassified":
+                violations.append((line, _unclassified_work(name)))
+            elif defect == "no-reason":
+                violations.append((line, _no_reason(name)))
     return violations
+
+
+def _classification_defect(block: str) -> str | None:
+    """'unclassified', 'no-reason', or None for a job block's marker comment."""
+    match = _CLASSIFY.search(_classification_text(block))
+    if match is None:
+        return "unclassified"
+    if match.group(1) == "false" and not _REASON.search(match.group("rest")):
+        return "no-reason"
+    return None
 
 
 def _unclassified(name: str) -> str:
@@ -185,6 +217,16 @@ def _unclassified(name: str) -> str:
         f"set. Add '# {MARKER}: true' if it must be a required status check, or "
         f"'# {MARKER}: false  # <reason>' if it is deliberately advisory. Opt the "
         f"whole workflow out with '# {OPT_OUT}' on its pull_request: trigger."
+    )
+
+
+def _unclassified_work(name: str) -> str:
+    return (
+        f"gated work job '{name}' is unclassified, and this workflow fails closed "
+        "through a twin rather than an always() reporter. The twin is SKIPPED on "
+        "every healthy run, so the check run branch protection reads there is this "
+        f"job's own. Add '# {MARKER}: true' if it must be a required status check, "
+        f"or '# {MARKER}: false  # <reason>' if it is deliberately advisory."
     )
 
 
