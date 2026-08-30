@@ -41,12 +41,12 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     decide_gate_names,
     has_always_reporter,
     is_fail_closed_twin,
-    job_needs,
-    last_run_script,
-    script_ends_in_failure,
-    twin_gate_refs,
+    twin_defects,
 )
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PathologicalInputError,
+)
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "not-required-check"
@@ -129,46 +129,11 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
     if not twins:
         return pr_line, _no_fail_closed_shape()
 
-    defects = {name: _twin_defects(cfg, gate_names) for name, cfg in twins.items()}
+    defects = {name: twin_defects(cfg, gate_names) for name, cfg in twins.items()}
     if any(not found for found in defects.values()):
         return None  # one twin closes the hole — that is all the workflow needs
     closest = min(defects, key=lambda name: len(defects[name]))
     return pr_line, _twin_fails_open(closest, defects[closest], gate_names)
-
-
-def _twin_defects(cfg: dict, gate_names: set[str]) -> list[str]:
-    """Why this twin-shaped job does not in fact fail closed. Empty means it does."""
-    refs = set(twin_gate_refs(cfg.get("if", "")) or [])
-    defects = []
-    uncovered = sorted(gate_names - refs)
-    if uncovered:
-        defects.append(
-            f"its condition reads no result for the decide gate(s) {', '.join(uncovered)}, "
-            "so each of those can fail with this job skipped"
-        )
-    foreign = sorted(refs - gate_names)
-    if foreign:
-        defects.append(
-            f"its condition reads {', '.join(foreign)}, which is no decide gate of this "
-            "workflow — the job then reds on healthy runs and skips on broken gates"
-        )
-    unneeded = sorted((refs & gate_names) - set(job_needs(cfg)))
-    if unneeded:
-        defects.append(
-            f"it does not `needs:` {', '.join(unneeded)}, so that gate's result reads as "
-            "empty here and the disjunct never fires"
-        )
-    script = last_run_script(cfg)
-    if script is None:
-        defects.append(
-            "it runs no `run:` step, so it succeeds on the run that needs it red"
-        )
-    elif not script_ends_in_failure(script):
-        defects.append(
-            "its last `run:` step does not end in a failing command, so the job exits 0 "
-            "on the run that needs it red"
-        )
-    return defects
 
 
 def _no_fail_closed_shape() -> str:
@@ -204,11 +169,16 @@ def workflow_files() -> list[Path]:
 def main() -> int:
     total = 0
     for path in workflow_files():
-        found = check_file(path)
+        rel = path.relative_to(REPO_ROOT)
+        try:
+            found = check_file(path)
+        except PathologicalInputError as err:
+            print(f"::error file={rel}::{err}")
+            total += 1
+            continue
         if found is None:
             continue
         line, message = found
-        rel = path.relative_to(REPO_ROOT)
         loc = f"file={rel},line={line}" if line else f"file={rel}"
         print(f"::error {loc}::{message}")
         total += 1

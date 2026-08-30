@@ -385,9 +385,38 @@ def test_has_fail_closed_twin_requires_the_gate_in_needs() -> None:
         (
             {
                 "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
-                "twin": {"if": "always() && needs.decide.result != 'success'"},
+                "twin": {
+                    "if": "always() && needs.decide.result != 'success'",
+                    "needs": ["decide"],
+                    "steps": [{"run": "exit 1"}],
+                },
             },
             lc.TWIN_SHAPE,
+        ),
+        # A twin that protects nothing is no shape: it exits 0 on the run that
+        # needs it red, so reading it as one would have every caller defend a
+        # required check this workflow does not have.
+        (
+            {
+                "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+                "twin": {
+                    "if": "always() && needs.decide.result != 'success'",
+                    "needs": ["decide"],
+                    "steps": [{"run": "echo broken"}],
+                },
+            },
+            None,
+        ),
+        # The same, for a twin that names the gate but does not `needs:` it.
+        (
+            {
+                "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+                "twin": {
+                    "if": "always() && needs.decide.result != 'success'",
+                    "steps": [{"run": "exit 1"}],
+                },
+            },
+            None,
         ),
         ({"decide": {"uses": "./.github/workflows/decide-reusable.yaml"}}, None),
         ({"report": {"if": "always()"}}, None),  # no gate → nothing to fail closed on
@@ -409,8 +438,23 @@ def test_required_check_shape(jobs: dict, expected: str | None) -> None:
         ({}, None),
     ],
 )
-def test_last_run_script(cfg: dict, expected: str | None) -> None:
-    assert lc.last_run_script(cfg) == expected
+def test_last_run_step(cfg: dict, expected: str | None) -> None:
+    step = lc.last_run_step(cfg)
+    assert (None if step is None else step["run"]) == expected
+
+
+@pytest.mark.parametrize(
+    "cfg, step, expected",
+    [
+        ({}, {"run": "exit 1"}, "bash"),
+        ({}, {"run": "x", "shell": "python"}, "python"),
+        ({"defaults": {"run": {"shell": "pwsh"}}}, {"run": "x"}, "pwsh"),
+        # The step's own key wins over the job default.
+        ({"defaults": {"run": {"shell": "pwsh"}}}, {"run": "x", "shell": "sh"}, "sh"),
+    ],
+)
+def test_step_shell(cfg: dict, step: dict, expected: str) -> None:
+    assert lc.step_shell(cfg, step) == expected
 
 
 @pytest.mark.parametrize(
@@ -422,6 +466,10 @@ def test_last_run_script(cfg: dict, expected: str | None) -> None:
         ("( exit 1 )", True),
         # `&&` short-circuits to the left status on failure, so both paths fail.
         ("echo a && exit 1", True),
+        # A left operand that ALWAYS fails decides the list on its own: the right
+        # one never runs, and the status is the left one's.
+        ("false && echo unreachable", True),
+        ("exit 1 && true", True),
         # `||` runs the right side ONLY when the left failed — `echo` succeeds,
         # so this whole script exits 0. A regex cannot separate it from the line
         # above; the grammar can.

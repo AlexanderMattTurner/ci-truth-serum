@@ -265,9 +265,29 @@ TWIN_WITHOUT_STEPS = GATED_WITH_TWIN.replace(
     "",
 )
 
+TWIN_IN_ANOTHER_SHELL = GATED_WITH_TWIN.replace(
+    "      - run: |\n",
+    "      - shell: python\n        run: |\n",
+)
+
 TWIN_ENDING_IN_OR_EXIT = GATED_WITH_TWIN.replace(
     '          echo "the decide gate did not succeed"\n          exit 1\n',
     "          test -f /nonexistent || exit 1\n",
+)
+
+TWIN_WITH_CONTINUE_ON_ERROR_STEP = GATED_WITH_TWIN.replace(
+    "      - run: |\n",
+    "      - continue-on-error: true\n        run: |\n",
+)
+
+TWIN_WITH_CONTINUE_ON_ERROR_JOB = GATED_WITH_TWIN.replace(
+    "    steps:\n      - run: |\n",
+    "    continue-on-error: true\n    steps:\n      - run: |\n",
+)
+
+TWIN_IN_UNREADABLE_SHELL = GATED_WITH_TWIN.replace(
+    '          echo "the decide gate did not succeed"\n          exit 1\n',
+    "          if [ -f x ]; then\n          exit 1\n",
 )
 
 
@@ -297,6 +317,15 @@ def test_twin_that_does_not_need_its_gate_is_flagged(tmp_path):
     assert "`needs:`" in found[1]
 
 
+def test_twin_in_a_shell_this_check_cannot_read_is_flagged(tmp_path):
+    # The bash grammar is the only reader here, so a `shell: python` body would be
+    # parsed as bash and its exit status guessed at. A twin exists to fail, so an
+    # unverifiable one is refused rather than accepted.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_IN_ANOTHER_SHELL))
+    assert found is not None
+    assert "shell: python" in found[1]
+
+
 def test_twin_whose_script_succeeds_is_flagged(tmp_path):
     # The twin runs exactly when the gate broke and then exits 0 — a green
     # required check on the one run that had to be red.
@@ -309,6 +338,36 @@ def test_twin_with_no_steps_is_flagged(tmp_path):
     found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_WITHOUT_STEPS))
     assert found is not None
     assert "no `run:` step" in found[1]
+
+
+def test_a_continue_on_error_step_cannot_be_what_makes_the_twin_red(tmp_path):
+    # The script ends in `exit 1`, but the step's failure is reported as success,
+    # so the job still concludes green on the one run that had to be red. No
+    # other `run:` step is left to decide.
+    found = car.check_file(
+        _write(tmp_path, "wf.yaml", TWIN_WITH_CONTINUE_ON_ERROR_STEP)
+    )
+    assert found is not None
+    assert "no `run:` step" in found[1]
+
+
+def test_a_continue_on_error_job_is_flagged(tmp_path):
+    # Job-level `continue-on-error` reports EVERY step's failure as success, so
+    # the same fail-open arrives one level up.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_WITH_CONTINUE_ON_ERROR_JOB))
+    assert found is not None
+    assert "continue-on-error" in found[1]
+
+
+def test_a_twin_whose_shell_does_not_parse_is_refused_as_unverifiable(tmp_path):
+    # An unterminated `if` yields ERROR nodes. The honest verdict is "I could not
+    # read this", not "it does not end in a failing command" — different faults,
+    # different fixes.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_IN_UNREADABLE_SHELL))
+    assert found is not None
+    assert "cannot read" in found[1]
+    # The remedy text below names a failing command; the DEFECT must not.
+    assert "does not end in a failing command" not in found[1]
 
 
 def test_twin_whose_script_can_exit_zero_is_flagged(tmp_path):
