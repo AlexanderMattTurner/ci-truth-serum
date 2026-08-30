@@ -786,6 +786,40 @@ def has_always_reporter(jobs: dict) -> bool:
     )
 
 
+# A fail-closed twin's condition tail: one `needs.<gate>.result != 'success'`
+# disjunct per gate, `||`-joined, optionally in one balanced paren group.
+_TWIN_DISJUNCTS = (
+    r"needs\.[A-Za-z0-9_-]+\.result\s*!=\s*'success'"
+    r"(?:\s*\|\|\s*needs\.[A-Za-z0-9_-]+\.result\s*!=\s*'success')*"
+)
+_TWIN_TAIL = re.compile(rf"(?:{_TWIN_DISJUNCTS}|\(\s*{_TWIN_DISJUNCTS}\s*\))")
+
+
+def is_fail_closed_twin(if_value: object) -> bool:
+    """True if a job `if:` runs exactly when a decide gate did not succeed.
+
+    The zero-boot counterpart of a bare always() reporter. On a healthy run the
+    job is SKIPPED, which boots no runner and still satisfies a required check;
+    it runs (and must fail) only when a gate itself did not succeed — the one
+    case where every gated work job skips and a merge would otherwise green
+    over a broken gate. Shape: `always() && needs.<gate>.result != 'success'`,
+    with `||` between disjuncts when several gates share the twin.
+    """
+    expression = unwrap_expression(if_value)
+    prefix, sep, rest = expression.partition("&&")
+    if not sep or prefix.strip() != "always()":
+        return False
+    return _TWIN_TAIL.fullmatch(rest.strip()) is not None
+
+
+def has_fail_closed_twin(jobs: dict) -> bool:
+    """True if any job is a fail-closed twin — the other required-check shape."""
+    return any(
+        isinstance(job_cfg, dict) and is_fail_closed_twin(job_cfg.get("if", ""))
+        for job_cfg in jobs.values()
+    )
+
+
 # A concurrency group keyed by any of these is per-ref / per-PR / per-run, so a
 # run is only ever superseded by a *newer run of the same ref* — whose own
 # reporter then posts the check. Without one of these the group is static and a

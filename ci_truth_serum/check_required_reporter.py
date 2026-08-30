@@ -11,8 +11,10 @@ green reporter silently escapes the required-status-check set, and nothing in
 the repo records that it was meant to. This lint closes that gap.
 
 For every workflow with a pull_request / pull_request_target trigger, each
-`if: always()` reporter job must carry an explicit classification comment inside
-its job block:
+`if: always()` reporter job — and each fail-closed twin
+(`if: always() && needs.<gate>.result != 'success'`), which is the check run
+branch protection reads when a gate fails — must carry an explicit
+classification comment inside its job block:
 
     # required-check: true               -> must be a required status check
     # required-check: false  # <reason>  -> deliberately advisory (reason MANDATORY)
@@ -54,6 +56,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _job_blocks,
     _marked_jobs,
     is_always_reporter,
+    is_fail_closed_twin,
     workflow_files as _workflow_files,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -94,11 +97,18 @@ def _trigger_names(triggers: object) -> set[str]:
 
 
 def _reporter_names(jobs: dict) -> list[str]:
-    """Names of jobs whose `if` is an always() reporter (bare or ${{ }}-wrapped)."""
+    """Names of jobs that report for a gate: an always() reporter (bare or
+    ${{ }}-wrapped) or a fail-closed twin. Both produce the check run that
+    branch protection reads on a run whose gate failed, so both demand a
+    classification."""
     return [
         name
         for name, cfg in jobs.items()
-        if isinstance(cfg, dict) and is_always_reporter(cfg.get("if", ""))
+        if isinstance(cfg, dict)
+        and (
+            is_always_reporter(cfg.get("if", ""))
+            or is_fail_closed_twin(cfg.get("if", ""))
+        )
     ]
 
 
@@ -169,7 +179,8 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
 def _unclassified(name: str) -> str:
     return (
-        f"always() reporter job '{name}' is unclassified — a green reporter that "
+        f"reporter job '{name}' (always() reporter or fail-closed twin) is "
+        "unclassified — a green reporter that "
         "nothing ties to branch protection silently escapes the required-check "
         f"set. Add '# {MARKER}: true' if it must be a required status check, or "
         f"'# {MARKER}: false  # <reason>' if it is deliberately advisory. Opt the "
@@ -179,7 +190,7 @@ def _unclassified(name: str) -> str:
 
 def _no_reason(name: str) -> str:
     return (
-        f"always() reporter job '{name}' is marked '# {MARKER}: false' but gives "
+        f"reporter job '{name}' is marked '# {MARKER}: false' but gives "
         "no reason — append '# <reason>' explaining why it is deliberately not a "
         "required check."
     )

@@ -162,6 +162,82 @@ def test_check_file_passes_wrapped_always_reporter(tmp_path):
     assert car.check_file(path) is None
 
 
+GATED_WITH_TWIN = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  work:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+  gate-failed:
+    needs: [decide]
+    if: always() && needs.decide.result != 'success'
+    runs-on: ubuntu-latest
+"""
+
+GATED_WITH_MULTI_GATE_TWIN = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  decide-docs:
+    uses: ./.github/workflows/decide-reusable.yaml
+  work:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+  gate-failed:
+    needs: [decide, decide-docs]
+    if: always() && (needs.decide.result != 'success' || needs.decide-docs.result != 'success')
+    runs-on: ubuntu-latest
+"""
+
+GATED_WITH_COMPOUND_NON_TWIN = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  work:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+  report:
+    needs: [decide, work]
+    if: always() && needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+"""
+
+
+def test_check_file_passes_gated_workflow_with_fail_closed_twin(tmp_path):
+    # A twin is SKIPPED on a healthy run and runs red only when the gate did
+    # not succeed — skipped satisfies a required check, so the workflow fails
+    # closed with no reporter boot.
+    path = _write(tmp_path, "wf.yaml", GATED_WITH_TWIN)
+    assert car.check_file(path) is None
+
+
+def test_check_file_passes_multi_gate_twin(tmp_path):
+    path = _write(tmp_path, "wf.yaml", GATED_WITH_MULTI_GATE_TWIN)
+    assert car.check_file(path) is None
+
+
+def test_check_file_flags_compound_always_that_is_not_a_twin(tmp_path):
+    # `always() && needs.decide.outputs.run == 'true'` SKIPS when the gate job
+    # itself fails (the output is empty), so it closes nothing — still flagged.
+    path = _write(tmp_path, "wf.yaml", GATED_WITH_COMPOUND_NON_TWIN)
+    found = car.check_file(path)
+    assert found is not None
+    assert "fails closed" in found[1]
+
+
 def test_check_file_passes_ungated_workflow(tmp_path):
     # No decide gate → every job always runs → no reporter needed.
     path = _write(tmp_path, "wf.yaml", UNGATED_NO_REPORTER)
