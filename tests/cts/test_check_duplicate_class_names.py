@@ -143,6 +143,13 @@ def test_distinct_names_never_collide() -> None:
 
 # --------------------------------------------------------------------------- #
 # scan_repo / main over a throwaway repo.
+
+
+def _scan_hits(paths, repo, scopes):
+    """The collisions half of a scan, which is all these cases assert on."""
+    return mod.scan_repo(paths, repo, scopes).hits
+
+
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def repo(tmp_path: Path) -> Path:
@@ -160,7 +167,7 @@ def _track(repo_dir: Path, rel: str, text: str) -> None:
 def test_a_collision_between_two_argv_files_is_reported_on_both(repo: Path) -> None:
     _track(repo, "a/one.py", _GH)
     _track(repo, "a/two.py", _GH)
-    hits, _ = mod.scan_repo([str(repo / "a/one.py"), str(repo / "a/two.py")], repo, [])
+    hits = _scan_hits([str(repo / "a/one.py"), str(repo / "a/two.py")], repo, [])
     assert hits == {"a/one.py": ["Gh"], "a/two.py": ["Gh"]}
 
 
@@ -172,13 +179,13 @@ def test_a_collision_against_a_file_not_on_argv_is_reported_on_the_argv_file(
     is reported."""
     _track(repo, "a/one.py", _GH)
     _track(repo, "a/two.py", _GH)
-    hits, _ = mod.scan_repo([str(repo / "a/one.py")], repo, [])
+    hits = _scan_hits([str(repo / "a/one.py")], repo, [])
     assert hits == {"a/one.py": ["Gh"]}
 
 
 def test_a_unique_class_reports_nothing(repo: Path) -> None:
     _track(repo, "a/one.py", "class Row:\n    pass\n")
-    hits, _ = mod.scan_repo([str(repo / "a/one.py")], repo, [])
+    hits = _scan_hits([str(repo / "a/one.py")], repo, [])
     assert hits == {}
 
 
@@ -190,14 +197,14 @@ def test_a_scope_directory_that_excludes_the_collision_reports_nothing(
     is nothing else in scope to collide with."""
     _track(repo, "a/one.py", _GH)
     _track(repo, "b/two.py", _GH)
-    hits, _ = mod.scan_repo([str(repo / "a/one.py")], repo, ["a"])
+    hits = _scan_hits([str(repo / "a/one.py")], repo, ["a"])
     assert hits == {}
 
 
 def test_a_scope_directory_that_includes_the_collision_reports_it(repo: Path) -> None:
     _track(repo, "a/one.py", _GH)
     _track(repo, "b/two.py", _GH)
-    hits, _ = mod.scan_repo([str(repo / "a/one.py")], repo, ["a", "b"])
+    hits = _scan_hits([str(repo / "a/one.py")], repo, ["a", "b"])
     assert hits == {"a/one.py": ["Gh"]}
 
 
@@ -206,14 +213,14 @@ def test_a_test_file_is_never_scanned_even_as_the_collision_partner(
 ) -> None:
     _track(repo, "a/one.py", _GH)
     _track(repo, "tests/test_two.py", _GH)
-    hits, _ = mod.scan_repo([str(repo / "a/one.py")], repo, [])
+    hits = _scan_hits([str(repo / "a/one.py")], repo, [])
     assert hits == {}
 
 
 def test_a_test_file_named_on_argv_is_never_reported(repo: Path) -> None:
     _track(repo, "a/one.py", _GH)
     _track(repo, "tests/test_two.py", _GH)
-    hits, _ = mod.scan_repo(
+    hits = _scan_hits(
         [str(repo / "a/one.py"), str(repo / "tests/test_two.py")], repo, []
     )
     assert "tests/test_two.py" not in hits
@@ -228,7 +235,7 @@ def test_an_untracked_file_is_still_compared_against_when_named_on_argv(
     outside = repo / "a" / "one.py"
     outside.parent.mkdir(parents=True, exist_ok=True)
     outside.write_text(_GH, encoding="utf-8")  # never committed
-    hits, _ = mod.scan_repo([str(outside)], repo, ["b"])
+    hits = _scan_hits([str(outside)], repo, ["b"])
     assert hits == {"a/one.py": ["Gh"]}
 
 
@@ -236,7 +243,7 @@ def test_a_non_python_argv_path_is_ignored(repo: Path) -> None:
     _track(repo, "a/one.py", _GH)
     readme = repo / "README.md"
     readme.write_text("# hi\n", encoding="utf-8")
-    hits, _ = mod.scan_repo([str(repo / "a/one.py"), str(readme)], repo, [])
+    hits = _scan_hits([str(repo / "a/one.py"), str(readme)], repo, [])
     assert hits == {}
 
 
@@ -246,7 +253,7 @@ def test_relative_argv_paths_resolve_against_the_current_directory(
     _track(repo, "a/one.py", _GH)
     _track(repo, "a/two.py", _GH)
     monkeypatch.chdir(repo)
-    hits, _ = mod.scan_repo(["a/one.py"], repo, [])
+    hits = _scan_hits(["a/one.py"], repo, [])
     assert hits == {"a/one.py": ["Gh"]}
 
 
@@ -301,3 +308,19 @@ def test_the_real_tree_scanned_through_run_file_cli_exits_0_or_1() -> None:
         check=False,
     )
     assert result.returncode in (0, 1)
+
+
+def test_a_file_this_interpreter_cannot_parse_is_refused(repo: Path) -> None:
+    """A refusal, never a crash and never a silent skip.
+
+    `ast.parse` raising here used to take the whole check down with a bare
+    traceback, so one file the running interpreter is too old for stopped every
+    other file in the tree being judged.
+    """
+    _track(repo, "a/one.py", _GH)
+    _track(repo, "a/bad.py", "class Broken(:\n")
+    scan = mod.scan_repo([str(repo / "a/one.py"), str(repo / "a/bad.py")], repo, [])
+    assert "a/bad.py" in scan.refusals
+    assert "cannot parse this file" in scan.refusals["a/bad.py"]
+    # The readable file is still scanned, so one bad file costs only itself.
+    assert "a/one.py" in scan.classes_by_file

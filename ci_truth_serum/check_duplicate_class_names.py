@@ -38,6 +38,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotation_re,
     is_test_path,
     run_file_cli,
+    unparseable_python_reason,
 )
 
 OPT_OUT = "allow-duplicate-class"
@@ -169,26 +170,49 @@ def _relative(path: str, repo_root: Path) -> str:
     return Path(path).resolve().relative_to(repo_root).as_posix()
 
 
-def scan_repo(
-    argv_paths: list[str], repo_root: Path, scopes: list[str]
-) -> tuple[dict[str, list[str]], dict[str, ModuleClasses]]:
-    """({argv-relative-path: [colliding class names]}, {rel: ModuleClasses})
-    for every scanned argv path — the rest of scope only supplies the other
-    half of the question. An argv path outside every `--scope` directory is
-    still compared: judging it needs to know what it itself defines."""
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ScanResult:
+    """What one scan of the tree found.
+
+    `hits` is keyed by argv-relative path and holds that file's colliding class
+    names. `classes_by_file` carries every scanned module, because a hit's line
+    number lives there. `refusals` names each file this interpreter could not
+    parse, keyed the same way.
+    """
+
+    hits: dict[str, list[str]]
+    classes_by_file: dict[str, ModuleClasses]
+    refusals: dict[str, str]
+
+
+def scan_repo(argv_paths: list[str], repo_root: Path, scopes: list[str]) -> ScanResult:
+    """Every scanned argv path's collisions, modules and refusals.
+
+    The rest of scope only supplies the other half of the question. An argv path
+    outside every `--scope` directory is still compared: judging it needs to know
+    what it itself defines."""
     argv_rel = [_relative(p, repo_root) for p in argv_paths if p.endswith(".py")]
     reportable = [rel for rel in argv_rel if not is_test_path(rel)]
     all_files = sorted({*_tracked_python_files(repo_root, scopes), *reportable})
     classes_by_file: dict[str, ModuleClasses] = {}
+    refusals: dict[str, str] = {}
     for rel in all_files:
         try:
             text = (repo_root / rel).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
+        # A file this interpreter cannot parse is REFUSED, never skipped and
+        # never allowed to raise: `ast.parse` here would take the whole check
+        # down with a bare traceback, and dropping the file would compare the
+        # tree against a set missing exactly the names it defines.
+        reason = unparseable_python_reason(rel, text)
+        if reason is not None:
+            refusals[rel] = reason
+            continue
         classes_by_file[rel] = top_level_classes(text)
     collisions = find_collisions(classes_by_file)
     hits = {rel: collisions[rel] for rel in reportable if collisions.get(rel)}
-    return hits, classes_by_file
+    return ScanResult(hits=hits, classes_by_file=classes_by_file, refusals=refusals)
 
 
 _WHY = (
@@ -232,12 +256,14 @@ def main(argv: list[str]) -> int:
     repo_root = (
         Path(args.repo_root).resolve() if args.repo_root else _default_repo_root()
     )
-    hits, classes_by_file = scan_repo(args.paths, repo_root, args.scope)
-    if not hits:
-        return 0
-    for rel in sorted(hits):
-        for name in hits[rel]:
-            lineno = classes_by_file[rel].lines.get(name, 1)
+    scan = scan_repo(args.paths, repo_root, args.scope)
+    for rel in sorted(scan.refusals):
+        print(f"{rel}:1: {scan.refusals[rel]}", file=sys.stderr)
+    if not scan.hits:
+        return 1 if scan.refusals else 0
+    for rel in sorted(scan.hits):
+        for name in scan.hits[rel]:
+            lineno = scan.classes_by_file[rel].lines.get(name, 1)
             print(
                 f"{rel}:{lineno}: duplicated class name `{name}` — {_WHY}. {_REMEDY}.",
                 file=sys.stderr,
