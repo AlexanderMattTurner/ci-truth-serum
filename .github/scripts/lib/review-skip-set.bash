@@ -35,13 +35,16 @@ REVIEW_SKIP_TYPES='["chore", "style", "release"]'
 # request itself rather than a webhook payload, so a later event (a push, a
 # label) gets the same answer as the first one.
 pr_review_is_skipped() {
-  local owner="$1" name="$2" pr="$3" verdict
-  verdict="$(retry_stdout gh api "repos/${owner}/${name}/pulls/${pr}" --jq '
-    (.title | ascii_downcase) as $title
+  local owner="$1" name="$2" pr="$3" verdict program
+  # `gh api` passes no jq variables, so the type list is spliced into the
+  # program. $title and $t belong to jq, not the shell.
+  # shellcheck disable=SC2016
+  program='(.title | ascii_downcase) as $title
     | if any(.labels[]?; .name == "needs-auto-review") then "reviewed"
       elif .user.type == "Bot" then "skipped"
       elif any('"$REVIEW_SKIP_TYPES"'[]; . as $t | $title | test("^" + $t + "(\\(.*\\))?!?:")) then "skipped"
       else "reviewed"
-      end')"
+      end'
+  verdict="$(retry_stdout gh api "repos/${owner}/${name}/pulls/${pr}" --jq "$program")"
   [[ "$verdict" == "skipped" ]]
 }
