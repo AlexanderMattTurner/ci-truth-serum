@@ -6,9 +6,15 @@ the next sweep repeat that work. The cost of that ordering is a run that fails
 *before* any work starts: it marks the head, does nothing, and the mark then
 suppresses every later scan of that pull request for a full TTL.
 
-That is not hypothetical. A missing pins file failed the mergiraf install, and
-every open conflicted pull request in this repository was latched with no merge
-attempted and nothing said on the pull request itself.
+That is not hypothetical, and it happened twice in different shapes. A missing
+pins file failed the mergiraf install, and every open conflicted pull request in
+this repository was latched with no merge attempted. Later the credential guard
+refused an empty ladder AFTER the pre-pass had run, so the release was skipped,
+and pull request #147 stayed stranded even once the credentials were fixed —
+only a new head clears a mark.
+
+So the gate is on SPEND, not on how far the run got: `execution_file` is written
+as soon as the CLI produces a log, so an empty value means no model was called.
 
 These read the workflow with a real YAML parser and assert the release path
 exists and is guarded so it can never hand back a head a paid pass worked on.
@@ -53,17 +59,45 @@ def test_a_run_that_failed_before_any_work_releases_its_attempt() -> None:
 
 
 def test_the_failure_release_cannot_hand_back_a_head_a_paid_pass_worked_on() -> None:
-    """The failure-path release is gated on the pre-pass never having run.
+    """The failure-path release is gated on the run having spent nothing.
 
-    `prepare` is the first step that touches the tree, and the model call sits
-    behind its outputs. Gating on anything weaker would let a failure *after* a
-    resolution began release the head, and the next sweep would pay to redo it.
+    Both arms are needed and neither is sufficient. Gating only on `prepare`
+    never running keeps the mark on a credential refusal that spent nothing —
+    the #147 strand. Gating only on the empty execution log would release a head
+    whose failure came before the model step ever ran, where `execution_file` is
+    empty for a different reason. Dropping the `execution_file` test entirely
+    would release a head whose ladder really did call the model and get errors
+    back, and the next sweep would pay to redo it.
     """
     on_failure = [s for s in _release_steps() if "failure()" in str(s.get("if", ""))]
     assert on_failure, "no failure-path release step to gate"
-    condition = str(on_failure[0]["if"])
+    condition = " ".join(str(on_failure[0]["if"]).split())
     assert "steps.prepare.outcome == ''" in condition, (
-        f"failure-path release is not gated on prepare never running: {condition}"
+        f"failure-path release does not cover a run that never touched the tree: {condition}"
+    )
+    assert "steps.resolve_llm.outputs.execution_file == ''" in condition, (
+        f"failure-path release does not cover a run that called no model: {condition}"
+    )
+    assert "steps.resolve_llm.outcome == 'failure'" in condition, (
+        "the empty-execution-log arm must also require the model step to have "
+        f"FAILED, or a skipped model step releases the head: {condition}"
+    )
+
+
+def test_the_release_reads_the_step_that_writes_the_execution_log() -> None:
+    """`execution_file` must name the step that actually produces it.
+
+    The condition is a string GitHub resolves at run time: a wrong step id is
+    always the empty string, which silently releases every failing head. This
+    pins the id to the step whose script writes that output.
+    """
+    steps = _resolve_steps()
+    writer = next(
+        s for s in steps if "claude-conflict-resolve.sh" in str(s.get("run", ""))
+    )
+    assert writer["id"] == "resolve_llm", (
+        f"the execution-log writer is step id {writer['id']!r}, but the release "
+        "condition reads steps.resolve_llm.outputs.execution_file"
     )
 
 
