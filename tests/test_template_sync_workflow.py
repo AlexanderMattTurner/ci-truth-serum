@@ -7,9 +7,12 @@ died exactly there: the template's newer resolver demands a `RESOLVER_DIR` this
 workflow never sets, so every scheduled sync that hit a conflict failed the same
 way, and the failure was in a script no reviewer had approved.
 
-The fix stages the base ref's `.github/scripts` into `runner.temp` before the
-checkout and runs the resolver, the push and the auto-merge from there. These
-tests pin that: after the branch switch, no step may name a workspace script path.
+The fix adds a base-ref worktree under `runner.temp` before the checkout, and
+runs the resolver, the push and the auto-merge from there. It is the shape and
+the names `auto-resolve-conflicts.yaml` already uses: a `resolver` step whose
+`dir` output is the scripts directory and whose `base` output is the worktree.
+These tests pin that: after the branch switch, no step may name a workspace
+script path.
 
 The path test is a text property (`does this body name that path`), not a shell
 structure question, so it is a plain substring scan by design.
@@ -22,8 +25,9 @@ from tests._helpers import REPO_ROOT
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "template-sync.yaml"
 SWITCH = "git checkout -B template-sync"
 WORKSPACE_SCRIPTS = ".github/scripts/"
-STAGED = "${{ steps.base-scripts.outputs.dir }}"
-STAGED_REF = "${BASE_SCRIPTS}"
+STAGED = "${{ steps.resolver.outputs.dir }}"
+STAGED_REF = "${RESOLVER_DIR}"
+WORKTREE = "${{ steps.resolver.outputs.base }}"
 
 
 def _sync_steps() -> list[dict]:
@@ -41,17 +45,21 @@ def _switch_index(steps: list[dict]) -> int:
     )
 
 
-def test_the_staging_step_copies_the_base_ref_scripts() -> None:
-    """The staged copy must be taken while the workspace is still on the base ref."""
+def test_the_staging_step_takes_a_worktree_of_the_base_ref() -> None:
+    """The worktree must be added while the workspace is still on the base ref.
+
+    A full worktree, not a copy of one directory: an enumerated subset leaves out
+    whatever it did not anticipate, which a script finds only after the paid work.
+    """
     steps = _sync_steps()
     staging = [
         index
         for index, step in enumerate(steps)
-        if step.get("id") == "base-scripts" and WORKSPACE_SCRIPTS in str(step["run"])
+        if step.get("id") == "resolver" and "git worktree add" in str(step["run"])
     ]
-    assert staging, "no step stages the base ref's .github/scripts"
+    assert staging, "no step stages a base-ref worktree"
     assert staging[0] < _switch_index(steps), (
-        "the staging step runs after the sync branch is checked out, so it copies "
+        "the staging step runs after the sync branch is checked out, so it stages "
         "the incoming scripts rather than the reviewed ones"
     )
 
@@ -73,11 +81,19 @@ def test_the_steps_after_the_switch_run_the_staged_copy() -> None:
 
 
 def test_every_staged_invocation_has_the_directory_in_its_env() -> None:
-    """A `${BASE_SCRIPTS}` that no `env:` sets expands to an empty path."""
+    """A `${RESOLVER_DIR}` that no `env:` sets expands to an empty path."""
     for step in _sync_steps():
         if STAGED_REF not in str(step.get("run", "")):
             continue
-        assert (step.get("env") or {}).get("BASE_SCRIPTS") == STAGED, (
-            f"step {step.get('name')!r} reads BASE_SCRIPTS without binding it to "
+        assert (step.get("env") or {}).get("RESOLVER_DIR") == STAGED, (
+            f"step {step.get('name')!r} reads RESOLVER_DIR without binding it to "
             "the staging step's output"
         )
+
+
+def test_the_resolve_step_binds_the_worktree_too() -> None:
+    """`auto-resolve/self-review.sh` reads its prompts and its CLI from
+    BASE_WORKTREE, and refuses to run without it."""
+    resolve = [step for step in _sync_steps() if step.get("id") == "resolve"]
+    assert len(resolve) == 1, "no resolve step to check"
+    assert (resolve[0].get("env") or {}).get("BASE_WORKTREE") == WORKTREE

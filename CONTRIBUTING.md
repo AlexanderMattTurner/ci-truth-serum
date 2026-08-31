@@ -54,6 +54,7 @@ Add all of these in one commit. Several tests read them as one source of truth, 
 4. A row in the README table for the tier you chose.
 5. A test module, as `tests/cts/test_check_<name>.py`.
 6. A changelog fragment in `changelog.d/`, when the change is user-facing.
+7. A fuzz target, when the check parses input: an entry in `tests/cts/test_fuzz_coverage.py`'s `FUZZ_REQUIRED`, and a suite that drives the named symbol. `tests/cts/test_fuzz_new_checks.py` is the shared one. That gate matches the live set of input-parsing checks exactly, so a new check fails CI until it appears there.
 
 ## Rules a check must follow
 

@@ -217,16 +217,22 @@ jobs:
       # script against the env this workflow declares. That is how run 32714066016
       # died: the template's newer resolver demands a RESOLVER_DIR this step never
       # sets, and every scheduled sync with a conflict failed the same way. So
-      # stage the base ref's scripts first and run the resolver from there.
+      # stage the base ref first and run the resolver from there.
+      #
+      # A full worktree, and the same outputs and names auto-resolve-conflicts.yaml
+      # already uses. That workflow states why a copy of one directory is not
+      # enough: an enumerated subset leaves out whatever it did not anticipate,
+      # and a script finds the gap only after the paid work. The workspace is on
+      # the base ref here, so HEAD is the ref to stage and no fetch is needed.
       - name: Stage the base ref's resolver
-        id: base-scripts
+        id: resolver
         if: inputs.dry-run != true && steps.create-pr.outputs.pull-request-number
         env:
-          DEST: ${{ runner.temp }}/base-scripts
+          DEST: ${{ runner.temp }}/base
         run: |
-          mkdir -p "${DEST}"
-          cp -R .github/scripts/. "${DEST}/"
-          echo "dir=${DEST}" >>"$GITHUB_OUTPUT"
+          git worktree add --detach --quiet "${DEST}" HEAD
+          echo "base=${DEST}" >>"$GITHUB_OUTPUT"
+          echo "dir=${DEST}/.github/scripts" >>"$GITHUB_OUTPUT"
 
       - name: Install mergiraf (pinned, digest-verified)
         if: inputs.dry-run != true && steps.sync.outputs.has_conflicts == 'true' && steps.create-pr.outputs.pull-request-number
@@ -242,11 +248,12 @@ jobs:
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
           GH_REPO: ${{ github.repository }}
-          BASE_SCRIPTS: ${{ steps.base-scripts.outputs.dir }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          BASE_WORKTREE: ${{ steps.resolver.outputs.base }}
         run: |
           git fetch --no-tags origin "+refs/heads/template-sync:refs/remotes/origin/template-sync"
           git checkout -B template-sync origin/template-sync
-          bash "${BASE_SCRIPTS}/template-sync-resolve.sh"
+          bash "${RESOLVER_DIR}/template-sync-resolve.sh"
 
       - name: Push the resolutions
         if: steps.resolve.outcome == 'success' && (steps.resolve.outputs.deterministic != '' || steps.resolve.outputs.by_model != '')
@@ -255,8 +262,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
           DETERMINISTIC: ${{ steps.resolve.outputs.deterministic }}
           BY_MODEL: ${{ steps.resolve.outputs.by_model }}
-          BASE_SCRIPTS: ${{ steps.base-scripts.outputs.dir }}
-        run: bash "${BASE_SCRIPTS}/template-sync-push.sh"
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/template-sync-push.sh"
 
       # A sync merges itself only when NOTHING needed judgement. See the script
       # for the full predicate; the two carve-outs are that a model-resolved file
@@ -272,5 +279,5 @@ jobs:
           HAS_DOWNGRADES: ${{ steps.sync.outputs.has_downgrades }}
           ALL_DETERMINISTIC: ${{ steps.resolve.outputs.all_deterministic }}
           CHANGED_PATHS: ${{ steps.sync.outputs.changed_paths }}
-          BASE_SCRIPTS: ${{ steps.base-scripts.outputs.dir }}
-        run: bash "${BASE_SCRIPTS}/template-sync-automerge.sh"
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/template-sync-automerge.sh"

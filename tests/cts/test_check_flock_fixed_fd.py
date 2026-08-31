@@ -1,5 +1,5 @@
 """Tests for ci_truth_serum/check_flock_fixed_fd.py — the lint that flags a lock
-taken on a hardcoded file descriptor.
+taken on a hardcoded file descriptor the file never opens.
 
 Drives `violations()` for the parsing rules and `main()` for the argv/exit-code
 contract. The two probes every shell lint in this pack must survive — the idiom
@@ -60,6 +60,41 @@ def test_a_launcher_wrapping_flock_is_not_judged() -> None:
     belongs to the shell that opened it.
     """
     assert mod.violations("sudo flock -x 9\n") == []
+
+
+# ── not flagged: the file opens the descriptor itself ────────────────────
+@pytest.mark.parametrize(
+    "name, src",
+    [
+        ("the documented pairing", "exec 9>/var/lock/x\nflock -x 9\n"),
+        ("opened for reading", "exec 9</var/lock/x\nflock -s 9\n"),
+        ("opened for both", "exec 9<>/var/lock/x\nflock -x 9\n"),
+        ("opened after the lock", "flock -x 9\nexec 9>/var/lock/x\n"),
+    ],
+)
+def test_a_descriptor_the_file_opens_passes(name: str, src: str) -> None:
+    """`exec 9>FILE` makes fd 9 this file's own, which is the documented
+    util-linux pairing. Two runs of it still contend on the same lock."""
+    assert mod.violations(src) == [], name
+
+
+@pytest.mark.parametrize(
+    "name, src",
+    [
+        # A redirect on another command lasts only for that command.
+        ("a per-command redirect", "cmd 9>/dev/null\nflock -x 9\n"),
+        # The shell picks the number, so 9 stays somebody else's.
+        ("a shell-allocated descriptor", "exec {fd}>/var/lock/x\nflock -x 9\n"),
+        # A different number is a different descriptor.
+        ("another descriptor", "exec 8>/var/lock/x\nflock -x 9\n"),
+        # `exec` inside a message a command prints opens nothing.
+        ("an exec in a message", 'gb_warn "run exec 9>FILE first"\nflock -x 9\n'),
+    ],
+)
+def test_an_exec_that_does_not_open_this_descriptor_still_flags(
+    name: str, src: str
+) -> None:
+    assert mod.violations(src) == [2], name
 
 
 # ── not flagged: the descriptor is not a literal ─────────────────────────
@@ -140,7 +175,9 @@ def _run(path: Path) -> subprocess.CompletedProcess:
 
 def test_main_reports_the_path_and_line_and_exits_one(tmp_path: Path) -> None:
     script = tmp_path / "lock.sh"
-    script.write_text("#!/bin/bash\nexec 9>/var/lock/x\nflock -x 9\n", encoding="utf-8")
+    script.write_text(
+        "#!/bin/bash\n# take the caller's lock\nflock -x 9\n", encoding="utf-8"
+    )
     result = _run(script)
     assert result.returncode == 1
     assert f"{script}:3:" in result.stderr

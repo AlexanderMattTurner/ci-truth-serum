@@ -63,7 +63,7 @@
 
 - id: check-flock-fixed-fd
   name: "honesty: ban a lock taken on a hardcoded file descriptor"
-  description: "`flock -x 9` locks whatever fd 9 is; a caller that already holds that number owns a different file, so the lock can guard nothing while both runs report success."
+  description: "`flock -x 9` in a file that never opens fd 9 locks whatever that number is. When nothing opened it, `flock` exits non-zero. When something else holds it, the lock guards a different file and both runs still report success."
   entry: python -m ci_truth_serum.check_flock_fixed_fd
   language: python
   additional_dependencies: [tree-sitter, tree-sitter-bash]

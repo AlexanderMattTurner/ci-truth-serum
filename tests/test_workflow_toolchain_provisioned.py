@@ -9,7 +9,8 @@ STUBBED `uv` on PATH, which is a dependency more permissive than the real runner
 
 This test closes that gap from the other side. It reads the real workflow tree,
 follows each `run:` body into the scripts it invokes, and asserts that a job that
-can reach the `uv` command runs in a job that installs it.
+can reach the `uv` command installs it BEFORE the step that reaches it. Order is
+part of the rule: an install below the use leaves the same dead step.
 """
 
 import re
@@ -72,9 +73,16 @@ def _scripts_reaching_tool() -> set[str]:
         reaching |= grown
 
 
-def _provisions_tool(job: dict) -> bool:
-    """True when JOB installs TOOL — through the shared action or setup-uv directly."""
-    for step in job.get("steps") or []:
+def _provisions_tool(job: dict, before: int) -> bool:
+    """True when JOB installs TOOL before step index BEFORE.
+
+    Through the shared action or setup-uv directly. The index matters: a step
+    that installs the tool below the step that runs it leaves that step dying
+    with `command not found`, which is the defect this suite exists to catch.
+    """
+    for index, step in enumerate(job.get("steps") or []):
+        if index >= before:
+            return False
         if not isinstance(step, dict):
             continue
         uses = str(step.get("uses", ""))
@@ -90,8 +98,19 @@ def _provisions_tool(job: dict) -> bool:
     return False
 
 
-def _jobs_reaching_tool() -> list[tuple[str, str]]:
-    """Every `(workflow file, job id)` whose steps can reach TOOL."""
+def _first_reaching_step(job: dict, scripts: set[str]) -> int | None:
+    """The index of JOB's first step that reaches TOOL, or None when none does."""
+    for index, step in enumerate(job.get("steps") or []):
+        if not isinstance(step, dict) or not step.get("run"):
+            continue
+        body = str(step["run"])
+        if _runs_tool(body) or scripts & set(SCRIPT_REF.findall(body)):
+            return index
+    return None
+
+
+def _jobs_reaching_tool() -> list[tuple[str, str, int]]:
+    """Every `(workflow file, job id, first reaching step index)`."""
     scripts = _scripts_reaching_tool()
     reaching = []
     for path in sorted(WORKFLOWS.glob("*.y*ml")):
@@ -99,16 +118,9 @@ def _jobs_reaching_tool() -> list[tuple[str, str]]:
         if not isinstance(doc, dict):
             continue
         for job_id, job in (doc.get("jobs") or {}).items():
-            bodies = [
-                str(step.get("run", ""))
-                for step in job.get("steps") or []
-                if isinstance(step, dict) and step.get("run")
-            ]
-            if any(
-                _runs_tool(body) or scripts & set(SCRIPT_REF.findall(body))
-                for body in bodies
-            ):
-                reaching.append((path.name, job_id))
+            index = _first_reaching_step(job, scripts)
+            if index is not None:
+                reaching.append((path.name, job_id, index))
     return reaching
 
 
@@ -125,13 +137,32 @@ def test_a_wrapper_script_is_reached_through_its_caller() -> None:
     assert ".github/scripts/startup-failure-scan.sh" in _scripts_reaching_tool()
 
 
+def test_an_install_below_the_use_does_not_count() -> None:
+    """Non-vacuity for the ordering rule, on a job whose steps are in the wrong
+    order. Without the index the same job passes."""
+    job = {
+        "steps": [
+            {"run": "bash .github/scripts/startup-failure-scan.sh"},
+            {"uses": LOCAL_UV_ACTION},
+        ]
+    }
+    assert _first_reaching_step(job, _scripts_reaching_tool()) == 0
+    assert not _provisions_tool(job, before=0)
+    assert _provisions_tool(job, before=2)
+
+
 @pytest.mark.parametrize(
-    ("workflow", "job_id"), _jobs_reaching_tool(), ids=lambda part: str(part)
+    ("workflow", "job_id", "reaching_step"),
+    _jobs_reaching_tool(),
+    ids=lambda part: str(part),
 )
-def test_a_job_that_reaches_the_tool_provisions_it(workflow: str, job_id: str) -> None:
+def test_a_job_that_reaches_the_tool_provisions_it_first(
+    workflow: str, job_id: str, reaching_step: int
+) -> None:
     doc = yaml.safe_load((WORKFLOWS / workflow).read_text(encoding="utf-8"))
-    assert _provisions_tool(doc["jobs"][job_id]), (
-        f"{workflow} job {job_id!r} runs `{TOOL}` but no step installs it — the "
-        f"step dies with `{TOOL}: command not found`. Add a step that uses "
-        f"{LOCAL_UV_ACTION}, the repo's pinned installer."
+    assert _provisions_tool(doc["jobs"][job_id], before=reaching_step), (
+        f"{workflow} job {job_id!r} runs `{TOOL}` at step {reaching_step} but no "
+        f"earlier step installs it — the step dies with `{TOOL}: command not "
+        f"found`. Add a step that uses {LOCAL_UV_ACTION}, the repo's pinned "
+        "installer, above it."
     )

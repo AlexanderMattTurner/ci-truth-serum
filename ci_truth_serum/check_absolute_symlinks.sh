@@ -31,29 +31,76 @@ while IFS= read -r line; do
   *) : ;; # relative targets are portable — judged against .gitignore below
   esac
 
-  # Resolve the target the way the filesystem does: relative to the LINK's
-  # directory, not to the repo root. `realpath -m` does not require the target to
-  # exist, so a link into a directory this clone has not built still resolves.
+  # Join the target to the LINK's directory, not to the repo root, and normalise
+  # `.` and `..` in the shell.
+  #
+  # Two reasons not to call `realpath`. macOS ships the BSD one, which has
+  # neither `-m` nor `--relative-to`, so the hook would exit on an illegal option
+  # on the first relative link in every consuming repo. And `realpath` follows a
+  # symlink it finds along the way: a `node_modules/pkg` that a workspace install
+  # points back into `packages/pkg` would resolve to a tracked path and pass,
+  # although a fresh clone has no `node_modules/` at all. A lexical join reads
+  # the committed tree, which is the tree the verdict is about.
   dir=$(dirname "${path}")
-  resolved=$(realpath -m --relative-to=. "${dir}/${target}")
-  # A target outside the repository has no .gitignore verdict to read. Skip it
-  # rather than guess.
+  resolved=""
+  IFS='/' read -r -a segments <<<"${dir}/${target}"
+  for segment in "${segments[@]}"; do
+    case "${segment}" in
+    "" | .) : ;;
+    ..)
+      case "${resolved}" in
+      "" | .. | ../*) resolved="${resolved:+${resolved}/}.." ;;
+      */*) resolved="${resolved%/*}" ;;
+      *) resolved="" ;;
+      esac
+      ;;
+    *) resolved="${resolved:+${resolved}/}${segment}" ;;
+    esac
+  done
+  # A target outside the repository, or the repository root itself, has no
+  # .gitignore verdict to read. Skip it rather than guess.
   case "${resolved}" in
-  ../* | /*) continue ;;
+  "" | ../* | /*) continue ;;
   *) : ;;
   esac
+
+  # Ask git about each prefix of the target, shortest first. A path is ignored as
+  # soon as one of its parents is, and asking the parent first is what keeps the
+  # question answerable: `git check-ignore` refuses any path that lies beyond a
+  # symbolic link in the worktree, so a full-path query dies with exit 128 in the
+  # very tree the case above describes.
+  #
   # 0 = ignored, 1 = not ignored, anything else is a git fault this must not read
   # as "not ignored" — that direction loses the finding silently.
-  rc=0
-  git check-ignore -q -- "${resolved}" || rc=$?
-  case "${rc}" in
-  0) violations="${violations}${path} -> ${target} (git ignores ${resolved})"$'\n' ;;
-  1) : ;; # a target the clone will carry
-  *)
-    echo "check-absolute-symlinks: git check-ignore failed (${rc}) on ${resolved}" >&2
-    exit "${rc}"
-    ;;
-  esac
+  ignored=""
+  prefix=""
+  IFS='/' read -r -a parts <<<"${resolved}"
+  for part in "${parts[@]}"; do
+    prefix="${prefix:+${prefix}/}${part}"
+    rc=0
+    git check-ignore -q -- "${prefix}" || rc=$?
+    case "${rc}" in
+    0)
+      ignored="${prefix}"
+      break
+      ;;
+    1) : ;; # no rule covers this prefix; try the next one
+    *)
+      echo "check-absolute-symlinks: git check-ignore failed (${rc}) on ${prefix}" >&2
+      exit "${rc}"
+      ;;
+    esac
+    # This component is a symlink here, so git refuses every deeper prefix. Every
+    # prefix up to it says "no rule covers this", which is the verdict.
+    # Written as an `if` because a bare `[[ … ]] && break` that evaluates false is
+    # the loop body's last command, and `set -e` would end the script there.
+    if [[ -L "${prefix}" ]]; then
+      break
+    fi
+  done
+  if [[ "${ignored}" != "" ]]; then
+    violations="${violations}${path} -> ${target} (git ignores ${ignored})"$'\n'
+  fi
 done < <(git ls-files -s)
 
 if [[ "${violations}" != "" ]]; then
