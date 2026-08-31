@@ -1,14 +1,21 @@
 name: Dependabot Auto-Merge
 
-# Enables auto-merge on every Dependabot PR, a major version bump included.
-# Auto-merge only sets a flag: GitHub holds the merge until every required
-# check passes, so a bump that breaks the build stays open.
+# Arms auto-merge on every Dependabot PR, a major version bump included.
+# Auto-merge only sets a flag, so a bump that breaks a required check stays
+# open. That gate is only as wide as the PR checks: an action that only a
+# scheduled or post-merge workflow runs is never exercised by them, so a major
+# bump of one merges green and its breakage surfaces afterwards through
+# ci-failure-notify.yaml.
 
 on:
   pull_request:
+    # `opened` only, deliberately. The merge-conflict resolver runs
+    # `gh pr merge --disable-auto` when a resolution drops an edit or goes
+    # unread, and its push emits `synchronize` — re-arming there would defeat
+    # that hold. Auto-merge survives a later push, so one arm is enough.
     types:
       - opened
-      - synchronize
+      - reopened
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
@@ -30,8 +37,29 @@ jobs:
     # so the pushed commit must still pass every required check before it merges.
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
-      - name: Enable auto-merge
-        run: gh pr merge --auto --squash "$PR_URL"
+      - name: Arm auto-merge
+        run: |
+          set -euo pipefail
+          # The required checks ARE the gate this policy rests on. A branch that
+          # requires none merges a clean PR the moment auto-merge is armed, so
+          # refuse to arm rather than land a bump nothing tested.
+          required="$(gh api "repos/${GH_REPO}/rules/branches/${BASE_REF}" \
+            --jq '[.[] | select(.type == "required_status_checks")
+                   | .parameters.required_status_checks[].context] | length')"
+          if [[ "${required}" -eq 0 ]]; then
+            echo "::error::${BASE_REF} requires no status checks, so auto-merge would land this PR untested. Run sync-required-checks first."
+            exit 1
+          fi
+          gh pr merge --auto --squash "$PR_URL"
+          # Read back rather than trust the exit status: the enable mutation can
+          # be rejected (auto-merge disabled on the repository) and still report
+          # success, which leaves a PR nobody is waiting on and nobody merges.
+          if [[ "$(gh pr view "$PR_URL" --json state,autoMergeRequest --jq '.state == "MERGED" or .autoMergeRequest != null')" != "true" ]]; then
+            echo "::error::auto-merge did not stick on ${PR_URL}. Enable 'Allow auto-merge' in the repository settings."
+            exit 1
+          fi
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
