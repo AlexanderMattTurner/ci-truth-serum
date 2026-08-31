@@ -506,8 +506,8 @@
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
 - id: check-absolute-symlinks
-  name: "extra: reject tracked symlinks with absolute targets"
-  description: An absolute-target symlink breaks on every machine but the author's. The id is not check-symlinks, which pre-commit-hooks uses for a different rule.
+  name: "extra: reject tracked symlinks a fresh clone cannot follow"
+  description: A symlink to an absolute path, or to a path git ignores, dangles on every machine but the author's. The id is not check-symlinks, which pre-commit-hooks uses for a different rule.
   entry: ci_truth_serum/check_absolute_symlinks.sh
   language: script
   pass_filenames: false
