@@ -149,8 +149,24 @@ jobs:
   # code, and holds pull-requests:write and nothing else.
   auto-approve-skipped:
     name: Auto-approve low-risk and bot PRs the reviewer skips
+    # The on-demand label re-arms this job, and it is an alternative to the
+    # EVENT only. The approval fires once, on `opened` or `ready_for_review`. A
+    # firing that fails leaves the PR with no approval and no second chance:
+    # `synchronize` does not re-run this job, so a later push cannot recover it.
+    # PR #176 stranded exactly that way, because GitHub refused the Actions
+    # token its one firing used.
+    #
+    # The label sits INSIDE the conjunction, so the draft gate and the skip set
+    # below still govern it. A label that was a top-level alternative would
+    # approve any pull request a person labels — a draft, or a `feat:` whose
+    # review is still open — and the posted approval says the reviewer skipped
+    # it, which would then be false.
     if: >-
-      (github.event.action == 'opened' || github.event.action == 'ready_for_review') &&
+      (
+      github.event.action == 'opened' ||
+      github.event.action == 'ready_for_review' ||
+      github.event.label.name == 'needs-auto-approve'
+      ) &&
       github.event.pull_request.draft == false &&
       (
         github.event.pull_request.user.type == 'Bot' ||
