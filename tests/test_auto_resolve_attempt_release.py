@@ -13,8 +13,9 @@ refused an empty ladder AFTER the pre-pass had run, so the release was skipped,
 and pull request #147 stayed stranded even once the credentials were fixed —
 only a new head clears a mark.
 
-So the gate is on SPEND, not on how far the run got: `execution_file` is written
-as soon as the CLI produces a log, so an empty value means no model was called.
+So the gate is on SPEND, not on how far the run got. `fanout.sh` records
+`spent=true` the moment its shards finish and before the aggregate/report tail
+that can die, so the flag is true exactly when model calls were billed.
 
 These read the workflow with a real YAML parser and assert the release path
 exists and is guarded so it can never hand back a head a paid pass worked on.
@@ -63,11 +64,11 @@ def test_the_failure_release_cannot_hand_back_a_head_a_paid_pass_worked_on() -> 
 
     Both arms are needed and neither is sufficient. Gating only on `prepare`
     never running keeps the mark on a credential refusal that spent nothing —
-    the #147 strand. Gating only on the empty execution log would release a head
-    whose failure came before the model step ever ran, where `execution_file` is
-    empty for a different reason. Dropping the `execution_file` test entirely
-    would release a head whose ladder really did call the model and get errors
-    back, and the next sweep would pay to redo it.
+    the #147 strand. Gating only on the spend flag would release a head whose
+    failure came before the model step ever ran, where the flag is unset for a
+    different reason. Dropping the spend test entirely would release a head whose
+    ladder really did call the model and get errors back, and the next sweep
+    would pay to redo it.
     """
     on_failure = [s for s in _release_steps() if "failure()" in str(s.get("if", ""))]
     assert on_failure, "no failure-path release step to gate"
@@ -75,7 +76,7 @@ def test_the_failure_release_cannot_hand_back_a_head_a_paid_pass_worked_on() -> 
     assert "steps.prepare.outcome == ''" in condition, (
         f"failure-path release does not cover a run that never touched the tree: {condition}"
     )
-    assert "steps.resolve_llm.outputs.execution_file == ''" in condition, (
+    assert "steps.resolve_llm.outputs.spent != 'true'" in condition, (
         f"failure-path release does not cover a run that called no model: {condition}"
     )
     assert "steps.resolve_llm.outcome == 'failure'" in condition, (
@@ -84,8 +85,8 @@ def test_the_failure_release_cannot_hand_back_a_head_a_paid_pass_worked_on() -> 
     )
 
 
-def test_the_release_reads_the_step_that_writes_the_execution_log() -> None:
-    """`execution_file` must name the step that actually produces it.
+def test_the_release_reads_the_step_that_writes_the_spend_flag() -> None:
+    """The spend flag must name the step that actually produces it.
 
     The condition is a string GitHub resolves at run time: a wrong step id is
     always the empty string, which silently releases every failing head. This
@@ -125,7 +126,8 @@ def test_the_release_is_declared_after_every_step_it_reads() -> None:
     release_index = next(
         i
         for i, s in enumerate(steps)
-        if RELEASE_SCRIPT in str(s.get("run", "")) and "failure()" in str(s.get("if", ""))
+        if RELEASE_SCRIPT in str(s.get("run", ""))
+        and "failure()" in str(s.get("if", ""))
     )
     condition = str(steps[release_index]["if"])
     read_ids = {sid for sid in ids if sid and f"steps.{sid}." in condition}
@@ -134,4 +136,22 @@ def test_the_release_is_declared_after_every_step_it_reads() -> None:
         assert ids.index(sid) < release_index, (
             f"the release reads steps.{sid} but is declared before it, so that "
             "value is always the empty string"
+        )
+
+
+def test_the_spend_flag_is_written_before_anything_that_can_die() -> None:
+    """`spent=true` must be recorded before the aggregate/report tail.
+
+    That tail runs under `set -euo pipefail` and has a documented die path, so a
+    flag written after it is unset on runs whose shards already billed — and the
+    release would then hand back a head that really did pay.
+    """
+    fanout = (
+        REPO_ROOT / ".github" / "scripts" / "auto-resolve" / "fanout.sh"
+    ).read_text(encoding="utf-8")
+    spend = fanout.index('echo "spent=true"')
+    for later in ("\n  aggregate\n", "\n  collect_verdicts\n", "\n  report\n"):
+        assert spend < fanout.index(later), (
+            f"the spend flag is written after {later.strip()}, which can die and "
+            "leave it unset on a run that paid"
         )

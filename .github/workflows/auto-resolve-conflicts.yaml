@@ -465,14 +465,17 @@ jobs:
         # succeeded, and the old gate kept the mark. Nothing then retried after
         # the credentials were fixed, because only a new head clears a mark.
         #
-        # `execution_file` is the honest test for spend: fanout.sh writes it as
-        # soon as the CLI produces a log, so an EMPTY value means no model was
-        # ever called. A ladder that called the model and got errors back writes
-        # it, so that run keeps its mark and is not repeated for free.
+        # `spent` is the honest test, and `execution_file` is NOT: fanout.sh
+        # writes that one after aggregate/collect/report, so a rung whose shards
+        # already billed and then died in that tail leaves it empty — reading it
+        # would hand back a head that really did pay. `spent` is written the
+        # moment the shards finish, before any of that, so it is true exactly
+        # when model calls were made. A ladder that called the model and got
+        # errors back sets it, keeps its mark, and is not repeated for free.
         if: >-
           failure() && (steps.prepare.outcome == ''
           || (steps.resolve_llm.outcome == 'failure'
-          && steps.resolve_llm.outputs.execution_file == ''))
+          && steps.resolve_llm.outputs.spent != 'true'))
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
