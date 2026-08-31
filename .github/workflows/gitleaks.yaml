@@ -24,6 +24,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+<<<<<<< local
       # This job runs on every push to every open pull request, and the pinned
       # version makes the bytes identical every time. Keyed on the version, so
       # only the first run after a bump contacts the release host.
@@ -33,7 +34,18 @@ jobs:
           path: gitleaks
           key: gitleaks-${{ runner.os }}-${{ env.GITLEAKS_VERSION }}
 
+||||||| base
+=======
+      - name: Restore cached gitleaks binary
+        id: gitleaks-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: gitleaks
+          key: gitleaks-${{ runner.os }}-${{ env.GITLEAKS_VERSION }}
+
+>>>>>>> template
       - name: Download pinned gitleaks
+        if: steps.gitleaks-cache.outputs.cache-hit != 'true'
         run: |
           # A restored cache entry is never trusted on its own. The post-job save
           # runs even when a download failed, so an entry can hold a truncated
