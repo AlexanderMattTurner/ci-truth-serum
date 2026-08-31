@@ -20,9 +20,9 @@
 # Env: at least ONE of the rungs lib/claude-oauth-ladder.bash lists —
 # CLAUDE_CODE_OAUTH_TOKEN and _FALLBACK, _FALLBACK_2 … _FALLBACK_6. Any single
 # one is enough; none of them is individually required. The rest is
-# auto-resolve/fanout.sh's own contract — see its header. Needs node/npm on PATH for the CLI install, and must
-# run with the mid-merge working tree as the current directory, like every
-# resolver entrypoint.
+# auto-resolve/fanout.sh's own contract — see its header. Needs node/npm on
+# PATH for the CLI install, and must run with the mid-merge working tree as the
+# current directory, like every resolver entrypoint.
 set -euo pipefail
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
