@@ -42,7 +42,7 @@ Each table row below names the hook id, then the failure it prevents. Most rows 
 Not everything! ci-truth-serum enforces policy gaps. Keep running the tools it does not duplicate:
 
 - [`zizmor`](https://github.com/woodruffw/zizmor) pins `uses:` references to a SHA.
-- [`hadolint`](https://github.com/hadolint/hadolint) checks Dockerfiles.[^tag] 
+- [`hadolint`](https://github.com/hadolint/hadolint) checks Dockerfiles.[^tag]
 - [`actionlint`](https://github.com/rhysd/actionlint) checks workflow syntax and types.
 
 [^tag]: `check-pinned-base-images` is stronger than hadolint's: it demands a `@sha256:` digest, not only an explicit tag.
@@ -182,8 +182,9 @@ pipx install pre-commit # or: pip install pre-commit / brew install pre-commit
 pre-commit install
 ```
 
-Then add ci-truth-serum to your `.pre-commit-config.yaml`: 
+Then add ci-truth-serum to your `.pre-commit-config.yaml`:
 
+```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
     rev: v1.2.0 # the release tag; matches the package version (vX.Y.Z)
@@ -260,7 +261,6 @@ repos:
       # - id: check-test-predicate-shadow  # a test may stub a dependency, not redefine a pure predicate
       # - id: check-stray-tool-markup    # ban a leaked tool-call tag committed into a file
 ```
-
 
 ### Checks outside of tiers
 
@@ -447,3 +447,7 @@ The scan reads the whole window for each workflow, and not the newest page of it
 The cost is one request for each 100 completed runs, plus one for each failing run that did not conclude `startup_failure`. A successful run costs nothing. The Actions API stops paginating at 1000 items, so one workflow costs at most 10 listings. A workflow busier than that is the one case the scan cannot read in full, and the report names it and marks its count as a floor.
 
 **The obvious version of this scan reports every repo healthy.** A run that failed to load concludes `startup_failure`, and not `failure`. The `status=` filter on the runs listing matches the conclusion, so `status=failure` never returns one. This tool asks for `status=completed` and classifies each conclusion itself. It leaves out `cancelled` and `skipped`, because a run cancelled in the queue also holds zero jobs and is not a broken file.
+
+## Contributing
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) states the rule for what belongs here. It gives three tests a proposed check must pass, says which tier and tag a new check takes, and lists the files one check has to ship. Read it before you open a pull request that adds a check.
