@@ -109,7 +109,10 @@ def find_branch_ruleset(repo: str, token: str, *, need_write: bool) -> int:
     repo_owned = [
         r for r in branch if r.get("source_type", "Repository") == "Repository"
     ]
-    candidates = repo_owned if need_write else branch
+    # A repo-owned ruleset is the right target for a read too: it is the one an
+    # apply run would write, so --check must gate the same ruleset. The wider
+    # branch list is a fallback for a read with nothing repo-owned to pick.
+    candidates = repo_owned if (need_write or repo_owned) else branch
     if len(candidates) == 1:
         return candidates[0]["id"]
     counts = (

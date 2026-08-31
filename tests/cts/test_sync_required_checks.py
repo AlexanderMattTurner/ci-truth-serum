@@ -249,6 +249,9 @@ def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
         ],
     )
     assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 8
+    # A read must gate the same ruleset an apply would write, so the repo-owned
+    # one wins here too — the wider branch list is only a fallback.
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=False) == 8
 
 
 def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
