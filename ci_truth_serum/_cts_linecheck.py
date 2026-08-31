@@ -897,7 +897,7 @@ ALWAYS_REPORTER_SHAPE = "decide gate + always() reporter"
 TWIN_SHAPE = "decide gate + fail-closed twin"
 
 
-def required_check_shape(jobs: dict) -> str | None:
+def required_check_shape(jobs: dict, workflow: dict) -> str | None:
     """Which required-check shape a workflow's jobs form, or None for neither.
 
     A gated workflow reports through a job that runs when the gate breaks. That
@@ -914,10 +914,10 @@ def required_check_shape(jobs: dict) -> str | None:
         return None
     if has_always_reporter(jobs):
         return ALWAYS_REPORTER_SHAPE
-    return TWIN_SHAPE if valid_twin_names(jobs) else None
+    return TWIN_SHAPE if valid_twin_names(jobs, workflow) else None
 
 
-def valid_twin_names(jobs: dict) -> list[str]:
+def valid_twin_names(jobs: dict, workflow: dict) -> list[str]:
     """The names of the fail-closed twins that really do fail closed."""
     gate_names = decide_gate_names(jobs)
     if not gate_names:
@@ -927,11 +927,11 @@ def valid_twin_names(jobs: dict) -> list[str]:
         for name, cfg in jobs.items()
         if isinstance(cfg, dict)
         and is_fail_closed_twin(cfg.get("if", ""))
-        and not twin_defects(cfg, gate_names)
+        and not twin_defects(cfg, gate_names, workflow)
     ]
 
 
-def twin_defects(cfg: dict, gate_names: set[str]) -> list[str]:
+def twin_defects(cfg: dict, gate_names: set[str], workflow: dict) -> list[str]:
     """Why this twin-shaped job does not in fact fail closed. Empty means it does."""
     refs = set(twin_gate_refs(cfg.get("if", "")) or [])
     defects = []
@@ -965,12 +965,24 @@ def twin_defects(cfg: dict, gate_names: set[str]) -> list[str]:
             "the run that needs it red"
         )
         return defects
-    shell = step_shell(cfg, step)
-    if shell not in READABLE_SHELLS:
+    template = resolved_shell(cfg, step, workflow)
+    shell = shell_program(template)
+    if shell is None:
+        defects.append(
+            "a `${{ }}` expression hides its last `run:` step's shell, so whether "
+            "that step exits nonzero cannot be verified and the twin is not accepted"
+        )
+    elif shell not in READABLE_SHELLS:
         defects.append(
             f"its last `run:` step declares `shell: {shell}`, which this check reads "
             "as bash — whether it exits nonzero cannot be verified, so the twin is "
             "not accepted"
+        )
+    elif not template_runs_the_script(template):
+        defects.append(
+            f"its last `run:` step declares `shell: {template}`, which passes `-c` — "
+            "the shell then runs that command string and leaves the step's own script "
+            "as `$0`, so the script never executes and its failure never fires"
         )
     elif unreadable_run_script(str(step["run"])):
         defects.append(
@@ -998,11 +1010,13 @@ def continues_on_error(value: object) -> bool:
 
 
 def last_run_step(job_cfg: dict) -> dict | None:
-    """A job's last `run:` step whose failure can fail the job, else None.
+    """A job's last `run:` step whose failure is GUARANTEED to fail the job.
 
-    `continue-on-error` on a step reports its failure as success, so such a step
-    can never be what makes a twin red: an earlier `run:` step has to decide, or
-    the job runs none that can.
+    Two keys break that guarantee, so a step carrying either can never be what
+    makes a twin red. `continue-on-error` reports the step's failure as success.
+    A skippable `if:` can drop the step entirely, and a skipped step fails
+    nothing — so an earlier `run:` step has to decide, or the job runs none that
+    can.
     """
     steps = job_cfg.get("steps")
     if not isinstance(steps, list):
@@ -1013,26 +1027,71 @@ def last_run_step(job_cfg: dict) -> dict | None:
         if isinstance(step, dict)
         and isinstance(step.get("run"), str)
         and not continues_on_error(step.get("continue-on-error"))
+        and step_always_runs(step)
     ]
     return runs[-1] if runs else None
+
+
+# The step `if:` conditions that cannot skip the step. `always()` runs it
+# whatever the earlier steps did, and `true` is the constant. Every other
+# condition can skip — `success()` and `!cancelled()` included — and so can any
+# expression this check cannot resolve offline.
+_UNSKIPPABLE_STEP_CONDITIONS = frozenset({"always()", "true"})
+
+
+def step_always_runs(step: dict) -> bool:
+    """True when nothing in STEP's `if:` can skip it."""
+    if "if" not in step:
+        return True
+    text = str(step["if"]).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    return text.lower() in _UNSKIPPABLE_STEP_CONDITIONS
 
 
 # The shells `script_ends_in_failure` can read. The bash grammar covers both;
 # any other value names a language this check would misparse as bash.
 READABLE_SHELLS = ("bash", "sh")
 
+# The only two commands `script_ends_in_failure` reads as unconditional
+# failures, so the only two a shadowing definition can take away from it.
+_SHADOWABLE = frozenset({"false", "exit"})
 
-def step_shell(job_cfg: dict, step: dict) -> str:
-    """Which shell runs STEP, under GitHub's own precedence.
 
-    The step's own `shell:` wins, then the job's `defaults.run.shell`. GitHub's
-    default on a runner is bash, which is what an absent key means here.
+def resolved_shell(job_cfg: dict, step: dict, workflow: dict) -> str:
+    """The `shell:` value that applies to STEP, at whichever scope sets it.
+
+    `default_run_shell` owns the precedence: the step's own `shell:`, then the
+    job's `defaults.run.shell`, then the workflow's. GitHub's default on a runner
+    is bash, which is what an absent key means here.
     """
-    defaults = job_cfg.get("defaults")
-    job_shell = None
-    if isinstance(defaults, dict) and isinstance(defaults.get("run"), dict):
-        job_shell = defaults["run"].get("shell")
-    return str(step.get("shell") or job_shell or "bash").strip()
+    return str(
+        step.get("shell") or default_run_shell(job_cfg, workflow) or "bash"
+    ).strip()
+
+
+def step_shell(job_cfg: dict, step: dict, workflow: dict) -> str | None:
+    """Which shell runs STEP, named by its program alone, or None when a
+    `${{ }}` expression hides that program."""
+    return shell_program(resolved_shell(job_cfg, step, workflow))
+
+
+def template_runs_the_script(shell: str) -> bool:
+    """True when a custom `shell:` template hands GitHub's script to the program.
+
+    `{0}` is the path of the script GitHub writes from the step's `run:` body. A
+    template that passes `-c` runs its own command string instead and leaves
+    `{0}` as `$0`, so `bash -c true {0}` starts bash, runs `true`, and never
+    executes the step's `exit 1`. A value carrying no `{0}` is a keyword such as
+    `bash`, and GitHub always runs the script under those.
+    """
+    words = shell.split()
+    if "{0}" not in words:
+        return True
+    for word in words[: words.index("{0}")]:
+        if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
+            return False
+    return True
 
 
 def script_ends_in_failure(script: str) -> bool:
@@ -1064,11 +1123,40 @@ def script_ends_in_failure(script: str) -> bool:
         parse as bash_parse,
     )
 
+    def defined_functions(node) -> set[str]:
+        """The function names defined in NODE's OWN shell process, at any depth.
+
+        A script that defines `false` or `exit` redefines the only two commands
+        this analysis reads as unconditional failures, so neither is trusted
+        where the definition reaches. A definition inside a function body or a
+        `{ … }` group does reach, because neither forks. A `( … )` subshell does
+        fork, so its definitions die with it — those are collected again where
+        the subshell itself is judged.
+
+        An explicit stack, never recursion: a generated `run:` body nests deeply
+        enough to pass Python's recursion limit, and the callers handle only
+        `PathologicalInputError`.
+        """
+        found: set[str] = set()
+        stack = list(node.children)
+        while stack:
+            current = stack.pop()
+            if current.type == "subshell":
+                continue
+            if current.type == "function_definition":
+                names = [child for child in current.children if child.type == "word"]
+                if names:
+                    found.add(names[0].text.decode())
+            stack.extend(current.children)
+        return found
+
     def command_always_fails(command) -> bool:
         words = command_words(command)
         if not words:
             return False
         name, args = words[0], [unquote(word) for word in words[1:]]
+        if name in shadowed:
+            return False
         if name == "false":
             return True
         # Bare `exit` re-raises the previous command's status, so it fails only
@@ -1090,15 +1178,19 @@ def script_ends_in_failure(script: str) -> bool:
                 # right one decides. So either side failing always is enough.
                 return always_fails(left) or always_fails(right)
             return always_fails(left) and always_fails(right)
+        if node.type == "subshell" and defined_functions(node) & _SHADOWABLE:
+            # Its own definitions shadow the commands this reads as failures,
+            # and they do not reach the enclosing script's `shadowed` set.
+            return False
         if node.type in ("subshell", "compound_statement"):
             inner = [child for child in node.children if child.is_named]
             return bool(inner) and always_fails(inner[-1])
         return False
 
+    root = bash_parse(_neutralized(script))
+    shadowed = defined_functions(root) & _SHADOWABLE
     statements = [
-        node
-        for node in bash_parse(_neutralized(script)).children
-        if node.is_named and node.type != "comment"
+        node for node in root.children if node.is_named and node.type != "comment"
     ]
     return bool(statements) and always_fails(statements[-1])
 
@@ -1597,6 +1689,24 @@ def default_run_shell(*scopes: object) -> str | None:
         if isinstance(shell, str):
             return shell
     return None
+
+
+_SHELL_EXPRESSION = re.compile(r"\$\{\{")
+
+
+def shell_program(shell: str) -> str | None:
+    """The lower-case basename of the program SHELL starts, or None when a
+    `${{ }}` expression hides it.
+
+    Windows separators count, because a `cmd` template on a Windows runner spells
+    its path with backslashes. One definition, for the reason `default_run_shell`
+    above gives: three lints ask this question.
+    """
+    words = shell.strip().split()
+    if not words or _SHELL_EXPRESSION.search(words[0]):
+        return None
+    name = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name.removesuffix(".exe")
 
 
 def step_span_ends(steps: list[dict], last_line: int) -> dict[int, int]:

@@ -78,6 +78,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     container_block_end,
     default_run_shell,
+    shell_program,
     step_span_ends,
     workflow_files as _workflow_files,
     yaml_comment_view,
@@ -104,22 +105,6 @@ RUNNER_VARS = ("GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_PATH", "GITHUB_STEP_SUMMAR
 # up case-insensitively, and so do the runtimes a foreign shell starts there, so
 # `$ENV{github_output}` in Perl on Windows reads the same file as the capitals do.
 _RUNNER_VAR_RE = re.compile(rf"\b(?:{'|'.join(RUNNER_VARS)})\b", re.IGNORECASE)
-
-# A `${{ … }}` expression: where it sits decides whether this check can read the
-# shell. In the FIRST word it hides the program's name, so the shell is unknown.
-# Later in the template it is only an argument, as in a bind mount's path.
-_EXPRESSION = re.compile(r"\$\{\{")
-
-
-def shell_program(shell: str) -> str | None:
-    """The lower-case basename of the program SHELL starts, or None when a `${{ }}`
-    expression hides it. Windows separators count, because a `cmd` template on a
-    Windows runner spells its path with backslashes."""
-    words = shell.strip().split()
-    if not words or _EXPRESSION.search(words[0]):
-        return None
-    name = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name.removesuffix(".exe")
 
 
 def is_foreign_shell(shell: str | None) -> bool:
