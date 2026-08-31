@@ -72,7 +72,9 @@ export FANOUT_DIR="$fanout_dir"
 any_billed=false
 
 emit_spend() {
-  [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "spent=${any_billed}" >>"$GITHUB_OUTPUT"
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "spent=${any_billed}" >>"$GITHUB_OUTPUT"
+  fi
 }
 
 rung=0
