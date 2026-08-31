@@ -1,0 +1,1 @@
+Pinned transitive dependencies `tmp` to `>=0.2.6` and `ajv` to `>=8.18.0` via `pnpm-workspace.yaml` overrides. This resolves a high-severity path traversal vulnerability (GHSA-ph9p-34f9-6g65) and a moderate-severity ReDoS vulnerability (GHSA-2g4f-4pwh-qvx6) in dev dependencies pulled in by `@stryker-mutator/core`.
