@@ -98,22 +98,25 @@ def find_branch_ruleset(repo: str, token: str) -> int:
     own repo-level ruleset plus an org-level ruleset inherited from the owning
     organization. Both list under `GET /repos/{repo}/rulesets` with
     `target == "branch"`, but only the repo-owned one is writable through the
-    `/repos/{repo}/rulesets/{id}` PATCH used here; org rulesets live on a
-    different endpoint. So when exactly one branch ruleset exists we return it,
-    and when several do we narrow to the sole `source_type == "Repository"` one
-    (the writable target). Any other count — zero branch rulesets, or still more
-    than one after narrowing — stays ambiguous and fails loud with the counts."""
+    `/repos/{repo}/rulesets/{id}` PUT used here; org rulesets live on a
+    different endpoint. So the count that decides is the REPO-OWNED one, never
+    the branch count: a lone org-owned ruleset is readable and unwritable, and
+    returning its id sends the caller into a 404 on the write that reads as a
+    missing ruleset or an under-scoped token. A listing that omits `source_type`
+    is treated as repo-owned, which is what a repository-only listing returns."""
     rulesets = github_request("GET", f"{API_ROOT}/repos/{repo}/rulesets", token)
     branch = [r for r in rulesets if r.get("target") == "branch"]
-    if len(branch) == 1:
-        return branch[0]["id"]
-    repo_owned = [r for r in branch if r.get("source_type") == "Repository"]
+    repo_owned = [
+        r for r in branch if r.get("source_type", "Repository") == "Repository"
+    ]
     if len(repo_owned) == 1:
         return repo_owned[0]["id"]
     raise SystemExit(
         f"Expected exactly one writable branch ruleset on {repo}: found "
         f"{len(branch)} branch ruleset(s), {len(repo_owned)} of them "
-        "repo-owned (source_type=Repository); pass --ruleset-id to disambiguate."
+        "repo-owned (source_type=Repository); pass --ruleset-id to disambiguate. "
+        "An organization-owned ruleset is not writable through the repository "
+        "endpoint this tool uses."
     )
 
 
