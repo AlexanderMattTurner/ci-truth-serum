@@ -110,3 +110,28 @@ def test_the_no_op_release_is_not_on_the_failure_path() -> None:
     no_op = [s for s in _release_steps() if "no_op_head" in str(s.get("if", ""))]
     assert len(no_op) == 1
     assert "failure()" not in str(no_op[0]["if"])
+
+
+def test_the_release_is_declared_after_every_step_it_reads() -> None:
+    """A step sees only the steps declared ABOVE it.
+
+    GitHub resolves `steps.<later-id>` in an earlier step's `if:` to the empty
+    string rather than erroring, so a release placed before the model step reads
+    an empty outcome, its spend arm never fires, and the whole fix is a silent
+    no-op that still passes every other assertion here.
+    """
+    steps = _resolve_steps()
+    ids = [s.get("id") for s in steps]
+    release_index = next(
+        i
+        for i, s in enumerate(steps)
+        if RELEASE_SCRIPT in str(s.get("run", "")) and "failure()" in str(s.get("if", ""))
+    )
+    condition = str(steps[release_index]["if"])
+    read_ids = {sid for sid in ids if sid and f"steps.{sid}." in condition}
+    assert read_ids, f"the release condition names no step id: {condition}"
+    for sid in read_ids:
+        assert ids.index(sid) < release_index, (
+            f"the release reads steps.{sid} but is declared before it, so that "
+            "value is always the empty string"
+        )
