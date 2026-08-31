@@ -61,6 +61,14 @@
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
 
+- id: check-flock-fixed-fd
+  name: "honesty: ban a lock taken on a hardcoded file descriptor"
+  description: "`flock -x 9` locks whatever fd 9 is; a caller that already holds that number owns a different file, so the lock can guard nothing while both runs report success."
+  entry: python -m ci_truth_serum.check_flock_fixed_fd
+  language: python
+  additional_dependencies: [tree-sitter, tree-sitter-bash]
+  types: [shell]
+
 - id: check-pr-paths
   name: "honesty: ban paths/branches filters on pull_request triggers"
   description: A paths or branches filter strands a required check at "Expected — Waiting" forever.

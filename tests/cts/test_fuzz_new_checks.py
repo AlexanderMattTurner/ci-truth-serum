@@ -7,7 +7,8 @@ result (the same contract as the sibling fuzz suites).
 Covered here: check_token_fallback, check_workflow_secret_names,
 check_provenance_repo_url (URL normalization), check_pin_comment_truth,
 check_divergent_action_pins, check_stderr_merge_parse, check_echo_fallback,
-check_case_default, check_soft_timeout, check_bare_return_status,
+check_case_default, check_soft_timeout, check_flock_fixed_fd,
+check_bare_return_status,
 check_lockstep_pins, check_cron_comment, check_toolchain_skips,
 check_conclusion_coverage, and release_canary's changelog/semver parsing.
 """
@@ -30,6 +31,7 @@ stderr_merge = load_hook("check_stderr_merge_parse.py", "fuzz_check_stderr_merge
 echo_fallback = load_hook("check_echo_fallback.py", "fuzz_check_echo_fallback")
 case_default = load_hook("check_case_default.py", "fuzz_check_case_default")
 soft_timeout = load_hook("check_soft_timeout.py", "fuzz_check_soft_timeout")
+flock_fd = load_hook("check_flock_fixed_fd.py", "fuzz_check_flock_fixed_fd")
 bare_return = load_hook("check_bare_return_status.py", "fuzz_check_bare_return_status")
 lockstep = load_hook("check_lockstep_pins.py", "fuzz_check_lockstep_pins")
 cron_comment = load_hook("check_cron_comment.py", "fuzz_check_cron_comment")
@@ -79,6 +81,12 @@ _TOKENS = [
     "run=(timeout 600)",
     "sudo timeout 300 apt-get update",
     "# allow-soft-timeout: dpkg holds SIGTERM",
+    "flock -x 9",
+    "flock -w 5 200",
+    'flock -x "$lock_fd"',
+    "flock -x /var/lock/deploy cmd",
+    "exec {lock_fd}>/var/lock/deploy",
+    "# allow-fixed-fd: this script opens fd 9 itself",
     '- cron: "0 6 * * 1"',
     "# daily",
     "# every 15 minutes",
@@ -128,6 +136,7 @@ _LINE_DETECTORS = [
     ("check_echo_fallback", echo_fallback.violations),
     ("check_case_default", case_default.violations),
     ("check_soft_timeout", soft_timeout.violations),
+    ("check_flock_fixed_fd", flock_fd.violations),
     ("check_bare_return_status", bare_return.violations),
     ("check_cron_comment", cron_comment.violations),
     ("check_toolchain_skips", toolchain.violations),

@@ -111,6 +111,7 @@ CHECKS: tuple[Check, ...] = (
     _check("check_substitution_exit_swallow", "1", SHELL, HONESTY),
     _check("check_argument_exit_swallow", "1", SHELL, HONESTY),
     _check("check_soft_timeout", "1", SHELL, HONESTY, COST),
+    _check("check_flock_fixed_fd", "1", SHELL, HONESTY, CONCURRENCY),
     _check("check_pipefail_grep_pipe", "1", SHELL, HONESTY),
     _check("check_folded_scalar_comment", "1", WORKFLOW, HONESTY),
     _check("check_runner_var_foreign_shell", "1", WORKFLOW, HONESTY),
