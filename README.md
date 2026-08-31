@@ -39,6 +39,15 @@ Each table row below names the hook id, then the failure it prevents. Most rows 
 
 ## What it checks
 
+Not everything! ci-truth-serum enforces policy gaps. Keep running the tools it does not duplicate:
+
+- [`zizmor`](https://github.com/woodruffw/zizmor) pins `uses:` references to a SHA.
+- [`hadolint`](https://github.com/hadolint/hadolint) checks Dockerfiles.[^tag]
+- [`actionlint`](https://github.com/rhysd/actionlint) checks workflow syntax and types.
+- [`shellcheck`](https://www.shellcheck.net) checks shell.
+
+[^tag]: `check-pinned-base-images` is stronger than hadolint's: it demands a `@sha256:` digest, not only an explicit tag.
+
 ### Honesty (Tier 1, default-on)
 
 These checks find code whose failure reports success.
@@ -167,34 +176,20 @@ These checks are about shell scripts, Python, tests, and docs rather than CI rep
 
 ## Usage
 
-Add ci-truth-serum to your `.pre-commit-config.yaml`. The block below names each hook one by one, so you can see the whole menu. It enables Tier 1 and comments Tier 2 and Extras out; uncomment what you want. pre-commit builds an isolated Python environment for each hook, so pre-commit is the only prerequisite.
+Start here enables Tier 1 through one aggregate id. This section is the full menu: every check by name, the tag selectors, and the three checks that sit outside every tier.
+
+### Enable specific checks
 
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
     rev: v1.2.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
-      # ── Tier 1 · Honesty (default-on) ──
-      - id: check-workflow-pipefail
-      - id: check-exit-suppression
-      - id: check-stderr-suppression
-      - id: check-substitution-exit-swallow
-      - id: check-argument-exit-swallow # `f "$(cmd)"` hides cmd's exit status
-      - id: check-soft-timeout # `timeout 60 cmd` sends a signal cmd can ignore
-      - id: check-pr-paths
-      - id: check-pipefail-grep-pipe
-      - id: check-frozen-head-sha # the event head.sha is frozen at trigger time
-      - id: check-folded-scalar-comment
-      - id: check-gh-slurp-jq
-      # ── Tier 1 · Identity (default-on) ──
-      - id: check-pinned-base-images
-      - id: check-pinned-downloads
-      - id: check-versionless-install # every install command must name a version
-      - id: check-provenance-repo-url
-      # ── Tier 1 · Security (default-on) ──
-      - id: check-trusted-base
-      - id: check-untrusted-exec # do not run the PR's own checkout with secrets live
-      - id: check-unscoped-tool-grant
+      # ── Tier 1 · honesty, identity and security (default-on) ──
+      # One id, so a Tier 1 check added in a later release runs as soon as you
+      # move the `rev:` above. Enumerating the ids instead pins you to the set
+      # that existed the day you copied this.
+      - id: check-tier1
       # ── Tier 2 · Opinionated (opt-in: uncomment to enable) ──
       # - id: check-job-timeout          # every job must declare timeout-minutes
       # - id: check-uncached-download    # a pinned download in a job with no cache
@@ -249,23 +244,9 @@ repos:
       # - id: check-stray-tool-markup    # ban a leaked tool-call tag committed into a file
 ```
 
-`pre-commit run --all-files` sweeps the whole repo, which helps on first adoption.
+### Checks outside of tiers
 
-### Enable a whole tier with one id
-
-You can enable a tier aggregate instead of adding a new `- id:` line every time a check ships. One id runs every Python check in that tier, and a check added later arrives with **no change to your config**:
-
-```yaml
-repos:
-  - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v1.2.0 # the release tag; matches the package version (vX.Y.Z)
-    hooks:
-      - id: check-tier1 # every honesty + identity + security check (the safe default-on set)
-      # - id: check-tier2   # every opinionated check: it assumes the decide-gate + reporter architecture
-      # - id: check-extras  # the Python extras (vendor-specific or style-specific)
-```
-
-Three checks are in no aggregate. Add each `- id:` on its own if you want it:
+Add each `- id:` on its own if you want it:
 
 - `check-absolute-symlinks` is a shell `language: script` hook, not a Python module.
 - `check-lockstep-pins` is config-driven. It hard-errors without the per-repo `--pair` arguments that an aggregate cannot supply.
@@ -450,15 +431,6 @@ The scan reads the whole window for each workflow, and not the newest page of it
 The cost is one request for each 100 completed runs, plus one for each failing run that did not conclude `startup_failure`. A successful run costs nothing. The Actions API stops paginating at 1000 items, so one workflow costs at most 10 listings. A workflow busier than that is the one case the scan cannot read in full, and the report names it and marks its count as a floor.
 
 **The obvious version of this scan reports every repo healthy.** A run that failed to load concludes `startup_failure`, and not `failure`. The `status=` filter on the runs listing matches the conclusion, so `status=failure` never returns one. This tool asks for `status=completed` and classifies each conclusion itself. It leaves out `cancelled` and `skipped`, because a run cancelled in the queue also holds zero jobs and is not a broken file.
-
-## It complements other tools, it does not replace them
-
-ci-truth-serum enforces policy gaps. Keep running the tools it does not duplicate:
-
-- [`zizmor`](https://github.com/woodruffw/zizmor) pins `uses:` references to a SHA.
-- [`hadolint`](https://github.com/hadolint/hadolint) checks Dockerfiles. `check-pinned-base-images` is stronger: it demands a `@sha256:` digest, not only an explicit tag.
-- [`actionlint`](https://github.com/rhysd/actionlint) checks workflow syntax and types.
-- `shellcheck` checks shell.
 
 ## Contributing
 

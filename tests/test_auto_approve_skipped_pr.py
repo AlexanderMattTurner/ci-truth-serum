@@ -12,6 +12,13 @@ hands it a PAT first. These tests drive the real script with `gh` stubbed, so
 the behaviour is observed rather than asserted about the source text. The last
 two keep the first honest: a stand-down that swallowed a real fault would be
 worse than no stand-down at all.
+
+The job also needs a second chance. It fires once, on `opened` or
+`ready_for_review`, so a firing that fails leaves the pull request with no
+approval forever: `synchronize` does not re-run it, and a later push cannot
+recover it. PR #176 stranded that way. The last three tests pin the on-demand
+label that re-arms it, and above all that the label re-arms the EVENT only: a
+label that escaped the skip set would approve any pull request a person labels.
 """
 
 import os
@@ -25,6 +32,12 @@ from tests._helpers import REPO_ROOT
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "auto-approve-skipped-pr.sh"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "claude-review.yaml"
 JOB = "auto-approve-skipped"
+REVIEW_JOB = "review"
+# The label a human adds to re-arm the approver, and the reviewer's own label.
+# They must differ: one label that did both would send a release PR to a reader
+# the skip set exists to spare.
+APPROVE_LABEL = "needs-auto-approve"
+REVIEW_LABEL = "needs-auto-review"
 # The candidates the sibling reviewer-hold approver already takes, in its order.
 TOKEN_LADDER = (
     "${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.TEMPLATE_SYNC_TOKEN "
@@ -32,22 +45,58 @@ TOKEN_LADDER = (
 )
 
 
-def _run(tmp_path: Path, *, message: str, code: int) -> subprocess.CompletedProcess:
-    """Run the approver with `gh` printing MESSAGE and exiting CODE."""
+def _run(
+    tmp_path: Path,
+    *,
+    message: str = "",
+    code: int = 0,
+    reviews: str = "",
+    comments: str = "",
+    skip: str = "skipped",
+) -> subprocess.CompletedProcess:
+    """Run the approver with `gh` stubbed per subcommand.
+
+    REVIEWS is what the reviews read prints (the script's `--jq` yields one
+    state per line); COMMENTS is what the comment read prints. MESSAGE and CODE
+    belong to `gh pr review` alone, so a refusal there is observed without the
+    reads failing first. Every call is appended to `calls`.
+    """
     bindir = tmp_path / "bin"
-    bindir.mkdir()
+    bindir.mkdir(parents=True)
     (bindir / "gh").write_text(
-        f'#!/usr/bin/env bash\nprintf "%s\\n" {message!r} >&2\nexit {code}\n',
+        "#!/usr/bin/env bash\n"
+        "all=\"${*//$'\\n'/ }\"\n"
+        'printf "%s\\n" "$all" >>"$GH_CALLS"\n'
+        'case "$all" in\n'
+        "*/reviews*) printf '%s' \"$STUB_REVIEWS\" ;;\n"
+        "*/comments*) printf '%s' \"$STUB_COMMENTS\" ;;\n"
+        "*/pulls/*) printf '%s' \"$STUB_SKIP\" ;;\n"
+        '"pr review"*) printf "%s\\n" "$STUB_MESSAGE" >&2; exit "$STUB_CODE" ;;\n'
+        "esac\n",
         encoding="utf-8",
     )
     (bindir / "gh").chmod(0o755)
+    calls = tmp_path / "calls"
+    calls.write_text("", encoding="utf-8")
     env = dict(os.environ)
     env.update(
-        {"PATH": f"{bindir}:{env['PATH']}", "GH_REPO": "owner/name", "PR": "176"}
+        {
+            "PATH": f"{bindir}:{env['PATH']}",
+            "GH_REPO": "owner/name",
+            "PR": "176",
+            "GH_CALLS": str(calls),
+            "STUB_REVIEWS": reviews,
+            "STUB_COMMENTS": comments,
+            "STUB_SKIP": skip,
+            "STUB_MESSAGE": message,
+            "STUB_CODE": str(code),
+        }
     )
-    return subprocess.run(
+    result = subprocess.run(
         ["bash", str(SCRIPT)], capture_output=True, text=True, env=env, check=False
     )
+    result.calls = calls.read_text(encoding="utf-8").splitlines()  # type: ignore[attr-defined]
+    return result
 
 
 def test_a_posted_approval_reports_it_and_exits_zero(tmp_path) -> None:
@@ -99,3 +148,137 @@ def test_the_job_takes_a_pat_before_the_actions_token() -> None:
     ]
     assert len(steps) == 1, "no step runs the approver, so this test guards nothing"
     assert (steps[0].get("env") or {}).get("GH_TOKEN") == TOKEN_LADDER
+
+
+def test_the_approval_carries_no_body(tmp_path) -> None:
+    """A bodied approval would satisfy the review-findings gate by itself.
+
+    reviewer-identity.bash reads "the reviewer has spoken" as a review by the
+    reviewer WITH a body. Under the Actions-token fallback this approval IS
+    that identity, so a body here greens the merge gate with zero reads.
+    """
+    result = _run(tmp_path)
+    approve = [c for c in result.calls if c.startswith("pr review ")]
+    assert approve == ["pr review 176 --repo owner/name --approve"], result.calls
+
+
+def test_an_existing_approval_is_not_posted_twice(tmp_path) -> None:
+    result = _run(tmp_path, reviews="APPROVED\n")
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in result.calls if c.startswith("pr review ")]
+    assert "already carries an approval or a dismissal" in result.stderr
+
+
+def test_a_dismissed_approval_is_not_reposted(tmp_path) -> None:
+    """A dismissal is a decision; re-approving would overrule it silently."""
+    result = _run(tmp_path, reviews="DISMISSED\n")
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in result.calls if c.startswith("pr review ")]
+
+
+def test_the_offer_posts_once(tmp_path) -> None:
+    """The approval cannot carry the offer, so a comment does — exactly once."""
+    first = _run(tmp_path / "a", comments="")
+    assert [c for c in first.calls if c.startswith("pr comment ")], first.calls
+    again = _run(tmp_path / "b", comments="1234\n")
+    assert not [c for c in again.calls if c.startswith("pr comment ")], again.calls
+
+
+def test_a_pull_request_the_reviewer_reads_gets_no_stand_in_approval(tmp_path) -> None:
+    """The job `if:` only saves a runner; the skip set is what decides.
+
+    A drift in that expression would otherwise approve a pull request nothing
+    has read, which is the whole failure a review-required ruleset prevents.
+    """
+    result = _run(tmp_path, skip="reviewed")
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in result.calls if c.startswith("pr review ")]
+    assert "owes PR #176 a review" in result.stderr
+
+
+def _workflow() -> dict:
+    """The parsed workflow. PyYAML reads the `on:` key as the boolean True."""
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def _top_level_alternatives(guard: str) -> list[str]:
+    """GUARD split on every `||` that sits outside a bracket.
+
+    The nesting is the whole question here, so the split tracks depth. A term
+    the parser reports at depth 0 is one the job fires on ALONE.
+    """
+    terms: list[str] = []
+    depth = 0
+    start = 0
+    index = 0
+    while index < len(guard):
+        char = guard[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "|" and depth == 0 and guard[index : index + 2] == "||":
+            terms.append(guard[start:index])
+            index += 2
+            start = index
+            continue
+        index += 1
+    terms.append(guard[start:])
+    return [term.strip() for term in terms]
+
+
+def test_a_label_re_arms_the_approver() -> None:
+    """One failed firing must not strand the pull request forever."""
+    doc = _workflow()
+    guard = str(doc["jobs"][JOB]["if"])
+    assert f"github.event.label.name == '{APPROVE_LABEL}'" in guard, (
+        "the approver has no on-demand re-arm. A PR whose one firing failed "
+        "needs a way back, and `synchronize` does not re-run this job."
+    )
+    assert "github.event.action == 'opened'" in guard, (
+        "the label alternative replaced the ordinary firing rather than adding "
+        "to it, so no PR gets an approval without a human label"
+    )
+    types = doc[True]["pull_request_target"]["types"]
+    assert "labeled" in types, f"the label never reaches the job: types are {types}"
+
+
+def test_the_label_cannot_approve_a_pull_request_the_reviewer_reads() -> None:
+    """The label re-arms the EVENT. It never bypasses the skip set.
+
+    A label hoisted out to a top-level `||` approves whatever a person labels:
+    a draft, or a `feat:` whose review is still open. The approval body then
+    says the reviewer skipped the pull request, which is false, and one label
+    satisfies a review-required ruleset. This is the shape the first version of
+    this change shipped, so the assertion pins behaviour, not the diff.
+    """
+    guard = str(_workflow()["jobs"][JOB]["if"])
+    alternatives = _top_level_alternatives(guard)
+    assert len(alternatives) == 1, (
+        f"the guard fires on any one of {len(alternatives)} independent terms. "
+        "Every gate must govern every firing, so the whole guard is one "
+        f"conjunction: {alternatives}"
+    )
+    governed = alternatives[0]
+    for gate in (
+        "github.event.pull_request.draft == false",
+        "github.event.pull_request.user.type == 'Bot'",
+        "'release:'",
+    ):
+        assert gate in governed, (
+            f"{gate} no longer governs the label, so a labelled pull request skips it"
+        )
+
+
+def test_the_two_on_demand_labels_differ() -> None:
+    """Non-vacuity for the label above, and a real hazard of its own.
+
+    The reviewer job carries a label of its own. One shared label would make a
+    `release:` PR both approved and read, which defeats the skip set.
+    """
+    review_guard = str(_workflow()["jobs"][REVIEW_JOB]["if"])
+    assert f"github.event.label.name == '{REVIEW_LABEL}'" in review_guard, (
+        "the reviewer's own label clause is gone, so the idiom this mirrors no "
+        "longer exists and the assertion above pins a lone invention"
+    )
+    assert APPROVE_LABEL not in review_guard
