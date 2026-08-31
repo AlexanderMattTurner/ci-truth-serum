@@ -64,6 +64,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/review-threads.bash"
 # shellcheck source=.github/scripts/lib/pr-reviews.bash
 source "$SCRIPT_DIR/lib/pr-reviews.bash"
+# shellcheck source=.github/scripts/lib/review-skip-set.bash
+source "$SCRIPT_DIR/lib/review-skip-set.bash"
 
 : "${GH_REPO:?GH_REPO required}"
 : "${PR:?PR number required}"
@@ -160,12 +162,24 @@ done <<<"$severity_rows"
 # approvals from an Actions token), and a PR whose only review was dismissed has
 # nothing standing that read it.
 reviews="$(reviewer_reviews_ndjson "$owner" "$name" "$PR" | jq -c 'select(.state != "DISMISSED")')"
-if [[ -z "$reviews" ]]; then
+# The skip set is clause (a)'s EXPLICIT complement. The reviewer reads no
+# bot-authored, chore, style or release pull request, so no review of one ever
+# arrives and a bare "wait for the first review" holds every Dependabot and
+# every machine-cut release at pending forever. lib/review-skip-set.bash is the
+# one definition of that set, and the stand-in approval reads the same one.
+# Clause (b) still runs: a `needs-auto-review` label takes a pull request back
+# out of the set, and any finding it then collects gates as usual.
+if [[ -z "$reviews" ]] && pr_review_is_skipped "$owner" "$name" "$PR"; then
+  verdict=green
+  reason="the reviewer owes this pull request no review (bot-authored, or a chore, style or release title)"
+elif [[ -z "$reviews" ]]; then
   verdict=pending
   reason="waiting for the automated review of this pull request"
 else
   # (b) Unresolved reviewer-rooted threads carrying a gating severity, per the
-  # SSOT-derived predicate built above — 🔵 nits are advisory and never gate.
+  # SSOT-derived predicate built above. config/review-severities.json lists all
+  # three here, 🔵 `nit` included, so every finding opens a thread the merge
+  # waits on. .github/prompts/claude-pr-review.md tells the reviewer the same.
   gating="$(fetch_review_threads "$owner" "$name" "$PR" \
     "[.[] | select(.isResolved == false)
           | $REVIEW_THREAD_ROOT_IS_REVIEWER
@@ -176,7 +190,7 @@ else
   count="$(jq 'length' <<<"$gating")"
   if [[ "$count" -eq 0 ]]; then
     verdict=green
-    reason="the reviewer has reviewed this PR and no unresolved thread carries a blocking or warning finding"
+    reason="the reviewer has reviewed this PR and no unresolved thread carries a gating finding"
   else
     verdict=red
     where="$(jq -r '[.[] | (.path // "(general)") + (if .line then ":" + (.line|tostring) else "" end)] | join(", ")' <<<"$gating")"

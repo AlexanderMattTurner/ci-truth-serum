@@ -62,10 +62,11 @@ jobs:
   # what the calling job holds, so a caller that grants less ends the run in
   # `startup_failure` before any job starts.
   #
-  # The `if:` is this repository's own skip set, and it must stay the exact
-  # complement of auto-approve-skipped's below: a PR either gets a real read here
-  # or the stand-in approval there, never neither. It carries the cheap
-  # payload-only skips (no runner boots for a draft, a bot or a chore PR):
+  # The `if:` is a cheap payload-only pre-filter, so no runner boots for a draft,
+  # a bot or a chore PR. It is NOT the authority: lib/review-skip-set.bash is,
+  # and review-findings-gate.sh waives its wait for exactly that set while
+  # auto-approve-skipped's script re-checks it before approving. A drift here
+  # therefore costs one skipped job and never a wrong verdict. The set:
   #   - draft PRs and bot-authored PRs (dependabot et al. are handled by
   #     dependabot-auto-merge.yaml);
   #   - low-risk Conventional-Commit types by title — chore/style (matched as
@@ -174,7 +175,9 @@ jobs:
           # own posture: the script is trusted repo content, no PR code runs.
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: .github/scripts/auto-approve-skipped-pr.sh
+          # The approver sources lib/review-skip-set.bash, which sources the
+          # retry helper; a narrower list dies at the `source` under `set -e`.
+          sparse-checkout: .github/scripts
           sparse-checkout-cone-mode: false
       - name: Approve so a review-required ruleset doesn't strand a skipped PR
         env:

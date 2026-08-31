@@ -49,10 +49,12 @@ on: # zizmor: ignore[dangerous-triggers] — no PR code executes: API-only scrip
   # The reviewer's first review landing (or a dismissal) changes the predicate.
   pull_request_review:
     types: [submitted, dismissed]
-  # New review comments change the thread set — including the reviewer's own
-  # findings, whose created events are what turn the gate red promptly after a
-  # review posts. A burst of per-comment events dedups through the per-head
-  # concurrency group below.
+  # New review comments change the thread set, so a human's finding turns the
+  # gate red promptly. The REVIEWER's own findings do not arrive this way: it
+  # posts with GITHUB_TOKEN, whose events start no run. Its
+  # `post-review-command` re-derives the gate itself, and
+  # reconcile-review-findings-gate.sh is the backstop. A burst of per-comment
+  # events dedups through the per-head concurrency group below.
   pull_request_review_comment:
     types: [created]
 

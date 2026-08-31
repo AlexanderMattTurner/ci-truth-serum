@@ -34,13 +34,19 @@ set -euo pipefail
 : "${GH_TOKEN:?GH_TOKEN required}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=.github/scripts/lib-ci-retry.sh
+source "${here}/lib-ci-retry.sh"
 
 # EVERY open PR, drafts and bot-authored included — deliberately wider than
 # sweep-reviewer-holds.sh's human/non-draft filter. The skipped class is
 # bot-authored, and it is the class most likely to be stranded: it gets its
 # approval on `opened` and then never pushes again.
 readonly PR_LIMIT=200
-prs_json="$(gh pr list --repo "$GH_REPO" --state open --limit "$PR_LIMIT" \
+# The listing is the first call, so an outage there loses every PR rather than
+# one, and this sweep is the only thing that re-derives a verdict no event can.
+# retry_stdout re-tries with backoff and emits only the succeeding attempt, so a
+# real fault still exhausts the cap and goes red.
+prs_json="$(retry_stdout gh pr list --repo "$GH_REPO" --state open --limit "$PR_LIMIT" \
   --json number,headRefOid)"
 if [[ "$(jq 'length' <<<"$prs_json")" -ge "$PR_LIMIT" ]]; then
   echo "::warning::reconcile-review-findings-gate: open-PR page hit the ${PR_LIMIT} cap; PRs beyond it keep whatever status they last computed. Raise PR_LIMIT or paginate." >&2
