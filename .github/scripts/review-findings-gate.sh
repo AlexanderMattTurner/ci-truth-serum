@@ -153,15 +153,17 @@ done <<<"$severity_rows"
   exit 1
 }
 
-# (a) At least one reviewer review still standing. A PR nothing has read must
-# not merge on "zero unresolved findings" — zero findings from zero reviews is
-# vacuous, so the gate waits until the reviewer's first pass lands.
+# (a) The reviewer has read this pull request at least once. A PR nothing has
+# read must not merge on "zero unresolved findings" — zero findings from zero
+# reviews is vacuous, so the gate waits until the reviewer's first pass lands.
 #
-# DISMISSED reviews are dropped, which is what makes a dismissal mean something:
-# the hold sweeper dismisses the reviewer's stale hold routinely (GitHub refuses
-# approvals from an Actions token), and a PR whose only review was dismissed has
-# nothing standing that read it.
-reviews="$(reviewer_reviews_ndjson "$owner" "$name" "$PR" | jq -c 'select(.state != "DISMISSED")')"
+# A DISMISSED review counts, because a dismissal retracts the HOLD and not the
+# reading. approve-if-reviewer-hold-clear.sh dismisses the reviewer's
+# CHANGES_REQUESTED on the routine path — GitHub refuses approvals from an
+# Actions token, so dismissal is how a cleared hold gets cleared. Dropping it
+# would turn that clearing into a permanent `pending` on every reviewed PR.
+# Clause (b) is the merge lever, and a dismissal moves none of its threads.
+reviews="$(reviewer_reviews_ndjson "$owner" "$name" "$PR")"
 # The skip set is clause (a)'s EXPLICIT complement. The reviewer reads no
 # bot-authored, chore, style or release pull request, so no review of one ever
 # arrives and a bare "wait for the first review" holds every Dependabot and

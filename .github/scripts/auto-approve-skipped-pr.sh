@@ -23,6 +23,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/scripts/lib/review-skip-set.bash
 source "$SCRIPT_DIR/lib/review-skip-set.bash"
+# Brings REVIEWER_JQ, so the `is_reviewer` test below names the same reviewer
+# review-findings-gate.sh reads.
+# shellcheck source=.github/scripts/lib/reviewer-identity.bash
+source "$SCRIPT_DIR/lib/reviewer-identity.bash"
 
 # The caller's job `if:` decides whether a runner boots. This decides whether an
 # approval posts, from the same definition review-findings-gate.sh waives on, so
@@ -38,7 +42,7 @@ NOTE_MARKER='<!-- auto-approve-skipped -->'
 # connection gh caps at 100 with no cursor, so an early approval falls off the
 # list and this approves twice. The filter reduces nothing, so per page is fine.
 states="$(gh api --paginate "repos/${GH_REPO}/pulls/${PR}/reviews" \
-  --jq '.[] | select((.user.login | sub("\\[bot\\]$"; "")) == "github-actions") | .state')"
+  --jq "$REVIEWER_JQ"'.[] | select(is_reviewer) | .state')"
 case $'\n'"$states"$'\n' in
 *$'\n'APPROVED$'\n'* | *$'\n'DISMISSED$'\n'*)
   echo "auto-approve-skipped: PR #${PR} already carries an approval or a dismissal; nothing to post." >&2

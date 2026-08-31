@@ -8,7 +8,8 @@
 # thread past the first page and reports the truncated slice as the whole set.
 # Callers differ only in the jq they project each page's nodes through.
 #
-# Consumer: review-findings-gate.sh.
+# Consumers: review-findings-gate.sh, fetch-unresolved-review-threads.sh,
+# approve-if-reviewer-hold-clear.sh, detect-reviewer-body-hold.sh.
 
 # retry_stdout and the reviewer predicate: sourced here rather than assumed, so a
 # consumer gets both by sourcing this file alone. Each is idempotent under a

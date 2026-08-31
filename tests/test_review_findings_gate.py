@@ -215,8 +215,14 @@ def test_the_needs_auto_review_label_takes_a_pull_request_out_of_the_skip_set(tm
     )
 
 
-def test_a_dismissed_review_is_not_a_standing_review(tmp_path):
-    """Zero findings from a dismissed review is vacuous, so the gate waits."""
+def test_a_dismissed_review_still_counts_as_a_read(tmp_path):
+    """A dismissal retracts the hold, not the reading.
+
+    approve-if-reviewer-hold-clear.sh dismisses the reviewer's
+    CHANGES_REQUESTED whenever the Actions token cannot post the clearing
+    approval, which is the routine path. Treating that as unreviewed turns
+    every cleared hold into a permanent `pending`.
+    """
     result = _run(
         tmp_path,
         reviews=[review(state="DISMISSED")],
@@ -224,7 +230,19 @@ def test_a_dismissed_review_is_not_a_standing_review(tmp_path):
         pull_request=pull("feat: a change"),
     )
     assert result.returncode == 0, result.stderr
-    assert result.posted["state"] == "pending", result.posted
+    assert result.posted["state"] == "success", result.posted
+
+
+def test_a_dismissed_review_does_not_clear_an_unresolved_finding(tmp_path):
+    """Non-vacuity for the case above: clause (b) still holds the merge."""
+    result = _run(
+        tmp_path,
+        reviews=[review(state="DISMISSED")],
+        threads=[thread("a.py", 1, "\U0001f534 a blocking finding")],
+        pull_request=pull("feat: a change"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.posted["state"] == "failure", result.posted
 
 
 def test_a_body_less_review_by_the_reviewer_is_not_a_review(tmp_path):

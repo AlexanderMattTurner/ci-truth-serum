@@ -15,8 +15,11 @@
 # scripts' own `source` lines, so an omission reds CI rather than killing the
 # gate at runtime under `set -e`.
 #
-# Consumers: review-findings-gate.sh, lib/pr-reviews.bash,
-# lib/review-threads.bash.
+# Consumers: review-findings-gate.sh, auto-approve-skipped-pr.sh,
+# approve-if-reviewer-hold-clear.sh, detect-reviewer-body-hold.sh,
+# fetch-unresolved-review-threads.sh, lib/pr-reviews.bash,
+# lib/review-threads.bash. The three middle scripts reach it by sourcing one of
+# the two libs; auto-approve-skipped-pr.sh sources it directly.
 
 REVIEWER_LOGIN="${REVIEWER_LOGIN:-github-actions[bot]}"
 

@@ -7,7 +7,10 @@
 # `reviews(first: 100)` with no cursor returns the OLDEST 100 reviews and reports
 # a stale state as the live one.
 #
-# Consumer: review-findings-gate.sh.
+# Consumers: review-findings-gate.sh calls reviewer_reviews_ndjson.
+# approve-if-reviewer-hold-clear.sh and detect-reviewer-body-hold.sh run
+# REVIEWS_QUERY with their own jq: each needs the reviewer's latest review
+# state, including a body-less one, which reviewer_reviews_ndjson drops.
 
 # retry_stdout and the reviewer predicate: sourced here rather than assumed, so a
 # consumer gets both by sourcing this file alone. Each is idempotent under a
