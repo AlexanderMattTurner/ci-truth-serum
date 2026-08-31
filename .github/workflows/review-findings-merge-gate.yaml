@@ -67,5 +67,7 @@ jobs:
           prs="$(bash .github/scripts/merge-group-prs.sh)"
           [[ -n "$prs" ]] || { echo "no PR in the queued batch" >&2; exit 1; }
           while IFS= read -r pr; do
-            PR="$pr" bash .github/scripts/review-findings-gate.sh
+            # `</dev/null` keeps gh off the loop's stdin, the PR list it would
+            # otherwise consume.
+            PR="$pr" bash .github/scripts/review-findings-gate.sh </dev/null
           done <<<"$prs"
