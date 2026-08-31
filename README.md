@@ -138,8 +138,11 @@ pre-commit install
 ```
 
 Then add ci-truth-serum to your `.pre-commit-config.yaml`. The block below
-enables Tier 1, which is honesty plus identity. Tier 2 and Extras are commented
-out, so uncomment what you want. pre-commit builds an isolated Python
+enables Tier 1, which is honesty plus identity, through the `check-tier1`
+aggregate. One id runs every Tier 1 check, so a check that ships in a later
+release arrives when you move the `rev:` and needs no edit to your config. The
+Tier 1 table above lists what that id runs today. Tier 2 and Extras are
+commented out, so uncomment what you want. pre-commit builds an isolated Python
 environment for each hook, so pre-commit is the only prerequisite.
 
 ```yaml
@@ -147,27 +150,11 @@ repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
     rev: v1.2.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
-      # ── Tier 1 · Honesty (default-on) ──
-      - id: check-workflow-pipefail
-      - id: check-exit-suppression
-      - id: check-stderr-suppression
-      - id: check-substitution-exit-swallow
-      - id: check-argument-exit-swallow # `f "$(cmd)"` hides cmd's exit status
-      - id: check-soft-timeout # `timeout 60 cmd` sends a signal cmd can ignore
-      - id: check-pr-paths
-      - id: check-pipefail-grep-pipe
-      - id: check-frozen-head-sha # the event head.sha is frozen at trigger time
-      - id: check-folded-scalar-comment
-      - id: check-gh-slurp-jq
-      # ── Tier 1 · Identity (default-on) ──
-      - id: check-pinned-base-images
-      - id: check-pinned-downloads
-      - id: check-versionless-install # every install command must name a version
-      - id: check-provenance-repo-url
-      # ── Tier 1 · Security (default-on) ──
-      - id: check-trusted-base
-      - id: check-untrusted-exec # do not run the PR's own checkout with secrets live
-      - id: check-unscoped-tool-grant
+      # ── Tier 1 · honesty, identity and security (default-on) ──
+      # One id, so a Tier 1 check added in a later release runs as soon as you
+      # move the `rev:` above. Enumerating the ids instead pins you to the set
+      # that existed the day you copied this.
+      - id: check-tier1
       # ── Tier 2 · Opinionated (opt-in: uncomment to enable) ──
       # - id: check-job-timeout          # every job must declare timeout-minutes
       # - id: check-uncached-download    # a pinned download in a job with no cache
