@@ -465,13 +465,15 @@ jobs:
         # succeeded, and the old gate kept the mark. Nothing then retried after
         # the credentials were fixed, because only a new head clears a mark.
         #
-        # `spent` is the honest test, and `execution_file` is NOT: fanout.sh
-        # writes that one after aggregate/collect/report, so a rung whose shards
-        # already billed and then died in that tail leaves it empty — reading it
-        # would hand back a head that really did pay. `spent` is written the
-        # moment the shards finish, before any of that, so it is true exactly
-        # when model calls were made. A ladder that called the model and got
-        # errors back sets it, keeps its mark, and is not repeated for free.
+        # `spent` is the honest test, and neither "a rung ran" nor "a log
+        # exists" is. A REJECTED credential still produces an aggregate log, and
+        # check-claude-execution.sh reads `total_cost_usd == 0` as proof the
+        # model was never reached — so a run refused at auth on every rung has a
+        # log, billed nothing, and is precisely the run whose mark must not
+        # survive, because the credential is what gets repaired.
+        # claude-conflict-resolve.sh therefore folds billed cost across the
+        # whole ladder and reports it here, monotone, so a rung that did pay
+        # keeps the mark for the run.
         if: >-
           failure() && (steps.prepare.outcome == ''
           || (steps.resolve_llm.outcome == 'failure'

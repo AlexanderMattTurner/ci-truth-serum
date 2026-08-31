@@ -33,8 +33,7 @@
 #   SHARD_TIMEOUT_SECONDS    per-shard wall-clock bound, seconds, > 0 (default 600)
 #   FANOUT_DIR               per-shard + aggregate log dir
 #                            (default "${RUNNER_TEMP:-/tmp}/conflict-fanout")
-#   GITHUB_OUTPUT            appended with spent=true once the shards have run,
-#                            then execution_file=<aggregate log>,
+#   GITHUB_OUTPUT            appended with execution_file=<aggregate log>,
 #                            and verdict_file=<the modify/delete verdicts>
 set -euo pipefail
 
@@ -526,16 +525,6 @@ main() {
     running=$((running + 1))
   done
   wait
-
-  # SPEND, recorded the moment the shards are done and BEFORE anything that can
-  # die. A caller deciding whether to give back a per-head attempt mark needs to
-  # know only one thing: did this run pay for model calls? `execution_file`
-  # below cannot answer it, because it is written after aggregate/collect/report
-  # and any die in that tail leaves it unwritten on a run whose shards already
-  # billed — so a caller reading it would hand the head back and let the next
-  # sweep redo the work at cost. This flag is written before that tail, so it is
-  # true exactly when shards ran.
-  [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "spent=true" >>"$GITHUB_OUTPUT"
 
   aggregate
   collect_verdicts

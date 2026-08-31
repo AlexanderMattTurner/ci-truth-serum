@@ -56,6 +56,25 @@ bash "${SCRIPTS_DIR}/install-claude-cli.sh"
 fanout_dir="${FANOUT_DIR:-${RUNNER_TEMP:-/tmp}/conflict-fanout}"
 export FANOUT_DIR="$fanout_dir"
 
+# SPEND, folded across the WHOLE ladder, for the caller that decides whether to
+# give back this head's attempt mark. The question is not "did a rung run" and
+# not "is there a log": a rejected credential still produces an aggregate log,
+# and check-claude-execution.sh reads `total_cost_usd == 0` as proof the model
+# was never reached. So a run whose every rung was refused at auth has a log and
+# has billed nothing — exactly the case a mark must not survive, because the
+# credential is what gets repaired.
+#
+# Monotone on purpose: once any rung bills, the answer stays true, so a later
+# rung refused at auth cannot hand back a head an earlier rung already paid for.
+# An aggregate MISSING the cost field means a shard could not report one, and
+# unknown counts as spent — the conservative side, since guessing wrong here
+# repeats paid work.
+any_billed=false
+
+emit_spend() {
+  [[ -z "${GITHUB_OUTPUT:-}" ]] || echo "spent=${any_billed}" >>"$GITHUB_OUTPUT"
+}
+
 rung=0
 for token in "${ladder[@]}"; do
   rung=$((rung + 1))
@@ -63,7 +82,11 @@ for token in "${ladder[@]}"; do
   rc=0
   CLAUDE_CODE_OAUTH_TOKEN="$token" bash "${SCRIPTS_DIR}/auto-resolve/fanout.sh" || rc=$?
   log="${fanout_dir}/execution.json"
+  if [[ -s "$log" ]] && jq -e '(has("total_cost_usd") | not) or .total_cost_usd > 0' "$log" >/dev/null; then
+    any_billed=true
+  fi
   if [[ "$rc" -eq 0 && -s "$log" ]] && ! jq -e '.is_error == true' "$log" >/dev/null; then
+    emit_spend
     exit 0
   fi
   echo "::warning::credential ${rung} produced no usable resolution (exit ${rc}); trying the next rung if one is configured."
@@ -71,5 +94,6 @@ done
 
 # Every rung is spent. Exiting non-zero is the honest report, and the workflow's
 # execution-log gate turns it into a message naming the real cause.
+emit_spend
 echo "::error::every configured Claude credential failed to resolve the conflicts."
 exit 1

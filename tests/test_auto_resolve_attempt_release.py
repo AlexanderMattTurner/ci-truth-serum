@@ -13,13 +13,16 @@ refused an empty ladder AFTER the pre-pass had run, so the release was skipped,
 and pull request #147 stayed stranded even once the credentials were fixed —
 only a new head clears a mark.
 
-So the gate is on SPEND, not on how far the run got. `fanout.sh` records
-`spent=true` the moment its shards finish and before the aggregate/report tail
-that can die, so the flag is true exactly when model calls were billed.
+So the gate is on BILLED SPEND, not on how far the run got and not on whether a
+log exists — a credential refused at auth still writes one, with a zero cost.
+claude-conflict-resolve.sh folds `total_cost_usd` across the whole ladder and
+reports `spent`, monotone, so a rung that did pay keeps the mark for the run.
 
 These read the workflow with a real YAML parser and assert the release path
 exists and is guarded so it can never hand back a head a paid pass worked on.
 """
+
+import subprocess
 
 import yaml
 
@@ -139,19 +142,51 @@ def test_the_release_is_declared_after_every_step_it_reads() -> None:
         )
 
 
-def test_the_spend_flag_is_written_before_anything_that_can_die() -> None:
-    """`spent=true` must be recorded before the aggregate/report tail.
+def test_the_spend_flag_folds_billed_cost_across_the_ladder() -> None:
+    """`spent` must be monotone and keyed on cost, not on a log existing.
 
-    That tail runs under `set -euo pipefail` and has a documented die path, so a
-    flag written after it is unset on runs whose shards already billed — and the
-    release would then hand back a head that really did pay.
+    A rung refused at auth writes an aggregate whose `total_cost_usd` is 0, so a
+    flag keyed on the log would keep the mark on the one run whose credential is
+    about to be repaired. A missing cost field means a shard could not report
+    one, and unknown counts as spent, because guessing wrong there repeats paid
+    work.
     """
-    fanout = (
-        REPO_ROOT / ".github" / "scripts" / "auto-resolve" / "fanout.sh"
+    resolver = (
+        REPO_ROOT / ".github" / "scripts" / "claude-conflict-resolve.sh"
     ).read_text(encoding="utf-8")
-    spend = fanout.index('echo "spent=true"')
-    for later in ("\n  aggregate\n", "\n  collect_verdicts\n", "\n  report\n"):
-        assert spend < fanout.index(later), (
-            f"the spend flag is written after {later.strip()}, which can die and "
-            "leave it unset on a run that paid"
+    program = next(
+        line.split("jq -e ", 1)[1].rsplit(' "$log"', 1)[0].strip("'")
+        for line in resolver.splitlines()
+        if "total_cost_usd" in line and "jq -e" in line
+    )
+    cases = {
+        '{"total_cost_usd": 0}': False,
+        '{"total_cost_usd": 0.42}': True,
+        '{"is_error": true}': True,
+    }
+    for payload, expected in cases.items():
+        got = (
+            subprocess.run(
+                ["jq", "-e", program], input=payload, capture_output=True, text=True
+            ).returncode
+            == 0
+        )
+        assert got is expected, f"{payload} judged spent={got}, expected {expected}"
+
+
+def test_the_spend_flag_is_reported_on_every_exit() -> None:
+    """Both of the resolver's exits report spend.
+
+    The release reads an ABSENT value as "nothing billed", which is right for a
+    run that never reached the ladder — and wrong for one that walked it and
+    simply forgot to say so.
+    """
+    resolver = (
+        REPO_ROOT / ".github" / "scripts" / "claude-conflict-resolve.sh"
+    ).read_text(encoding="utf-8")
+    body = resolver[resolver.index("for token in") :]
+    for exit_line in ("exit 0", "exit 1"):
+        before = body[: body.index(exit_line)]
+        assert "emit_spend" in before.rsplit("\n\n", 1)[-1] or "emit_spend" in before, (
+            f"the resolver reaches `{exit_line}` without reporting spend"
         )
