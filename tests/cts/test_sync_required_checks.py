@@ -224,7 +224,7 @@ def test_find_branch_ruleset_single(monkeypatch):
         "github_request",
         lambda *a, **k: [{"id": 7, "target": "branch"}, {"id": 8, "target": "tag"}],
     )
-    assert mod.find_branch_ruleset("o/r", "tok") == 7
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 7
 
 
 def test_find_branch_ruleset_ambiguous_fails_loud(monkeypatch):
@@ -234,7 +234,7 @@ def test_find_branch_ruleset_ambiguous_fails_loud(monkeypatch):
         lambda *a, **k: [{"id": 7, "target": "branch"}, {"id": 9, "target": "branch"}],
     )
     with pytest.raises(SystemExit, match="found 2"):
-        mod.find_branch_ruleset("o/r", "tok")
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
 
 
 def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
@@ -248,7 +248,10 @@ def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
             {"id": 8, "target": "branch", "source_type": "Repository"},
         ],
     )
-    assert mod.find_branch_ruleset("o/r", "tok") == 8
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 8
+    # A read must gate the same ruleset an apply would write, so the repo-owned
+    # one wins here too — the wider branch list is only a fallback.
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=False) == 8
 
 
 def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
@@ -261,7 +264,7 @@ def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
             {"id": 6, "target": "branch", "source_type": "Repository"},
         ],
     )
-    assert mod.find_branch_ruleset("o/r", "tok") == 6
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 6
 
 
 def test_find_branch_ruleset_lone_org_ruleset_fails_loud(monkeypatch):
@@ -277,10 +280,35 @@ def test_find_branch_ruleset_lone_org_ruleset_fails_loud(monkeypatch):
         lambda *a, **k: [{"id": 6, "target": "branch", "source_type": "Organization"}],
     )
     with pytest.raises(SystemExit) as excinfo:
-        mod.find_branch_ruleset("o/r", "tok")
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
     message = str(excinfo.value)
     assert "1 branch ruleset(s), 0 of them repo-owned" in message
     assert "organization-owned" in message.lower()
+    # --ruleset-id names one of several candidates. With none writable it only
+    # re-creates the 404, so the message must not prescribe it.
+    assert "--ruleset-id" not in message
+
+
+def test_find_branch_ruleset_lone_org_ruleset_reads_when_no_write(monkeypatch):
+    """`--check` writes nothing, so an org-owned ruleset is a fine read target."""
+    monkeypatch.setattr(
+        mod,
+        "github_request",
+        lambda *a, **k: [{"id": 6, "target": "branch", "source_type": "Organization"}],
+    )
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=False) == 6
+
+
+def test_find_branch_ruleset_no_branch_ruleset_at_all(monkeypatch):
+    # Zero branch rulesets is not an organization-owned one, so the message
+    # must not blame organization ownership for it.
+    monkeypatch.setattr(
+        mod, "github_request", lambda *a, **k: [{"id": 5, "target": "tag"}]
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+    assert "organization-owned" not in str(excinfo.value).lower()
+    assert "found 0 branch ruleset(s)" in str(excinfo.value)
 
 
 def test_find_branch_ruleset_no_repository_source_still_ambiguous(monkeypatch):
@@ -294,7 +322,7 @@ def test_find_branch_ruleset_no_repository_source_still_ambiguous(monkeypatch):
         ],
     )
     with pytest.raises(SystemExit, match="found 2 branch ruleset\\(s\\), 0"):
-        mod.find_branch_ruleset("o/r", "tok")
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
 
 
 def test_find_branch_ruleset_two_repository_source_still_ambiguous(monkeypatch):
@@ -308,7 +336,7 @@ def test_find_branch_ruleset_two_repository_source_still_ambiguous(monkeypatch):
         ],
     )
     with pytest.raises(SystemExit, match="2 of them repo-owned"):
-        mod.find_branch_ruleset("o/r", "tok")
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
 
 
 # ─── apply_contexts ──────────────────────────────────────────────────────────

@@ -248,7 +248,9 @@ def main(argv: list[str] | None = None) -> None:
     if not token:
         raise SystemExit("No GH_TOKEN / GITHUB_TOKEN in the environment.")
 
-    ruleset_id = args.ruleset_id or find_branch_ruleset(args.repo, token)
+    ruleset_id = args.ruleset_id or find_branch_ruleset(
+        args.repo, token, need_write=not args.check
+    )
     ruleset = github_request(
         "GET", f"{API_ROOT}/repos/{args.repo}/rulesets/{ruleset_id}", token
     )

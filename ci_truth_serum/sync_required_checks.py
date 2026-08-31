@@ -19,8 +19,8 @@ Modes:
   (default) PUT the ruleset so its required checks equal the desired set.
 
 The mutation path needs a token (`GH_TOKEN` / `GITHUB_TOKEN`) with
-`administration: write` on the repo; it fails loud if the token is missing or the
-single branch ruleset can't be located (pass `--ruleset-id` to disambiguate).
+`administration: write` on the repo; it fails loud if the token is missing or no
+single writable branch ruleset can be located.
 """
 
 import argparse
@@ -90,33 +90,48 @@ def github_request(method: str, url: str, token: str, body: dict | None = None) 
     return json.loads(payload) if payload else {}
 
 
-def find_branch_ruleset(repo: str, token: str) -> int:
-    """The id of the branch ruleset this script can write, or fail loud when the
-    target is ambiguous (caller must pass --ruleset-id).
+def find_branch_ruleset(repo: str, token: str, *, need_write: bool) -> int:
+    """The id of the one branch ruleset to act on, or fail loud naming why not.
 
     A repo can be covered by more than one branch ruleset targeting `main` — its
     own repo-level ruleset plus an org-level ruleset inherited from the owning
     organization. Both list under `GET /repos/{repo}/rulesets` with
-    `target == "branch"`, but only the repo-owned one is writable through the
-    `/repos/{repo}/rulesets/{id}` PUT used here; org rulesets live on a
-    different endpoint. So the count that decides is the REPO-OWNED one, never
-    the branch count: a lone org-owned ruleset is readable and unwritable, and
-    returning its id sends the caller into a 404 on the write that reads as a
-    missing ruleset or an under-scoped token. A listing that omits `source_type`
-    is treated as repo-owned, which is what a repository-only listing returns."""
+    `target == "branch"`, and both READ through `/repos/{repo}/rulesets/{id}`.
+    Only the repo-owned one WRITES there; an org ruleset lives on a different
+    endpoint and answers 404, which reads as a missing ruleset or an
+    under-scoped token. So `need_write` picks the pool: a caller that only
+    reads (a `--check` drift gate) may use an org-owned ruleset, and a caller
+    that writes may not. A listing that omits `source_type` is treated as
+    repo-owned, which is what a repository-only listing returns.
+    """
     rulesets = github_request("GET", f"{API_ROOT}/repos/{repo}/rulesets", token)
     branch = [r for r in rulesets if r.get("target") == "branch"]
     repo_owned = [
         r for r in branch if r.get("source_type", "Repository") == "Repository"
     ]
-    if len(repo_owned) == 1:
-        return repo_owned[0]["id"]
+    # A repo-owned ruleset is the right target for a read too: it is the one an
+    # apply run would write, so --check must gate the same ruleset. The wider
+    # branch list is a fallback for a read with nothing repo-owned to pick.
+    candidates = repo_owned if (need_write or repo_owned) else branch
+    if len(candidates) == 1:
+        return candidates[0]["id"]
+    counts = (
+        f"found {len(branch)} branch ruleset(s), {len(repo_owned)} of them "
+        "repo-owned (source_type=Repository)"
+    )
+    # --ruleset-id names one of several candidates. It is no remedy when the
+    # count is zero: naming an organization-owned id re-creates the same 404.
+    if need_write and branch and not repo_owned:
+        raise SystemExit(
+            f"No writable branch ruleset on {repo}: {counts}. An "
+            "organization-owned ruleset is not writable through the repository "
+            "endpoint this tool uses, so an organization owner must apply the "
+            "change, or the repository needs a branch ruleset of its own."
+        )
+    kind = "writable branch" if need_write else "branch"
     raise SystemExit(
-        f"Expected exactly one writable branch ruleset on {repo}: found "
-        f"{len(branch)} branch ruleset(s), {len(repo_owned)} of them "
-        "repo-owned (source_type=Repository); pass --ruleset-id to disambiguate. "
-        "An organization-owned ruleset is not writable through the repository "
-        "endpoint this tool uses."
+        f"Expected exactly one {kind} ruleset on {repo}: {counts}; pass "
+        "--ruleset-id to name the one to use."
     )
 
 
@@ -221,7 +236,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("No GH_TOKEN / GITHUB_TOKEN in the environment.")
 
     want = desired_contexts(args.workflows_dir)
-    ruleset_id = args.ruleset_id or find_branch_ruleset(args.repo, token)
+    ruleset_id = args.ruleset_id or find_branch_ruleset(
+        args.repo, token, need_write=not args.check
+    )
     ruleset = github_request(
         "GET", f"{API_ROOT}/repos/{args.repo}/rulesets/{ruleset_id}", token
     )
