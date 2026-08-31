@@ -18,6 +18,18 @@ followed further through its own local imports (`_cts_py_imports.walk_imports`),
 since a list that stops at the entry point still serves a tree that dies on
 its first `import`.
 
+An `import` and a `source` are the only two references either walk can
+follow. A module that OPENS a file at run time — a helper that stats
+`pyproject.toml` to find the repo root, a step that reads a template — writes
+neither, so that file stays invisible here and the job dies on the runner the
+first time that code path runs. A file in the closure declares such a path
+with a `sparse-checkout-needs: <path> [<path>…]` comment, and this counts the
+declared paths as dependencies of every job that reaches the declaring file.
+The declaration is read from a real comment, through the language's own
+grammar, and each path is repo-relative. A path that names no tracked file is
+a violation: sparse-checkout serves tracked files alone, so a typo there would
+widen nothing and say nothing.
+
 The derivation must stay a WIDENING one — it may only raise the floor a
 hand-written list must clear, never lower it. A `${{ }}` value or a wildcard
 pattern is decided or matched at a level this cannot model, so that checkout
@@ -43,6 +55,7 @@ import argparse
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +72,9 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     node_text,
     parse as parse_bash,
     unquote,
+)
+from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    comment_lines,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
@@ -87,6 +103,17 @@ _UNMODELLED = ("*", "?", "[", "!")
 _OPT_OUT_RE = re.compile(
     rf"#\s*{OPT_OUT}:\s*(?P<dep>\S+)[ \t]*(?P<reason>[^\n]*)", re.MULTILINE
 )
+
+NEEDS = "sparse-checkout-needs"
+
+# `sparse-checkout-needs: <path> [<path>…]` — the paths one file in the closure
+# declares it opens at run time. The pattern READS a value out of the
+# annotation, so it is spelled here rather than built from
+# `_cts_linecheck.annotation_re`, which models a boolean opt-out and captures
+# nothing (see tests/cts/test_annotation_predicates.py). Its left edge is a
+# token boundary, not a comment introducer: `_cts_comments` has already decided
+# which text is a comment, and a JavaScript comment opens with `//`.
+_NEEDS_RE = re.compile(rf"(?<![\w-]){re.escape(NEEDS)}:(?P<paths>[^\n]*)")
 
 
 @dataclass(frozen=True)
@@ -387,6 +414,48 @@ def _sourced(entrypoints: list[str], root: Path, files: frozenset[str]) -> set[s
     return seen
 
 
+@dataclass(frozen=True)
+class Need:
+    """One `sparse-checkout-needs:` declaration: a repo-relative PATH a file in
+    the closure opens at run time, and the comment that declares it."""
+
+    path: str
+    declarer: str
+    line: int
+
+
+def declared_needs(reached: Iterable[str], root: Path) -> list[Need]:
+    """Every `sparse-checkout-needs:` path the REACHED files declare.
+
+    The import walk and the source walk find the files a job executes. A file
+    one of them OPENS at run time is reachable by neither, so its own author
+    names it here, and this is the only place the tree states that need.
+
+    The declaration is read from a real comment, through the grammar
+    `_cts_comments` picks for the path. A text scan would read the same words
+    inside a string literal — an error message, a test fixture, a lint's own
+    help text — as a claim about the tree.
+
+    A declaration that names NO path yields one `Need` with an empty path: it
+    is a marker that states nothing, and the caller reports it. Dropping it
+    here would leave a typo looking like a declaration that works.
+
+    An unreadable path is skipped: `git ls-files` reports the index, so a
+    tracked path can be binary, or gone in a rename race.
+    """
+    found: list[Need] = []
+    for rel in sorted(reached):
+        try:
+            text = (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line, comment in sorted(comment_lines(text, rel).items()):
+            for match in _NEEDS_RE.finditer(comment):
+                paths = match.group("paths").split() or [""]
+                found += [Need(_normalize(path), rel, line) for path in paths]
+    return found
+
+
 def _tracked(dep: str, files: frozenset[str]) -> bool:
     """A dependency exists when it is a tracked file or a tracked directory.
     `uses: ./actions/x` names a directory, so an exact-file test alone
@@ -419,19 +488,35 @@ def uncovered(
     exempt: dict[str, str],
     root: Path,
     path_token_re: "re.Pattern[str]",
-) -> list[str]:
-    """Tracked files the job's own steps execute that its sparse-checkout list
-    does not cover, and no `# sparse-checkout-ok:` comment excuses."""
+) -> tuple[list[str], list[Need]]:
+    """(files the sparse-checkout list misses, declarations that name nothing).
+
+    The first list holds the tracked files the job's own steps execute, or a
+    reached file declares it opens, that the list does not cover and no
+    `# sparse-checkout-ok:` comment excuses. The second holds every
+    `sparse-checkout-needs:` path that is no tracked file: sparse-checkout
+    serves tracked files alone, so such a declaration widens nothing, and the
+    caller reports it rather than dropping it.
+    """
+    entrypoints = _entrypoints(checkout, files)
+    shell_entrypoints = _shell_entrypoints(checkout, files)
     deps = _dependencies(checkout.window, path_token_re)
-    deps |= _imported(_entrypoints(checkout, files), root, files)
-    deps |= _sourced(_shell_entrypoints(checkout, files), root, files)
-    return sorted(
+    deps |= _imported(entrypoints, root, files)
+    deps |= _sourced(shell_entrypoints, root, files)
+    # An entry point joins the SCAN set alone, never `deps`. A declaration
+    # inside a script the job runs must count. The entry point itself is
+    # already judged by `_dependencies` and by the list that names it, and this
+    # derivation may only ADD the paths a declaration names.
+    needs = declared_needs(deps | set(entrypoints) | set(shell_entrypoints), root)
+    deps |= {need.path for need in needs if need.path}
+    missing = sorted(
         dep
         for dep in deps
         if _tracked(dep, files)
         and dep not in exempt
         and not covers(checkout, dep, files)
     )
+    return missing, [need for need in needs if not _tracked(need.path, files)]
 
 
 def tracked_files(root: Path) -> frozenset[str]:
@@ -484,6 +569,9 @@ def main(argv: list[str] | None = None) -> int:
     files = tracked_files(root)
 
     total = 0
+    # One broken declaration sits in a file many jobs reach, and it is the same
+    # defect each time, so it is reported once.
+    said: set[Need] = set()
     for workflow in workflow_files(root / ".github" / "workflows"):
         text = workflow.read_text(encoding="utf-8")
         found = checkouts(text, workflow)
@@ -511,7 +599,9 @@ def main(argv: list[str] | None = None) -> int:
             # grammar loudly rather than silently: skipping it would false-green
             # exactly the job this lint exists to read.
             try:
-                missing = uncovered(checkout, files, exempt, root, path_token_re)
+                missing, strays = uncovered(
+                    checkout, files, exempt, root, path_token_re
+                )
             except PathologicalInputError as err:
                 print(
                     f"::error file={rel},line={checkout.line}::job "
@@ -519,13 +609,29 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 total += 1
                 continue
+            for need in strays:
+                if need in said:
+                    continue
+                said.add(need)
+                fault = (
+                    f"`{NEEDS}: {need.path}` names no tracked file"
+                    if need.path
+                    else f"`{NEEDS}:` names no path"
+                )
+                print(
+                    f"::error file={need.declarer},line={need.line}::{fault}. A "
+                    "sparse-checkout list serves tracked files alone, so this "
+                    "declaration widens nothing. Write each path relative to "
+                    "the repository root, or drop the declaration."
+                )
+                total += 1
             for dep in missing:
                 print(
                     f"::error file={rel},line={checkout.line}::job "
                     f"{checkout.job_name}: sparse-checkout list misses `{dep}`, "
-                    "which this job's own steps execute — a step that sources "
-                    'or invokes it dies with "No such file or directory" the '
-                    "first time that code path runs. Widen the sparse-checkout "
+                    "which this job's own steps reach — a step that sources, "
+                    'invokes or opens it dies with "No such file or directory" '
+                    "the first time that code path runs. Widen the sparse-checkout "
                     f"list, or annotate `# {OPT_OUT}: {dep} <reason>`."
                 )
                 total += 1
