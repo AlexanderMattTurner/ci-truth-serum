@@ -24,11 +24,18 @@ follow. A module that OPENS a file at run time — a helper that stats
 neither, so that file stays invisible here and the job dies on the runner the
 first time that code path runs. A file in the closure declares such a path
 with a `sparse-checkout-needs: <path> [<path>…]` comment, and this counts the
-declared paths as dependencies of every job that reaches the declaring file.
+declared paths as dependencies of every job that EXECUTES the declaring file.
+A job that merely names that file (`ruff check x.py`) runs nothing in it, so
+it owes nothing the file opens.
+
 The declaration is read from a real comment, through the language's own
-grammar, and each path is repo-relative. A path that names no tracked file is
-a violation: sparse-checkout serves tracked files alone, so a typo there would
-widen nothing and say nothing.
+grammar, and each path is repo-relative. Everything after the colon is a
+path, so a reason or any other prose on that line reads as one and fails.
+A declared directory enters as the tracked files inside it, and a declared
+file is scanned for declarations of its own, so a launcher that names its
+plugin and a plugin that names its config are both followed. A path that
+names no tracked file is a violation: sparse-checkout serves tracked files
+alone, so a typo there would widen nothing and say nothing.
 
 The derivation must stay a WIDENING one — it may only raise the floor a
 hand-written list must clear, never lower it. A `${{ }}` value or a wildcard
@@ -106,14 +113,23 @@ _OPT_OUT_RE = re.compile(
 
 NEEDS = "sparse-checkout-needs"
 
-# `sparse-checkout-needs: <path> [<path>…]` — the paths one file in the closure
-# declares it opens at run time. The pattern READS a value out of the
-# annotation, so it is spelled here rather than built from
+# The marker named above, then the paths one file in the closure declares it
+# opens at run time. This comment writes the marker through NEEDS rather than
+# spelling it with its colon, because a real comment holding the literal form
+# IS a declaration to the reader below, and its prose would parse as paths.
+#
+# The pattern READS a value out of the annotation, so it is built here, not from
 # `_cts_linecheck.annotation_re`, which models a boolean opt-out and captures
 # nothing (see tests/cts/test_annotation_predicates.py). Its left edge is a
 # token boundary, not a comment introducer: `_cts_comments` has already decided
 # which text is a comment, and a JavaScript comment opens with `//`.
 _NEEDS_RE = re.compile(rf"(?<![\w-]){re.escape(NEEDS)}:(?P<paths>[^\n]*)")
+
+# The terminator of a one-line JavaScript block comment. `_cts_comments` hands
+# back the comment NODE, delimiters and all, so `/* … config.json */` ends in a
+# token that is no path. Reading it as one would report a broken declaration on
+# a file the list already covers.
+_BLOCK_END = re.compile(r"\s*\*/\s*$")
 
 
 @dataclass(frozen=True)
@@ -261,17 +277,30 @@ def _path_token_re(dep_dirs: tuple[str, ...]) -> "re.Pattern[str]":
     return re.compile(rf"(?<![\w./])(?:{dirs})(?:/[\w.-]+)+")
 
 
+def _composite_dirs(window: tuple[JsonObject, ...]) -> set[str]:
+    """The directory of each local composite action a step uses (`uses: ./dir`).
+
+    Kept apart from the path tokens below because the two differ in what the
+    job DOES with them. A step that uses a local action runs the files in that
+    directory, so a declaration inside it binds this job. A path token is only
+    a name in the text.
+    """
+    dirs: set[str] = set()
+    for step in window:
+        uses = step.get("uses")
+        if isinstance(uses, str) and uses.startswith("./"):
+            dirs.add(uses[2:].split("@", 1)[0].rstrip("/"))
+    return dirs
+
+
 def _dependencies(
     window: tuple[JsonObject, ...], path_token_re: "re.Pattern[str]"
 ) -> set[str]:
-    deps: set[str] = set()
+    deps: set[str] = _composite_dirs(window)
     for step in window:
         run = step.get("run")
         if isinstance(run, str):
             deps |= set(path_token_re.findall(run))
-        uses = step.get("uses")
-        if isinstance(uses, str) and uses.startswith("./"):
-            deps.add(uses[2:].split("@", 1)[0].rstrip("/"))
     return deps
 
 
@@ -451,9 +480,32 @@ def declared_needs(reached: Iterable[str], root: Path) -> list[Need]:
             continue
         for line, comment in sorted(comment_lines(text, rel).items()):
             for match in _NEEDS_RE.finditer(comment):
-                paths = match.group("paths").split() or [""]
-                found += [Need(_normalize(path), rel, line) for path in paths]
+                declared = _BLOCK_END.sub("", match.group("paths"))
+                found += [
+                    Need(_normalize(path), rel, line)
+                    for path in declared.split() or [""]
+                ]
     return found
+
+
+def _scan_targets(paths: Iterable[str], files: frozenset[str]) -> set[str]:
+    """The tracked FILES that PATHS name: each path that is a tracked file, and
+    every tracked file under each path that is a directory.
+
+    A directory reaches this twice. `uses: ./.github/actions/x` names the
+    action's whole directory, and a declaration inside that action binds every
+    job that uses it. A declaration may itself name a directory of data files,
+    and the job must serve each file in it — a cone list covers a root-level
+    FILE for free, so judging the directory alone would pass a job whose tree
+    holds none of its contents.
+    """
+    targets: set[str] = set()
+    for path in paths:
+        if path in files:
+            targets.add(path)
+            continue
+        targets |= {rel for rel in files if rel.startswith(f"{path}/")}
+    return targets
 
 
 def _tracked(dep: str, files: frozenset[str]) -> bool:
@@ -493,22 +545,51 @@ def uncovered(
 
     The first list holds the tracked files the job's own steps execute, or a
     reached file declares it opens, that the list does not cover and no
-    `# sparse-checkout-ok:` comment excuses. The second holds every
-    `sparse-checkout-needs:` path that is no tracked file: sparse-checkout
-    serves tracked files alone, so such a declaration widens nothing, and the
-    caller reports it rather than dropping it.
+    `# sparse-checkout-ok:` comment excuses. A declaration that names a
+    DIRECTORY enters as the tracked files inside it, so each one is judged
+    where it sits. The second list holds every `sparse-checkout-needs:` path
+    that is no tracked file: sparse-checkout serves tracked files alone, so
+    such a declaration widens nothing, and the caller reports it rather than
+    dropping it.
     """
     entrypoints = _entrypoints(checkout, files)
     shell_entrypoints = _shell_entrypoints(checkout, files)
-    deps = _dependencies(checkout.window, path_token_re)
-    deps |= _imported(entrypoints, root, files)
-    deps |= _sourced(shell_entrypoints, root, files)
-    # An entry point joins the SCAN set alone, never `deps`. A declaration
-    # inside a script the job runs must count. The entry point itself is
-    # already judged by `_dependencies` and by the list that names it, and this
-    # derivation may only ADD the paths a declaration names.
-    needs = declared_needs(deps | set(entrypoints) | set(shell_entrypoints), root)
-    deps |= {need.path for need in needs if need.path}
+    imported = _imported(entrypoints, root, files)
+    sourced = _sourced(shell_entrypoints, root, files)
+    deps = _dependencies(checkout.window, path_token_re) | imported | sourced
+    # The scan reads the files this job EXECUTES, which is a smaller set than
+    # `deps`. A step that merely names a file (`ruff check x.py`) never runs
+    # it, so what that file opens at run time is no dependency of this job, and
+    # scanning it would turn a sound job red over a path it never touches. An
+    # entry point joins this set alone, never `deps`: it is already judged by
+    # `_dependencies` and by the list that names it, and this derivation may
+    # only ADD the paths a declaration names. The shell half of that term is
+    # the load-bearing one, since `_sourced` skips the entry points it starts
+    # from; the Python half is spelled out too, so the set does not depend on
+    # `walk_imports` seeding its own roots.
+    #
+    # The scan runs to a FIXED POINT, because a declared file declares in turn:
+    # a launcher names the plugin it loads, and the plugin names the config it
+    # reads. One pass would serve the plugin and leave the runner without the
+    # config. Each round scans only the files the last one added, and a tree
+    # holds finitely many, so the walk ends.
+    executed = (
+        set(entrypoints)
+        | set(shell_entrypoints)
+        | imported
+        | sourced
+        | _composite_dirs(checkout.window)
+    )
+    needs: list[Need] = []
+    scanned: set[str] = set()
+    pending = _scan_targets(executed, files)
+    while pending:
+        scanned |= pending
+        found = declared_needs(sorted(pending), root)
+        needs += found
+        declared = _scan_targets({need.path for need in found}, files)
+        deps |= declared
+        pending = declared - scanned
     missing = sorted(
         dep
         for dep in deps

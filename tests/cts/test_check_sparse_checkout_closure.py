@@ -610,3 +610,187 @@ def test_main_flags_a_declaration_that_names_no_path(
     repo = _needs_repo(tmp_path, "# sparse-checkout-needs:\n", ".github/scripts")
     assert mod.main(["--repo-root", str(repo)]) == 1
     assert "names no path" in capsys.readouterr().out
+
+
+def test_main_walks_declarations_to_a_fixed_point(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """A declared file declares in turn: `_root.py` names the plugin it loads,
+    and the plugin names the config it reads. One pass would serve the plugin
+    and leave the runner without the config."""
+    repo = _needs_repo(
+        tmp_path,
+        "# sparse-checkout-needs: .github/scripts/plugin.sh\n",
+        ".github/scripts",
+    )
+    _write(
+        repo,
+        ".github/scripts/plugin.sh",
+        "# sparse-checkout-needs: config/pins.toml\nload() { :; }\n",
+    )
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    # The plugin itself is covered by the listed `.github/scripts`; the file
+    # the SECOND round found is the hole.
+    assert "misses `config/pins.toml`" in out
+    assert "plugin.sh" not in out
+
+
+def test_main_reads_a_one_line_javascript_block_declaration(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """`_cts_comments` hands back the comment node, delimiters and all, so the
+    `*/` of a one-line block must not read as a second path. The route to a
+    `.js` file is a composite action: the step runs the whole directory, and
+    `_scan_targets` expands it to every tracked file inside."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(
+            ".github/scripts\n            .github/actions",
+            "echo hi",
+            "      - uses: ./.github/actions/x\n",
+        ),
+    )
+    _write(repo, ".github/actions/x/action.yml", "runs:\n  using: node20\n")
+    _write(
+        repo,
+        ".github/actions/x/index.js",
+        "/* sparse-checkout-needs: config/pins.toml */\nconsole.log(1);\n",
+    )
+    _write(repo, "config/pins.toml", "ruff = '0.1.0'\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert "misses `config/pins.toml`" in out
+    assert "names no tracked file" not in out
+
+
+def test_main_reads_a_declaration_inside_a_composite_action(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """`uses: ./.github/actions/x` names the action's DIRECTORY. Handing that
+    directory to a file reader finds nothing, so the declaration its
+    `action.yml` carries would bind no job."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(
+            ".github/scripts\n            .github/actions",
+            "echo hi",
+            "      - uses: ./.github/actions/x\n",
+        ),
+    )
+    _write(
+        repo,
+        ".github/actions/x/action.yml",
+        "# sparse-checkout-needs: config/pins.toml\nruns:\n  using: composite\n",
+    )
+    _write(repo, "config/pins.toml", "ruff = '0.1.0'\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert "misses `config/pins.toml`" in capsys.readouterr().out
+
+
+def test_main_judges_a_declared_directory_by_the_files_inside_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """A cone list covers a root-level FILE for free, so judging a declared
+    root-level DIRECTORY as one path passes a job whose tree holds none of its
+    contents."""
+    repo = _needs_repo(tmp_path, "# sparse-checkout-needs: config\n", ".github/scripts")
+    _write(repo, "config/rules.toml", "x = 1\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert "misses `config/pins.toml`" in out
+    assert "misses `config/rules.toml`" in out
+
+
+def test_main_reads_a_declaration_in_a_variable_invoked_entry_point(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """The entry point term of the scan set, on its own. `python3 "$DIR/x.py"`
+    puts no readable path on the command, so the script reaches the scan only
+    as the sparse-checkout list's own entry — nothing else names it."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts/render.py", 'python3 "$DIR/render.py"'),
+    )
+    _write(
+        repo,
+        ".github/scripts/render.py",
+        "# sparse-checkout-needs: config/pins.toml\nprint(1)\n",
+    )
+    _write(repo, "config/pins.toml", "ruff = '0.1.0'\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert "misses `config/pins.toml`" in capsys.readouterr().out
+
+
+def test_main_reads_a_declaration_in_a_shell_entry_point(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """The shell half of the same term, and the load-bearing one: `_sourced`
+    skips the entry points themselves, so a declaration in the script the job
+    runs reaches the scan only through that term."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts/approve.sh", 'bash "$DIR/approve.sh"'),
+    )
+    _write(
+        repo,
+        ".github/scripts/approve.sh",
+        "# sparse-checkout-needs: config/pins.toml\necho hi\n",
+    )
+    _write(repo, "config/pins.toml", "ruff = '0.1.0'\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert "misses `config/pins.toml`" in capsys.readouterr().out
+
+
+def test_main_ignores_a_declaration_in_a_file_the_job_only_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """`ruff check x.py` reads that file and runs nothing in it, so what it
+    opens at RUN TIME is no dependency of this job. The module docstring holds
+    the same rule for the import walk, and a declaration must not be the one
+    reference that escapes it."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts", "ruff check .github/scripts/_root.py"),
+    )
+    _write(
+        repo,
+        ".github/scripts/_root.py",
+        "# sparse-checkout-needs: config/pins.toml\nx = 1\n",
+    )
+    _write(repo, "config/pins.toml", "ruff = '0.1.0'\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_reads_prose_after_the_paths_as_a_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """The documented grammar: everything after the colon is a path. A reason
+    borrowed from the sibling opt-out's habit is not silently ignored — it
+    fails, and the message says which word named no tracked file."""
+    repo = _needs_repo(
+        tmp_path,
+        "# sparse-checkout-needs: config/pins.toml (read by pins)\n",
+        ".github/scripts\n            config/pins.toml",
+    )
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert "`sparse-checkout-needs: (read` names no tracked file" in out
