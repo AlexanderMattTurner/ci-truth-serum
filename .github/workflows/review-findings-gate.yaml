@@ -1,0 +1,179 @@
+name: Review-findings gate
+
+# The merge gate for the automated review, as a STATUS CHECK beside the review
+# verdict. A review verdict cannot hold a merge the reviewer has not read yet:
+# the cheap checks go green in about ninety seconds, while the review takes
+# minutes, so a PR gated only on those merges before its review lands. This
+# check closes that window. It re-derives ONE stateless predicate from the PR
+# itself on every relevant event: red until the reviewer's first review lands,
+# red while any unresolved reviewer-rooted thread carries a gating finding
+# (config/review-severities.json says which severities gate), green otherwise.
+# Resolving the last gating thread is the whole clearing ceremony. The
+# reviewer's own APPROVE or REQUEST_CHANGES is a separate lever, and
+# claude-review.yaml's resolver plus claude-reviewer-hold-clear.yaml clear that
+# one.
+#
+# One job, posting the predicate (review-findings-gate.sh) as a commit status
+# under the context "Review findings resolved" on the PR HEAD sha, so the
+# ruleset's required check is satisfied (or red) there. A status rather than a
+# check run because a check run POSTed for a bare sha lands in a suite GitHub
+# does not tie to the pull request, and the PR-scoped merge box never counts it
+# — see the script's header. Thread RESOLUTION fires no workflow event of its
+# own, so whoever resolves a thread adds the `recheck-review-gate` label to re-run
+# this evaluation (the labeled trigger below); claude-reviewer-hold-clear.yaml's
+# cron bounds a forgotten one to a half-hour of staleness. The merge queue's leg of the same predicate lives in
+# review-findings-merge-gate.yaml — a separate file ON PURPOSE: the required
+# check's job must sit in a workflow with NO PR-event triggers, because a PR
+# event skipping that job would report a `skipped` check run under the required
+# context on the head, and GitHub counts `skipped` as satisfying a required
+# check — a fail-open that would let a stray event overwrite a red gate.
+#
+# SECURITY — pull_request_target and the review events run in the BASE repo's
+# context. The explicit default-branch `ref:` on the checkout below is the
+# enforcement point: no PR-authored code is ever checked out or executed here —
+# the job reads review/thread state via the API and posts a commit status. Least
+# privilege: contents:read (checkout the scripts) + statuses:write (post the
+# verdict) + pull-requests:write (read the threads, remove the command label).
+
+on: # zizmor: ignore[dangerous-triggers] — no PR code executes: API-only scripts off a default-branch checkout; see the SECURITY header
+  # A new head sha needs a fresh verdict (synchronize), and a PR becomes gateable
+  # on opened/reopened/ready_for_review. `labeled` is the agent/human-usable
+  # re-check hatch: workflow_dispatch 403s for agent-session tokens, so the
+  # recheck-review-gate label routes to the same evaluation and is removed after
+  # acting (re-add to retry). Usage:
+  #   gh label create recheck-review-gate --force --color D93F0B \
+  #     --description "One-shot: re-evaluate this PR's review-findings gate"
+  #   gh pr edit <N> --add-label recheck-review-gate
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled]
+  # The reviewer's first review landing (or a dismissal) changes the predicate.
+  pull_request_review:
+    types: [submitted, dismissed]
+  # New review comments change the thread set — including the reviewer's own
+  # findings, whose created events are what turn the gate red promptly after a
+  # review posts. A burst of per-comment events dedups through the per-head
+  # concurrency group below.
+  pull_request_review_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  evaluate:
+    name: Post the review-findings verdict on the PR head
+    # No job-level `if:`. This job posts a required check, so every run that
+    # can occupy the per-PR concurrency slot must post a verdict itself — a
+    # conditionally-skipped run could displace a queued evaluation and then
+    # post nothing, leaving the head's check stale or missing forever (the
+    # cancel-without-replacement strand). The predicate is stateless and
+    # idempotent, so the extra evaluations this buys (a draft push, an
+    # unrelated label add) are each one short ubuntu job posting the same
+    # verdict that already stands; a draft cannot merge, so its verdict is
+    # inert until ready_for_review.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Serialized per PR HEAD — the sha is in the group key because webhook
+    # delivery is unordered: with a PR-only key, a late-delivered event
+    # carrying a stale head could displace the queued evaluation for the
+    # current head and then post its verdict on the stale sha, leaving the
+    # live head with no check. Per-head groups make displacement possible only
+    # among runs that would post to the SAME sha. NEVER cancelling the running
+    # evaluation: cancel-in-progress stays false because GitHub cancels
+    # mid-step, so a true here can kill a run between reading the PR state
+    # and POSTing the verdict — that verdict is lost and the head keeps a
+    # stale one. With false, only the QUEUED run is ever cancelled, and only
+    # by a newer same-head run that itself executes unconditionally (no job
+    # `if:`) and posts a fresher verdict — every cancellation is a strict
+    # supersession, so a burst of review-comment events still collapses
+    # toward the newest evaluation. Rapid pushes buy a few extra short jobs
+    # (one per superseded head); their check posts target distinct shas, so
+    # they cannot clobber each other.
+    concurrency:
+      group: review-findings-gate-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: read # sparse-checkout the trusted gate script
+      statuses: write # post the "Review findings resolved" verdict on the head
+      # A label on a PULL REQUEST is checked against the pull-requests
+      # permission, not issues. Under `issues: write` alone the DELETE below
+      # 403s and the label stays; while it sits there re-adding it fires no
+      # `labeled` event, which makes the recheck hatch one-shot for the whole
+      # life of the PR.
+      pull-requests: write # read the PR's threads, remove the command label
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Remove the recheck-review-gate command label
+        # UNCONDITIONAL remove-if-present, and the FIRST step, because a
+        # `labeled` run displaced while QUEUED executes zero steps — no
+        # ordering or `always()` can make the displaced run itself free the
+        # label. What can is the run that displaced it: the per-head group
+        # key means any survivor evaluates the SAME head the label was
+        # asking about, so every evaluation of a head consumes a pending
+        # recheck request for it — one-shot semantics kept, stuck-label
+        # strand closed. Running first also frees the label before a failed
+        # evaluation, keeping the retry path. On the (common) runs where no
+        # label sits on the PR the DELETE 404s, which the case below treats
+        # as the harmless no-op it is; any OTHER failure leaves the label
+        # stuck, and while it sits on the PR re-adding it is a no-op that
+        # fires no `labeled` event, so a non-404 failure is warned about,
+        # never swallowed.
+        run: |
+          if ! out="$(gh api -X DELETE "repos/${GH_REPO}/issues/${PR}/labels/recheck-review-gate" 2>&1)"; then
+            # gh renders the status as "(HTTP 404)"; the body text varies by
+            # endpoint, so match the code.
+            case "$out" in
+              *"(HTTP 404)"*) ;;
+              *) echo "::warning::recheck-review-gate label removal failed — remove it manually so re-adding it can fire again: ${out}" ;;
+            esac
+          fi
+      - name: Checkout the trusted gate script (default branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Explicit default-branch ref — never the event's SHA; see the
+          # SECURITY header. This pin keeps PR-authored content out of this job.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          # review-findings-gate.sh sources the shared reviewer-identity, review
+          # and thread libraries under .github/scripts/lib, and reads the
+          # severity SSOT. Omit one and the script dies at its `source` line, or
+          # at the `jq` that reads the severities, under `set -e`.
+          sparse-checkout: |
+            .github/scripts
+            config/review-severities.json
+          sparse-checkout-cone-mode: false
+      - name: Evaluate the gate and post the verdict on the head
+        id: evaluate
+        # The whole point of the job: without this step the workflow removes a
+        # label and posts nothing, so the required "Review findings resolved"
+        # context is never reported on a new head and the PR blocks forever on
+        # a check that will never arrive. REPORT_SHA is what routes the verdict
+        # to the head's status context; without it the script only exits 0/1.
+        env:
+          REPORT_SHA: ${{ github.event.pull_request.head.sha }}
+          # A status description is capped at 140 characters, so this is where a
+          # reader gets the finding list a red verdict names.
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .github/scripts/review-findings-gate.sh
+      - name: Report red when the evaluation posted no verdict
+        # The step above posts the required check only if it reaches its POST, so
+        # an evaluation that dies first — an exhausted API retry ladder, a jq
+        # failure on the severity config, a lost runner — leaves the head with NO
+        # status under a REQUIRED context. GitHub renders that as
+        # "Expected — Waiting for status to be reported" and blocks the merge on
+        # a check nothing will ever send: thread resolution fires no workflow
+        # event, so the gate is not re-derived until the next push or a
+        # `recheck-review-gate` label. Reporting red says the same thing in a
+        # form the merge box can act on. LIMIT: a failure in the checkout above
+        # takes this arm's script with it, so that one still strands the check —
+        # it reds the run loudly in Actions, unlike the silent strand this closes.
+        if: always() && steps.evaluate.outcome != 'success'
+        env:
+          REPORT_SHA: ${{ github.event.pull_request.head.sha }}
+          GATE_UNREPORTED: "1"
+          # Points at the run that failed, which is where the reason this arm
+          # fired at all is legible.
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .github/scripts/review-findings-gate.sh
