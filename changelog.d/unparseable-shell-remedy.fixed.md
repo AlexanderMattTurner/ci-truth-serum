@@ -1,1 +1,0 @@
-- `UnparseableShellError` now names a byte offset and one remedy. It already named a line number. Fix the syntax using the known triggers listed in the class docstring. Or add the file to the shell checks' `exclude:` pattern in `.pre-commit-config.yaml`, when the file is not real bash. Before this change, a pre-commit run named the broken line only.
