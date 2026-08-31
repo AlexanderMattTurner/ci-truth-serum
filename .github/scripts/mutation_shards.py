@@ -53,11 +53,22 @@ TEST_DIR = "tests/cts"
 # sub-shards that each mutate the whole module but run only a disjoint slice of
 # its mutants (see run-mutation-shard.sh's work_items partition). cosmic-ray
 # emits roughly one mutant per source line and each mutant costs ~1.2 s, so this
-# caps a shard at ~150 mutants ≈ ~3 min of exec + setup — comfortably under the
+# caps a shard at ~200 mutants ≈ ~4 min of exec + setup — comfortably under the
 # job's timeout. Line count is a cheap, drift-proof proxy computed at plan time,
 # exactly as agent-input-sanitizer's `splitEvery` slices its big files. Below the
 # cap a module is a single shard whose id is the bare module stem.
-SPLIT_EVERY_LINES = 150
+#
+# The value also trades against MATRIX_JOB_LIMIT below: a smaller slice buys
+# wall-clock and spends matrix slots. At 150 the pack expanded to 257 shards and
+# crossed that limit, which produced no shard jobs at all.
+SPLIT_EVERY_LINES = 200
+
+# GitHub runs at most 256 jobs from one matrix. Over that it starts NONE of them,
+# and the shard job is skipped rather than failed, so the aggregate step then
+# demands reports for a matrix that never ran and dies on a missing directory —
+# a failure that names neither the limit nor the cause. Fail here instead, where
+# the number and the remedy are both in hand.
+MATRIX_JOB_LIMIT = 256
 
 # Files every shard's oracle loads whichever module it mutates: the pytest
 # conftest, the shared test helpers, and the fixture tree the example suites
@@ -199,6 +210,8 @@ def expand_shards(repo_root: Path) -> list[dict]:
     inputs, which the workflow uses as its session cache key. Raises if a module's
     ``test_<module>.py`` oracle is missing — a new hook must bring the suite its
     shard will run, or expansion fails loud rather than gate on an empty slice.
+    Raises too when the set outgrows ``MATRIX_JOB_LIMIT``, because a matrix over
+    that size starts no jobs at all.
     """
     cfg = _base_config(repo_root)["cosmic-ray"]
     package = cfg["module-path"]
@@ -230,6 +243,12 @@ def expand_shards(repo_root: Path) -> list[dict]:
             )
     if not shards:
         raise ValueError(f"no mutable modules found under {package}/ in {CONFIG}")
+    if len(shards) > MATRIX_JOB_LIMIT:
+        raise ValueError(
+            f"{len(shards)} shards exceeds GitHub's {MATRIX_JOB_LIMIT}-job matrix limit. "
+            f"Raise SPLIT_EVERY_LINES (now {SPLIT_EVERY_LINES}) so fewer modules split, "
+            f"or exclude a module in {CONFIG}."
+        )
     digests: dict[str, bytes] = {}
     for shard in shards:
         shard["hash"] = shard_hash(repo_root, shard, digests)

@@ -159,6 +159,40 @@ def test_module_without_oracle_raises(tmp_path: Path) -> None:
         mod.expand_shards(tmp_path)
 
 
+def test_the_real_matrix_stays_under_the_job_limit() -> None:
+    """GitHub starts no job at all from a matrix over 256 entries.
+
+    The shard job is then SKIPPED, not failed, and the aggregate step dies on a
+    missing report directory instead of naming the limit. This asserts the live
+    tree, so a new hook module that crosses the limit fails here first.
+    """
+    shards = mod.expand_shards(REPO_ROOT)
+    assert 0 < len(shards) <= mod.MATRIX_JOB_LIMIT
+
+
+def test_a_matrix_over_the_job_limit_raises(tmp_path: Path) -> None:
+    modules = [f"check_{index}.py" for index in range(mod.MATRIX_JOB_LIMIT + 1)]
+    _write_min_repo(
+        tmp_path,
+        modules=["__init__.py", *modules],
+        tests=[f"test_{name}" for name in modules],
+    )
+    with pytest.raises(ValueError, match=r"exceeds GitHub's 256-job matrix limit"):
+        mod.expand_shards(tmp_path)
+
+
+def test_a_matrix_at_the_job_limit_is_accepted(tmp_path: Path) -> None:
+    """The bound is inclusive — proves the guard above is not off by one, and is
+    the positive marker for the negative assertion it pairs with."""
+    modules = [f"check_{index}.py" for index in range(mod.MATRIX_JOB_LIMIT)]
+    _write_min_repo(
+        tmp_path,
+        modules=["__init__.py", *modules],
+        tests=[f"test_{name}" for name in modules],
+    )
+    assert len(mod.expand_shards(tmp_path)) == mod.MATRIX_JOB_LIMIT
+
+
 def test_empty_package_raises(tmp_path: Path) -> None:
     _write_min_repo(tmp_path, modules=["__init__.py"], tests=[])
     with pytest.raises(ValueError, match="no mutable modules"):
