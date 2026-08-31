@@ -45,22 +45,58 @@ TOKEN_LADDER = (
 )
 
 
-def _run(tmp_path: Path, *, message: str, code: int) -> subprocess.CompletedProcess:
-    """Run the approver with `gh` printing MESSAGE and exiting CODE."""
+def _run(
+    tmp_path: Path,
+    *,
+    message: str = "",
+    code: int = 0,
+    reviews: str = "",
+    comments: str = "",
+    skip: str = "skipped",
+) -> subprocess.CompletedProcess:
+    """Run the approver with `gh` stubbed per subcommand.
+
+    REVIEWS is what the reviews read prints (the script's `--jq` yields one
+    state per line); COMMENTS is what the comment read prints. MESSAGE and CODE
+    belong to `gh pr review` alone, so a refusal there is observed without the
+    reads failing first. Every call is appended to `calls`.
+    """
     bindir = tmp_path / "bin"
-    bindir.mkdir()
+    bindir.mkdir(parents=True)
     (bindir / "gh").write_text(
-        f'#!/usr/bin/env bash\nprintf "%s\\n" {message!r} >&2\nexit {code}\n',
+        "#!/usr/bin/env bash\n"
+        "all=\"${*//$'\\n'/ }\"\n"
+        'printf "%s\\n" "$all" >>"$GH_CALLS"\n'
+        'case "$all" in\n'
+        "*/reviews*) printf '%s' \"$STUB_REVIEWS\" ;;\n"
+        "*/comments*) printf '%s' \"$STUB_COMMENTS\" ;;\n"
+        "*/pulls/*) printf '%s' \"$STUB_SKIP\" ;;\n"
+        '"pr review"*) printf "%s\\n" "$STUB_MESSAGE" >&2; exit "$STUB_CODE" ;;\n'
+        "esac\n",
         encoding="utf-8",
     )
     (bindir / "gh").chmod(0o755)
+    calls = tmp_path / "calls"
+    calls.write_text("", encoding="utf-8")
     env = dict(os.environ)
     env.update(
-        {"PATH": f"{bindir}:{env['PATH']}", "GH_REPO": "owner/name", "PR": "176"}
+        {
+            "PATH": f"{bindir}:{env['PATH']}",
+            "GH_REPO": "owner/name",
+            "PR": "176",
+            "GH_CALLS": str(calls),
+            "STUB_REVIEWS": reviews,
+            "STUB_COMMENTS": comments,
+            "STUB_SKIP": skip,
+            "STUB_MESSAGE": message,
+            "STUB_CODE": str(code),
+        }
     )
-    return subprocess.run(
+    result = subprocess.run(
         ["bash", str(SCRIPT)], capture_output=True, text=True, env=env, check=False
     )
+    result.calls = calls.read_text(encoding="utf-8").splitlines()  # type: ignore[attr-defined]
+    return result
 
 
 def test_a_posted_approval_reports_it_and_exits_zero(tmp_path) -> None:
@@ -112,6 +148,52 @@ def test_the_job_takes_a_pat_before_the_actions_token() -> None:
     ]
     assert len(steps) == 1, "no step runs the approver, so this test guards nothing"
     assert (steps[0].get("env") or {}).get("GH_TOKEN") == TOKEN_LADDER
+
+
+def test_the_approval_carries_no_body(tmp_path) -> None:
+    """A bodied approval would satisfy the review-findings gate by itself.
+
+    reviewer-identity.bash reads "the reviewer has spoken" as a review by the
+    reviewer WITH a body. Under the Actions-token fallback this approval IS
+    that identity, so a body here greens the merge gate with zero reads.
+    """
+    result = _run(tmp_path)
+    approve = [c for c in result.calls if c.startswith("pr review ")]
+    assert approve == ["pr review 176 --repo owner/name --approve"], result.calls
+
+
+def test_an_existing_approval_is_not_posted_twice(tmp_path) -> None:
+    result = _run(tmp_path, reviews="APPROVED\n")
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in result.calls if c.startswith("pr review ")]
+    assert "already carries an approval or a dismissal" in result.stderr
+
+
+def test_a_dismissed_approval_is_not_reposted(tmp_path) -> None:
+    """A dismissal is a decision; re-approving would overrule it silently."""
+    result = _run(tmp_path, reviews="DISMISSED\n")
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in result.calls if c.startswith("pr review ")]
+
+
+def test_the_offer_posts_once(tmp_path) -> None:
+    """The approval cannot carry the offer, so a comment does — exactly once."""
+    first = _run(tmp_path / "a", comments="")
+    assert [c for c in first.calls if c.startswith("pr comment ")], first.calls
+    again = _run(tmp_path / "b", comments="1234\n")
+    assert not [c for c in again.calls if c.startswith("pr comment ")], again.calls
+
+
+def test_a_pull_request_the_reviewer_reads_gets_no_stand_in_approval(tmp_path) -> None:
+    """The job `if:` only saves a runner; the skip set is what decides.
+
+    A drift in that expression would otherwise approve a pull request nothing
+    has read, which is the whole failure a review-required ruleset prevents.
+    """
+    result = _run(tmp_path, skip="reviewed")
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in result.calls if c.startswith("pr review ")]
+    assert "owes PR #176 a review" in result.stderr
 
 
 def _workflow() -> dict:

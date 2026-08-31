@@ -1,0 +1,9 @@
+{
+  "comment": "SSOT for the review-finding severity model this repository gates on. `gating` lists the severities whose unresolved review threads red the `Review findings resolved` merge gate; `icons` maps every severity to the emoji its posted finding leads with (the gate's fallback signal for threads posted before the hidden marker existed). Consumers: review-findings-gate.sh (builds its thread predicate from this file at runtime), .github/prompts/claude-pr-review.md (tells the reviewer which severities hold the merge). The reviewer itself renders findings from agent-review's own copy of this file; this one decides only what gates here.",
+  "gating": ["blocking", "warning", "nit"],
+  "icons": {
+    "blocking": "🔴",
+    "warning": "🟡",
+    "nit": "🔵"
+  }
+}
