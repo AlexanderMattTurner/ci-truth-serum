@@ -495,7 +495,7 @@
 
 - id: check-sparse-checkout-closure
   name: "opinionated: a sparse-checkout list must cover what its job reads"
-  description: A job that checks out sparsely and then runs a tracked file the list omits dies with "No such file or directory" on the runner, and no static read of the tree sees it coming — sparse-checkout sets SKIP_WORKTREE rather than removing the entry. The closure follows a served Python entrypoint's local imports too.
+  description: A job that checks out sparsely and then runs a tracked file the list omits dies with "No such file or directory" on the runner, and no static read of the tree sees it coming — sparse-checkout sets SKIP_WORKTREE rather than removing the entry. The closure follows a served Python entrypoint's local imports too. A file in the closure declares what it opens at run time with a sparse-checkout-needs comment.
   entry: python -m ci_truth_serum.check_sparse_checkout_closure
   language: python
   additional_dependencies: [PyYAML]
