@@ -12,6 +12,12 @@ hands it a PAT first. These tests drive the real script with `gh` stubbed, so
 the behaviour is observed rather than asserted about the source text. The last
 two keep the first honest: a stand-down that swallowed a real fault would be
 worse than no stand-down at all.
+
+The job also needs a second chance. It fires once, on `opened` or
+`ready_for_review`, so a firing that fails leaves the pull request with no
+approval forever: `synchronize` does not re-run it, and a later push cannot
+recover it. PR #176 stranded that way. The last two tests pin the on-demand
+label that re-arms it.
 """
 
 import os
@@ -25,6 +31,12 @@ from tests._helpers import REPO_ROOT
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "auto-approve-skipped-pr.sh"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "claude-review.yaml"
 JOB = "auto-approve-skipped"
+REVIEW_JOB = "review"
+# The label a human adds to re-arm the approver, and the reviewer's own label.
+# They must differ: one label that did both would send a release PR to a reader
+# the skip set exists to spare.
+APPROVE_LABEL = "needs-auto-approve"
+REVIEW_LABEL = "needs-auto-review"
 # The candidates the sibling reviewer-hold approver already takes, in its order.
 TOKEN_LADDER = (
     "${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.TEMPLATE_SYNC_TOKEN "
@@ -99,3 +111,40 @@ def test_the_job_takes_a_pat_before_the_actions_token() -> None:
     ]
     assert len(steps) == 1, "no step runs the approver, so this test guards nothing"
     assert (steps[0].get("env") or {}).get("GH_TOKEN") == TOKEN_LADDER
+
+
+def _workflow() -> dict:
+    """The parsed workflow. PyYAML reads the `on:` key as the boolean True."""
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_a_label_re_arms_the_approver() -> None:
+    """One failed firing must not strand the pull request forever."""
+    doc = _workflow()
+    guard = str(doc["jobs"][JOB]["if"])
+    assert f"github.event.label.name == '{APPROVE_LABEL}'" in guard, (
+        "the approver has no on-demand re-arm. A PR whose one firing failed "
+        "needs a way back, and `synchronize` does not re-run this job."
+    )
+    assert "github.event.action == 'opened'" in guard, (
+        "the label alternative replaced the ordinary firing rather than adding "
+        "to it, so no PR gets an approval without a human label"
+    )
+    types = doc[True]["pull_request_target"]["types"]
+    assert "labeled" in types, f"the label never reaches the job: types are {types}"
+
+
+def test_the_two_on_demand_labels_differ() -> None:
+    """Non-vacuity for the label above, and a real hazard of its own.
+
+    The reviewer job carries the same idiom. One shared label would make a
+    `release:` PR both approved and read, which defeats the skip set.
+    """
+    doc = _workflow()
+    review_guard = str(doc["jobs"][REVIEW_JOB]["if"])
+    assert f"github.event.label.name == '{REVIEW_LABEL}'" in review_guard, (
+        "the reviewer's own label clause is gone, so the idiom this mirrors no "
+        "longer exists and the assertion above pins a lone invention"
+    )
+    assert APPROVE_LABEL != REVIEW_LABEL
+    assert APPROVE_LABEL not in review_guard

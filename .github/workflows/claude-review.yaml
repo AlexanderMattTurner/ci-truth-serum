@@ -142,7 +142,15 @@ jobs:
   # code, and holds pull-requests:write and nothing else.
   auto-approve-skipped:
     name: Auto-approve low-risk and bot PRs the reviewer skips
+    # The on-demand label mirrors the reviewer's `needs-auto-review` above, and
+    # it is the only way to re-arm this job. The approval fires once, on
+    # `opened` or `ready_for_review`. A firing that fails leaves the PR with no
+    # approval and no second chance: `synchronize` does not re-run this job, so
+    # a later push cannot recover it. PR #176 stranded exactly that way, because
+    # GitHub refused the Actions token its one firing used.
     if: >-
+      github.event.label.name == 'needs-auto-approve' ||
+      (
       (github.event.action == 'opened' || github.event.action == 'ready_for_review') &&
       github.event.pull_request.draft == false &&
       (
@@ -153,6 +161,7 @@ jobs:
         startsWith(github.event.pull_request.title, 'style(') ||
         startsWith(github.event.pull_request.title, 'release:') ||
         startsWith(github.event.pull_request.title, 'release(')
+      )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
