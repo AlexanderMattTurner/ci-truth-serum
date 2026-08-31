@@ -20,15 +20,19 @@ in-progress run (current SHA → red), `false` cancels the pending one (also
 current SHA → red). The safe fixes are to drop the group or key it on
 `github.run_id` (a group of one cannot cancel a sibling).
 
-A workflow "backs a required check" by EITHER of two routes, because a required
-check has two shapes. The decide-job + reporter architecture shows up as a
-decide gate plus an `always()` reporter (the heuristic). A workflow can also
-declare a required check with nothing but a `# required-check: true` marker on
-one job — the mandatory SSOT marker check_required_reporter enforces and
-sync_required_checks reads — and that shape has no decide gate to find. The
-heuristic route judges every job of the workflow; the marker route judges the
-workflow-level block plus the MARKED jobs only, because an advisory job's group
-in a marked workflow reddens no required check.
+A workflow "backs a required check" by EITHER of two routes. The heuristic
+route is a decide gate plus one of the shapes that fail closed on a broken gate:
+an `always()` reporter, or a fail-closed twin (`if: always() &&
+needs.<gate>.result != 'success'`). A workflow can also declare a required check
+with nothing but a `# required-check: true` marker on one job — the mandatory
+SSOT marker check_required_reporter enforces and sync_required_checks reads —
+and that shape has no decide gate to find.
+
+Which jobs each route judges follows from what reads their results. An always()
+reporter is a funnel every job feeds, so that route judges every job. A twin
+reads only its gates' results, so that route judges the gates, the twins and the
+MARKED jobs; an unrelated job's cancellation reddens no check the twin posts.
+The marker route judges the workflow-level block plus the marked jobs alone.
 
 This lint is deliberately scoped to per-ref/per-PR groups (the key polarity
 check_static_concurrency calls safe). A STATIC group shares the failure mode but
@@ -49,14 +53,20 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ALWAYS_REPORTER_SHAPE,
+    TWIN_SHAPE,
     _job_blocks,
     _marked_jobs,
     concurrency_line,
-    has_always_reporter,
-    has_decide_gate,
+    decide_gate_names,
     job_concurrency_line,
     opted_out,
+    required_check_shape,
+    valid_twin_names,
     workflow_files,
+)
+from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    PathologicalInputError,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -180,15 +190,11 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     if not isinstance(jobs, dict):
         return []
     blocks = _job_blocks(text)
-    heuristic = has_decide_gate(jobs) and has_always_reporter(jobs)
+    heuristic = required_check_shape(jobs, doc)
     marked = _marked_jobs(blocks, jobs)
     if not (heuristic or marked):
         return []  # not a required-check shape — a reddened cancel self-describes
-    basis = (
-        "decide gate + always() reporter"
-        if heuristic
-        else "the '# required-check: true' marker"
-    )
+    basis = heuristic or "the '# required-check: true' marker"
 
     violations: list[tuple[int | None, str]] = []
     if _ref_keyed(_group_of(doc.get("concurrency"))):
@@ -196,10 +202,18 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
             (concurrency_line(text), f"workflow-level {_message(storm, basis)}")
         )
 
-    # The heuristic shape reports through one always() reporter that every job
-    # feeds, so any job's group can redden it. A marker-only workflow has no such
-    # funnel: only a marked job's own cancellation posts a required-check status.
-    judged = jobs if heuristic else {name: jobs[name] for name in marked}
+    # An always() reporter is a funnel every job feeds: it reads each job's
+    # result, so any job's cancellation can strand the required check. A TWIN
+    # reads only its gates' results, so an unrelated job's cancel reddens nothing
+    # it reports — under that shape the judged set is the gates, the twins, and
+    # whatever carries the marker. A marker-only workflow has no funnel at all.
+    if heuristic == ALWAYS_REPORTER_SHAPE:
+        judged = jobs
+    else:
+        names = set(marked)
+        if heuristic == TWIN_SHAPE:
+            names |= decide_gate_names(jobs) | set(valid_twin_names(jobs, doc))
+        judged = {name: jobs[name] for name in names if name in jobs}
     for name, cfg in judged.items():
         if not isinstance(cfg, dict):
             continue
@@ -215,7 +229,13 @@ def main() -> int:
     total = 0
     for path in workflow_files(WORKFLOWS_DIR, ACTIONS_DIR):
         rel = path.relative_to(REPO_ROOT)
-        for line, message in check_file(path):
+        try:
+            findings = check_file(path)
+        except PathologicalInputError as err:
+            print(f"::error file={rel}::{err}")
+            total += 1
+            continue
+        for line, message in findings:
             loc = f"file={rel},line={line}" if line else f"file={rel}"
             print(f"::error {loc}::{message}")
             total += 1

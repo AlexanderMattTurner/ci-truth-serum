@@ -61,6 +61,14 @@
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
 
+- id: check-flock-fixed-fd
+  name: "honesty: ban a lock taken on a hardcoded file descriptor"
+  description: "`flock -x 9` in a file that never opens fd 9 locks whatever that number is. When nothing opened it, `flock` exits non-zero. When something else holds it, the lock guards a different file and both runs still report success."
+  entry: python -m ci_truth_serum.check_flock_fixed_fd
+  language: python
+  additional_dependencies: [tree-sitter, tree-sitter-bash]
+  types: [shell]
+
 - id: check-pr-paths
   name: "honesty: ban paths/branches filters on pull_request triggers"
   description: A paths or branches filter strands a required check at "Expected — Waiting" forever.
@@ -110,6 +118,16 @@
   name: "honesty: ban a `#` comment line inside a folded YAML block scalar"
   description: A folded scalar has no comment syntax, so the line joins the value — and shell word-splitting then discards every argument after the `#`.
   entry: python -m ci_truth_serum.check_folded_scalar_comment
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-runner-var-foreign-shell
+  name: "honesty: no runner variable in a shell GitHub does not set up"
+  description: GITHUB_OUTPUT, GITHUB_ENV, GITHUB_PATH and GITHUB_STEP_SUMMARY name files on the runner. A shell GitHub does not set up can run the script in a container or on another host. The write then reaches no file the runner reads. The step still exits 0, and the result stays empty.
+  entry: python -m ci_truth_serum.check_runner_var_foreign_shell
   language: python
   additional_dependencies: [PyYAML]
   pass_filenames: false
@@ -191,10 +209,10 @@
 # These prescribe a specific architecture. Enable only if you follow it.
 - id: check-always-reporter
   name: "opinionated: require an always() reporter on gated workflows"
-  description: Assumes the decide-job + reporter pattern; a skipped gate strands a required check.
+  description: "Assumes the decide-job pattern. A gated workflow needs an always() reporter, or a fail-closed twin that names every gate and exits nonzero. Without one, a failed gate skips every work job and the merge greens over it."
   entry: python -m ci_truth_serum.check_always_reporter
   language: python
-  additional_dependencies: [PyYAML]
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
   types: [yaml]
@@ -485,7 +503,7 @@
 
 - id: check-sparse-checkout-closure
   name: "opinionated: a sparse-checkout list must cover what its job reads"
-  description: A job that checks out sparsely and then runs a tracked file the list omits dies with "No such file or directory" on the runner, and no static read of the tree sees it coming — sparse-checkout sets SKIP_WORKTREE rather than removing the entry. The closure follows a served Python entrypoint's local imports too.
+  description: A job that checks out sparsely and then runs a tracked file the list omits dies with "No such file or directory" on the runner, and no static read of the tree sees it coming — sparse-checkout sets SKIP_WORKTREE rather than removing the entry. The closure follows a served Python entrypoint's local imports too. A file in the closure declares what it opens at run time with a sparse-checkout-needs comment.
   entry: python -m ci_truth_serum.check_sparse_checkout_closure
   language: python
   additional_dependencies: [PyYAML]
@@ -496,8 +514,8 @@
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
 - id: check-absolute-symlinks
-  name: "extra: reject tracked symlinks with absolute targets"
-  description: An absolute-target symlink breaks on every machine but the author's. The id is not check-symlinks, which pre-commit-hooks uses for a different rule.
+  name: "extra: reject tracked symlinks a fresh clone cannot follow"
+  description: A symlink to an absolute path, or to a path git ignores, dangles on every machine but the author's. The id is not check-symlinks, which pre-commit-hooks uses for a different rule.
   entry: ci_truth_serum/check_absolute_symlinks.sh
   language: script
   pass_filenames: false

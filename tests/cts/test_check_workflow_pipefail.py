@@ -185,30 +185,6 @@ def test_blindspot_backtick_substitution_pipe_text_is_exact():
     assert len(out) == 1 and '`echo "a"`' in out[0]
 
 
-# ── _default_shell ───────────────────────────────────────────────────────
-def test_default_shell_finds_job_then_workflow():
-    job = {"defaults": {"run": {"shell": "sh"}}}
-    workflow = {"defaults": {"run": {"shell": "bash"}}}
-    assert cwp._default_shell(job, workflow) == "sh"
-    assert cwp._default_shell({}, workflow) == "bash"
-
-
-def test_default_shell_skips_non_dict_scope_and_keeps_scanning():
-    # The `continue` past a non-dict scope must NOT be a `break`: a malformed first
-    # scope cannot abort the walk before a valid later scope sets the shell.
-    assert (
-        cwp._default_shell("notadict", {"defaults": {"run": {"shell": "sh"}}}) == "sh"
-    )
-
-
-def test_default_shell_none_when_unset_or_malformed():
-    assert cwp._default_shell({}, {}) is None
-    assert cwp._default_shell(None, "notadict") is None
-    assert cwp._default_shell({"defaults": None}) is None
-    assert cwp._default_shell({"defaults": {"run": None}}) is None
-    assert cwp._default_shell({"defaults": {"run": {"shell": ["x"]}}}) is None
-
-
 # ── _check_script ────────────────────────────────────────────────────────
 def test_check_script_skips_non_string_and_non_shell():
     assert cwp._check_script(None, None, "loc") == []

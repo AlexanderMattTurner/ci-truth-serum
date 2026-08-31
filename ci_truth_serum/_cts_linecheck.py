@@ -12,9 +12,12 @@ read loop instead, because ``run_line_checks`` cannot surface
 
 The workflow lints (``check_pr_paths``, ``check_workflow_pipefail``,
 ``check_inline_run_length``, ``check_always_reporter``) share a byte-identical
-``workflow_files()`` discovery glob; it lives here too. The two
-required-check-shape probes (``has_decide_gate``, ``has_always_reporter``) are
-shared by ``check_always_reporter`` and ``check_concurrency`` and live here too.
+``workflow_files()`` discovery glob; it lives here too. The required-check-shape
+probes (``decide_gate_names``, ``has_always_reporter``, ``has_fail_closed_twin``,
+``required_check_shape``) are shared by ``check_always_reporter``,
+``check_required_reporter`` and the two concurrency lints, and live here too. One
+copy is the point: a lint that grew its own matcher for the twin shape would
+answer "does this workflow back a required check?" differently from its siblings.
 
 Imported as a sibling: the scripts run as ``python3 ci_truth_serum/check_*.py`` (or
 ``python -m ci_truth_serum.check_*``), so each script prepends its own dir to ``sys.path``
@@ -101,6 +104,9 @@ _COMMENT_INTRO = r"(?:#|<!--|//)"
 # lint — a fail-open on every hook whose opt-out scan runs over multi-line text
 # (a job block, a whole file) rather than one line at a time.
 _LINE_BOUNDARY_CLASS = r"\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029"
+# The same characters as a set, for the code that walks text rather than matching
+# it. `test_line_boundary_spellings_agree` pins the two spellings together.
+_LINE_BOUNDARY = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 # The characters an annotation token may not be glued to on either side. `\b`
@@ -753,16 +759,54 @@ def parse_optout_marker(lines: list[str], token: str) -> tuple[str | None, str |
     return None, None
 
 
-def has_decide_gate(jobs: dict) -> bool:
-    """True if any job uses decide-reusable.yaml or conditions on needs.decide.outputs.*"""
-    for job_cfg in jobs.values():
+def decide_gate_names(jobs: dict) -> set[str]:
+    """The names of the decide gates a workflow declares.
+
+    Two spellings name a gate. A job that calls `decide-reusable.yaml` IS one,
+    under its own job name. A job conditioned on `needs.decide.outputs.*` names
+    the gate `decide` in the expression itself, so that name counts even when
+    the workflow declares no job by that name — a twin pointed at a gate job
+    that does not exist is a fail-open this set is what makes visible.
+    """
+    names: set[str] = set()
+    for name, job_cfg in jobs.items():
         if not isinstance(job_cfg, dict):
             continue
         if "decide-reusable.yaml" in str(job_cfg.get("uses", "")):
-            return True
+            names.add(str(name))
         if "needs.decide.outputs" in str(job_cfg.get("if", "")):
-            return True
-    return False
+            names.add("decide")
+    return names
+
+
+def has_decide_gate(jobs: dict) -> bool:
+    """True if any job uses decide-reusable.yaml or conditions on needs.decide.outputs.*"""
+    return bool(decide_gate_names(jobs))
+
+
+def job_needs(job_cfg: dict) -> list[str]:
+    """A job's declared dependencies. GitHub accepts a scalar (`needs: decide`)
+    and a list (`needs: [decide, lint]`); both read the same here."""
+    needs = job_cfg.get("needs")
+    if isinstance(needs, str):
+        return [needs]
+    if isinstance(needs, list):
+        return [str(item) for item in needs]
+    return []
+
+
+def gated_work_jobs(jobs: dict, gate_names: Iterable[str]) -> list[str]:
+    """The jobs a decide gate switches on and off — every job whose `if:` reads
+    `needs.<gate>.outputs`, excluding the gates themselves."""
+    gates = set(gate_names)
+    tokens = {f"needs.{gate}.outputs" for gate in gates}
+    return [
+        str(name)
+        for name, cfg in jobs.items()
+        if isinstance(cfg, dict)
+        and str(name) not in gates
+        and any(token in str(cfg.get("if", "")) for token in tokens)
+    ]
 
 
 def is_always_reporter(if_value: object) -> bool:
@@ -781,6 +825,399 @@ def has_always_reporter(jobs: dict) -> bool:
         isinstance(job_cfg, dict) and is_always_reporter(job_cfg.get("if", ""))
         for job_cfg in jobs.values()
     )
+
+
+# A fail-closed twin's condition tail: one `needs.<gate>.result != 'success'`
+# disjunct per gate, `||`-joined, optionally in one balanced paren group.
+_TWIN_DISJUNCTS = (
+    r"needs\.[A-Za-z0-9_-]+\.result\s*!=\s*'success'"
+    r"(?:\s*\|\|\s*needs\.[A-Za-z0-9_-]+\.result\s*!=\s*'success')*"
+)
+_TWIN_TAIL = re.compile(rf"(?:{_TWIN_DISJUNCTS}|\(\s*{_TWIN_DISJUNCTS}\s*\))")
+# One disjunct, with the gate name it reads.
+_TWIN_REF = re.compile(r"needs\.(?P<gate>[A-Za-z0-9_-]+)\.result\s*!=\s*'success'")
+
+
+def twin_gate_refs(if_value: object) -> list[str] | None:
+    """The gate names a twin-shaped `if:` reads, or None when it is not twin-shaped.
+
+    Shape: `always() && needs.<gate>.result != 'success'`, with `||` between
+    disjuncts when several gates share the twin.
+    """
+    expression = unwrap_expression(if_value)
+    prefix, sep, rest = expression.partition("&&")
+    if not sep or prefix.strip() != "always()":
+        return None
+    tail = rest.strip()
+    if _TWIN_TAIL.fullmatch(tail) is None:
+        return None
+    return [match.group("gate") for match in _TWIN_REF.finditer(tail)]
+
+
+def is_fail_closed_twin(
+    if_value: object, gate_names: Iterable[str] | None = None
+) -> bool:
+    """True if a job `if:` runs exactly when a decide gate did not succeed.
+
+    The zero-boot counterpart of a bare always() reporter. On a healthy run the
+    job is SKIPPED, which boots no runner and still satisfies a required check;
+    it runs (and must fail) only when a gate itself did not succeed — the one
+    case where every gated work job skips and a merge would otherwise green
+    over a broken gate.
+
+    With GATE_NAMES the disjuncts must cover exactly that set. Shape alone is
+    not enough to accept a twin: a twin naming only one of two gates leaves the
+    other free to fail unreported, and a twin naming a job that is no gate reds
+    every healthy run. Pass None to ask the shape question on its own, which is
+    what a caller that only CLASSIFIES the job wants.
+    """
+    refs = twin_gate_refs(if_value)
+    if refs is None:
+        return False
+    return gate_names is None or set(refs) == set(gate_names)
+
+
+def has_fail_closed_twin(jobs: dict, gate_names: Iterable[str] | None = None) -> bool:
+    """True if any job is a fail-closed twin — the other required-check shape.
+
+    With GATE_NAMES the twin must also `needs:` every gate it names. A gate a
+    job does not depend on has an empty `result` in that job's expression, so
+    the disjunct never fires and the twin stays skipped when that gate breaks.
+    """
+    gates = None if gate_names is None else set(gate_names)
+    return any(
+        isinstance(job_cfg, dict)
+        and is_fail_closed_twin(job_cfg.get("if", ""), gates)
+        and (gates is None or gates <= set(job_needs(job_cfg)))
+        for job_cfg in jobs.values()
+    )
+
+
+ALWAYS_REPORTER_SHAPE = "decide gate + always() reporter"
+TWIN_SHAPE = "decide gate + fail-closed twin"
+
+
+def required_check_shape(jobs: dict, workflow: dict) -> str | None:
+    """Which required-check shape a workflow's jobs form, or None for neither.
+
+    A gated workflow reports through a job that runs when the gate breaks. That
+    job is either an always() reporter or a fail-closed twin, and every lint
+    that asks "does this workflow back a required check?" must accept both — a
+    lint that knows only the reporter mis-reads a twin-shaped workflow as
+    ordinary and drops its protection.
+
+    A twin counts only when it is VALID. A twin that omits a gate, names a job
+    that is no gate, or exits 0 protects nothing, so reading it as a shape would
+    have every caller here defend a required check the workflow does not have.
+    """
+    if not has_decide_gate(jobs):
+        return None
+    if has_always_reporter(jobs):
+        return ALWAYS_REPORTER_SHAPE
+    return TWIN_SHAPE if valid_twin_names(jobs, workflow) else None
+
+
+def valid_twin_names(jobs: dict, workflow: dict) -> list[str]:
+    """The names of the fail-closed twins that really do fail closed."""
+    gate_names = decide_gate_names(jobs)
+    if not gate_names:
+        return []
+    return [
+        name
+        for name, cfg in jobs.items()
+        if isinstance(cfg, dict)
+        and is_fail_closed_twin(cfg.get("if", ""))
+        and not twin_defects(cfg, gate_names, workflow)
+    ]
+
+
+def twin_defects(cfg: dict, gate_names: set[str], workflow: dict) -> list[str]:
+    """Why this twin-shaped job does not in fact fail closed. Empty means it does."""
+    refs = set(twin_gate_refs(cfg.get("if", "")) or [])
+    defects = []
+    uncovered = sorted(gate_names - refs)
+    if uncovered:
+        defects.append(
+            f"its condition reads no result for the decide gate(s) {', '.join(uncovered)}, "
+            "so each of those can fail with this job skipped"
+        )
+    foreign = sorted(refs - gate_names)
+    if foreign:
+        defects.append(
+            f"its condition reads {', '.join(foreign)}, which is no decide gate of this "
+            "workflow — the job then reds on healthy runs and skips on broken gates"
+        )
+    unneeded = sorted((refs & gate_names) - set(job_needs(cfg)))
+    if unneeded:
+        defects.append(
+            f"it does not `needs:` {', '.join(unneeded)}, so that gate's result reads as "
+            "empty here and the disjunct never fires"
+        )
+    if continues_on_error(cfg.get("continue-on-error")):
+        defects.append(
+            "it declares `continue-on-error`, so every step's failure is reported as "
+            "success and the job concludes green on the run that needs it red"
+        )
+    step = last_run_step(cfg)
+    if step is None:
+        defects.append(
+            "it runs no `run:` step whose failure can fail the job, so it succeeds on "
+            "the run that needs it red"
+        )
+        return defects
+    template = resolved_shell(cfg, step, workflow)
+    shell = shell_program(template)
+    if shell is None:
+        defects.append(
+            "a `${{ }}` expression hides its last `run:` step's shell, so whether "
+            "that step exits nonzero cannot be verified and the twin is not accepted"
+        )
+    elif shell not in READABLE_SHELLS:
+        defects.append(
+            f"its last `run:` step declares `shell: {shell}`, which this check reads "
+            "as bash — whether it exits nonzero cannot be verified, so the twin is "
+            "not accepted"
+        )
+    elif not template_runs_the_script(template):
+        defects.append(
+            f"its last `run:` step declares `shell: {template}`, which passes `-c` — "
+            "the shell then runs that command string and leaves the step's own script "
+            "as `$0`, so the script never executes and its failure never fires"
+        )
+    elif unreadable_run_script(str(step["run"])):
+        defects.append(
+            "the bash grammar cannot read its last `run:` step, so whether that step "
+            "exits nonzero cannot be verified and the twin is not accepted"
+        )
+    elif not script_ends_in_failure(str(step["run"])):
+        defects.append(
+            "its last `run:` step does not end in a failing command, so the job exits 0 "
+            "on the run that needs it red"
+        )
+    return defects
+
+
+def continues_on_error(value: object) -> bool:
+    """True when a `continue-on-error:` value can divorce a status from the job's.
+
+    GitHub accepts an expression here, which no offline check can resolve, so
+    anything but a literal false counts — the twin is then refused rather than
+    accepted on a guess about what the expression evaluates to.
+    """
+    if value is None or value is False:
+        return False
+    return str(value).strip().lower() != "false"
+
+
+def last_run_step(job_cfg: dict) -> dict | None:
+    """A job's last `run:` step whose failure is GUARANTEED to fail the job.
+
+    Two keys break that guarantee, so a step carrying either can never be what
+    makes a twin red. `continue-on-error` reports the step's failure as success.
+    A skippable `if:` can drop the step entirely, and a skipped step fails
+    nothing — so an earlier `run:` step has to decide, or the job runs none that
+    can.
+    """
+    steps = job_cfg.get("steps")
+    if not isinstance(steps, list):
+        return None
+    runs = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("run"), str)
+        and not continues_on_error(step.get("continue-on-error"))
+        and step_always_runs(step)
+    ]
+    return runs[-1] if runs else None
+
+
+# The step `if:` conditions that cannot skip the step. `always()` runs it
+# whatever the earlier steps did, and `true` is the constant. Every other
+# condition can skip — `success()` and `!cancelled()` included — and so can any
+# expression this check cannot resolve offline.
+_UNSKIPPABLE_STEP_CONDITIONS = frozenset({"always()", "true"})
+
+
+def step_always_runs(step: dict) -> bool:
+    """True when nothing in STEP's `if:` can skip it."""
+    if "if" not in step:
+        return True
+    text = str(step["if"]).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    return text.lower() in _UNSKIPPABLE_STEP_CONDITIONS
+
+
+# The shells `script_ends_in_failure` can read. The bash grammar covers both;
+# any other value names a language this check would misparse as bash.
+READABLE_SHELLS = ("bash", "sh")
+
+# The only two commands `script_ends_in_failure` reads as unconditional
+# failures, so the only two a shadowing definition can take away from it.
+_SHADOWABLE = frozenset({"false", "exit"})
+
+
+def resolved_shell(job_cfg: dict, step: dict, workflow: dict) -> str:
+    """The `shell:` value that applies to STEP, at whichever scope sets it.
+
+    `default_run_shell` owns the precedence: the step's own `shell:`, then the
+    job's `defaults.run.shell`, then the workflow's. GitHub's default on a runner
+    is bash, which is what an absent key means here.
+    """
+    return str(
+        step.get("shell") or default_run_shell(job_cfg, workflow) or "bash"
+    ).strip()
+
+
+def step_shell(job_cfg: dict, step: dict, workflow: dict) -> str | None:
+    """Which shell runs STEP, named by its program alone, or None when a
+    `${{ }}` expression hides that program."""
+    return shell_program(resolved_shell(job_cfg, step, workflow))
+
+
+def template_runs_the_script(shell: str) -> bool:
+    """True when a custom `shell:` template hands GitHub's script to the program.
+
+    `{0}` is the path of the script GitHub writes from the step's `run:` body. A
+    template that passes `-c` runs its own command string instead and leaves
+    `{0}` as `$0`, so `bash -c true {0}` starts bash, runs `true`, and never
+    executes the step's `exit 1`. A value carrying no `{0}` is a keyword such as
+    `bash`, and GitHub always runs the script under those.
+    """
+    words = shell.split()
+    if "{0}" not in words:
+        return True
+    for word in words[: words.index("{0}")]:
+        if word.startswith("-") and not word.startswith("--") and "c" in word[1:]:
+            return False
+    return True
+
+
+def script_ends_in_failure(script: str) -> bool:
+    """True when SCRIPT's last statement exits nonzero however its earlier
+    commands went.
+
+    A fail-closed twin runs only on a broken gate, so it has to FAIL there. A
+    twin whose script ends in `echo` exits 0 and greens the merge over the very
+    gate it exists to redden. The bash grammar answers this, never a regex:
+    `cmd && exit 1` always fails, `cmd || exit 1` fails only when `cmd` does
+    too, and only the parse tree tells the two apart
+    (.claude/rules/shell-lint-parsing.md).
+
+    A `${{ … }}` expression is GitHub Actions syntax, not bash, so each span is
+    replaced by an inert word of the same length before the parse. tree-sitter
+    recovers from a construct it cannot read by dropping nodes for the REST of
+    the input, so one un-neutralized expression on line 1 hides the `exit 1` on
+    line 2 and reports a compliant twin as failing open.
+    """
+    # Imported here, not at module scope: around fifty checks load this module
+    # and most are handed no shell at all — the same deferral
+    # `unparseable_shell_reason` above documents.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _cts_bash_ast import (  # pylint: disable=import-outside-toplevel
+        command_words,
+        unquote,
+    )
+    from _cts_bash_ast import (
+        parse as bash_parse,
+    )
+
+    def defined_functions(node) -> set[str]:
+        """The function names defined in NODE's OWN shell process, at any depth.
+
+        A script that defines `false` or `exit` redefines the only two commands
+        this analysis reads as unconditional failures, so neither is trusted
+        where the definition reaches. A definition inside a function body or a
+        `{ … }` group does reach, because neither forks. A `( … )` subshell does
+        fork, so its definitions die with it — those are collected again where
+        the subshell itself is judged.
+
+        An explicit stack, never recursion: a generated `run:` body nests deeply
+        enough to pass Python's recursion limit, and the callers handle only
+        `PathologicalInputError`.
+        """
+        found: set[str] = set()
+        stack = list(node.children)
+        while stack:
+            current = stack.pop()
+            if current.type == "subshell":
+                continue
+            if current.type == "function_definition":
+                names = [child for child in current.children if child.type == "word"]
+                if names:
+                    found.add(names[0].text.decode())
+            stack.extend(current.children)
+        return found
+
+    def command_always_fails(command) -> bool:
+        words = command_words(command)
+        if not words:
+            return False
+        name, args = words[0], [unquote(word) for word in words[1:]]
+        if name in shadowed:
+            return False
+        if name == "false":
+            return True
+        # Bare `exit` re-raises the previous command's status, so it fails only
+        # when that command did. `exit 256` wraps to 0 and is no failure either.
+        if name != "exit" or len(args) != 1 or not args[0].isdigit():
+            return False
+        return int(args[0]) % 256 != 0
+
+    def always_fails(node) -> bool:
+        if node.type == "command":
+            return command_always_fails(node)
+        if node.type == "list":
+            operands = [child for child in node.children if child.is_named]
+            if len(operands) != 2:
+                return False
+            left, right = operands
+            if any(child.type == "&&" for child in node.children):
+                # A failing left short-circuits to its own status; otherwise the
+                # right one decides. So either side failing always is enough.
+                return always_fails(left) or always_fails(right)
+            return always_fails(left) and always_fails(right)
+        if node.type == "subshell" and defined_functions(node) & _SHADOWABLE:
+            # Its own definitions shadow the commands this reads as failures,
+            # and they do not reach the enclosing script's `shadowed` set.
+            return False
+        if node.type in ("subshell", "compound_statement"):
+            inner = [child for child in node.children if child.is_named]
+            return bool(inner) and always_fails(inner[-1])
+        return False
+
+    root = bash_parse(_neutralized(script))
+    shadowed = defined_functions(root) & _SHADOWABLE
+    statements = [
+        node for node in root.children if node.is_named and node.type != "comment"
+    ]
+    return bool(statements) and always_fails(statements[-1])
+
+
+def _neutralized(script: str) -> str:
+    """SCRIPT with each `${{ … }}` span replaced by an inert word of its length.
+
+    A function replacer, never a built string: `re.sub` reads `\\1` and
+    `\\g<name>` in a string replacement (the check-replacement-expansion rule).
+    """
+    return _EXPR_SPAN.sub(lambda match: "_" * len(match.group(0)), script)
+
+
+def unreadable_run_script(script: str) -> bool:
+    """True when the bash grammar cannot read this `run:` body.
+
+    A twin whose script the grammar cannot read is refused as unverifiable, not
+    reported as ending in a passing command: those are different faults with
+    different fixes, and the misdiagnosis is what `unparseable_shell_reason`
+    exists to prevent for a whole file.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _cts_bash_ast import (  # pylint: disable=import-outside-toplevel
+        parse as bash_parse,
+    )
+
+    return bash_parse(_neutralized(script)).has_error
 
 
 # A concurrency group keyed by any of these is per-ref / per-PR / per-run, so a
@@ -1213,6 +1650,93 @@ def _job_blocks(text: str) -> dict[str, tuple[int, str]]:
         blocks[name] = (i + 1, "\n".join(lines[i:end]))
         i = end
     return blocks
+
+
+def yaml_comment_view(text: str) -> list[str]:
+    """TEXT's lines with everything that is not a YAML COMMENT blanked out.
+
+    An opt-out is a comment by contract, and a raw line scan cannot hold that
+    line: `name: "# some-check-ok: example"` is a string VALUE, and honouring it
+    would let any step turn a check off by naming it. The comment spans come from
+    PyYAML's own scanner (`strip_yaml_comments`), so what counts as a comment
+    here is what GitHub parses as one. Line boundaries survive, so a caller's
+    line numbers still index this view.
+    """
+    blanked = strip_yaml_comments(text)
+    view = "".join(
+        original if original != stripped or original in _LINE_BOUNDARY else " "
+        for original, stripped in zip(text, blanked)
+    )
+    return view.splitlines()
+
+
+def default_run_shell(*scopes: object) -> str | None:
+    """The first `defaults.run.shell` in SCOPES, or None when none sets one.
+
+    GitHub resolves a step's shell in one order: the step's own `shell:`, then
+    the job's `defaults.run.shell`, then the workflow's. The caller owns the
+    step, and passes the remaining scopes here in that order. One definition,
+    because two lints ask this and a second encoding of the precedence would
+    drift. Tolerant of a null or non-mapping `defaults:`, which a workflow can
+    hold and which is actionlint's finding, not this pack's.
+    """
+    for scope in scopes:
+        if not isinstance(scope, dict):
+            continue
+        defaults = scope.get("defaults")
+        run = defaults.get("run") if isinstance(defaults, dict) else None
+        shell = run.get("shell") if isinstance(run, dict) else None
+        if isinstance(shell, str):
+            return shell
+    return None
+
+
+_SHELL_EXPRESSION = re.compile(r"\$\{\{")
+
+
+def shell_program(shell: str) -> str | None:
+    """The lower-case basename of the program SHELL starts, or None when a
+    `${{ }}` expression hides it.
+
+    Windows separators count, because a `cmd` template on a Windows runner spells
+    its path with backslashes. One definition, for the reason `default_run_shell`
+    above gives: three lints ask this question.
+    """
+    words = shell.strip().split()
+    if not words or _SHELL_EXPRESSION.search(words[0]):
+        return None
+    name = words[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name.removesuffix(".exe")
+
+
+def step_span_ends(steps: list[dict], last_line: int) -> dict[int, int]:
+    """The last line of each step's block, keyed by the step's own line.
+
+    A step ends where the next one starts, and the final step ends at LAST_LINE.
+    The caller supplies LAST_LINE as the end of the CONTAINER — the job's block
+    in a workflow, the file in a composite action — never the end of the
+    document. A span that ran to the next JOB's first step would swallow that
+    job's header, so an opt-out written for one job's step would suppress the
+    previous job's last step, which is a false green.
+
+    The span is what an opt-out may be written inside (see ``annotation_window``).
+    """
+    starts = sorted(
+        line for step in steps if isinstance(line := step.get("__line__"), int)
+    )
+    ends = {start: nxt - 1 for start, nxt in zip(starts, starts[1:])}
+    if starts:
+        ends[starts[-1]] = last_line
+    return ends
+
+
+def container_block_end(
+    blocks: dict[str, tuple[int, str]], name: str, last_line: int
+) -> int:
+    """The last source line of the job named NAME, or LAST_LINE when BLOCKS has
+    no entry for it — a composite action's `runs:` block, which is not a job."""
+    key_line, block = blocks.get(name, (0, ""))
+    return key_line + len(block.splitlines()) - 1 if block else last_line
 
 
 def _classification_text(block: str) -> str:

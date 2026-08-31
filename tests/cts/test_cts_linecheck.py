@@ -8,6 +8,7 @@ The per-script test modules keep only their own detection cases plus one thin
 duplicated across them.
 """
 
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -225,6 +226,450 @@ def test_has_always_reporter(jobs: dict, expected: bool) -> None:
 )
 def test_is_always_reporter(if_value: str, expected: bool) -> None:
     assert lc.is_always_reporter(if_value) is expected
+
+
+@pytest.mark.parametrize(
+    "if_value, expected",
+    [
+        ("always() && needs.decide.result != 'success'", True),
+        ("${{ always() && needs.decide.result != 'success' }}", True),
+        (
+            "always() && (needs.a.result != 'success' || needs.b.result != 'success')",
+            True,
+        ),
+        # Unparenthesized disjuncts are still fail-closed: `&&` binds tighter
+        # than `||`, and always() is constant true, so the job runs exactly
+        # when some gate did not succeed.
+        (
+            "always() && needs.a.result != 'success' || needs.b.result != 'success'",
+            True,
+        ),
+        ("always()", False),  # a bare reporter runs on every conclusion
+        (
+            "always() && needs.decide.outputs.run == 'true'",
+            False,
+        ),  # gate output, not result
+        (
+            "always() && needs.decide.result == 'success'",
+            False,
+        ),  # runs on success: fail-open
+        ("success() && needs.decide.result != 'success'", False),  # wrong prefix
+        (
+            "needs.decide.result != 'success'",
+            False,
+        ),  # no always(): a failed gate skips it
+        (
+            "always() && needs.a.result != 'success' && extra",
+            False,
+        ),  # trailing conjunct
+        ("", False),
+    ],
+)
+def test_is_fail_closed_twin(if_value: str, expected: bool) -> None:
+    assert lc.is_fail_closed_twin(if_value) is expected
+
+
+@pytest.mark.parametrize(
+    "jobs, expected",
+    [
+        ({"twin": {"if": "always() && needs.decide.result != 'success'"}}, True),
+        ({"report": {"if": "always()"}}, False),
+        ({"odd": "scalar"}, False),  # non-dict job config is skipped
+        ({}, False),
+    ],
+)
+def test_has_fail_closed_twin(jobs: dict, expected: bool) -> None:
+    assert lc.has_fail_closed_twin(jobs) is expected
+
+
+# ── twin gate-name awareness ─────────────────────────────────────────────
+# The `if:` shape says WHEN a twin runs and nothing about WHICH gates it covers.
+# These are the fail-opens that shape alone accepts.
+
+
+@pytest.mark.parametrize(
+    "jobs, expected",
+    [
+        ({"decide": {"uses": "./.github/workflows/decide-reusable.yaml"}}, {"decide"}),
+        # A gate under another name is still a gate — its own job name.
+        (
+            {"decide-docs": {"uses": "./.github/workflows/decide-reusable.yaml"}},
+            {"decide-docs"},
+        ),
+        # The expression names the gate `decide` even with no job by that name,
+        # which is what makes a twin pointed at a missing job visible.
+        ({"work": {"if": "needs.decide.outputs.run == 'true'"}}, {"decide"}),
+        ({"build": {"runs-on": "ubuntu-latest"}}, set()),
+        ({"odd": "scalar"}, set()),
+    ],
+)
+def test_decide_gate_names(jobs: dict, expected: set) -> None:
+    assert lc.decide_gate_names(jobs) == expected
+
+
+@pytest.mark.parametrize(
+    "cfg, expected",
+    [
+        ({"needs": "decide"}, ["decide"]),  # GitHub accepts the scalar form
+        ({"needs": ["decide", "lint"]}, ["decide", "lint"]),
+        ({}, []),
+        ({"needs": None}, []),
+    ],
+)
+def test_job_needs(cfg: dict, expected: list) -> None:
+    assert lc.job_needs(cfg) == expected
+
+
+def test_gated_work_jobs_excludes_the_gates_themselves() -> None:
+    jobs = {
+        "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+        "work": {"if": "needs.decide.outputs.run == 'true'"},
+        "twin": {"if": "always() && needs.decide.result != 'success'"},
+        "always-runs": {"runs-on": "ubuntu-latest"},
+    }
+    assert lc.gated_work_jobs(jobs, {"decide"}) == ["work"]
+
+
+@pytest.mark.parametrize(
+    "if_value, expected",
+    [
+        ("always() && needs.decide.result != 'success'", ["decide"]),
+        (
+            "always() && (needs.a.result != 'success' || needs.b.result != 'success')",
+            ["a", "b"],
+        ),
+        ("always()", None),  # not twin-shaped at all
+        ("", None),
+    ],
+)
+def test_twin_gate_refs(if_value: str, expected: list | None) -> None:
+    assert lc.twin_gate_refs(if_value) == expected
+
+
+@pytest.mark.parametrize(
+    "if_value, gate_names, expected",
+    [
+        ("always() && needs.decide.result != 'success'", {"decide"}, True),
+        # One gate of two: `docs` can fail with the twin skipped.
+        ("always() && needs.decide.result != 'success'", {"decide", "docs"}, False),
+        # A job that is no gate: reds every healthy run, skips every broken one.
+        ("always() && needs.work.result != 'success'", {"decide"}, False),
+        # gate_names=None keeps the shape-only question a classifier asks.
+        ("always() && needs.work.result != 'success'", None, True),
+    ],
+)
+def test_is_fail_closed_twin_against_gate_names(
+    if_value: str, gate_names: set | None, expected: bool
+) -> None:
+    assert lc.is_fail_closed_twin(if_value, gate_names) is expected
+
+
+def test_has_fail_closed_twin_requires_the_gate_in_needs() -> None:
+    # `needs.decide.result` reads as empty in a job that does not depend on
+    # `decide`, so the disjunct never fires and the twin never runs.
+    twin = {"if": "always() && needs.decide.result != 'success'"}
+    assert lc.has_fail_closed_twin({"twin": twin}, {"decide"}) is False
+    assert lc.has_fail_closed_twin({"twin": {**twin, "needs": "decide"}}, {"decide"})
+
+
+@pytest.mark.parametrize(
+    "jobs, expected",
+    [
+        (
+            {
+                "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+                "report": {"if": "always()"},
+            },
+            lc.ALWAYS_REPORTER_SHAPE,
+        ),
+        (
+            {
+                "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+                "twin": {
+                    "if": "always() && needs.decide.result != 'success'",
+                    "needs": ["decide"],
+                    "steps": [{"run": "exit 1"}],
+                },
+            },
+            lc.TWIN_SHAPE,
+        ),
+        # A twin that protects nothing is no shape: it exits 0 on the run that
+        # needs it red, so reading it as one would have every caller defend a
+        # required check this workflow does not have.
+        (
+            {
+                "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+                "twin": {
+                    "if": "always() && needs.decide.result != 'success'",
+                    "needs": ["decide"],
+                    "steps": [{"run": "echo broken"}],
+                },
+            },
+            None,
+        ),
+        # The same, for a twin that names the gate but does not `needs:` it.
+        (
+            {
+                "decide": {"uses": "./.github/workflows/decide-reusable.yaml"},
+                "twin": {
+                    "if": "always() && needs.decide.result != 'success'",
+                    "steps": [{"run": "exit 1"}],
+                },
+            },
+            None,
+        ),
+        ({"decide": {"uses": "./.github/workflows/decide-reusable.yaml"}}, None),
+        ({"report": {"if": "always()"}}, None),  # no gate → nothing to fail closed on
+    ],
+)
+def test_required_check_shape(jobs: dict, expected: str | None) -> None:
+    assert lc.required_check_shape(jobs, {}) == expected
+
+
+@pytest.mark.parametrize(
+    "cfg, expected",
+    [
+        ({"steps": [{"run": "exit 1"}]}, "exit 1"),
+        # The LAST run step is the one that decides the job's conclusion.
+        ({"steps": [{"run": "echo a"}, {"run": "exit 1"}]}, "exit 1"),
+        # A `uses:` step after it runs only if that step succeeded.
+        ({"steps": [{"run": "exit 1"}, {"uses": "actions/checkout@v4"}]}, "exit 1"),
+        ({"steps": []}, None),
+        ({}, None),
+    ],
+)
+def test_last_run_step(cfg: dict, expected: str | None) -> None:
+    step = lc.last_run_step(cfg)
+    assert (None if step is None else step["run"]) == expected
+
+
+@pytest.mark.parametrize(
+    "cfg, step, workflow, expected",
+    [
+        ({}, {"run": "exit 1"}, {}, "bash"),
+        ({}, {"run": "x", "shell": "python"}, {}, "python"),
+        ({"defaults": {"run": {"shell": "pwsh"}}}, {"run": "x"}, {}, "pwsh"),
+        # The step's own key wins over the job default.
+        (
+            {"defaults": {"run": {"shell": "pwsh"}}},
+            {"run": "x", "shell": "sh"},
+            {},
+            "sh",
+        ),
+        # A job that sets none inherits the WORKFLOW default, which is the scope
+        # a job-only read would miss.
+        ({}, {"run": "x"}, {"defaults": {"run": {"shell": "python"}}}, "python"),
+        (
+            {"defaults": {"run": {"shell": "pwsh"}}},
+            {"run": "x"},
+            {"defaults": {"run": {"shell": "python"}}},
+            "pwsh",
+        ),
+        # A custom template runs the program its leading word names, and a path
+        # spells that word out — both are plain bash.
+        (
+            {},
+            {"run": "x", "shell": "bash --noprofile --norc -eo pipefail {0}"},
+            {},
+            "bash",
+        ),
+        ({}, {"run": "x", "shell": "/usr/bin/bash {0}"}, {}, "bash"),
+        # An expression in the first word hides the program, which is unknown
+        # rather than bash.
+        ({}, {"run": "x", "shell": "${{ matrix.shell }}"}, {}, None),
+    ],
+)
+def test_step_shell(
+    cfg: dict, step: dict, workflow: dict, expected: str | None
+) -> None:
+    assert lc.step_shell(cfg, step, workflow) == expected
+
+
+@pytest.mark.parametrize(
+    "shell, expected",
+    [
+        ("bash", True),
+        ("bash --noprofile --norc -eo pipefail {0}", True),
+        ("bash -e {0}", True),
+        # `-c` makes bash run the command string that follows and leaves the
+        # step's own script as `$0`, so the script never executes.
+        ("bash -c true {0}", False),
+        ("bash -ec true {0}", False),
+        # A long option is not the short `-c`, whatever letters it spells.
+        ("bash --rcfile {0}", True),
+    ],
+)
+def test_template_runs_the_script(shell: str, expected: bool) -> None:
+    assert lc.template_runs_the_script(shell) is expected
+
+
+@pytest.mark.parametrize(
+    "step, expected",
+    [
+        ({"run": "exit 1"}, True),
+        ({"run": "exit 1", "if": "always()"}, True),
+        ({"run": "exit 1", "if": "${{ always() }}"}, True),
+        ({"run": "exit 1", "if": "true"}, True),
+        # Each of these can skip the step, and a skipped step fails nothing.
+        ({"run": "exit 1", "if": "success()"}, False),
+        ({"run": "exit 1", "if": "!cancelled()"}, False),
+        ({"run": "exit 1", "if": "github.event_name == 'push'"}, False),
+    ],
+)
+def test_step_always_runs(step: dict, expected: bool) -> None:
+    assert lc.step_always_runs(step) is expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, False),
+        (False, False),
+        ("false", False),
+        ("False", False),
+        (True, True),
+        # No offline check can resolve an expression, so it is refused rather
+        # than accepted on a guess about what it evaluates to.
+        ("${{ github.event_name == 'push' }}", True),
+    ],
+)
+def test_continues_on_error(value: object, expected: bool) -> None:
+    assert lc.continues_on_error(value) is expected
+
+
+@pytest.mark.parametrize(
+    "script, expected",
+    [
+        ("exit 1", True),
+        ('echo "the gate failed"\nexit 1', True),
+        ("false", True),
+        ("( exit 1 )", True),
+        # `&&` short-circuits to the left status on failure, so both paths fail.
+        ("echo a && exit 1", True),
+        # A script that redefines the command this analysis reads as an
+        # unconditional failure is no longer read that way.
+        ("false() { return 0; }\nfalse && echo reached", False),
+        ("exit() { return 0; }\nexit 1", False),
+        # A definition one level down still takes effect at call time, which is
+        # why the scan is not scoped to the top-level statements.
+        ("f() { false() { return 0; }; }\nfalse", False),
+        # A `( … )` subshell forks, so its definition cannot reach the `exit 1`
+        # that follows it.
+        ("( exit() { return 0; }; true )\nexit 1", True),
+        # Inside that same subshell the definition DOES reach, so the subshell
+        # is not read as an unconditional failure.
+        ("( exit() { return 0; }; exit 1 )", False),
+        # A left operand that ALWAYS fails decides the list on its own: the right
+        # one never runs, and the status is the left one's.
+        ("false && echo unreachable", True),
+        ("exit 1 && true", True),
+        # `||` runs the right side ONLY when the left failed — `echo` succeeds,
+        # so this whole script exits 0. A regex cannot separate it from the line
+        # above; the grammar can.
+        ("echo a || exit 1", False),
+        ("false || exit 1", True),
+        ('echo "the gate failed"', False),
+        ("exit 0", False),
+        ("exit", False),  # bare exit re-raises the previous status
+        ("exit 256", False),  # wraps to 0
+        ('echo "exit 1"', False),  # a string a command prints, not a command
+        # A `${{ … }}` span is GitHub syntax, not bash. tree-sitter drops nodes
+        # for the REST of the input once it hits one, so an un-neutralized
+        # expression on line 1 used to hide this `exit 1` on line 2.
+        ('echo "${{ github.sha }} gate failed"\nexit 1', True),
+        ("exit ${{ env.CODE }}", False),  # a computed status is no fixed failure
+        ("", False),
+    ],
+)
+def test_script_ends_in_failure(script: str, expected: bool) -> None:
+    assert lc.script_ends_in_failure(script) is expected
+
+
+# ── yaml_comment_view ────────────────────────────────────────────────────────
+# What may carry an opt-out: a real YAML comment, never a string value.
+
+
+def test_yaml_comment_view_keeps_only_yaml_comments() -> None:
+    """Code becomes blanks rather than vanishing, so every column — and so every
+    line number a finding reports — still lines up with the source."""
+    text = 'name: "# x"  # real: why\nrun: echo hi\n'
+    assert lc.yaml_comment_view(text) == [" " * 13 + "# real: why", " " * 12]
+
+
+def test_yaml_comment_view_blanks_a_marker_inside_a_block_scalar() -> None:
+    """A `run:` script is a string value, so a comment introducer in it is data."""
+    text = "run: |\n  // allow-x: not a comment\n"
+    assert lc.yaml_comment_view(text) == ["      ", " " * 27]
+
+
+def test_line_boundary_spellings_agree() -> None:
+    """The set, the regex class, and Python's own idea of a line boundary agree.
+
+    Derived from `splitlines`, not pasted, so a character Python adds later fails
+    here instead of silently escaping one of the two spellings.
+    """
+    real = {chr(n) for n in range(0x3000) if len(f"a{chr(n)}b".splitlines()) > 1}
+    assert real, "splitlines probe found nothing — the derivation broke"
+    assert lc._LINE_BOUNDARY == real
+    assert all(re.fullmatch(f"[{lc._LINE_BOUNDARY_CLASS}]", c) for c in real)
+
+
+# ── default_run_shell ────────────────────────────────────────────────────────
+# GitHub's `defaults.run.shell` precedence, shared by check_workflow_pipefail and
+# check_runner_var_foreign_shell — two lints that must read one rule the same way.
+
+
+def test_default_run_shell_finds_job_then_workflow() -> None:
+    job = {"defaults": {"run": {"shell": "sh"}}}
+    workflow = {"defaults": {"run": {"shell": "bash"}}}
+    assert lc.default_run_shell(job, workflow) == "sh"
+    assert lc.default_run_shell({}, workflow) == "bash"
+
+
+def test_default_run_shell_skips_non_dict_scope_and_keeps_scanning() -> None:
+    # The `continue` past a non-dict scope must NOT be a `break`: a malformed first
+    # scope cannot abort the walk before a valid later scope sets the shell.
+    assert (
+        lc.default_run_shell("notadict", {"defaults": {"run": {"shell": "sh"}}}) == "sh"
+    )
+
+
+def test_default_run_shell_none_when_unset_or_malformed() -> None:
+    assert lc.default_run_shell({}, {}) is None
+    assert lc.default_run_shell(None, "notadict") is None
+    assert lc.default_run_shell({"defaults": None}) is None
+    assert lc.default_run_shell({"defaults": {"run": None}}) is None
+    assert lc.default_run_shell({"defaults": {"run": {"shell": ["x"]}}}) is None
+
+
+# ── step_span_ends / container_block_end ─────────────────────────────────────
+# Where an opt-out may be written for a step. The bound is the step's OWN
+# container, so an opt-out cannot reach across a job boundary.
+
+
+def test_step_span_ends_ends_each_step_before_the_next() -> None:
+    steps = [{"__line__": 8}, {"__line__": 14}, {"__line__": 20}]
+    assert lc.step_span_ends(steps, 30) == {8: 13, 14: 19, 20: 30}
+
+
+def test_step_span_ends_ignores_a_step_with_no_line() -> None:
+    assert lc.step_span_ends([{"__line__": 5}, {"name": "x"}], 9) == {5: 9}
+
+
+def test_step_span_ends_of_no_steps_is_empty() -> None:
+    assert lc.step_span_ends([], 9) == {}
+
+
+def test_container_block_end_is_the_jobs_last_line() -> None:
+    text = "jobs:\n  a:\n    steps:\n      - run: x\n  b:\n    steps:\n      - run: y\n"
+    blocks = lc._job_blocks(text)
+    assert lc.container_block_end(blocks, "a", 7) == 4
+    assert lc.container_block_end(blocks, "b", 7) == 7
+
+
+def test_container_block_end_falls_back_for_a_block_that_is_not_a_job() -> None:
+    """A composite action's `runs:` has no job block, so the file bounds it."""
+    assert lc.container_block_end({}, "runs", 12) == 12
 
 
 # ── _job_blocks / _classification_text ───────────────────────────────────────

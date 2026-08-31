@@ -28,6 +28,24 @@ REQUIRED_CHECK_JOBS = (
 )
 PLAIN_JOBS = "jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: []\n"
 
+# The other required-check shape: decide gate + a fail-closed twin, no reporter.
+TWIN_SHAPE_JOBS = (
+    "jobs:\n"
+    "  decide:\n"
+    "    uses: ./.github/workflows/decide-reusable.yaml\n"
+    "  work:\n"
+    "    needs: decide\n"
+    "    if: needs.decide.outputs.run == 'true'\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps: []\n"
+    "  gate-failed:\n"
+    "    needs: [decide]\n"
+    "    if: always() && needs.decide.result != 'success'\n"
+    "    runs-on: ubuntu-latest\n"
+    "    steps:\n"
+    "      - run: exit 1\n"
+)
+
 
 def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
     path = tmp_path / name
@@ -229,3 +247,31 @@ def test_all_shipped_workflows_pass(monkeypatch, capsys):
     monkeypatch.setattr(sc, "REPO_ROOT", REPO_ROOT)
     monkeypatch.setattr(sc, "WORKFLOWS_DIR", workflows)
     assert sc.main() == 0, capsys.readouterr().out
+
+
+def test_static_group_on_twin_shape_is_an_error(tmp_path):
+    """A twin-shaped workflow backs a required check too. A cancelled PENDING run
+    starts zero jobs, so the twin never runs, the work jobs never report, and the
+    check hangs at 'Expected — Waiting' exactly as it does behind a reporter."""
+    body = (
+        "name: x\non:\n  pull_request:\nconcurrency:\n"
+        "  group: my-static-lock\n  cancel-in-progress: false\n" + TWIN_SHAPE_JOBS
+    )
+    result = sc.check_file(_write(tmp_path, body))
+    assert result is not None
+    _line, message = result
+    assert "fail-closed twin" in message
+    assert "Expected — Waiting" in message
+
+
+def test_static_group_on_shapeless_twin_is_clean(tmp_path):
+    """Non-vacuity for the row above: strip the twin's `if:` and the same
+    workflow stops backing a required check, so its static lock is fine."""
+    body = (
+        "name: x\non:\n  pull_request:\nconcurrency:\n"
+        "  group: my-static-lock\n  cancel-in-progress: false\n"
+        + TWIN_SHAPE_JOBS.replace(
+            "    if: always() && needs.decide.result != 'success'\n", ""
+        )
+    )
+    assert sc.check_file(_write(tmp_path, body)) is None

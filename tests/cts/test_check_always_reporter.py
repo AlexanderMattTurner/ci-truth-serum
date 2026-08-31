@@ -162,6 +162,309 @@ def test_check_file_passes_wrapped_always_reporter(tmp_path):
     assert car.check_file(path) is None
 
 
+GATED_WITH_TWIN = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  work:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+  gate-failed:
+    needs: [decide]
+    if: always() && needs.decide.result != 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "the decide gate did not succeed"
+          exit 1
+"""
+
+GATED_WITH_MULTI_GATE_TWIN = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  decide-docs:
+    uses: ./.github/workflows/decide-reusable.yaml
+  work:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+  gate-failed:
+    needs: [decide, decide-docs]
+    if: always() && (needs.decide.result != 'success' || needs.decide-docs.result != 'success')
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1
+"""
+
+GATED_WITH_COMPOUND_NON_TWIN = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  work:
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+  report:
+    needs: [decide, work]
+    if: always() && needs.decide.outputs.run == 'true'
+    runs-on: ubuntu-latest
+"""
+
+
+def test_check_file_passes_gated_workflow_with_fail_closed_twin(tmp_path):
+    # A twin is SKIPPED on a healthy run and runs red only when the gate did
+    # not succeed — skipped satisfies a required check, so the workflow fails
+    # closed with no reporter boot.
+    path = _write(tmp_path, "wf.yaml", GATED_WITH_TWIN)
+    assert car.check_file(path) is None
+
+
+def test_check_file_passes_multi_gate_twin(tmp_path):
+    path = _write(tmp_path, "wf.yaml", GATED_WITH_MULTI_GATE_TWIN)
+    assert car.check_file(path) is None
+
+
+# ── twin hardening ────────────────────────────────────────────────────────
+# A twin's `if:` SHAPE says when the job runs, and nothing about whether it
+# covers every gate, depends on the gates it reads, or fails when it does run.
+# Each fixture below satisfied the shape-only rule and still failed open.
+
+TWIN_COVERS_ONE_OF_TWO_GATES = GATED_WITH_MULTI_GATE_TWIN.replace(
+    "if: always() && (needs.decide.result != 'success' "
+    "|| needs.decide-docs.result != 'success')",
+    "if: always() && needs.decide.result != 'success'",
+)
+
+TWIN_NAMES_A_WORK_JOB = GATED_WITH_TWIN.replace(
+    "needs.decide.result != 'success'", "needs.work.result != 'success'"
+).replace("needs: [decide]", "needs: [work]")
+
+TWIN_WITHOUT_NEEDS = GATED_WITH_TWIN.replace("    needs: [decide]\n", "")
+
+TWIN_THAT_SUCCEEDS = GATED_WITH_TWIN.replace(
+    '          echo "the decide gate did not succeed"\n          exit 1\n',
+    '          echo "the decide gate did not succeed"\n',
+)
+
+TWIN_WITHOUT_STEPS = GATED_WITH_TWIN.replace(
+    "    steps:\n"
+    "      - run: |\n"
+    '          echo "the decide gate did not succeed"\n'
+    "          exit 1\n",
+    "",
+)
+
+TWIN_IN_ANOTHER_SHELL = GATED_WITH_TWIN.replace(
+    "      - run: |\n",
+    "      - shell: python\n        run: |\n",
+)
+
+TWIN_ENDING_IN_OR_EXIT = GATED_WITH_TWIN.replace(
+    '          echo "the decide gate did not succeed"\n          exit 1\n',
+    "          test -f /nonexistent || exit 1\n",
+)
+
+TWIN_WITH_CONTINUE_ON_ERROR_STEP = GATED_WITH_TWIN.replace(
+    "      - run: |\n",
+    "      - continue-on-error: true\n        run: |\n",
+)
+
+TWIN_WITH_CONTINUE_ON_ERROR_JOB = GATED_WITH_TWIN.replace(
+    "    steps:\n      - run: |\n",
+    "    continue-on-error: true\n    steps:\n      - run: |\n",
+)
+
+TWIN_IN_A_WORKFLOW_SHELL = GATED_WITH_TWIN.replace(
+    "jobs:\n", "defaults:\n  run:\n    shell: python\njobs:\n"
+)
+
+TWIN_IN_UNREADABLE_SHELL = GATED_WITH_TWIN.replace(
+    '          echo "the decide gate did not succeed"\n          exit 1\n',
+    "          if [ -f x ]; then\n          exit 1\n",
+)
+
+
+def test_twin_that_covers_only_one_of_two_gates_is_flagged(tmp_path):
+    # `decide-docs` can fail with the twin skipped: its work jobs skip, skipped
+    # satisfies their required checks, and the merge greens over a broken gate.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_COVERS_ONE_OF_TWO_GATES))
+    assert found is not None
+    message = found[1]
+    assert "decide-docs" in message
+    assert "fails open" in message
+
+
+def test_twin_naming_a_non_gate_job_is_flagged(tmp_path):
+    # `work` is gated OUT on a healthy run, so a twin keyed on its result reds
+    # every clean PR — and stays skipped when `decide` itself fails.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_NAMES_A_WORK_JOB))
+    assert found is not None
+    assert "no decide gate" in found[1]
+
+
+def test_twin_that_does_not_need_its_gate_is_flagged(tmp_path):
+    # `needs.decide.result` reads as empty in a job that does not depend on
+    # `decide`, so the disjunct never fires and the twin never runs.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_WITHOUT_NEEDS))
+    assert found is not None
+    assert "`needs:`" in found[1]
+
+
+def test_twin_in_a_shell_this_check_cannot_read_is_flagged(tmp_path):
+    # The bash grammar is the only reader here, so a `shell: python` body would be
+    # parsed as bash and its exit status guessed at. A twin exists to fail, so an
+    # unverifiable one is refused rather than accepted.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_IN_ANOTHER_SHELL))
+    assert found is not None
+    assert "shell: python" in found[1]
+
+
+def test_twin_whose_script_succeeds_is_flagged(tmp_path):
+    # The twin runs exactly when the gate broke and then exits 0 — a green
+    # required check on the one run that had to be red.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_THAT_SUCCEEDS))
+    assert found is not None
+    assert "failing command" in found[1]
+
+
+def test_twin_with_no_steps_is_flagged(tmp_path):
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_WITHOUT_STEPS))
+    assert found is not None
+    assert "no `run:` step" in found[1]
+
+
+def test_a_continue_on_error_step_cannot_be_what_makes_the_twin_red(tmp_path):
+    # The script ends in `exit 1`, but the step's failure is reported as success,
+    # so the job still concludes green on the one run that had to be red. No
+    # other `run:` step is left to decide.
+    found = car.check_file(
+        _write(tmp_path, "wf.yaml", TWIN_WITH_CONTINUE_ON_ERROR_STEP)
+    )
+    assert found is not None
+    assert "no `run:` step" in found[1]
+
+
+def test_a_conditional_step_is_not_the_guaranteed_failure(tmp_path):
+    # The `exit 1` step can be skipped, and the step after it cannot red, so no
+    # step is guaranteed to fail on the run that needs the twin red.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n"
+        '          echo "the decide gate did not succeed"\n'
+        "          exit 1\n",
+        "      - if: ${{ false }}\n        run: exit 1\n"
+        "      - continue-on-error: true\n        run: echo cleanup\n",
+    )
+    found = car.check_file(_write(tmp_path, "wf.yaml", body))
+    assert found is not None
+    assert "no `run:` step" in found[1]
+
+
+def test_a_custom_bash_template_is_still_bash(tmp_path):
+    # `shell: bash --noprofile --norc -eo pipefail {0}` still runs bash, so the
+    # twin must be accepted rather than refused as unreadable.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n",
+        "      - shell: bash --noprofile --norc -eo pipefail {0}\n        run: |\n",
+    )
+    assert car.check_file(_write(tmp_path, "wf.yaml", body)) is None
+
+
+def test_an_always_step_condition_still_guarantees_the_failure(tmp_path):
+    # `if: always()` cannot skip the step — it runs whatever the earlier steps
+    # did — so the twin still has a step whose failure reds the job.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n", "      - if: always()\n        run: |\n"
+    )
+    assert car.check_file(_write(tmp_path, "wf.yaml", body)) is None
+
+
+def test_a_template_that_passes_dash_c_is_refused(tmp_path):
+    # `bash -c true {0}` starts bash and runs `true`; the step's own script is
+    # only `$0`, so its `exit 1` never executes and the job exits 0.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n", "      - shell: bash -c true {0}\n        run: |\n"
+    )
+    found = car.check_file(_write(tmp_path, "wf.yaml", body))
+    assert found is not None
+    assert "passes `-c`" in found[1]
+
+
+def test_an_expression_hiding_the_shell_is_refused(tmp_path):
+    # Nothing offline resolves `${{ matrix.shell }}`, so the twin is refused
+    # rather than accepted on a guess that it names bash.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n", "      - shell: ${{ matrix.shell }}\n        run: |\n"
+    )
+    found = car.check_file(_write(tmp_path, "wf.yaml", body))
+    assert found is not None
+    assert "hides" in found[1]
+
+
+def test_a_continue_on_error_job_is_flagged(tmp_path):
+    # Job-level `continue-on-error` reports EVERY step's failure as success, so
+    # the same fail-open arrives one level up.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_WITH_CONTINUE_ON_ERROR_JOB))
+    assert found is not None
+    assert "continue-on-error" in found[1]
+
+
+def test_a_workflow_level_shell_reaches_the_twin(tmp_path):
+    # The job sets no shell, so it inherits the workflow default. A job-only read
+    # resolves "bash" here and parses a python body with the bash grammar.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_IN_A_WORKFLOW_SHELL))
+    assert found is not None
+    assert "shell: python" in found[1]
+
+
+def test_a_twin_whose_shell_does_not_parse_is_refused_as_unverifiable(tmp_path):
+    # An unterminated `if` yields ERROR nodes. The honest verdict is "I could not
+    # read this", not "it does not end in a failing command" — different faults,
+    # different fixes.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_IN_UNREADABLE_SHELL))
+    assert found is not None
+    assert "cannot read" in found[1]
+    # The remedy text below names a failing command; the DEFECT must not.
+    assert "does not end in a failing command" not in found[1]
+
+
+def test_twin_whose_script_can_exit_zero_is_flagged(tmp_path):
+    # `cmd || exit 1` exits 0 whenever `cmd` succeeds. Only the bash grammar
+    # separates it from `cmd && exit 1`, which always fails.
+    found = car.check_file(_write(tmp_path, "wf.yaml", TWIN_ENDING_IN_OR_EXIT))
+    assert found is not None
+    assert "failing command" in found[1]
+
+
+def test_a_second_compliant_twin_satisfies_the_check(tmp_path):
+    # One twin closing the hole is all the workflow owes, even beside a broken one.
+    body = GATED_WITH_TWIN.replace(
+        "  gate-failed:",
+        "  half-twin:\n    if: always() && needs.work.result "
+        "!= 'success'\n    runs-on: ubuntu-latest\n  gate-failed:",
+    )
+    assert car.check_file(_write(tmp_path, "wf.yaml", body)) is None
+
+
+def test_check_file_flags_compound_always_that_is_not_a_twin(tmp_path):
+    # `always() && needs.decide.outputs.run == 'true'` SKIPS when the gate job
+    # itself fails (the output is empty), so it closes nothing — still flagged.
+    path = _write(tmp_path, "wf.yaml", GATED_WITH_COMPOUND_NON_TWIN)
+    found = car.check_file(path)
+    assert found is not None
+    assert "fails closed" in found[1]
+
+
 def test_check_file_passes_ungated_workflow(tmp_path):
     # No decide gate → every job always runs → no reporter needed.
     path = _write(tmp_path, "wf.yaml", UNGATED_NO_REPORTER)
