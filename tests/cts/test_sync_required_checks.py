@@ -296,6 +296,18 @@ def test_find_branch_ruleset_lone_org_ruleset_reads_when_no_write(monkeypatch):
     assert mod.find_branch_ruleset("o/r", "tok", need_write=False) == 6
 
 
+def test_find_branch_ruleset_no_branch_ruleset_at_all(monkeypatch):
+    # Zero branch rulesets is not an organization-owned one, so the message
+    # must not blame organization ownership for it.
+    monkeypatch.setattr(
+        mod, "github_request", lambda *a, **k: [{"id": 5, "target": "tag"}]
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+    assert "organization-owned" not in str(excinfo.value).lower()
+    assert "found 0 branch ruleset(s)" in str(excinfo.value)
+
+
 def test_find_branch_ruleset_no_repository_source_still_ambiguous(monkeypatch):
     # Two branch rulesets, neither repo-owned → cannot pick a writable target.
     monkeypatch.setattr(

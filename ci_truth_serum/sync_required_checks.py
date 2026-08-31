@@ -118,7 +118,7 @@ def find_branch_ruleset(repo: str, token: str, *, need_write: bool) -> int:
     )
     # --ruleset-id names one of several candidates. It is no remedy when the
     # count is zero: naming an organization-owned id re-creates the same 404.
-    if need_write and not repo_owned:
+    if need_write and branch and not repo_owned:
         raise SystemExit(
             f"No writable branch ruleset on {repo}: {counts}. An "
             "organization-owned ruleset is not writable through the repository "
