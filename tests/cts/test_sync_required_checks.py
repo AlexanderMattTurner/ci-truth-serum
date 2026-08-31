@@ -258,10 +258,29 @@ def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
         "github_request",
         lambda *a, **k: [
             {"id": 5, "target": "tag", "source_type": "Repository"},
-            {"id": 6, "target": "branch", "source_type": "Organization"},
+            {"id": 6, "target": "branch", "source_type": "Repository"},
         ],
     )
     assert mod.find_branch_ruleset("o/r", "tok") == 6
+
+
+def test_find_branch_ruleset_lone_org_ruleset_fails_loud(monkeypatch):
+    """A single ORG-owned branch ruleset is readable and unwritable.
+
+    Returning its id sends the PUT to the repository endpoint, which answers
+    404 — the shape that reads as a missing ruleset or an under-scoped token
+    and costs a reader the whole diagnosis. Fail here, naming the cause.
+    """
+    monkeypatch.setattr(
+        mod,
+        "github_request",
+        lambda *a, **k: [{"id": 6, "target": "branch", "source_type": "Organization"}],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.find_branch_ruleset("o/r", "tok")
+    message = str(excinfo.value)
+    assert "1 branch ruleset(s), 0 of them repo-owned" in message
+    assert "organization-owned" in message.lower()
 
 
 def test_find_branch_ruleset_no_repository_source_still_ambiguous(monkeypatch):
