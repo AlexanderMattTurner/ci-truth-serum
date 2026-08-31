@@ -16,8 +16,9 @@ worse than no stand-down at all.
 The job also needs a second chance. It fires once, on `opened` or
 `ready_for_review`, so a firing that fails leaves the pull request with no
 approval forever: `synchronize` does not re-run it, and a later push cannot
-recover it. PR #176 stranded that way. The last two tests pin the on-demand
-label that re-arms it.
+recover it. PR #176 stranded that way. The last three tests pin the on-demand
+label that re-arms it, and above all that the label re-arms the EVENT only: a
+label that escaped the skip set would approve any pull request a person labels.
 """
 
 import os
@@ -118,6 +119,32 @@ def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
+def _top_level_alternatives(guard: str) -> list[str]:
+    """GUARD split on every `||` that sits outside a bracket.
+
+    The nesting is the whole question here, so the split tracks depth. A term
+    the parser reports at depth 0 is one the job fires on ALONE.
+    """
+    terms: list[str] = []
+    depth = 0
+    start = 0
+    index = 0
+    while index < len(guard):
+        char = guard[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "|" and depth == 0 and guard[index : index + 2] == "||":
+            terms.append(guard[start:index])
+            index += 2
+            start = index
+            continue
+        index += 1
+    terms.append(guard[start:])
+    return [term.strip() for term in terms]
+
+
 def test_a_label_re_arms_the_approver() -> None:
     """One failed firing must not strand the pull request forever."""
     doc = _workflow()
@@ -134,17 +161,42 @@ def test_a_label_re_arms_the_approver() -> None:
     assert "labeled" in types, f"the label never reaches the job: types are {types}"
 
 
+def test_the_label_cannot_approve_a_pull_request_the_reviewer_reads() -> None:
+    """The label re-arms the EVENT. It never bypasses the skip set.
+
+    A label hoisted out to a top-level `||` approves whatever a person labels:
+    a draft, or a `feat:` whose review is still open. The approval body then
+    says the reviewer skipped the pull request, which is false, and one label
+    satisfies a review-required ruleset. This is the shape the first version of
+    this change shipped, so the assertion pins behaviour, not the diff.
+    """
+    guard = str(_workflow()["jobs"][JOB]["if"])
+    alternatives = _top_level_alternatives(guard)
+    assert len(alternatives) == 1, (
+        f"the guard fires on any one of {len(alternatives)} independent terms. "
+        "Every gate must govern every firing, so the whole guard is one "
+        f"conjunction: {alternatives}"
+    )
+    governed = alternatives[0]
+    for gate in (
+        "github.event.pull_request.draft == false",
+        "github.event.pull_request.user.type == 'Bot'",
+        "'release:'",
+    ):
+        assert gate in governed, (
+            f"{gate} no longer governs the label, so a labelled pull request skips it"
+        )
+
+
 def test_the_two_on_demand_labels_differ() -> None:
     """Non-vacuity for the label above, and a real hazard of its own.
 
-    The reviewer job carries the same idiom. One shared label would make a
+    The reviewer job carries a label of its own. One shared label would make a
     `release:` PR both approved and read, which defeats the skip set.
     """
-    doc = _workflow()
-    review_guard = str(doc["jobs"][REVIEW_JOB]["if"])
+    review_guard = str(_workflow()["jobs"][REVIEW_JOB]["if"])
     assert f"github.event.label.name == '{REVIEW_LABEL}'" in review_guard, (
         "the reviewer's own label clause is gone, so the idiom this mirrors no "
         "longer exists and the assertion above pins a lone invention"
     )
-    assert APPROVE_LABEL != REVIEW_LABEL
     assert APPROVE_LABEL not in review_guard
