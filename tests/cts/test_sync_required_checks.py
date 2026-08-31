@@ -10,8 +10,10 @@ in test_cts_linecheck.py; here we cover the desired-set aggregation, the REST
 round-trip, the ruleset helpers, and main()'s three modes.
 """
 
+import io
 import json
 import textwrap
+import urllib.error
 import urllib.request
 
 import pytest
@@ -159,6 +161,58 @@ def test_github_request_put_sends_body_and_handles_empty_204(monkeypatch):
     assert out == {}
     assert json.loads(captured["req"].data.decode()) == {"a": 1}
     assert captured["req"].get_header("Content-type") == "application/json"
+
+
+def _raise_http_error(code, body):
+    """A urlopen stub that fails the call the way GitHub does."""
+
+    def fake_urlopen(req):  # noqa: ARG001 (signature must match urlopen)
+        raise urllib.error.HTTPError(
+            "https://api.github.com/x", code, "Not Found", {}, io.BytesIO(body.encode())
+        )
+
+    return fake_urlopen
+
+
+@pytest.mark.parametrize("code", [403, 404])
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "POST", "DELETE"])
+def test_github_request_write_denial_names_the_missing_grant(monkeypatch, method, code):
+    """A write GitHub refuses must say which grant the token lacks.
+
+    The ruleset PUT answering 404 after the GET of that same ruleset succeeded
+    is the shape this exists for: an under-scoped token reads as a vanished
+    ruleset, and the bare HTTPError traceback names neither the endpoint nor
+    the grant.
+    """
+    monkeypatch.setattr(
+        urllib.request, "urlopen", _raise_http_error(code, '{"message": "Not Found"}')
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.github_request(method, "https://api.github.com/x", "tok", {"a": 1})
+    message = str(excinfo.value)
+    assert "administration: write" in message
+    assert f"{method} https://api.github.com/x" in message
+    assert str(code) in message
+    assert '{"message": "Not Found"}' in message
+
+
+@pytest.mark.parametrize("code", [403, 404, 422, 500])
+def test_github_request_read_failure_reports_without_blaming_the_grant(
+    monkeypatch, code
+):
+    """A READ that fails names the endpoint and GitHub's message, and nothing
+    else: a token that cannot READ the ruleset is a different fault from one
+    that cannot write it, so naming `administration: write` here would send the
+    reader to the wrong setting."""
+    monkeypatch.setattr(
+        urllib.request, "urlopen", _raise_http_error(code, '{"message": "Bad creds"}')
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.github_request("GET", "https://api.github.com/x", "tok")
+    message = str(excinfo.value)
+    assert "administration: write" not in message
+    assert "GET https://api.github.com/x" in message
+    assert "Bad creds" in message
 
 
 # ─── find_branch_ruleset ─────────────────────────────────────────────────────

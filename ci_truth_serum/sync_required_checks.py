@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -49,8 +50,19 @@ def desired_contexts(workflows_dir: Path) -> list[str]:
     return sorted(contexts)
 
 
+WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
 def github_request(method: str, url: str, token: str, body: dict | None = None) -> dict:
-    """One authenticated GitHub REST call; returns the parsed JSON body ({} on 204)."""
+    """One authenticated GitHub REST call; returns the parsed JSON body ({} on 204).
+
+    An HTTP error exits with the method, the endpoint, the status and GitHub's
+    own message, because the bare `HTTPError` traceback names none of them.
+    A WRITE that answers 403 or 404 also names the missing grant: GitHub hides
+    an admin endpoint the token may not write behind 404 rather than 403, so a
+    404 on the ruleset PUT that follows a successful GET of that same ruleset
+    is an under-scoped token, not a ruleset that went missing.
+    """
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {token}")
@@ -58,8 +70,23 @@ def github_request(method: str, url: str, token: str, body: dict | None = None) 
     req.add_header("X-GitHub-Api-Version", "2022-11-28")
     if data is not None:
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req) as resp:  # noqa: S310 (fixed api.github.com host)
-        payload = resp.read().decode()
+    try:
+        with urllib.request.urlopen(req) as resp:  # noqa: S310 (fixed api.github.com host)
+            payload = resp.read().decode()
+    except urllib.error.HTTPError as exc:
+        lines = [f"GitHub API {method} {url} answered {exc.code} {exc.reason}."]
+        detail = exc.read().decode(errors="replace").strip()
+        if detail:
+            lines.append(detail)
+        if exc.code in (403, 404) and method in WRITE_METHODS:
+            lines.append(
+                "The token in GH_TOKEN / GITHUB_TOKEN needs `administration: "
+                "write` on this repository. GitHub answers 404 rather than 403 "
+                "for an admin endpoint a token may read but not write, so a "
+                "readable ruleset that refuses this write is an under-scoped "
+                "token."
+            )
+        raise SystemExit("\n".join(lines)) from exc
     return json.loads(payload) if payload else {}
 
 
