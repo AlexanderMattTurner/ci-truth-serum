@@ -44,6 +44,7 @@ Not everything! ci-truth-serum enforces policy gaps. Keep running the tools it d
 - [`zizmor`](https://github.com/woodruffw/zizmor) pins `uses:` references to a SHA.
 - [`hadolint`](https://github.com/hadolint/hadolint) checks Dockerfiles.[^tag]
 - [`actionlint`](https://github.com/rhysd/actionlint) checks workflow syntax and types.
+- [`shellcheck`](https://www.shellcheck.net) checks shell.
 
 [^tag]: `check-pinned-base-images` is stronger than hadolint's: it demands a `@sha256:` digest, not only an explicit tag.
 
@@ -323,6 +324,8 @@ The tag vocabulary is closed. These are the values:
 | `correctness`     | ordinary logic defects the other tags do not cover                            |
 | `maintainability` | code shaped so the next reader cannot see what runs                           |
 | `cost`            | CI minutes spent on a run that cannot finish or did not need to start         |
+
+A tag is not a file type. The files a check reads come from its own `types:`, so there is no `shell` or `python` tag to restate them.
 
 The three checks that sit in no aggregate carry no tag either, so no selector reaches them. `check-absolute-symlinks`, `check-lockstep-pins`, and `check-env-symmetry` stay standalone ids.
 
