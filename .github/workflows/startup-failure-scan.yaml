@@ -50,6 +50,14 @@ jobs:
       - name: Setup base environment
         uses: ./.github/actions/setup-base-env
 
+      # The scan is a `uv run` console script, so the job must install uv.
+      # Without this step the script died with `uv: command not found` on every
+      # scheduled fire.
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+        with:
+          install-python: "true"
+
       # The report goes to the run summary whatever the verdict, and the exit
       # status decides whether the run is red. Writing the summary first is what
       # makes a red run explain itself without opening a log.

@@ -210,6 +210,24 @@ jobs:
       #
       # After create-pull-request the workspace is back on the base ref and the
       # markers live on the sync branch, so switch to it before resolving.
+      #
+      # The sync branch carries the TEMPLATE's copy of `.github/scripts`, because
+      # that directory is one of the SYNC_PATHS. Running the resolver from the
+      # workspace after the checkout therefore runs the incoming, unreviewed
+      # script against the env this workflow declares. That is how run 32714066016
+      # died: the template's newer resolver demands a RESOLVER_DIR this step never
+      # sets, and every scheduled sync with a conflict failed the same way. So
+      # stage the base ref's scripts first and run the resolver from there.
+      - name: Stage the base ref's resolver
+        id: base-scripts
+        if: inputs.dry-run != true && steps.create-pr.outputs.pull-request-number
+        env:
+          DEST: ${{ runner.temp }}/base-scripts
+        run: |
+          mkdir -p "${DEST}"
+          cp -R .github/scripts/. "${DEST}/"
+          echo "dir=${DEST}" >>"$GITHUB_OUTPUT"
+
       - name: Install mergiraf (pinned, digest-verified)
         if: inputs.dry-run != true && steps.sync.outputs.has_conflicts == 'true' && steps.create-pr.outputs.pull-request-number
         run: bash .github/scripts/install-mergiraf.sh
@@ -224,10 +242,11 @@ jobs:
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
           GH_REPO: ${{ github.repository }}
+          BASE_SCRIPTS: ${{ steps.base-scripts.outputs.dir }}
         run: |
           git fetch --no-tags origin "+refs/heads/template-sync:refs/remotes/origin/template-sync"
           git checkout -B template-sync origin/template-sync
-          bash .github/scripts/template-sync-resolve.sh
+          bash "${BASE_SCRIPTS}/template-sync-resolve.sh"
 
       - name: Push the resolutions
         if: steps.resolve.outcome == 'success' && (steps.resolve.outputs.deterministic != '' || steps.resolve.outputs.by_model != '')
@@ -236,7 +255,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
           DETERMINISTIC: ${{ steps.resolve.outputs.deterministic }}
           BY_MODEL: ${{ steps.resolve.outputs.by_model }}
-        run: bash .github/scripts/template-sync-push.sh
+          BASE_SCRIPTS: ${{ steps.base-scripts.outputs.dir }}
+        run: bash "${BASE_SCRIPTS}/template-sync-push.sh"
 
       # A sync merges itself only when NOTHING needed judgement. See the script
       # for the full predicate; the two carve-outs are that a model-resolved file
@@ -252,4 +272,5 @@ jobs:
           HAS_DOWNGRADES: ${{ steps.sync.outputs.has_downgrades }}
           ALL_DETERMINISTIC: ${{ steps.resolve.outputs.all_deterministic }}
           CHANGED_PATHS: ${{ steps.sync.outputs.changed_paths }}
-        run: bash .github/scripts/template-sync-automerge.sh
+          BASE_SCRIPTS: ${{ steps.base-scripts.outputs.dir }}
+        run: bash "${BASE_SCRIPTS}/template-sync-automerge.sh"
