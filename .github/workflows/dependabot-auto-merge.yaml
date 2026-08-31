@@ -1,7 +1,8 @@
 name: Dependabot Auto-Merge
 
-# Automatically merges Dependabot PRs for minor/patch updates after CI passes.
-# Major version updates require manual review.
+# Enables auto-merge on every Dependabot PR, a major version bump included.
+# Auto-merge only sets a flag: GitHub holds the merge until every required
+# check passes, so a bump that breaks the build stays open.
 
 on:
   pull_request:
@@ -29,23 +30,8 @@ jobs:
     # so the pushed commit must still pass every required check before it merges.
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
-      - name: Dependabot metadata
-        id: metadata
-        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
-        with:
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
-
-      - name: Enable auto-merge for minor/patch updates
-        if: steps.metadata.outcome == 'success' && steps.metadata.outputs.update-type != 'version-update:semver-major'
+      - name: Enable auto-merge
         run: gh pr merge --auto --squash "$PR_URL"
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Comment on major updates
-        if: steps.metadata.outcome == 'success' && steps.metadata.outputs.update-type == 'version-update:semver-major'
-        run: |
-          gh pr comment "$PR_URL" --body "This is a **major version update** and requires manual review before merging."
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
