@@ -380,6 +380,37 @@ def test_a_custom_bash_template_is_still_bash(tmp_path):
     assert car.check_file(_write(tmp_path, "wf.yaml", body)) is None
 
 
+def test_an_always_step_condition_still_guarantees_the_failure(tmp_path):
+    # `if: always()` cannot skip the step — it runs whatever the earlier steps
+    # did — so the twin still has a step whose failure reds the job.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n", "      - if: always()\n        run: |\n"
+    )
+    assert car.check_file(_write(tmp_path, "wf.yaml", body)) is None
+
+
+def test_a_template_that_passes_dash_c_is_refused(tmp_path):
+    # `bash -c true {0}` starts bash and runs `true`; the step's own script is
+    # only `$0`, so its `exit 1` never executes and the job exits 0.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n", "      - shell: bash -c true {0}\n        run: |\n"
+    )
+    found = car.check_file(_write(tmp_path, "wf.yaml", body))
+    assert found is not None
+    assert "passes `-c`" in found[1]
+
+
+def test_an_expression_hiding_the_shell_is_refused(tmp_path):
+    # Nothing offline resolves `${{ matrix.shell }}`, so the twin is refused
+    # rather than accepted on a guess that it names bash.
+    body = GATED_WITH_TWIN.replace(
+        "      - run: |\n", "      - shell: ${{ matrix.shell }}\n        run: |\n"
+    )
+    found = car.check_file(_write(tmp_path, "wf.yaml", body))
+    assert found is not None
+    assert "hides" in found[1]
+
+
 def test_a_continue_on_error_job_is_flagged(tmp_path):
     # Job-level `continue-on-error` reports EVERY step's failure as success, so
     # the same fail-open arrives one level up.

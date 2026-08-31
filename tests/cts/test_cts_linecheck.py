@@ -465,10 +465,59 @@ def test_last_run_step(cfg: dict, expected: str | None) -> None:
             {"defaults": {"run": {"shell": "python"}}},
             "pwsh",
         ),
+        # A custom template runs the program its leading word names, and a path
+        # spells that word out — both are plain bash.
+        (
+            {},
+            {"run": "x", "shell": "bash --noprofile --norc -eo pipefail {0}"},
+            {},
+            "bash",
+        ),
+        ({}, {"run": "x", "shell": "/usr/bin/bash {0}"}, {}, "bash"),
+        # An expression in the first word hides the program, which is unknown
+        # rather than bash.
+        ({}, {"run": "x", "shell": "${{ matrix.shell }}"}, {}, None),
     ],
 )
-def test_step_shell(cfg: dict, step: dict, workflow: dict, expected: str) -> None:
+def test_step_shell(
+    cfg: dict, step: dict, workflow: dict, expected: str | None
+) -> None:
     assert lc.step_shell(cfg, step, workflow) == expected
+
+
+@pytest.mark.parametrize(
+    "shell, expected",
+    [
+        ("bash", True),
+        ("bash --noprofile --norc -eo pipefail {0}", True),
+        ("bash -e {0}", True),
+        # `-c` makes bash run the command string that follows and leaves the
+        # step's own script as `$0`, so the script never executes.
+        ("bash -c true {0}", False),
+        ("bash -ec true {0}", False),
+        # A long option is not the short `-c`, whatever letters it spells.
+        ("bash --rcfile {0}", True),
+    ],
+)
+def test_template_runs_the_script(shell: str, expected: bool) -> None:
+    assert lc.template_runs_the_script(shell) is expected
+
+
+@pytest.mark.parametrize(
+    "step, expected",
+    [
+        ({"run": "exit 1"}, True),
+        ({"run": "exit 1", "if": "always()"}, True),
+        ({"run": "exit 1", "if": "${{ always() }}"}, True),
+        ({"run": "exit 1", "if": "true"}, True),
+        # Each of these can skip the step, and a skipped step fails nothing.
+        ({"run": "exit 1", "if": "success()"}, False),
+        ({"run": "exit 1", "if": "!cancelled()"}, False),
+        ({"run": "exit 1", "if": "github.event_name == 'push'"}, False),
+    ],
+)
+def test_step_always_runs(step: dict, expected: bool) -> None:
+    assert lc.step_always_runs(step) is expected
 
 
 @pytest.mark.parametrize(
@@ -501,6 +550,15 @@ def test_continues_on_error(value: object, expected: bool) -> None:
         # unconditional failure is no longer read that way.
         ("false() { return 0; }\nfalse && echo reached", False),
         ("exit() { return 0; }\nexit 1", False),
+        # A definition one level down still takes effect at call time, which is
+        # why the scan is not scoped to the top-level statements.
+        ("f() { false() { return 0; }; }\nfalse", False),
+        # A `( … )` subshell forks, so its definition cannot reach the `exit 1`
+        # that follows it.
+        ("( exit() { return 0; }; true )\nexit 1", True),
+        # Inside that same subshell the definition DOES reach, so the subshell
+        # is not read as an unconditional failure.
+        ("( exit() { return 0; }; exit 1 )", False),
         # A left operand that ALWAYS fails decides the list on its own: the right
         # one never runs, and the status is the left one's.
         ("false && echo unreachable", True),
