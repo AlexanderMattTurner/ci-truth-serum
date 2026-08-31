@@ -49,5 +49,14 @@ jobs:
         with:
           node-version: 22
 
+      # The canary is a `uv run` console script, so the job must install uv.
+      # Without this step the script died with `uv: command not found` on every
+      # scheduled fire. tag-release.yaml runs the same script behind the same
+      # action.
+      - name: Install uv
+        uses: ./.github/actions/setup-uv
+        with:
+          install-python: "true"
+
       - name: Run release canary
         run: bash .github/scripts/release-canary.sh

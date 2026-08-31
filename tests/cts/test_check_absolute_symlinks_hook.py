@@ -1,6 +1,9 @@
-"""Tests for ci_truth_serum/check_absolute_symlinks.sh — the ci-truth-serum copy of
-the absolute-target symlink guard (the template ships an identical script under
-.github/scripts/; this pins the packaged hook itself)."""
+"""Tests for ci_truth_serum/check_absolute_symlinks.sh — the packaged guard against
+a tracked symlink a fresh clone cannot follow.
+
+Two targets qualify: an absolute path, and a path git ignores. The second half is
+judged by asking git, so these tests write a real `.gitignore` and let the script
+read it, rather than asserting against a list of tool directory names."""
 
 import subprocess
 from pathlib import Path
@@ -55,3 +58,106 @@ def test_ignores_untracked_absolute_symlink(empty_git_repo: Path, copy_script) -
     # Don't commit — link stays untracked.
     result = run_script(empty_git_repo, copy_script)
     assert result.returncode == 0, result.stderr
+
+
+def _ignored_tree(repo: Path, link_at: str, target: str) -> None:
+    """A repo whose `node_modules/` is ignored, with LINK_AT pointing at TARGET."""
+    (repo / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    (repo / "node_modules" / "pkg").mkdir(parents=True)
+    (repo / "node_modules" / "pkg" / "bin.js").write_text("x", encoding="utf-8")
+    link = repo / link_at
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+
+
+def test_a_link_into_an_ignored_directory_is_rejected(
+    empty_git_repo: Path, copy_script
+) -> None:
+    """The target is built by a tool and never committed, so the clone dangles."""
+    _ignored_tree(empty_git_repo, "link", "node_modules/pkg/bin.js")
+    commit_all(empty_git_repo)
+
+    result = run_script(empty_git_repo, copy_script)
+    assert result.returncode == 1
+    output = result.stdout + result.stderr
+    assert "link -> node_modules/pkg/bin.js" in output
+    assert "node_modules/pkg/bin.js" in output
+
+
+def test_the_target_resolves_against_the_links_own_directory(
+    empty_git_repo: Path, copy_script
+) -> None:
+    """A link one directory down writes `../node_modules/...`.
+
+    Resolving that against the repo root instead would land outside the tree and
+    the finding would be skipped — the fail-open direction.
+    """
+    _ignored_tree(empty_git_repo, "tools/link", "../node_modules/pkg/bin.js")
+    commit_all(empty_git_repo)
+
+    result = run_script(empty_git_repo, copy_script)
+    assert result.returncode == 1
+    assert "tools/link" in result.stdout + result.stderr
+
+
+def test_a_link_to_a_committed_file_under_an_unignored_path_passes(
+    empty_git_repo: Path, copy_script
+) -> None:
+    """Non-vacuity for the rule above: only the IGNORE verdict makes it fire."""
+    (empty_git_repo / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    (empty_git_repo / "vendor").mkdir()
+    (empty_git_repo / "vendor" / "bin.js").write_text("x", encoding="utf-8")
+    (empty_git_repo / "link").symlink_to("vendor/bin.js")
+    commit_all(empty_git_repo)
+
+    result = run_script(empty_git_repo, copy_script)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_the_verdict_does_not_follow_symlinks_the_install_built(
+    empty_git_repo: Path, copy_script
+) -> None:
+    """The path is normalised lexically, so an installed tree cannot hide a link.
+
+    A workspace install points `node_modules/pkg` back into `packages/pkg`. A
+    resolver that follows that link lands on a tracked file and passes, although
+    a fresh clone has no `node_modules/` and the tracked link still dangles.
+    """
+    (empty_git_repo / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    (empty_git_repo / "packages" / "pkg").mkdir(parents=True)
+    (empty_git_repo / "packages" / "pkg" / "bin.js").write_text("x", encoding="utf-8")
+    (empty_git_repo / "node_modules").mkdir()
+    (empty_git_repo / "node_modules" / "pkg").symlink_to("../packages/pkg")
+    (empty_git_repo / "tools").mkdir()
+    (empty_git_repo / "tools" / "link").symlink_to("../node_modules/pkg/bin.js")
+    commit_all(empty_git_repo)
+
+    result = run_script(empty_git_repo, copy_script)
+    assert result.returncode == 1
+    assert "node_modules/pkg/bin.js" in result.stdout + result.stderr
+
+
+def test_a_link_to_the_repository_root_is_left_alone(
+    empty_git_repo: Path, copy_script
+) -> None:
+    """`link -> .` normalises to the empty string — the repository root, which no
+    ignore rule covers. The script skips it instead of handing git an empty
+    pathspec."""
+    (empty_git_repo / "link").symlink_to(".")
+    commit_all(empty_git_repo)
+
+    result = run_script(empty_git_repo, copy_script)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "check-ignore failed" not in result.stderr
+
+
+def test_a_target_outside_the_repository_is_left_alone(
+    empty_git_repo: Path, copy_script
+) -> None:
+    """git has no ignore verdict for a path it does not own, so the script skips
+    it rather than guessing."""
+    (empty_git_repo / "link").symlink_to("../outside/thing.txt")
+    commit_all(empty_git_repo)
+
+    result = run_script(empty_git_repo, copy_script)
+    assert result.returncode == 0, result.stdout + result.stderr

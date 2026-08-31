@@ -61,6 +61,14 @@
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
 
+- id: check-flock-fixed-fd
+  name: "honesty: ban a lock taken on a hardcoded file descriptor"
+  description: "`flock -x 9` in a file that never opens fd 9 locks whatever that number is. When nothing opened it, `flock` exits non-zero. When something else holds it, the lock guards a different file and both runs still report success."
+  entry: python -m ci_truth_serum.check_flock_fixed_fd
+  language: python
+  additional_dependencies: [tree-sitter, tree-sitter-bash]
+  types: [shell]
+
 - id: check-pr-paths
   name: "honesty: ban paths/branches filters on pull_request triggers"
   description: A paths or branches filter strands a required check at "Expected — Waiting" forever.
@@ -506,8 +514,8 @@
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
 - id: check-absolute-symlinks
-  name: "extra: reject tracked symlinks with absolute targets"
-  description: An absolute-target symlink breaks on every machine but the author's. The id is not check-symlinks, which pre-commit-hooks uses for a different rule.
+  name: "extra: reject tracked symlinks a fresh clone cannot follow"
+  description: A symlink to an absolute path, or to a path git ignores, dangles on every machine but the author's. The id is not check-symlinks, which pre-commit-hooks uses for a different rule.
   entry: ci_truth_serum/check_absolute_symlinks.sh
   language: script
   pass_filenames: false
