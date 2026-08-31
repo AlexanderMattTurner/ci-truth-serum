@@ -176,26 +176,7 @@ These checks are about shell scripts, Python, tests, and docs rather than CI rep
 
 ## Usage
 
-These are [pre-commit](https://pre-commit.com) hooks:
-
-```bash
-pipx install pre-commit # or: pip install pre-commit / brew install pre-commit
-pre-commit install
-```
-
-Then add ci-truth-serum to your `.pre-commit-config.yaml`:
-
-```yaml
-repos:
-  - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v1.2.0 # the release tag; matches the package version (vX.Y.Z)
-    hooks:
-      - id: check-tier1 # every honesty + identity + security check (the safe default-on set)
-      # - id: check-tier2   # every opinionated check: it assumes the decide-gate + reporter architecture
-      # - id: check-extras  # the Python extras (vendor-specific or style-specific)
-```
-
-`pre-commit run --all-files` sweeps the whole repo, which helps on first adoption.
+Start here enables Tier 1 through one aggregate id. This section is the full menu: every check by name, the tag selectors, and the three checks that sit outside every tier.
 
 ### Enable specific checks
 
