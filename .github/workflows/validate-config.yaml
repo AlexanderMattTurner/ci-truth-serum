@@ -27,6 +27,11 @@ jobs:
           - '.github/actions/setup-base-env/**'
           - '.github/actions/setup-uv/**'
           - '.github/scripts/validate-config.sh'
+          # install-claude-cli.sh reads this pin and rejects anything that is
+          # not MAJOR.MINOR.PATCH, and tests/test_claude_conflict_resolve_ladder.py
+          # runs that installer. Without this line a pin-only change skips the
+          # job and merges with the reporter green.
+          - '.github/claude-cli-version'
           - '.github/workflows/**'
           - 'tests/**'
           - 'pyproject.toml'

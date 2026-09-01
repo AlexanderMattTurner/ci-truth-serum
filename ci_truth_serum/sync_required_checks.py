@@ -19,14 +19,15 @@ Modes:
   (default) PUT the ruleset so its required checks equal the desired set.
 
 The mutation path needs a token (`GH_TOKEN` / `GITHUB_TOKEN`) with
-`administration: write` on the repo; it fails loud if the token is missing or the
-single branch ruleset can't be located (pass `--ruleset-id` to disambiguate).
+`administration: write` on the repo; it fails loud if the token is missing or no
+single writable branch ruleset can be located.
 """
 
 import argparse
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -49,8 +50,19 @@ def desired_contexts(workflows_dir: Path) -> list[str]:
     return sorted(contexts)
 
 
+WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
 def github_request(method: str, url: str, token: str, body: dict | None = None) -> dict:
-    """One authenticated GitHub REST call; returns the parsed JSON body ({} on 204)."""
+    """One authenticated GitHub REST call; returns the parsed JSON body ({} on 204).
+
+    An HTTP error exits with the method, the endpoint, the status and GitHub's
+    own message, because the bare `HTTPError` traceback names none of them.
+    A WRITE that answers 403 or 404 also names the missing grant: GitHub hides
+    an admin endpoint the token may not write behind 404 rather than 403, so a
+    404 on the ruleset PUT that follows a successful GET of that same ruleset
+    is an under-scoped token, not a ruleset that went missing.
+    """
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {token}")
@@ -58,35 +70,68 @@ def github_request(method: str, url: str, token: str, body: dict | None = None) 
     req.add_header("X-GitHub-Api-Version", "2022-11-28")
     if data is not None:
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req) as resp:  # noqa: S310 (fixed api.github.com host)
-        payload = resp.read().decode()
+    try:
+        with urllib.request.urlopen(req) as resp:  # noqa: S310 (fixed api.github.com host)
+            payload = resp.read().decode()
+    except urllib.error.HTTPError as exc:
+        lines = [f"GitHub API {method} {url} answered {exc.code} {exc.reason}."]
+        detail = exc.read().decode(errors="replace").strip()
+        if detail:
+            lines.append(detail)
+        if exc.code in (403, 404) and method in WRITE_METHODS:
+            lines.append(
+                "The token in GH_TOKEN / GITHUB_TOKEN needs `administration: "
+                "write` on this repository. GitHub answers 404 rather than 403 "
+                "for an admin endpoint a token may read but not write, so a "
+                "readable ruleset that refuses this write is an under-scoped "
+                "token."
+            )
+        raise SystemExit("\n".join(lines)) from exc
     return json.loads(payload) if payload else {}
 
 
-def find_branch_ruleset(repo: str, token: str) -> int:
-    """The id of the branch ruleset this script can write, or fail loud when the
-    target is ambiguous (caller must pass --ruleset-id).
+def find_branch_ruleset(repo: str, token: str, *, need_write: bool) -> int:
+    """The id of the one branch ruleset to act on, or fail loud naming why not.
 
     A repo can be covered by more than one branch ruleset targeting `main` — its
     own repo-level ruleset plus an org-level ruleset inherited from the owning
     organization. Both list under `GET /repos/{repo}/rulesets` with
-    `target == "branch"`, but only the repo-owned one is writable through the
-    `/repos/{repo}/rulesets/{id}` PATCH used here; org rulesets live on a
-    different endpoint. So when exactly one branch ruleset exists we return it,
-    and when several do we narrow to the sole `source_type == "Repository"` one
-    (the writable target). Any other count — zero branch rulesets, or still more
-    than one after narrowing — stays ambiguous and fails loud with the counts."""
+    `target == "branch"`, and both READ through `/repos/{repo}/rulesets/{id}`.
+    Only the repo-owned one WRITES there; an org ruleset lives on a different
+    endpoint and answers 404, which reads as a missing ruleset or an
+    under-scoped token. So `need_write` picks the pool: a caller that only
+    reads (a `--check` drift gate) may use an org-owned ruleset, and a caller
+    that writes may not. A listing that omits `source_type` is treated as
+    repo-owned, which is what a repository-only listing returns.
+    """
     rulesets = github_request("GET", f"{API_ROOT}/repos/{repo}/rulesets", token)
     branch = [r for r in rulesets if r.get("target") == "branch"]
-    if len(branch) == 1:
-        return branch[0]["id"]
-    repo_owned = [r for r in branch if r.get("source_type") == "Repository"]
-    if len(repo_owned) == 1:
-        return repo_owned[0]["id"]
+    repo_owned = [
+        r for r in branch if r.get("source_type", "Repository") == "Repository"
+    ]
+    # A repo-owned ruleset is the right target for a read too: it is the one an
+    # apply run would write, so --check must gate the same ruleset. The wider
+    # branch list is a fallback for a read with nothing repo-owned to pick.
+    candidates = repo_owned if (need_write or repo_owned) else branch
+    if len(candidates) == 1:
+        return candidates[0]["id"]
+    counts = (
+        f"found {len(branch)} branch ruleset(s), {len(repo_owned)} of them "
+        "repo-owned (source_type=Repository)"
+    )
+    # --ruleset-id names one of several candidates. It is no remedy when the
+    # count is zero: naming an organization-owned id re-creates the same 404.
+    if need_write and branch and not repo_owned:
+        raise SystemExit(
+            f"No writable branch ruleset on {repo}: {counts}. An "
+            "organization-owned ruleset is not writable through the repository "
+            "endpoint this tool uses, so an organization owner must apply the "
+            "change, or the repository needs a branch ruleset of its own."
+        )
+    kind = "writable branch" if need_write else "branch"
     raise SystemExit(
-        f"Expected exactly one writable branch ruleset on {repo}: found "
-        f"{len(branch)} branch ruleset(s), {len(repo_owned)} of them "
-        "repo-owned (source_type=Repository); pass --ruleset-id to disambiguate."
+        f"Expected exactly one {kind} ruleset on {repo}: {counts}; pass "
+        "--ruleset-id to name the one to use."
     )
 
 
@@ -191,7 +236,9 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("No GH_TOKEN / GITHUB_TOKEN in the environment.")
 
     want = desired_contexts(args.workflows_dir)
-    ruleset_id = args.ruleset_id or find_branch_ruleset(args.repo, token)
+    ruleset_id = args.ruleset_id or find_branch_ruleset(
+        args.repo, token, need_write=not args.check
+    )
     ruleset = github_request(
         "GET", f"{API_ROOT}/repos/{args.repo}/rulesets/{ruleset_id}", token
     )

@@ -62,10 +62,11 @@ jobs:
   # what the calling job holds, so a caller that grants less ends the run in
   # `startup_failure` before any job starts.
   #
-  # The `if:` is this repository's own skip set, and it must stay the exact
-  # complement of auto-approve-skipped's below: a PR either gets a real read here
-  # or the stand-in approval there, never neither. It carries the cheap
-  # payload-only skips (no runner boots for a draft, a bot or a chore PR):
+  # The `if:` is a cheap payload-only pre-filter, so no runner boots for a draft,
+  # a bot or a chore PR. It is NOT the authority: lib/review-skip-set.bash is,
+  # and review-findings-gate.sh waives its wait for exactly that set while
+  # auto-approve-skipped's script re-checks it before approving. A drift here
+  # therefore costs one skipped job and never a wrong verdict. The set:
   #   - draft PRs and bot-authored PRs (dependabot et al. are handled by
   #     dependabot-auto-merge.yaml);
   #   - low-risk Conventional-Commit types by title — chore/style (matched as
@@ -111,6 +112,12 @@ jobs:
       # the same edit.
       reviewer-ref: 8fd4317a10020e28b8e721a11a2c9857b0027fc3
       review-prompt: .github/prompts/claude-pr-review.md
+      # The review posts with the workflow GITHUB_TOKEN, and that token's events
+      # start no workflow run. So `Review findings resolved` would sit at its old
+      # verdict until the next push, the `recheck-review-gate` label, or the
+      # half-hourly sweep. The reviewer runs this command on the head it just
+      # reviewed, with GH_TOKEN, GH_REPO, PR and REPORT_SHA already exported.
+      post-review-command: bash .github/scripts/review-findings-gate.sh
     secrets:
       # Rung 1 is the metered key the reviewer spends before any subscription
       # tier; the OAuth tiers keep this repository's own order behind it, so a
@@ -142,8 +149,24 @@ jobs:
   # code, and holds pull-requests:write and nothing else.
   auto-approve-skipped:
     name: Auto-approve low-risk and bot PRs the reviewer skips
+    # The on-demand label re-arms this job, and it is an alternative to the
+    # EVENT only. The approval fires once, on `opened` or `ready_for_review`. A
+    # firing that fails leaves the PR with no approval and no second chance:
+    # `synchronize` does not re-run this job, so a later push cannot recover it.
+    # PR #176 stranded exactly that way, because GitHub refused the Actions
+    # token its one firing used.
+    #
+    # The label sits INSIDE the conjunction, so the draft gate and the skip set
+    # below still govern it. A label that was a top-level alternative would
+    # approve any pull request a person labels — a draft, or a `feat:` whose
+    # review is still open — and the posted approval says the reviewer skipped
+    # it, which would then be false.
     if: >-
-      (github.event.action == 'opened' || github.event.action == 'ready_for_review') &&
+      (
+      github.event.action == 'opened' ||
+      github.event.action == 'ready_for_review' ||
+      github.event.label.name == 'needs-auto-approve'
+      ) &&
       github.event.pull_request.draft == false &&
       (
         github.event.pull_request.user.type == 'Bot' ||
@@ -168,7 +191,9 @@ jobs:
           # own posture: the script is trusted repo content, no PR code runs.
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-          sparse-checkout: .github/scripts/auto-approve-skipped-pr.sh
+          # The approver sources lib/review-skip-set.bash, which sources the
+          # retry helper; a narrower list dies at the `source` under `set -e`.
+          sparse-checkout: .github/scripts
           sparse-checkout-cone-mode: false
       - name: Approve so a review-required ruleset doesn't strand a skipped PR
         env:
@@ -360,6 +385,7 @@ jobs:
     permissions:
       contents: read # checkout the trusted base branch
       pull-requests: write # resolve threads, reply, submit the approval
+      statuses: write # re-derive the `Review findings resolved` verdict
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -505,3 +531,17 @@ jobs:
           # token-fallback-ok: designed graceful degradation, not an accident.
           GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.TEMPLATE_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
         run: bash .github/scripts/approve-if-reviewer-hold-clear.sh
+
+      # Resolving a thread fires no workflow event of its own
+      # (`pull_request_review_thread` is not a valid Actions `on:` event), so the
+      # step above can clear the last gating finding and leave the required
+      # `Review findings resolved` status red until the next push or the
+      # half-hourly sweep. Re-derive it here, on the head this run resolved
+      # against. `always()`: a failed approval is no reason to leave a cleared
+      # gate red.
+      - name: Re-derive the review-findings gate on this head
+        if: always()
+        env:
+          REPORT_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash .github/scripts/review-findings-gate.sh

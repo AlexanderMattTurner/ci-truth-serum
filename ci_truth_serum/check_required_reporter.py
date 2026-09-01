@@ -46,6 +46,33 @@ caller-local reporter job that `needs:` the call instead. Unlike the
 reporter-classification rule above, this one applies to every workflow file:
 the apply workflow reads `# required-check: true` from any job, on any
 trigger, with no opt-out, so this check has the same unconditional scope.
+
+A third rule polices the same annotation on a MATRIX job. A job whose `name:`
+carries a `${{ matrix.X }}` reference registers one required context per
+combination — `Test (3.11)`, `Test (3.12)`. GitHub posts those check runs only
+when the job runs. Two things skip the job: its own `if:` closes, or a job it
+`needs:` skips. Each one of those contexts then stays "Expected — Waiting for
+status to be reported". The branch blocks forever, no check turns red, and no
+log exists to read.
+
+So a marked matrix job that can skip needs a sibling job. That sibling runs on
+`if: always()` and carries the same `name:` template, and it covers the same
+matrix, so it posts the same contexts on every run. A `uses:` job is no such
+sibling, for the reason rule 2 gives. This rule reads the marker on every
+workflow file, on any trigger, as rule 2 does.
+
+"Can skip" reads a job's `if:` through `check_required_event_closure`'s
+three-valued evaluator. A condition that is provably true on every event the
+workflow declares — `if: github.event_name == 'pull_request'` on a workflow
+that fires on nothing else — gates no run, so the job does not count as
+skippable.
+
+The rest is an over-approximation, because the evaluator binds the event facts
+alone. A guard that never closes on the branch that matters —
+`if: github.repository == '<owner>/<repo>'` — is skippable here and is not a
+defect there. Answer such a case with `# matrix-context-ok: <reason>` on the
+job's key line, or on one of its direct-child lines. The reason is mandatory,
+and a bare marker suppresses nothing.
 """
 
 import re
@@ -60,17 +87,28 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _classification_text,
     _job_blocks,
     _marked_jobs,
+    declared_events,
     decide_gate_names,
     gated_work_jobs,
     has_fail_closed_twin,
     is_always_reporter,
     is_fail_closed_twin,
+    expand_name,
+    job_needs,
+    unwrap_expression,
+    MATRIX_REF,
     workflow_files as _workflow_files,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from check_required_event_closure import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ExpressionError,
+    _Parser,
+    truth_of,
+)
 
 OPT_OUT = "not-required-check"
 MARKER = "required-check"
+ALLOW = "matrix-context-ok"
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
@@ -149,15 +187,26 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     blocks = _job_blocks(text)
     violations: list[tuple[int, str]] = []
 
-    # Applies to every workflow file, regardless of trigger or the
-    # not-required-check opt-out below: sync-required-checks reads
-    # `# required-check: true` from every job in every workflow
-    # (`_marked_jobs`, unfiltered by trigger), so a `uses:` job carrying it
-    # poisons the ruleset even off a pull_request trigger.
-    for name in _marked_jobs(blocks, jobs):
+    # One scan of the markers, read by three rules: the two below and the
+    # twin-only branch further down.
+    marked = _marked_jobs(blocks, jobs)
+
+    # The two marker rules apply to every workflow file, regardless of trigger or
+    # of the not-required-check opt-out below: sync-required-checks reads
+    # `# required-check: true` from every job in every workflow (`_marked_jobs`,
+    # unfiltered by trigger), so a job carrying it poisons the ruleset even off a
+    # pull_request trigger.
+    for name in marked:
         if "uses" in jobs[name]:
             line, _block = blocks.get(name, (1, ""))
             violations.append((line, _uses_job_required(name)))
+
+    # A marked job whose name: carries a matrix reference registers one context
+    # per combination, and a skipped job posts none of them.
+    events = declared_events(doc)
+    for name, template in _unreportable_matrix_jobs(jobs, marked, blocks, events):
+        line, _block = blocks.get(name, (1, ""))
+        violations.append((line, _skippable_matrix_job(str(name), template)))
 
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
     triggers = doc.get("on", doc.get(True))
@@ -192,7 +241,6 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     # reporter carrying `# required-check: true` is the aggregate that exempts
     # the work jobs; anything else leaves the hole this branch closes.
     gate_names = decide_gate_names(jobs)
-    marked = set(_marked_jobs(blocks, jobs))
     aggregate = [
         name
         for name, cfg in jobs.items()
@@ -209,6 +257,149 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
             elif defect == "no-reason":
                 violations.append((line, _no_reason(name)))
     return violations
+
+
+def _name_template(name: str, cfg: dict) -> str:
+    """The check-run name GitHub posts for a job, before matrix substitution —
+    the job's `name:`, or its key when it declares none. The same fallback
+    `required_check_contexts` registers, so the two read one name."""
+    return str(cfg.get("name", name))
+
+
+def _never_closes(condition: str, events: frozenset[str]) -> bool:
+    """True when CONDITION is provably true on every event the workflow declares.
+
+    `if: github.event_name == 'pull_request'` on a workflow that fires on nothing
+    else is such a condition: it gates no run, so the job it guards cannot skip
+    on its own account. Anything the evaluator cannot prove — a `needs:` output,
+    a `github.repository` guard, a status function — stays a skip, which is the
+    conservative answer for a rule about a context that never reports.
+
+    The three-valued evaluator is `check_required_event_closure`'s, which asks
+    the mirror-image question (on which gating event is this condition provably
+    FALSE). One evaluator answers both, so the package holds one notion of what
+    a job condition means.
+    """
+    if not events:
+        return False
+    try:
+        tree = _Parser(condition).parse()
+    except ExpressionError:
+        # An expression this parser does not recognize proves nothing, so the
+        # job keeps its skip. The specific recovery a bare crash would deny.
+        return False
+    return all(truth_of(tree, {"github.event_name": event}) is True for event in events)
+
+
+def _skippable_jobs(jobs: dict, events: frozenset[str]) -> set[str]:
+    """Every job GitHub can leave unrun on a run of this workflow.
+
+    Two ways in. A job's own `if:` closes, or a job it `needs:` skipped — GitHub
+    skips a dependent job by default. `if: always()` closes both ways, which is
+    what makes an always() reporter a stable required check.
+
+    A FAILED dependency also skips the dependent, and that case is deliberately
+    not counted: the run is red, so the merge waits on a failure somebody can
+    read and fix. The skips counted here strand a required check on an all-green
+    run, which is the defect this rule is about.
+
+    The propagation is a fixpoint rather than a walk of the `needs:` graph: a
+    workflow with a `needs:` cycle is one GitHub rejects, but this lint reads the
+    file that has it, so it must answer instead of recurse.
+    """
+    configs = {str(name): cfg for name, cfg in jobs.items() if isinstance(cfg, dict)}
+    always = {
+        name for name, cfg in configs.items() if is_always_reporter(cfg.get("if", ""))
+    }
+    # `.lower()` because YAML resolves the bareword `if: true` to the boolean
+    # True, which stringifies as "True" — the same unconditional job.
+    conditions = {
+        name: unwrap_expression(cfg.get("if", "")) for name, cfg in configs.items()
+    }
+    skippable = {
+        name
+        for name, condition in conditions.items()
+        if name not in always
+        and condition.lower() not in ("", "true")
+        and not _never_closes(condition, events)
+    }
+    growing = True
+    while growing:
+        inherited = {
+            name
+            for name, cfg in configs.items()
+            if name not in always and any(dep in skippable for dep in job_needs(cfg))
+        }
+        growing = not inherited <= skippable
+        skippable |= inherited
+    return skippable
+
+
+def _job_matrix(cfg: dict) -> dict:
+    """A job's `strategy.matrix`, or an empty one when it declares none."""
+    strategy = cfg.get("strategy")
+    matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+    return matrix if isinstance(matrix, dict) else {}
+
+
+def _covering_sibling(jobs: dict, cfg: dict, template: str) -> bool:
+    """True when another job posts TEMPLATE's contexts on every run.
+
+    Such a sibling must satisfy three things. It runs on `if: always()`, so no
+    run leaves it out. It carries the same `name:` template. And it covers the
+    same matrix, which this reads two ways: the two `strategy.matrix` values are
+    equal, or the sibling's expanded names include every one of CFG's.
+
+    A `uses:` job never qualifies. GitHub reports a reusable-workflow call as
+    `<caller job name> / <called job name>`, which is why `_uses_job_required`
+    rejects the marker on such a job — a sibling of that shape would post
+    different contexts and wave the marked job through.
+    """
+    wanted = set(expand_name(template, _job_matrix(cfg)))
+    for name, sibling in jobs.items():
+        if not isinstance(sibling, dict) or "uses" in sibling:
+            continue
+        if not is_always_reporter(sibling.get("if", "")):
+            continue
+        if _name_template(str(name), sibling) != template:
+            continue
+        matrix = _job_matrix(sibling)
+        if matrix == _job_matrix(cfg):
+            return True
+        if wanted and wanted <= set(expand_name(template, matrix)):
+            return True
+    return False
+
+
+def _unreportable_matrix_jobs(
+    jobs: dict, marked: list[str], blocks: dict, events: frozenset[str]
+) -> list[tuple[str, str]]:
+    """(job key, name template) for every required matrix job that can skip and
+    has no always() reporter posting its contexts."""
+    skippable = _skippable_jobs(jobs, events)
+    found = []
+    for name in marked:
+        cfg = jobs[name]
+        template = _name_template(str(name), cfg)
+        if not MATRIX_REF.search(template) or str(name) not in skippable:
+            continue
+        if _allowed(blocks.get(name, (0, ""))[1]) or _covering_sibling(
+            jobs, cfg, template
+        ):
+            continue
+        found.append((name, template))
+    return found
+
+
+def _allowed(block: str) -> bool:
+    """True when the job's own lines carry `# matrix-context-ok: <reason>`.
+
+    Same scope as the marker this annotation answers: the job's key line or one
+    of its direct-child lines, never a step body.
+    """
+    return any(
+        annotated(line, ALLOW) for line in _classification_text(block).split("\n")
+    )
 
 
 def _classification_defect(block: str) -> str | None:
@@ -258,6 +449,21 @@ def _uses_job_required(name: str) -> str:
         "the ruleset would require a context nothing reports and every PR would "
         "hang. Move the marker to a thin caller-local reporter job that `needs:` "
         f"'{name}' instead."
+    )
+
+
+def _skippable_matrix_job(name: str, template: str) -> str:
+    return (
+        f"job '{name}' is marked '# {MARKER}: true' and its name '{template}' "
+        "carries a ${{ matrix.* }} reference, but the job can skip — through its "
+        "own if:, or through a job it needs:. The ruleset requires one context "
+        "per matrix combination. A skipped job posts none of them, so each "
+        "context stays 'Expected — Waiting for status to be reported' and the "
+        "branch blocks with nothing red to read. Make the job unconditional and "
+        "gate its steps instead. Or add a sibling job with 'if: always()', the "
+        f"same name '{template}' and the same matrix, which posts those contexts "
+        f"on every run. If the condition never closes on the protected branch, "
+        f"add '# {ALLOW}: <reason>' to the job instead."
     )
 
 

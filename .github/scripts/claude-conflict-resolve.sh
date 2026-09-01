@@ -17,24 +17,17 @@
 # $RUNNER_TEMP from the base ref is out of reach of both the PR's content and the
 # merge state.
 #
-# Env: CLAUDE_CODE_OAUTH_TOKEN (required) plus the optional _FALLBACK and
-# _FALLBACK_2 … _FALLBACK_6 rungs; the rest is auto-resolve/fanout.sh's own
-# contract — see its header. Needs node/npm on PATH for the CLI install, and must
-# run with the mid-merge working tree as the current directory, like every
-# resolver entrypoint.
+# Env: at least ONE of the rungs lib/claude-oauth-ladder.bash lists —
+# CLAUDE_CODE_OAUTH_TOKEN and _FALLBACK, _FALLBACK_2 … _FALLBACK_6. Any single
+# one is enough; none of them is individually required. The rest is
+# auto-resolve/fanout.sh's own contract — see its header. Needs node/npm on
+# PATH for the CLI install, and must run with the mid-merge working tree as the
+# current directory, like every resolver entrypoint.
 set -euo pipefail
-
-# Refuse before the CLI install, not after: with no credential at all every shard
-# fails anyway, and the fan-out's own guard only fires once the install is paid.
-: "${CLAUDE_CODE_OAUTH_TOKEN:?CLAUDE_CODE_OAUTH_TOKEN is required — no shard can authenticate without it}"
 
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=.github/scripts/lib/claude-oauth-ladder.bash
 source "${SCRIPTS_DIR}/lib/claude-oauth-ladder.bash"
-
-# The installer resolves its version pin relative to itself, so it reads the
-# base-staged pin rather than whatever the untrusted PR head carries.
-bash "${SCRIPTS_DIR}/install-claude-cli.sh"
 
 # The one ordered rung list every resolver caller walks, so a credential this
 # job can resolve on is never one the pre-push review then cannot verify on.
@@ -43,10 +36,46 @@ while IFS= read -r token; do
   [[ -n "$token" ]] && ladder+=("$token")
 done < <(claude_oauth_ladder)
 
+# Refuse before the CLI install, not after: with no credential at all every
+# shard fails anyway, and the fan-out's own guard only fires once the install is
+# paid. The question is whether the LADDER is empty, never whether one named
+# rung is set: the ladder exists so an unset tier is stepped over, and asking
+# for CLAUDE_CODE_OAUTH_TOKEN by name refused a repository holding five working
+# fallback credentials and none under that name.
+if ((${#ladder[@]} == 0)); then
+  echo "::error::no Claude credential is configured — set one of ${CLAUDE_OAUTH_LADDER_VARS[*]}" >&2
+  exit 1
+fi
+
+# The installer resolves its version pin relative to itself, so it reads the
+# base-staged pin rather than whatever the untrusted PR head carries.
+bash "${SCRIPTS_DIR}/install-claude-cli.sh"
+
 # The fan-out writes its aggregate log here every rung, overwriting the previous
 # rung's — so the rung that finally answers is the one the caller reads.
 fanout_dir="${FANOUT_DIR:-${RUNNER_TEMP:-/tmp}/conflict-fanout}"
 export FANOUT_DIR="$fanout_dir"
+
+# SPEND, folded across the WHOLE ladder, for the caller that decides whether to
+# give back this head's attempt mark. The question is not "did a rung run" and
+# not "is there a log": a rejected credential still produces an aggregate log,
+# and check-claude-execution.sh reads `total_cost_usd == 0` as proof the model
+# was never reached. So a run whose every rung was refused at auth has a log and
+# has billed nothing — exactly the case a mark must not survive, because the
+# credential is what gets repaired.
+#
+# Monotone on purpose: once any rung bills, the answer stays true, so a later
+# rung refused at auth cannot hand back a head an earlier rung already paid for.
+# An aggregate MISSING the cost field means a shard could not report one, and
+# unknown counts as spent — the conservative side, since guessing wrong here
+# repeats paid work.
+any_billed=false
+
+emit_spend() {
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "spent=${any_billed}" >>"$GITHUB_OUTPUT"
+  fi
+}
 
 rung=0
 for token in "${ladder[@]}"; do
@@ -55,7 +84,11 @@ for token in "${ladder[@]}"; do
   rc=0
   CLAUDE_CODE_OAUTH_TOKEN="$token" bash "${SCRIPTS_DIR}/auto-resolve/fanout.sh" || rc=$?
   log="${fanout_dir}/execution.json"
+  if [[ -s "$log" ]] && jq -e '(has("total_cost_usd") | not) or .total_cost_usd > 0' "$log" >/dev/null; then
+    any_billed=true
+  fi
   if [[ "$rc" -eq 0 && -s "$log" ]] && ! jq -e '.is_error == true' "$log" >/dev/null; then
+    emit_spend
     exit 0
   fi
   echo "::warning::credential ${rung} produced no usable resolution (exit ${rc}); trying the next rung if one is configured."
@@ -63,5 +96,6 @@ done
 
 # Every rung is spent. Exiting non-zero is the honest report, and the workflow's
 # execution-log gate turns it into a message naming the real cause.
+emit_spend
 echo "::error::every configured Claude credential failed to resolve the conflicts."
 exit 1

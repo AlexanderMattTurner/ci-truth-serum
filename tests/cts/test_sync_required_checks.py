@@ -10,8 +10,10 @@ in test_cts_linecheck.py; here we cover the desired-set aggregation, the REST
 round-trip, the ruleset helpers, and main()'s three modes.
 """
 
+import io
 import json
 import textwrap
+import urllib.error
 import urllib.request
 
 import pytest
@@ -161,6 +163,58 @@ def test_github_request_put_sends_body_and_handles_empty_204(monkeypatch):
     assert captured["req"].get_header("Content-type") == "application/json"
 
 
+def _raise_http_error(code, body):
+    """A urlopen stub that fails the call the way GitHub does."""
+
+    def fake_urlopen(req):  # noqa: ARG001 (signature must match urlopen)
+        raise urllib.error.HTTPError(
+            "https://api.github.com/x", code, "Not Found", {}, io.BytesIO(body.encode())
+        )
+
+    return fake_urlopen
+
+
+@pytest.mark.parametrize("code", [403, 404])
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "POST", "DELETE"])
+def test_github_request_write_denial_names_the_missing_grant(monkeypatch, method, code):
+    """A write GitHub refuses must say which grant the token lacks.
+
+    The ruleset PUT answering 404 after the GET of that same ruleset succeeded
+    is the shape this exists for: an under-scoped token reads as a vanished
+    ruleset, and the bare HTTPError traceback names neither the endpoint nor
+    the grant.
+    """
+    monkeypatch.setattr(
+        urllib.request, "urlopen", _raise_http_error(code, '{"message": "Not Found"}')
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.github_request(method, "https://api.github.com/x", "tok", {"a": 1})
+    message = str(excinfo.value)
+    assert "administration: write" in message
+    assert f"{method} https://api.github.com/x" in message
+    assert str(code) in message
+    assert '{"message": "Not Found"}' in message
+
+
+@pytest.mark.parametrize("code", [403, 404, 422, 500])
+def test_github_request_read_failure_reports_without_blaming_the_grant(
+    monkeypatch, code
+):
+    """A READ that fails names the endpoint and GitHub's message, and nothing
+    else: a token that cannot READ the ruleset is a different fault from one
+    that cannot write it, so naming `administration: write` here would send the
+    reader to the wrong setting."""
+    monkeypatch.setattr(
+        urllib.request, "urlopen", _raise_http_error(code, '{"message": "Bad creds"}')
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.github_request("GET", "https://api.github.com/x", "tok")
+    message = str(excinfo.value)
+    assert "administration: write" not in message
+    assert "GET https://api.github.com/x" in message
+    assert "Bad creds" in message
+
+
 # ─── find_branch_ruleset ─────────────────────────────────────────────────────
 
 
@@ -170,7 +224,7 @@ def test_find_branch_ruleset_single(monkeypatch):
         "github_request",
         lambda *a, **k: [{"id": 7, "target": "branch"}, {"id": 8, "target": "tag"}],
     )
-    assert mod.find_branch_ruleset("o/r", "tok") == 7
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 7
 
 
 def test_find_branch_ruleset_ambiguous_fails_loud(monkeypatch):
@@ -180,7 +234,7 @@ def test_find_branch_ruleset_ambiguous_fails_loud(monkeypatch):
         lambda *a, **k: [{"id": 7, "target": "branch"}, {"id": 9, "target": "branch"}],
     )
     with pytest.raises(SystemExit, match="found 2"):
-        mod.find_branch_ruleset("o/r", "tok")
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
 
 
 def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
@@ -194,7 +248,10 @@ def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
             {"id": 8, "target": "branch", "source_type": "Repository"},
         ],
     )
-    assert mod.find_branch_ruleset("o/r", "tok") == 8
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 8
+    # A read must gate the same ruleset an apply would write, so the repo-owned
+    # one wins here too — the wider branch list is only a fallback.
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=False) == 8
 
 
 def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
@@ -204,10 +261,54 @@ def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
         "github_request",
         lambda *a, **k: [
             {"id": 5, "target": "tag", "source_type": "Repository"},
-            {"id": 6, "target": "branch", "source_type": "Organization"},
+            {"id": 6, "target": "branch", "source_type": "Repository"},
         ],
     )
-    assert mod.find_branch_ruleset("o/r", "tok") == 6
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 6
+
+
+def test_find_branch_ruleset_lone_org_ruleset_fails_loud(monkeypatch):
+    """A single ORG-owned branch ruleset is readable and unwritable.
+
+    Returning its id sends the PUT to the repository endpoint, which answers
+    404 — the shape that reads as a missing ruleset or an under-scoped token
+    and costs a reader the whole diagnosis. Fail here, naming the cause.
+    """
+    monkeypatch.setattr(
+        mod,
+        "github_request",
+        lambda *a, **k: [{"id": 6, "target": "branch", "source_type": "Organization"}],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+    message = str(excinfo.value)
+    assert "1 branch ruleset(s), 0 of them repo-owned" in message
+    assert "organization-owned" in message.lower()
+    # --ruleset-id names one of several candidates. With none writable it only
+    # re-creates the 404, so the message must not prescribe it.
+    assert "--ruleset-id" not in message
+
+
+def test_find_branch_ruleset_lone_org_ruleset_reads_when_no_write(monkeypatch):
+    """`--check` writes nothing, so an org-owned ruleset is a fine read target."""
+    monkeypatch.setattr(
+        mod,
+        "github_request",
+        lambda *a, **k: [{"id": 6, "target": "branch", "source_type": "Organization"}],
+    )
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=False) == 6
+
+
+def test_find_branch_ruleset_no_branch_ruleset_at_all(monkeypatch):
+    # Zero branch rulesets is not an organization-owned one, so the message
+    # must not blame organization ownership for it.
+    monkeypatch.setattr(
+        mod, "github_request", lambda *a, **k: [{"id": 5, "target": "tag"}]
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+    assert "organization-owned" not in str(excinfo.value).lower()
+    assert "found 0 branch ruleset(s)" in str(excinfo.value)
 
 
 def test_find_branch_ruleset_no_repository_source_still_ambiguous(monkeypatch):
@@ -221,7 +322,7 @@ def test_find_branch_ruleset_no_repository_source_still_ambiguous(monkeypatch):
         ],
     )
     with pytest.raises(SystemExit, match="found 2 branch ruleset\\(s\\), 0"):
-        mod.find_branch_ruleset("o/r", "tok")
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
 
 
 def test_find_branch_ruleset_two_repository_source_still_ambiguous(monkeypatch):
@@ -235,7 +336,7 @@ def test_find_branch_ruleset_two_repository_source_still_ambiguous(monkeypatch):
         ],
     )
     with pytest.raises(SystemExit, match="2 of them repo-owned"):
-        mod.find_branch_ruleset("o/r", "tok")
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
 
 
 # ─── apply_contexts ──────────────────────────────────────────────────────────

@@ -3,9 +3,9 @@
 # PR, so a Haiku pass can judge whether later commits addressed each one.
 #
 # A "reviewer thread" is a review thread whose ROOT comment was authored by the
-# reviewer bot (REVIEWER_LOGIN, default github-actions[bot] — the identity the
-# reviewer posts its review with). Human threads and the PR author's own
-# replies are never touched: we key on the root comment's author only.
+# reviewer bot. lib/reviewer-identity.bash owns that question, and
+# lib/review-threads.bash owns the paginated read. Human threads and the PR
+# author's own replies are never touched: this keys on the root comment alone.
 #
 # Writes $PR_INPUT_DIR/threads.json — a JSON array of
 #   {index, id, path, line, body}
@@ -18,22 +18,14 @@
 # Env: GH_TOKEN, GH_REPO (owner/name), PR, PR_INPUT_DIR; REVIEWER_LOGIN optional.
 set -euo pipefail
 
-# shellcheck source=.github/scripts/lib-ci-retry.sh
-source "$(dirname "${BASH_SOURCE[0]}")/lib-ci-retry.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Brings fetch_review_threads, REVIEW_THREAD_ROOT_IS_REVIEWER and retry_stdout.
+# shellcheck source=.github/scripts/lib/review-threads.bash
+source "$SCRIPT_DIR/lib/review-threads.bash"
 
 : "${GH_REPO:?GH_REPO required}"
 : "${PR:?PR number required}"
 : "${PR_INPUT_DIR:?PR_INPUT_DIR required}"
-REVIEWER_LOGIN="${REVIEWER_LOGIN:-github-actions[bot]}"
-# GraphQL returns an app bot's `login` WITHOUT the REST `[bot]` suffix
-# (`github-actions`, not `github-actions[bot]`), and the thread query below runs
-# through `gh api graphql`; compare against the BARE login so the reviewer's own
-# threads are actually matched. Comparing the REST-shaped `github-actions[bot]`
-# matched zero threads, so has_threads was always false and the Haiku resolver
-# never ran.
-# Exported so the gh child inside retry_stdout's subshell sees it — the --jq
-# filter below reads env.REVIEWER_LOGIN_BARE.
-export REVIEWER_LOGIN_BARE="${REVIEWER_LOGIN%'[bot]'}"
 
 mkdir -p "$PR_INPUT_DIR"
 [[ -d "$PR_INPUT_DIR" ]] || {
@@ -43,41 +35,15 @@ mkdir -p "$PR_INPUT_DIR"
 owner="${GH_REPO%%/*}"
 name="${GH_REPO##*/}"
 
-# --paginate walks every page (a PR can accrue more reviewer threads than one
-# page holds); the per-page --jq keeps only unresolved threads whose root comment
-# is the reviewer's, emitting one NDJSON object per surviving thread.
-QUERY=$(
-  cat <<'GRAPHQL'
-query($owner: String!, $name: String!, $pr: Int!, $endCursor: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $pr) {
-      reviewThreads(first: 100, after: $endCursor) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          isResolved
-          path
-          line
-          comments(first: 1) { nodes { author { login } body } }
-        }
-      }
-    }
-  }
-}
-GRAPHQL
-)
-
-# retry_stdout inside a command substitution: a 5xx blip on any --paginate page
-# re-runs the whole (idempotent) query and only the succeeding attempt's NDJSON
-# reaches the file — never a plain `retry` here, whose failing-attempt stdout
-# (gh's HTTP error body) would concatenate into threads.ndjson.
+# One NDJSON object per unresolved reviewer thread. fetch_review_threads walks
+# every page, so a PR with more reviewer threads than one page holds keeps them
+# all. It retries inside a command substitution, so only the succeeding attempt's
+# NDJSON reaches the file — a failing attempt's HTTP error body never does.
 ndjson="${PR_INPUT_DIR}/threads.ndjson"
-threads_ndjson="$(retry_stdout gh api graphql --paginate \
-  -f query="$QUERY" -f owner="$owner" -f name="$name" -F pr="$PR" \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes[]
-        | select(.isResolved == false)
-        | select((.comments.nodes[0].author.login // "" | sub("\\[bot\\]$"; "")) == env.REVIEWER_LOGIN_BARE)
-        | {id, path, line, body: .comments.nodes[0].body}')"
+threads_ndjson="$(fetch_review_threads "$owner" "$name" "$PR" \
+  ".[] | select(.isResolved == false)
+       | $REVIEW_THREAD_ROOT_IS_REVIEWER
+       | {id, path, line, body: .comments.nodes[0].body}")"
 printf '%s\n' "$threads_ndjson" >"$ndjson"
 
 # Slurp the NDJSON into an array and stamp a 1-based index onto each thread.

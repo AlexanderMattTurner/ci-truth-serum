@@ -384,36 +384,6 @@ jobs:
             echo "release-attempt script absent on base ref (bootstrap window) — skipping."
           fi
 
-      - name: Release the attempt when the run died before doing any work
-        # MARK-ATTEMPT runs before the install and pre-pass so a crash or a
-        # timeout mid-resolution cannot repeat expensive work. A failure BEFORE
-        # `prepare` is the opposite case: nothing was merged, no model was
-        # called, and nothing was spent — so the mark records an attempt that
-        # never happened, and left standing it suppresses every later scan of
-        # this PR for a full TTL.
-        #
-        # This is what kept the resolver dead across the whole repository: the
-        # mergiraf install failed on a missing pins file, every open conflicted
-        # PR got marked, and each stayed unresolvable for a TTL per sweep.
-        #
-        # `steps.prepare.outcome` is empty ONLY when that step never executed,
-        # so this can never release a head that a paid pass already worked on.
-        # RESOLVER_DIR is empty when the staging step itself failed, and then
-        # the guard below finds no script and says so — there is no mark to
-        # release in that case either, because MARK-ATTEMPT runs after staging.
-        if: failure() && steps.prepare.outcome == ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        run: |
-          script="${RESOLVER_DIR}/auto-resolve/release-attempt.sh"
-          if [[ -f "$script" ]]; then
-            HEAD_SHA="$(git rev-parse HEAD)" bash "$script"
-          else
-            echo "release-attempt script absent on base ref (bootstrap window) — skipping."
-          fi
-
       - name: Hand off unmergeable (lockfile/binary) conflicts to a human
         # Fails the run loud BEFORE any LLM cost: a `-merge`-attributed or
         # binary conflict has no textual resolution an LLM could produce.
@@ -467,6 +437,61 @@ jobs:
           CONTEXT: Claude conflict resolution
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/check-claude-execution.sh"
+
+      - name: Release the attempt when the run spent nothing
+        # POSITION IS LOAD-BEARING: this reads `steps.resolve_llm`, and a
+        # step sees only the steps DECLARED ABOVE it, so the same block
+        # placed before the model step would read an empty outcome and the
+        # spend arm would never fire. It still covers a failure earlier in
+        # the job, because `failure()` runs a later step regardless of where
+        # the run died. HEAD has not moved yet either: `prepare` leaves the
+        # tree MID-merge and `bundle` below is what commits.
+        # MARK-ATTEMPT runs before the install and pre-pass so a crash or a
+        # timeout mid-resolution cannot repeat expensive work. The cost of that
+        # ordering is a run that marks the head and then spends nothing: the
+        # mark records an attempt that never happened, and left standing it
+        # suppresses every later scan of this PR for a full TTL.
+        #
+        # This is what kept the resolver dead across the whole repository: the
+        # mergiraf install failed on a missing pins file, every open conflicted
+        # PR got marked, and each stayed unresolvable for a TTL per sweep.
+        #
+        # TWO ways to spend nothing, and the second one stranded PR #147 for
+        # hours. A failure BEFORE `prepare` never touched the tree, which
+        # `steps.prepare.outcome == ''` detects — that field is empty ONLY when
+        # the step never executed. But a failure AFTER `prepare` and before the
+        # model can spend nothing too: `claude-conflict-resolve.sh` refuses on
+        # an empty credential ladder, so `resolve_llm` fails while `prepare`
+        # succeeded, and the old gate kept the mark. Nothing then retried after
+        # the credentials were fixed, because only a new head clears a mark.
+        #
+        # `spent` is the honest test, and neither "a rung ran" nor "a log
+        # exists" is. A REJECTED credential still produces an aggregate log, and
+        # check-claude-execution.sh reads `total_cost_usd == 0` as proof the
+        # model was never reached — so a run refused at auth on every rung has a
+        # log, billed nothing, and is precisely the run whose mark must not
+        # survive, because the credential is what gets repaired.
+        # claude-conflict-resolve.sh therefore folds billed cost across the
+        # whole ladder and reports it here, monotone, so a rung that did pay
+        # keeps the mark for the run.
+        if: >-
+          failure() && (steps.prepare.outcome == ''
+          || (steps.resolve_llm.outcome == 'failure'
+          && steps.resolve_llm.outputs.spent != 'true'))
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: |
+          # RESOLVER_DIR is empty when the staging step itself failed, and then
+          # this finds no script and says so — there is no mark to release in
+          # that case either, because MARK-ATTEMPT runs after staging.
+          script="${RESOLVER_DIR}/auto-resolve/release-attempt.sh"
+          if [[ -f "$script" ]]; then
+            HEAD_SHA="$(git rev-parse HEAD)" bash "$script"
+          else
+            echo "release-attempt script absent on base ref (bootstrap window) — skipping."
+          fi
 
       - name: Verify, self-review, and bundle the merge for the land job
         id: bundle

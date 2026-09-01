@@ -13,12 +13,23 @@ name: Claude reviewer-hold sweeper
 # The approve itself is state-based and idempotent (approve-if-reviewer-hold-
 # clear.sh reads current thread + review state), so a sweep never double-approves.
 #
+# The same cron carries a SECOND reconciler, for the same reason in a different
+# shape: the `Review findings resolved` status is a pure function of review and
+# thread state, and it only recomputes on a review event, a push, the reviewer's
+# own post-review command, or the `recheck-review-gate` label. A thread
+# resolution fires none of those. reconcile-review-findings-gate.sh re-derives
+# the status for every open PR, so a stale verdict lives at most one sweep
+# interval. Both duties share one job because both are state-based reconcilers
+# over the open-PR list.
+#
 # SECURITY — schedule + workflow_dispatch run from the DEFAULT branch (trusted repo
 # content) with the base repo's GITHUB_TOKEN; the job checks out ONLY the trusted
 # approval scripts and executes no PR code — it reads thread/review state via the
-# API and can only post an approval. Least privilege: contents:read (checkout the
-# scripts) + pull-requests:write (post the approval), nothing else, so even an
-# unexpected PR can only be approved, never pushed to, merged, or otherwise reached.
+# API and can only post an approval or a commit status. Least privilege:
+# contents:read (checkout the scripts) + pull-requests:write (post the approval)
+# + statuses:write (the gate verdict is a commit status), nothing else, so even
+# an unexpected PR can only be approved or have its gate verdict corrected,
+# never pushed to, merged, or otherwise reached.
 
 on:
   schedule:
@@ -35,16 +46,31 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read # sparse-checkout the trusted approval scripts
-      pull-requests: write # submit the approving review; no other scope
+      pull-requests: write # submit the approving review
+      statuses: write # re-derive the gate verdict; no other scope
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
+      # Job-level: a truncated status description has nowhere to send a reader
+      # without a target_url.
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Checkout the trusted approval scripts (default branch)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: .github/scripts
+          # review-findings-gate.sh reads config/review-severities.json (the
+          # gating-severity SSOT); without it the reconciler below fails closed
+          # on every open PR.
+          sparse-checkout: |
+            .github/scripts
+            config/review-severities.json
           sparse-checkout-cone-mode: false
       - name: Sweep open PRs and clear any cleared reviewer hold
         run: bash .github/scripts/sweep-reviewer-holds.sh
+
+      # `always()`: the two reconcilers are independent, and a hold the sweep
+      # could not clear is no reason to leave every open PR's gate status stale.
+      - name: Reconcile the review-findings gate across open PRs
+        if: always()
+        run: bash .github/scripts/reconcile-review-findings-gate.sh
