@@ -73,6 +73,15 @@ alone. A guard that never closes on the branch that matters —
 defect there. Answer such a case with `# matrix-context-ok: <reason>` on the
 job's key line, or on one of its direct-child lines. The reason is mandatory,
 and a bare marker suppresses nothing.
+
+A fourth rule polices the other expressions a marked `name:` can hold. The
+sync substitutes only `${{ matrix.* }}` when it builds a context. It registers
+any other `${{ }}` — `${{ github.ref_name }}`, `${{ inputs.x }}` — as literal
+text. GitHub evaluates every expression before it posts a check run. So no run
+reports the registered context, on a skip or on a green run alike, and the
+branch blocks with nothing red to read. This rule reads the marker on every
+workflow file, as rules 2 and 3 do. It has no opt-out: the mismatch is exact,
+not an over-approximation.
 """
 
 import re
@@ -207,6 +216,15 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     for name, template in _unreportable_matrix_jobs(jobs, marked, blocks, events):
         line, _block = blocks.get(name, (1, ""))
         violations.append((line, _skippable_matrix_job(str(name), template)))
+
+    # The sync substitutes only ${{ matrix.* }} into a marked name, and GitHub
+    # evaluates every expression before it posts a check run — any other ${{ }}
+    # registers a context no run reports, green or skipped.
+    for name in marked:
+        template = _name_template(str(name), jobs[name])
+        if "${{" in MATRIX_REF.sub("", template):
+            line, _block = blocks.get(name, (1, ""))
+            violations.append((line, _unexpandable_name(str(name), template)))
 
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
     triggers = doc.get("on", doc.get(True))
@@ -449,6 +467,19 @@ def _uses_job_required(name: str) -> str:
         "the ruleset would require a context nothing reports and every PR would "
         "hang. Move the marker to a thin caller-local reporter job that `needs:` "
         f"'{name}' instead."
+    )
+
+
+def _unexpandable_name(name: str, template: str) -> str:
+    return (
+        f"job '{name}' is marked '# {MARKER}: true' but its name '{template}' "
+        "holds a ${{ }} expression that is not a matrix reference. "
+        "sync-required-checks substitutes only ${{ matrix.* }}, so it registers "
+        "the rest as literal text. GitHub evaluates every expression before it "
+        "posts a check run, so no run — green or skipped — ever reports the "
+        "registered context, and the branch blocks with nothing red to read. "
+        "Give the job a static name (matrix references are fine), or move the "
+        f"marker to a static-named always() reporter that needs: '{name}'."
     )
 
 

@@ -859,6 +859,137 @@ def test_main_reports_matrix_job_violation(tmp_path, monkeypatch, capsys):
     assert "::error file=.github/workflows/bad.yaml,line=7::" in out
 
 
+# ── a non-matrix ${{ }} in a marked job's name ─────────────────────────────
+# The sync substitutes only `${{ matrix.* }}` when it builds a context;
+# GitHub evaluates every expression before it posts a check run. Any other
+# `${{ }}` therefore registers a context no run — green or skipped — reports.
+# Scope matches the `uses:` and matrix rules: every workflow, any trigger,
+# no opt-out.
+
+EXPRESSION_NAME_JOB = """\
+name: x
+on:
+  pull_request:
+jobs:
+  release:  # required-check: true
+    name: Release (${{ github.ref_name }})
+    runs-on: ubuntu-latest
+"""
+
+# Unconditional, so the skippable-matrix rule stays silent and any finding
+# here is the expression rule's own.
+MIXED_EXPRESSION_NAME_JOB = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.py }}, ${{ github.head_ref }})
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+EXPRESSION_NAME_UNMARKED = EXPRESSION_NAME_JOB.replace(
+    "  release:  # required-check: true", "  release:"
+)
+
+EXPRESSION_NAME_ADVISORY = EXPRESSION_NAME_JOB.replace(
+    "# required-check: true",
+    "# required-check: false  # the tag in the name changes every release",
+)
+
+EXPRESSION_NAME_NO_PR_TRIGGER = EXPRESSION_NAME_JOB.replace(
+    "on:\n  pull_request:\n", "on:\n  push:\n    branches: [main]\n"
+)
+
+EXPRESSION_NAME_OPTED_OUT = EXPRESSION_NAME_JOB.replace(
+    "  pull_request:\n", f"  pull_request:  # {crr.OPT_OUT}\n"
+)
+
+EXPRESSION_NAME_ALLOWED = EXPRESSION_NAME_JOB.replace(
+    "  release:  # required-check: true\n",
+    f"  release:  # required-check: true\n"
+    f"    # {crr.ALLOW}: the guard never closes on main\n",
+)
+
+MATRIX_REF_WITHOUT_SPACES = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{matrix.py}})
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+
+def test_flags_marked_job_with_an_expression_name(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_JOB))
+    assert len(found) == 1
+    line, message = found[0]
+    assert line == 5  # `release:` key line
+    assert "Release (${{ github.ref_name }})" in message
+    assert "not a matrix reference" in message
+
+
+def test_flags_expression_beside_a_matrix_ref_even_without_a_skip(tmp_path):
+    # The matrix rule needs a skip; this rule does not — the registered
+    # contexts hold the literal `${{ github.head_ref }}` on every run.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MIXED_EXPRESSION_NAME_JOB))
+    assert len(found) == 1
+    assert "not a matrix reference" in found[0][1]
+
+
+def test_unmarked_job_with_an_expression_name_is_fine(tmp_path):
+    # Nothing registers its name, so no context can go unreported.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_UNMARKED)) == []
+
+
+def test_advisory_job_with_an_expression_name_is_fine(tmp_path):
+    assert crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_ADVISORY)) == []
+
+
+def test_flags_expression_name_without_a_pr_trigger(tmp_path):
+    # sync-required-checks reads the marker from every workflow, on any trigger.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_NO_PR_TRIGGER))
+    assert len(found) == 1
+    assert "not a matrix reference" in found[0][1]
+
+
+def test_flags_expression_name_even_when_workflow_opts_out(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_OPTED_OUT))
+    assert len(found) == 1
+    assert "not a matrix reference" in found[0][1]
+
+
+def test_matrix_context_ok_does_not_suppress_an_expression_name(tmp_path):
+    # That annotation answers the skippable-matrix over-approximation. This
+    # mismatch is exact — no branch state makes the context report — so
+    # nothing suppresses it.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_ALLOWED))
+    assert len(found) == 1
+    assert "not a matrix reference" in found[0][1]
+
+
+def test_matrix_ref_without_spaces_is_not_an_expression(tmp_path):
+    # `${{matrix.py}}` is a matrix reference the sync substitutes; the
+    # leftover-`${{` probe must see it removed, not flag it.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_REF_WITHOUT_SPACES)) == []
+
+
+def test_main_reports_expression_name_violation(tmp_path, monkeypatch, capsys):
+    wf = _point_at(tmp_path, monkeypatch)
+    _write(wf, "bad.yaml", EXPRESSION_NAME_JOB)
+    assert crr.main() == 1
+    out = capsys.readouterr().out
+    assert "::error file=.github/workflows/bad.yaml,line=5::" in out
+
+
 # ── _skippable_jobs ────────────────────────────────────────────────────────
 
 
