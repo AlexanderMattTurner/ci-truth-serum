@@ -36,7 +36,7 @@ runs:
 
     - name: Install pnpm
       if: hashFiles('package.json') != ''
-      uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
     - name: Get pnpm store directory
       if: hashFiles('package.json') != ''
@@ -65,7 +65,7 @@ runs:
     # workflow that passes setup-python: true, on its very first sync PR.
     - name: Set up uv
       if: inputs.setup-python == 'true' && hashFiles('pyproject.toml') != ''
-      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       with:
         enable-cache: true
         cache-dependency-glob: "uv.lock"
