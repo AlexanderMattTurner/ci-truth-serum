@@ -1052,7 +1052,8 @@ def test_uppercase_matrix_ref_is_flagged(tmp_path):
     # sync registers the literal 'Test (${{ MATRIX.py }})' whatever GitHub
     # makes of the uppercase form, so the flag stands.
     found = crr.check_file(_write(tmp_path, "wf.yaml", UPPERCASE_MATRIX_REF))
-    assert any("still holds a" in message for _line, message in found)
+    assert len(found) == 1
+    assert "still holds a" in found[0][1]
 
 
 def test_uses_job_with_an_expression_name_gets_only_the_uses_finding(tmp_path):
@@ -1130,6 +1131,19 @@ jobs:
     runs-on: ubuntu-latest
 """
 
+DYNAMIC_INCLUDE_AXIS = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.shard }})
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+"""
+
 
 def test_flags_matrix_ref_without_any_strategy(tmp_path):
     found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_REF_WITHOUT_ANY_STRATEGY))
@@ -1155,6 +1169,14 @@ def test_include_only_axis_is_defined(tmp_path):
     # A bare `include:` matrix schedules exactly its entries, and expand_name
     # reads their keys, so the reference binds.
     assert crr.check_file(_write(tmp_path, "wf.yaml", INCLUDE_ONLY_AXIS)) == []
+
+
+def test_dynamic_include_is_defined(tmp_path):
+    # The canonical dynamic-shard spelling. `include` is an expression string,
+    # not a list, so only the run knows which keys it binds — the same reason
+    # a dynamic axis is exempt. Iterating the string would read it one
+    # character at a time and prove nothing.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", DYNAMIC_INCLUDE_AXIS)) == []
 
 
 def test_main_reports_expression_name_violation(tmp_path, monkeypatch, capsys):

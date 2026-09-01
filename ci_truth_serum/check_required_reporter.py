@@ -500,8 +500,10 @@ def _missing_axes(cfg: dict, template: str) -> set[str]:
     A key counts as defined when it is an axis of the job's `strategy.matrix`
     (whatever its value shape — a dynamic `${{ fromJSON(...) }}` axis is
     defined, only the run can expand it) or a key of an `include` entry. A
-    whole-matrix expression (`matrix: ${{ ... }}`) can bind any key, so
-    nothing is missing there. With no matrix at all, every reference is.
+    dynamic `include:` binds keys only the run can know, so it too defines
+    every reference. A whole-matrix expression (`matrix: ${{ ... }}`) can bind
+    any key, so nothing is missing there. With no matrix at all, every
+    reference is.
     """
     refs = set(MATRIX_REF.findall(template))
     if not refs:
@@ -509,8 +511,13 @@ def _missing_axes(cfg: dict, template: str) -> set[str]:
     strategy = cfg.get("strategy")
     raw = strategy.get("matrix") if isinstance(strategy, dict) else None
     if isinstance(raw, dict):
+        include = raw.get("include") or []
+        if not isinstance(include, list):
+            # A dynamic `include:` binds keys only the run can know, exactly as
+            # a dynamic axis does, so nothing here is provably missing.
+            return set()
         defined = {k for k in raw if k not in ("include", "exclude")}
-        for inc in raw.get("include", []) or []:
+        for inc in include:
             if isinstance(inc, dict):
                 defined |= set(inc)
         return refs - defined
