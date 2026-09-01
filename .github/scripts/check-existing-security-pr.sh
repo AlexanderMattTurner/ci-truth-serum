@@ -19,13 +19,7 @@ EXISTING_BRANCH=$(gh pr list --label "security-scan" --state open \
 
 if [[ -n "$EXISTING_BRANCH" ]]; then
   echo "Found existing security PR branch: $EXISTING_BRANCH"
-<<<<<<< local
   timeout --kill-after=15 60 git fetch origin "$EXISTING_BRANCH"
-||||||| base
-  git fetch origin "$EXISTING_BRANCH"
-=======
-  timeout --kill-after=10 60 git fetch origin "$EXISTING_BRANCH"
->>>>>>> template
   git checkout "$EXISTING_BRANCH"
   if ! git merge "origin/$DEFAULT_BRANCH" --no-edit; then
     echo "::error::Merge conflict with default branch. Aborting merge."

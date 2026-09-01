@@ -3,10 +3,10 @@
 # so the sync PR arrives ready to read instead of carrying raw markers and a
 # request for someone else to clean up later.
 #
-# This is a DRIVER, not a second resolver. Tier 2 is the resolver's own
-# auto-resolve/fanout.py — the same per-block bounded model runs the
-# merge-conflict resolver uses. A sync conflict is a marker-bearing file, which
-# is exactly fanout's input, so nothing here re-implements resolution.
+# This is a DRIVER, not a second resolver. Tier 2 is auto-resolve/fanout.sh —
+# the same per-file bounded model runs the merge-conflict resolver uses. A sync
+# conflict is a marker-bearing file, which is exactly fanout's input, so nothing
+# here re-implements resolution.
 #
 # Two tiers, cheapest first:
 #   1. STRUCTURAL — mergiraf re-merges from the markers, syntax-aware. Free, and
@@ -33,15 +33,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=.github/scripts/lib/merge-conflict.bash
-source "$(cd "${SCRIPT_DIR}/lib" && pwd)/merge-conflict.bash"
-
-# Tier 2 runs the resolver's fanout.py, and the resolver is its own repository
-# now — so the caller must stage it and say where. Required, not derived: an
-# empty default would silently skip the model tier and report every conflict
-# unresolved, which reads as "the model found nothing" rather than as a missing
-# checkout.
-: "${RESOLVER_DIR:?RESOLVER_DIR required — clone the resolver repository and point this at its .github/resolver}"
+# shellcheck source=.github/scripts/auto-resolve/lib.sh
+source "${SCRIPT_DIR}/auto-resolve/lib.sh"
 
 : "${PR_NUMBER:?PR_NUMBER required}"
 out="${GITHUB_OUTPUT:?GITHUB_OUTPUT required}"
@@ -64,13 +57,7 @@ if command -v "$mergiraf_bin" >/dev/null; then
     # Non-empty is required: mergiraf exits 0 printing NOTHING when it cannot
     # generate a solution, so testing the exit status and the absence of markers
     # alone would accept an empty result and blank the file.
-<<<<<<< local
     if timeout --kill-after=5 60 "$mergiraf_bin" solve -p "./${f}" >"$scratch/solved" 2>"$scratch/log" &&
-||||||| base
-    if timeout 60 "$mergiraf_bin" solve -p "./${f}" >"$scratch/solved" 2>"$scratch/log" &&
-=======
-    if timeout --kill-after=10 60 "$mergiraf_bin" solve -p "./${f}" >"$scratch/solved" 2>"$scratch/log" &&
->>>>>>> template
       [[ -s "$scratch/solved" ]] &&
       ! grep -qE "$CONFLICT_MARKER_RE" "$scratch/solved"; then
       cat "$scratch/solved" >"$f"
@@ -102,7 +89,7 @@ if [[ ${#remaining[@]} -gt 0 ]]; then
     CONFLICT_LIST="${remaining[*]}" \
       MODIFY_DELETE_PATHS="" \
       PR_NUMBER="$PR_NUMBER" \
-      python3 "${RESOLVER_DIR}/auto-resolve/fanout.py" ||
+      bash "${SCRIPT_DIR}/auto-resolve/fanout.sh" ||
       echo "template-sync-resolve: the model tier exited non-zero; the marker sweep below decides." >&2
     by_model=("${remaining[@]}")
   fi

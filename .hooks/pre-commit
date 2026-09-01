@@ -32,7 +32,6 @@ fi
 # stack, pinned in a ref so it survives gc and is one `git checkout` away.
 if ! git diff --quiet; then
   if _gb_snapshot=$(git stash create 2>/dev/null) && [[ -n "$_gb_snapshot" ]]; then
-<<<<<<< local
     # The snapshot COMMIT already exists, and the message below names its sha,
     # which is the handle a user actually recovers with. The ref only keeps gc
     # from reaping it, so a failed write costs a little durability and must
@@ -40,16 +39,6 @@ if ! git diff --quiet; then
     # allow-exit-suppress: the ref is a convenience; the sha below is the handle.
     git update-ref refs/gb/precommit-recovery "$_gb_snapshot" 2>/dev/null || true
     echo "pre-commit: unstaged edits present — saved recovery snapshot $_gb_snapshot. If this commit fails and your uncommitted edits vanish, restore them with: git checkout $_gb_snapshot -- <path>" >&2
-||||||| base
-    git update-ref refs/gb/precommit-recovery "$_gb_snapshot" 2>/dev/null || true
-    echo "pre-commit: unstaged edits present — saved recovery snapshot $_gb_snapshot (ref refs/gb/precommit-recovery). If this commit fails and your uncommitted edits vanish, restore them with: git checkout $_gb_snapshot -- <path>" >&2
-=======
-    if git update-ref refs/gb/precommit-recovery "$_gb_snapshot" 2>/dev/null; then
-      echo "pre-commit: unstaged edits present — saved recovery snapshot $_gb_snapshot (ref refs/gb/precommit-recovery). If this commit fails and your uncommitted edits vanish, restore them with: git checkout $_gb_snapshot -- <path>" >&2
-    else
-      echo "pre-commit: unstaged edits present — could not record the recovery ref, but the snapshot commit $_gb_snapshot still exists. If this commit fails and your uncommitted edits vanish, restore them with: git checkout $_gb_snapshot -- <path>" >&2
-    fi
->>>>>>> template
   fi
 fi
 

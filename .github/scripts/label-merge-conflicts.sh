@@ -16,8 +16,7 @@
 # PRs still UNKNOWN after MAX_PASSES are named in a workflow warning — never
 # silently skipped — and the next event or scheduled run retries them anyway.
 # Env: GH_TOKEN, REPO; PR_NUMBER scopes to one PR; MAX_PASSES (default 2) caps
-# the retry loop; RETRY_DELAY_SECS overrides the between-pass wait; SWEEP_LIMIT
-# (default 100) caps how many open PRs one full-repo sweep lists.
+# the retry loop; RETRY_DELAY_SECS overrides the between-pass wait.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,57 +30,25 @@ export LABEL="merge-conflict"
 gh label create "$LABEL" --repo "$REPO" --color d93f0b --force \
   --description "This PR has merge conflicts with its base branch"
 
-SWEEP_LIMIT="${SWEEP_LIMIT:-100}"
-# Set once the cap warning has fired, so a multi-pass retry (MAX_PASSES) that
-# keeps re-fetching the same capped page reports it once, not once per pass.
-# Must be set from the main loop, never from inside a command substitution —
-# a subshell's assignment never reaches back to this variable's parent shell.
-sweep_capped_warned=""
-
-# Raw JSON: a single PR wrapped in an array (`pr view`), or an open-PR page
-# (`pr list`) — a uniform shape so the caller never special-cases PR_NUMBER.
-fetch_page() {
-  if [[ -n "${PR_NUMBER:-}" ]]; then
-    gh pr view "$PR_NUMBER" --repo "$REPO" --json number,mergeable,labels --jq '[.]'
-    return
-  fi
-  gh pr list --repo "$REPO" --state open --limit "$SWEEP_LIMIT" \
-    --json number,mergeable,labels
-}
-
-# TSV rows from a fetch_page JSON blob: number, mergeable, whether LABEL is
-# already applied.
+# TSV rows: number, mergeable, whether LABEL is already applied. One PR when
+# PR_NUMBER is set (via `pr view`), else every open PR (via `pr list`).
 list_prs() {
   local jq_row='[.number, .mergeable, any(.labels[]; .name == env.LABEL)] | @tsv'
-  jq -r ".[] | $jq_row" <<<"$1"
+  if [[ -n "${PR_NUMBER:-}" ]]; then
+    gh pr view "$PR_NUMBER" --repo "$REPO" \
+      --json number,mergeable,labels --jq "$jq_row"
+  else
+    gh pr list --repo "$REPO" --state open --limit 100 \
+      --json number,mergeable,labels --jq ".[] | $jq_row"
+  fi
 }
 
 unknown=""
-<<<<<<< local
 # One pass: sync every PR's label, and report success only when none are left
 # UNKNOWN. retry_cmd owns the between-pass wait (doubling, not the original
 # constant delay — GitHub's lazy mergeability computation tolerates either).
 sync_pass() {
-||||||| base
-for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
-  [[ "$pass" == "1" ]] || sleep "${RETRY_DELAY_SECS:-10}"
-=======
-# retry-loop-ok: not a retry-until-success loop — each pass labels every PR
-# whose state IS known this pass and only carries the still-UNKNOWN subset
-# forward, so the repo's single-command retry_cmd has no body to wrap here.
-for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
-  [[ "$pass" == "1" ]] || sleep "${RETRY_DELAY_SECS:-10}"
->>>>>>> template
   unknown=""
-  page="$(fetch_page)"
-  # A full page means more open PRs may exist past the limit; say so rather
-  # than silently under-sweeping them. jq's own array length, not a line count
-  # of the rendered rows — a zero-PR page renders as one blank TSV line.
-  if [[ -z "${PR_NUMBER:-}" && -z "$sweep_capped_warned" &&
-    "$(jq 'length' <<<"$page")" -ge "$SWEEP_LIMIT" ]]; then
-    echo "::warning::open-PR sweep hit its $SWEEP_LIMIT-PR limit; some PRs may not have been checked this run." >&2
-    sweep_capped_warned=1
-  fi
   while IFS=$'\t' read -r num state labeled; do
     [[ -n "$num" ]] || continue
     case "$state" in
@@ -95,7 +62,6 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
       unknown="$unknown #$num"
       ;;
     esac
-<<<<<<< local
   done <<<"$(list_prs)"
   [[ -z "$unknown" ]]
 }
@@ -104,15 +70,6 @@ for ((pass = 1; pass <= ${MAX_PASSES:-2}; pass++)); do
 rc=0
 retry_cmd "${MAX_PASSES:-2}" "${RETRY_DELAY_SECS:-10}" sync_pass || rc=$?
 [[ "${rc:-0}" -le 1 ]] || exit "${rc}"
-||||||| base
-  done <<<"$(list_prs)"
-  [[ -n "$unknown" ]] || break
-done
-=======
-  done <<<"$(list_prs "$page")"
-  [[ -n "$unknown" ]] || break
-done
->>>>>>> template
 
 if [[ -n "$unknown" ]]; then
   echo "::warning::mergeability still UNKNOWN for$unknown after ${MAX_PASSES:-2} passes; the next PR event or scheduled run will retry them."

@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 # Install the agent-input-sanitizer package the PR-review scripts import
-<<<<<<< local
 # (sanitize-pr-input.mjs, select-resolvable-threads.mjs).
-||||||| base
-# (sanitize-pr-input.mjs, post-pr-review.mjs, select-resolvable-threads.mjs).
-=======
-# (sanitize-pr-input.mjs).
->>>>>>> template
 # Installs into .github/scripts/node_modules so ESM resolution from those
 # scripts finds it without touching the repository's own package.json or
 # lockfile — repos synced from this template need no sanitizer dependency of
