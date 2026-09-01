@@ -79,9 +79,18 @@ sync substitutes only `${{ matrix.* }}` when it builds a context. It registers
 any other `${{ }}` — `${{ github.ref_name }}`, `${{ inputs.x }}` — as literal
 text. GitHub evaluates every expression before it posts a check run. So no run
 reports the registered context, on a skip or on a green run alike, and the
-branch blocks with nothing red to read. This rule reads the marker on every
-workflow file, as rules 2 and 3 do. It has no opt-out: the mismatch is exact,
-not an over-approximation.
+branch blocks with nothing red to read. A matrix value that is itself an
+expression fails the same way: the sync substitutes the value as written, so
+the expression moves into the registered context. This rule reads the marker
+on every workflow file, as rules 2 and 3 do. It has no opt-out: the mismatch
+is exact, not an over-approximation.
+
+A fifth rule polices the mirror defect. A name that references a matrix key
+the job's `strategy.matrix` never defines expands to zero contexts. The sync
+then requires nothing for the job, so the marker silently stops gating merges
+instead of blocking them. An axis with a dynamic value — `${{ fromJSON(...) }}`
+— counts as defined, because only the run can expand it. Same scope as rules
+2 through 4, and no opt-out.
 """
 
 import re
@@ -200,16 +209,6 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     # twin-only branch further down.
     marked = _marked_jobs(blocks, jobs)
 
-    # The two marker rules apply to every workflow file, regardless of trigger or
-    # of the not-required-check opt-out below: sync-required-checks reads
-    # `# required-check: true` from every job in every workflow (`_marked_jobs`,
-    # unfiltered by trigger), so a job carrying it poisons the ruleset even off a
-    # pull_request trigger.
-    for name in marked:
-        if "uses" in jobs[name]:
-            line, _block = blocks.get(name, (1, ""))
-            violations.append((line, _uses_job_required(name)))
-
     # A marked job whose name: carries a matrix reference registers one context
     # per combination, and a skipped job posts none of them.
     events = declared_events(doc)
@@ -217,14 +216,39 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
         line, _block = blocks.get(name, (1, ""))
         violations.append((line, _skippable_matrix_job(str(name), template)))
 
-    # The sync substitutes only ${{ matrix.* }} into a marked name, and GitHub
-    # evaluates every expression before it posts a check run — any other ${{ }}
-    # registers a context no run reports, green or skipped.
+    # The marker rules below apply to every workflow file, regardless of trigger
+    # or of the not-required-check opt-out further down: sync-required-checks
+    # reads `# required-check: true` from every job in every workflow
+    # (`_marked_jobs`, unfiltered by trigger), so a job carrying it poisons the
+    # ruleset even off a pull_request trigger.
     for name in marked:
-        template = _name_template(str(name), jobs[name])
-        if "${{" in MATRIX_REF.sub("", template):
-            line, _block = blocks.get(name, (1, ""))
-            violations.append((line, _unexpandable_name(str(name), template)))
+        cfg = jobs[name]
+        line, _block = blocks.get(name, (1, ""))
+        if "uses" in cfg:
+            # Rule 4's static-name remedy cannot work on a uses: job — GitHub
+            # names its check run '<caller> / <called>' whatever name: says —
+            # so rule 2 owns the whole case.
+            violations.append((line, _uses_job_required(name)))
+            continue
+
+        # The sync substitutes only ${{ matrix.* }} into a marked name, and
+        # GitHub evaluates every expression before it posts a check run — any
+        # other ${{ }} registers a context no run reports, green or skipped.
+        # Both probes are needed: the template one catches a name whose dynamic
+        # matrix expands to nothing, and the expanded one catches a matrix
+        # VALUE that is itself an expression, which substitution moves into
+        # the registered context.
+        template = _name_template(str(name), cfg)
+        stuck = [c for c in expand_name(template, _job_matrix(cfg)) if "${{" in c]
+        if stuck or "${{" in MATRIX_REF.sub("", template):
+            offending = stuck[0] if stuck else template
+            violations.append((line, _unexpandable_name(str(name), offending)))
+
+        # The mirror defect: a reference to an axis the matrix never defines
+        # expands to ZERO contexts, so the sync requires nothing at all.
+        missing = _missing_axes(cfg, template)
+        if missing:
+            violations.append((line, _no_axis_for_ref(str(name), template, missing)))
 
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
     triggers = doc.get("on", doc.get(True))
@@ -470,16 +494,54 @@ def _uses_job_required(name: str) -> str:
     )
 
 
-def _unexpandable_name(name: str, template: str) -> str:
+def _missing_axes(cfg: dict, template: str) -> set[str]:
+    """The matrix keys TEMPLATE references that CFG's matrix can never bind.
+
+    A key counts as defined when it is an axis of the job's `strategy.matrix`
+    (whatever its value shape — a dynamic `${{ fromJSON(...) }}` axis is
+    defined, only the run can expand it) or a key of an `include` entry. A
+    whole-matrix expression (`matrix: ${{ ... }}`) can bind any key, so
+    nothing is missing there. With no matrix at all, every reference is.
+    """
+    refs = set(MATRIX_REF.findall(template))
+    if not refs:
+        return set()
+    strategy = cfg.get("strategy")
+    raw = strategy.get("matrix") if isinstance(strategy, dict) else None
+    if isinstance(raw, dict):
+        defined = {k for k in raw if k not in ("include", "exclude")}
+        for inc in raw.get("include", []) or []:
+            if isinstance(inc, dict):
+                defined |= set(inc)
+        return refs - defined
+    return refs if raw is None else set()
+
+
+def _unexpandable_name(name: str, offending: str) -> str:
+    return (
+        f"job '{name}' is marked '# {MARKER}: true' but registers the check "
+        f"context '{offending}', which still holds a "
+        "${{ }} expression. sync-required-checks substitutes only "
+        "${{ matrix.* }}, with the matrix values as written in the workflow, "
+        "so every other expression stays in the registered text. GitHub "
+        "evaluates every expression before it posts a check run, so no run — "
+        "green or skipped — ever reports that context, and the branch blocks "
+        "with nothing red to read. Use a static name and static matrix values "
+        "(matrix references are fine), or move the marker to a static-named "
+        f"always() reporter that needs: '{name}'."
+    )
+
+
+def _no_axis_for_ref(name: str, template: str, missing: set[str]) -> str:
+    keys = ", ".join(sorted(missing))
     return (
         f"job '{name}' is marked '# {MARKER}: true' but its name '{template}' "
-        "holds a ${{ }} expression that is not a matrix reference. "
-        "sync-required-checks substitutes only ${{ matrix.* }}, so it registers "
-        "the rest as literal text. GitHub evaluates every expression before it "
-        "posts a check run, so no run — green or skipped — ever reports the "
-        "registered context, and the branch blocks with nothing red to read. "
-        "Give the job a static name (matrix references are fine), or move the "
-        f"marker to a static-named always() reporter that needs: '{name}'."
+        f"references matrix key(s) [{keys}] that the job's strategy.matrix "
+        "never defines. The sync can expand no context from that name, so it "
+        "requires NOTHING for this job — the marker silently stops gating "
+        "merges instead of blocking them. Fix the reference or add the axis; "
+        "a dynamic axis (a "
+        "${{ fromJSON(...) }} value) counts as defined."
     )
 
 
