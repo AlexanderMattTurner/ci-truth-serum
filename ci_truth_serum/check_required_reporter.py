@@ -56,12 +56,17 @@ status to be reported". The branch blocks forever, no check turns red, and no
 log exists to read.
 
 So a marked matrix job that can skip needs a sibling job. That sibling runs on
-`if: always()` and carries the same `name:` template, so it posts the same
-contexts on every run. This rule has the same unconditional scope as the
-`uses:` rule, and for the same reason. It also ships no opt-out annotation,
-which is the exception CONTRIBUTING.md asks a check to declare: a required
-context that no job can post blocks the branch whatever the reason for it, so
-an annotation would only record the block.
+`if: always()` and carries the same `name:` template, and it covers the same
+matrix, so it posts the same contexts on every run. A `uses:` job is no such
+sibling, for the reason rule 2 gives. This rule reads the marker on every
+workflow file, on any trigger, as rule 2 does.
+
+"Can skip" is an over-approximation: this lint counts every `if:` that is not
+empty and not literally true. A guard that never closes on the branch that
+matters — `if: github.repository == '<owner>/<repo>'` — is skippable here and
+is not a defect there. Answer such a case with `# matrix-context-ok: <reason>`
+on the job's key line, or on one of its direct-child lines. The reason is
+mandatory, and a bare marker suppresses nothing.
 """
 
 import re
@@ -81,6 +86,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     has_fail_closed_twin,
     is_always_reporter,
     is_fail_closed_twin,
+    expand_name,
     job_needs,
     unwrap_expression,
     MATRIX_REF,
@@ -90,6 +96,7 @@ from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-
 
 OPT_OUT = "not-required-check"
 MARKER = "required-check"
+ALLOW = "matrix-context-ok"
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
@@ -184,7 +191,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
     # A marked job whose name: carries a matrix reference registers one context
     # per combination, and a skipped job posts none of them.
-    for name, template in _unreportable_matrix_jobs(jobs, marked):
+    for name, template in _unreportable_matrix_jobs(jobs, marked, blocks):
         line, _block = blocks.get(name, (1, ""))
         violations.append((line, _skippable_matrix_job(str(name), template)))
 
@@ -286,35 +293,71 @@ def _skippable_jobs(jobs: dict) -> set[str]:
     return skippable
 
 
-def _always_reporter_names(jobs: dict, exclude: str) -> set[str]:
-    """The `name:` templates of every always() reporter except EXCLUDE. A
-    reporter carrying the same template posts the same contexts on every run.
+def _job_matrix(cfg: dict) -> dict:
+    """A job's `strategy.matrix`, or an empty one when it declares none."""
+    strategy = cfg.get("strategy")
+    matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+    return matrix if isinstance(matrix, dict) else {}
 
-    The templates are compared verbatim, before matrix substitution: a dynamic
-    matrix (`${{ fromJSON(...) }}`) expands to nothing a lint can read, so an
-    expanded comparison would excuse exactly the workflows this rule is for.
+
+def _covering_sibling(jobs: dict, cfg: dict, template: str) -> bool:
+    """True when another job posts TEMPLATE's contexts on every run.
+
+    Such a sibling must satisfy three things. It runs on `if: always()`, so no
+    run leaves it out. It carries the same `name:` template. And it covers the
+    same matrix, which this reads two ways: the two `strategy.matrix` values are
+    equal, or the sibling's expanded names include every one of CFG's.
+
+    A `uses:` job never qualifies. GitHub reports a reusable-workflow call as
+    `<caller job name> / <called job name>`, which is why `_uses_job_required`
+    rejects the marker on such a job — a sibling of that shape would post
+    different contexts and wave the marked job through.
     """
-    return {
-        _name_template(str(name), cfg)
-        for name, cfg in jobs.items()
-        if isinstance(cfg, dict)
-        and str(name) != exclude
-        and is_always_reporter(cfg.get("if", ""))
-    }
+    wanted = set(expand_name(template, _job_matrix(cfg)))
+    for name, sibling in jobs.items():
+        if not isinstance(sibling, dict) or "uses" in sibling:
+            continue
+        if not is_always_reporter(sibling.get("if", "")):
+            continue
+        if _name_template(str(name), sibling) != template:
+            continue
+        matrix = _job_matrix(sibling)
+        if matrix == _job_matrix(cfg):
+            return True
+        if wanted and wanted <= set(expand_name(template, matrix)):
+            return True
+    return False
 
 
-def _unreportable_matrix_jobs(jobs: dict, marked: list[str]) -> list[tuple[str, str]]:
+def _unreportable_matrix_jobs(
+    jobs: dict, marked: list[str], blocks: dict
+) -> list[tuple[str, str]]:
     """(job key, name template) for every required matrix job that can skip and
     has no always() reporter posting its contexts."""
     skippable = _skippable_jobs(jobs)
     found = []
     for name in marked:
-        template = _name_template(str(name), jobs[name])
+        cfg = jobs[name]
+        template = _name_template(str(name), cfg)
         if not MATRIX_REF.search(template) or str(name) not in skippable:
             continue
-        if template not in _always_reporter_names(jobs, str(name)):
-            found.append((name, template))
+        if _allowed(blocks.get(name, (0, ""))[1]) or _covering_sibling(
+            jobs, cfg, template
+        ):
+            continue
+        found.append((name, template))
     return found
+
+
+def _allowed(block: str) -> bool:
+    """True when the job's own lines carry `# matrix-context-ok: <reason>`.
+
+    Same scope as the marker this annotation answers: the job's key line or one
+    of its direct-child lines, never a step body.
+    """
+    return any(
+        annotated(line, ALLOW) for line in _classification_text(block).split("\n")
+    )
 
 
 def _classification_defect(block: str) -> str | None:
@@ -375,8 +418,10 @@ def _skippable_matrix_job(name: str, template: str) -> str:
         "per matrix combination. A skipped job posts none of them, so each "
         "context stays 'Expected — Waiting for status to be reported' and the "
         "branch blocks with nothing red to read. Make the job unconditional and "
-        "gate its steps instead. Or add a sibling job with 'if: always()' and the "
-        f"same name '{template}', which posts those contexts on every run."
+        "gate its steps instead. Or add a sibling job with 'if: always()', the "
+        f"same name '{template}' and the same matrix, which posts those contexts "
+        f"on every run. If the condition never closes on the protected branch, "
+        f"add '# {ALLOW}: <reason>' to the job instead."
     )
 
 
