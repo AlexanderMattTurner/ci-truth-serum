@@ -667,3 +667,212 @@ def test_main_reports_uses_job_violation(tmp_path, monkeypatch, capsys):
     assert crr.main() == 1
     out = capsys.readouterr().out
     assert "::error file=.github/workflows/bad.yaml,line=5::" in out
+
+
+# ── required matrix job that can skip ──────────────────────────────────────
+# A job whose `name:` carries `${{ matrix.* }}` registers one required context
+# per combination ("Test (3.11)", "Test (3.12)"). GitHub posts those check runs
+# only when the job runs, so a skip leaves every one of them at
+# "Expected — Waiting for status to be reported": the branch blocks with no red
+# check and no log. Scope matches the `uses:` rule — every workflow, any
+# trigger, no opt-out — because sync-required-checks reads the marker the same
+# unconditional way.
+
+MATRIX_JOB_OWN_IF = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  test:  # required-check: true
+    name: Test (${{ matrix.py }})
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    strategy:
+      matrix:
+        py: ["3.11", "3.12"]
+    runs-on: ubuntu-latest
+"""
+
+MATRIX_JOB_INHERITED_SKIP = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+  build:
+    needs: decide
+    runs-on: ubuntu-latest
+  test:  # required-check: true
+    name: Test (${{ matrix.py }})
+    needs: [build]
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+MATRIX_JOB_UNCONDITIONAL = """\
+name: x
+on:
+  pull_request:
+jobs:
+  build:
+    if: true
+    runs-on: ubuntu-latest
+  test:  # required-check: true
+    name: Test (${{ matrix.py }})
+    needs: build
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+MATRIX_JOB_WITH_ALWAYS_TWIN = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  test:  # required-check: true
+    name: Test (${{ matrix.py }})
+    needs: decide
+    if: needs.decide.outputs.run == 'true'
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+  test-report:
+    name: Test (${{ matrix.py }})
+    # required-check: false  # posts the same contexts as test, which is the marked job
+    needs: [decide, test]
+    if: always()
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+MATRIX_JOB_WITH_MISMATCHED_TWIN = MATRIX_JOB_WITH_ALWAYS_TWIN.replace(
+    "name: Test (${{ matrix.py }})\n    # required-check: false",
+    "name: Report (${{ matrix.py }})\n    # required-check: false",
+)
+
+MATRIX_JOB_ITSELF_ALWAYS = """\
+name: x
+on:
+  pull_request:
+jobs:
+  decide:
+    uses: ./.github/workflows/decide-reusable.yaml
+  test:  # required-check: true
+    name: Test (${{ matrix.py }})
+    needs: decide
+    if: always()
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+MATRIX_JOB_UNMARKED = MATRIX_JOB_OWN_IF.replace(
+    "  test:  # required-check: true", "  test:"
+)
+
+MATRIX_JOB_NO_PR_TRIGGER = MATRIX_JOB_OWN_IF.replace(
+    "on:\n  pull_request:\n", "on:\n  push:\n    branches: [main]\n"
+)
+
+MATRIX_JOB_OPTED_OUT = MATRIX_JOB_OWN_IF.replace(
+    "  pull_request:\n", f"  pull_request:  # {crr.OPT_OUT}\n"
+)
+
+
+def test_flags_required_matrix_job_gated_by_its_own_if(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_OWN_IF))
+    assert len(found) == 1
+    line, message = found[0]
+    assert line == 7  # `test:` key line
+    assert "Test (${{ matrix.py }})" in message
+    assert "Waiting for status to be reported" in message
+
+
+def test_flags_required_matrix_job_that_inherits_a_skip(tmp_path):
+    # `test` has no `if:` of its own. It skips because `build` skips, and
+    # `build` skips because `decide` does — two hops, so the propagation has
+    # to be transitive.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_INHERITED_SKIP))
+    assert len(found) == 1
+    assert "'test'" in found[0][1]
+
+
+def test_unconditional_required_matrix_job_is_fine(tmp_path):
+    # `if: true` is not a gate, so neither `build` nor `test` can skip.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_UNCONDITIONAL)) == []
+
+
+def test_required_matrix_job_with_an_always_twin_is_fine(tmp_path):
+    assert (
+        crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_WITH_ALWAYS_TWIN)) == []
+    )
+
+
+def test_always_twin_under_a_different_name_does_not_satisfy(tmp_path):
+    # The twin only helps when it posts the SAME contexts. A reporter named
+    # "Report (…)" leaves every "Test (…)" context unreported.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_WITH_MISMATCHED_TWIN))
+    assert len(found) == 1
+    assert "'test'" in found[0][1]
+
+
+def test_required_matrix_job_that_always_runs_is_fine(tmp_path):
+    assert crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_ITSELF_ALWAYS)) == []
+
+
+def test_unmarked_matrix_job_that_can_skip_is_fine(tmp_path):
+    # Nothing requires its contexts, so a skip blocks no branch.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_UNMARKED)) == []
+
+
+def test_flags_required_matrix_job_without_a_pr_trigger(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_NO_PR_TRIGGER))
+    assert len(found) == 1
+    assert "matrix" in found[0][1]
+
+
+def test_flags_required_matrix_job_even_when_workflow_opts_out(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_OPTED_OUT))
+    assert len(found) == 1
+    assert "matrix" in found[0][1]
+
+
+def test_main_reports_matrix_job_violation(tmp_path, monkeypatch, capsys):
+    wf = _point_at(tmp_path, monkeypatch)
+    _write(wf, "bad.yaml", MATRIX_JOB_OWN_IF)
+    assert crr.main() == 1
+    out = capsys.readouterr().out
+    assert "::error file=.github/workflows/bad.yaml,line=7::" in out
+
+
+# ── _skippable_jobs ────────────────────────────────────────────────────────
+
+
+def test_skippable_jobs_reads_a_scalar_needs_and_ignores_a_non_dict_job():
+    jobs = {
+        "scalar": 3,
+        "gate": {"if": "github.event_name == 'push'"},
+        "worker": {"needs": "gate"},
+        "reporter": {"needs": ["gate", "worker"], "if": "always()"},
+    }
+    assert crr._skippable_jobs(jobs) == {"gate", "worker"}
+
+
+def test_skippable_jobs_terminates_on_a_needs_cycle():
+    # GitHub rejects this workflow, but the lint still reads the file.
+    jobs = {"a": {"needs": "b"}, "b": {"needs": "a"}}
+    assert crr._skippable_jobs(jobs) == set()

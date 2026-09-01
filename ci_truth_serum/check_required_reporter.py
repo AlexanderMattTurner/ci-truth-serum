@@ -46,6 +46,22 @@ caller-local reporter job that `needs:` the call instead. Unlike the
 reporter-classification rule above, this one applies to every workflow file:
 the apply workflow reads `# required-check: true` from any job, on any
 trigger, with no opt-out, so this check has the same unconditional scope.
+
+A third rule polices the same annotation on a MATRIX job. A job whose `name:`
+carries a `${{ matrix.X }}` reference registers one required context per
+combination — `Test (3.11)`, `Test (3.12)`. GitHub posts those check runs only
+when the job runs. Two things skip the job: its own `if:` closes, or a job it
+`needs:` skips. Each one of those contexts then stays "Expected — Waiting for
+status to be reported". The branch blocks forever, no check turns red, and no
+log exists to read.
+
+So a marked matrix job that can skip needs a sibling job. That sibling runs on
+`if: always()` and carries the same `name:` template, so it posts the same
+contexts on every run. This rule has the same unconditional scope as the
+`uses:` rule, and for the same reason. It also ships no opt-out annotation,
+which is the exception CONTRIBUTING.md asks a check to declare: a required
+context that no job can post blocks the branch whatever the reason for it, so
+an annotation would only record the block.
 """
 
 import re
@@ -65,6 +81,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     has_fail_closed_twin,
     is_always_reporter,
     is_fail_closed_twin,
+    job_needs,
+    unwrap_expression,
+    MATRIX_REF,
     workflow_files as _workflow_files,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -149,15 +168,25 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     blocks = _job_blocks(text)
     violations: list[tuple[int, str]] = []
 
-    # Applies to every workflow file, regardless of trigger or the
-    # not-required-check opt-out below: sync-required-checks reads
-    # `# required-check: true` from every job in every workflow
-    # (`_marked_jobs`, unfiltered by trigger), so a `uses:` job carrying it
-    # poisons the ruleset even off a pull_request trigger.
-    for name in _marked_jobs(blocks, jobs):
+    # One scan of the markers, read by three rules: the two below and the
+    # twin-only branch further down.
+    marked = _marked_jobs(blocks, jobs)
+
+    # The two marker rules apply to every workflow file, regardless of trigger or
+    # of the not-required-check opt-out below: sync-required-checks reads
+    # `# required-check: true` from every job in every workflow (`_marked_jobs`,
+    # unfiltered by trigger), so a job carrying it poisons the ruleset even off a
+    # pull_request trigger.
+    for name in marked:
         if "uses" in jobs[name]:
             line, _block = blocks.get(name, (1, ""))
             violations.append((line, _uses_job_required(name)))
+
+    # A marked job whose name: carries a matrix reference registers one context
+    # per combination, and a skipped job posts none of them.
+    for name, template in _unreportable_matrix_jobs(jobs, marked):
+        line, _block = blocks.get(name, (1, ""))
+        violations.append((line, _skippable_matrix_job(str(name), template)))
 
     # PyYAML parses the bareword key `on:` as the boolean True (YAML 1.1).
     triggers = doc.get("on", doc.get(True))
@@ -192,7 +221,6 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     # reporter carrying `# required-check: true` is the aggregate that exempts
     # the work jobs; anything else leaves the hole this branch closes.
     gate_names = decide_gate_names(jobs)
-    marked = set(_marked_jobs(blocks, jobs))
     aggregate = [
         name
         for name, cfg in jobs.items()
@@ -209,6 +237,84 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
             elif defect == "no-reason":
                 violations.append((line, _no_reason(name)))
     return violations
+
+
+def _name_template(name: str, cfg: dict) -> str:
+    """The check-run name GitHub posts for a job, before matrix substitution —
+    the job's `name:`, or its key when it declares none. The same fallback
+    `required_check_contexts` registers, so the two read one name."""
+    return str(cfg.get("name", name))
+
+
+def _skippable_jobs(jobs: dict) -> set[str]:
+    """Every job GitHub can leave unrun on a run of this workflow.
+
+    Two ways in. A job's own `if:` closes, or a job it `needs:` skipped — GitHub
+    skips a dependent job by default. `if: always()` closes both ways, which is
+    what makes an always() reporter a stable required check.
+
+    A FAILED dependency also skips the dependent, and that case is deliberately
+    not counted: the run is red, so the merge waits on a failure somebody can
+    read and fix. The skips counted here strand a required check on an all-green
+    run, which is the defect this rule is about.
+
+    The propagation is a fixpoint rather than a walk of the `needs:` graph: a
+    workflow with a `needs:` cycle is one GitHub rejects, but this lint reads the
+    file that has it, so it must answer instead of recurse.
+    """
+    configs = {str(name): cfg for name, cfg in jobs.items() if isinstance(cfg, dict)}
+    always = {
+        name for name, cfg in configs.items() if is_always_reporter(cfg.get("if", ""))
+    }
+    # `.lower()` because YAML resolves the bareword `if: true` to the boolean
+    # True, which stringifies as "True" — the same unconditional job.
+    skippable = {
+        name
+        for name, cfg in configs.items()
+        if name not in always
+        and unwrap_expression(cfg.get("if", "")).lower() not in ("", "true")
+    }
+    growing = True
+    while growing:
+        inherited = {
+            name
+            for name, cfg in configs.items()
+            if name not in always and any(dep in skippable for dep in job_needs(cfg))
+        }
+        growing = not inherited <= skippable
+        skippable |= inherited
+    return skippable
+
+
+def _always_reporter_names(jobs: dict, exclude: str) -> set[str]:
+    """The `name:` templates of every always() reporter except EXCLUDE. A
+    reporter carrying the same template posts the same contexts on every run.
+
+    The templates are compared verbatim, before matrix substitution: a dynamic
+    matrix (`${{ fromJSON(...) }}`) expands to nothing a lint can read, so an
+    expanded comparison would excuse exactly the workflows this rule is for.
+    """
+    return {
+        _name_template(str(name), cfg)
+        for name, cfg in jobs.items()
+        if isinstance(cfg, dict)
+        and str(name) != exclude
+        and is_always_reporter(cfg.get("if", ""))
+    }
+
+
+def _unreportable_matrix_jobs(jobs: dict, marked: list[str]) -> list[tuple[str, str]]:
+    """(job key, name template) for every required matrix job that can skip and
+    has no always() reporter posting its contexts."""
+    skippable = _skippable_jobs(jobs)
+    found = []
+    for name in marked:
+        template = _name_template(str(name), jobs[name])
+        if not MATRIX_REF.search(template) or str(name) not in skippable:
+            continue
+        if template not in _always_reporter_names(jobs, str(name)):
+            found.append((name, template))
+    return found
 
 
 def _classification_defect(block: str) -> str | None:
@@ -258,6 +364,19 @@ def _uses_job_required(name: str) -> str:
         "the ruleset would require a context nothing reports and every PR would "
         "hang. Move the marker to a thin caller-local reporter job that `needs:` "
         f"'{name}' instead."
+    )
+
+
+def _skippable_matrix_job(name: str, template: str) -> str:
+    return (
+        f"job '{name}' is marked '# {MARKER}: true' and its name '{template}' "
+        "carries a ${{ matrix.* }} reference, but the job can skip — through its "
+        "own if:, or through a job it needs:. The ruleset requires one context "
+        "per matrix combination. A skipped job posts none of them, so each "
+        "context stays 'Expected — Waiting for status to be reported' and the "
+        "branch blocks with nothing red to read. Make the job unconditional and "
+        "gate its steps instead. Or add a sibling job with 'if: always()' and the "
+        f"same name '{template}', which posts those contexts on every run."
     )
 
 
