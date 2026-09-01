@@ -35,6 +35,7 @@ jobs:
           - 'uv.lock'
           - '.pre-commit-config.yaml'
           - '.github/scripts/run-hook-lifecycle.sh'
+          - '.github/scripts/merge-driver-probe.sh'
           - '.github/actions/setup-base-env/**'
           - '.github/actions/setup-uv/**'
           - '.github/workflows/hook-lifecycle.yaml'
