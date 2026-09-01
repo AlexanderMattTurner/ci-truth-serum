@@ -352,7 +352,7 @@ A marked job whose `name:` holds a `${{ matrix.* }}` reference must also run on 
 
 The lint rejects that shape too. Make the job unconditional and gate its steps instead. Or add a sibling job that runs on `if: always()`, carries the same `name:` template and covers the same matrix. A `uses:` job is no such sibling, because GitHub names its check run `<caller job name> / <called job name>`.
 
-"Can skip" is an over-approximation: the lint counts every `if:` that is not empty and not literally true. A guard that never closes on the protected branch, such as `if: github.repository == '<owner>/<repo>'`, is skippable here and is no defect there. Answer that case with `# matrix-context-ok: <reason>` on the job. The reason is mandatory.
+The lint reads a job's `if:` through the same three-valued evaluator `check-required-event-closure` uses. A condition the workflow's own triggers make true, such as `if: github.event_name == 'pull_request'` on a workflow that fires on nothing else, is no skip. The rest is an over-approximation, because the evaluator binds the event facts alone. A guard that never closes on the protected branch, such as `if: github.repository == '<owner>/<repo>'`, is skippable here and is no defect there. Answer that case with `# matrix-context-ok: <reason>` on the job. The reason is mandatory.
 
 ```bash
 pip install "git+https://github.com/AlexanderMattTurner/ci-truth-serum@v1.0.0"

@@ -701,7 +701,7 @@ on:
   pull_request:
 jobs:
   decide:
-    if: github.event_name == 'pull_request'
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
   build:
     needs: decide
@@ -865,17 +865,17 @@ def test_main_reports_matrix_job_violation(tmp_path, monkeypatch, capsys):
 def test_skippable_jobs_reads_a_scalar_needs_and_ignores_a_non_dict_job():
     jobs = {
         "scalar": 3,
-        "gate": {"if": "github.event_name == 'push'"},
+        "gate": {"if": "github.event.pull_request.draft == false"},
         "worker": {"needs": "gate"},
         "reporter": {"needs": ["gate", "worker"], "if": "always()"},
     }
-    assert crr._skippable_jobs(jobs) == {"gate", "worker"}
+    assert crr._skippable_jobs(jobs, frozenset({"push"})) == {"gate", "worker"}
 
 
 def test_skippable_jobs_terminates_on_a_needs_cycle():
     # GitHub rejects this workflow, but the lint still reads the file.
     jobs = {"a": {"needs": "b"}, "b": {"needs": "a"}}
-    assert crr._skippable_jobs(jobs) == set()
+    assert crr._skippable_jobs(jobs, frozenset({"push"})) == set()
 
 
 # ── what does NOT count as a covering sibling ──────────────────────────────
@@ -1026,3 +1026,56 @@ def test_annotation_inside_a_step_does_not_suppress(tmp_path):
     found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_ALLOWED_IN_A_STEP))
     assert len(found) == 1
     assert "'test'" in found[0][1]
+
+
+# ── a condition the triggers make always true ──────────────────────────────
+# `check_required_event_closure`'s evaluator answers the mirror question, so
+# both rules read a job `if:` the same way.
+
+MATRIX_JOB_EVENT_GUARD = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.py }})
+    if: github.event_name == 'pull_request'
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+MATRIX_JOB_EVENT_GUARD_TWO_TRIGGERS = MATRIX_JOB_EVENT_GUARD.replace(
+    "on:\n  pull_request:\n", "on:\n  pull_request:\n  push:\n"
+)
+
+MATRIX_JOB_UNREADABLE_IF = MATRIX_JOB_EVENT_GUARD.replace(
+    "if: github.event_name == 'pull_request'", "if: github.event_name =~ 'pull'"
+)
+
+
+def test_condition_the_triggers_make_true_is_not_a_skip(tmp_path):
+    assert crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_EVENT_GUARD)) == []
+
+
+def test_event_guard_that_closes_on_another_trigger_is_a_skip(tmp_path):
+    # The same guard is false on the push run, so the job skips there.
+    found = crr.check_file(
+        _write(tmp_path, "wf.yaml", MATRIX_JOB_EVENT_GUARD_TWO_TRIGGERS)
+    )
+    assert len(found) == 1
+    assert "'test'" in found[0][1]
+
+
+def test_unreadable_condition_stays_a_skip(tmp_path):
+    # The evaluator cannot parse `=~`, and an unproven condition proves nothing.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_UNREADABLE_IF))
+    assert len(found) == 1
+    assert "'test'" in found[0][1]
+
+
+def test_never_closes_needs_the_declared_events():
+    # No readable `on:` means no fact to prove the condition with.
+    assert crr._never_closes("github.event_name == 'push'", frozenset()) is False
+    assert crr._never_closes("github.event_name == 'push'", frozenset({"push"})) is True
