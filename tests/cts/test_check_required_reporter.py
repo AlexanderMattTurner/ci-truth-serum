@@ -859,6 +859,334 @@ def test_main_reports_matrix_job_violation(tmp_path, monkeypatch, capsys):
     assert "::error file=.github/workflows/bad.yaml,line=7::" in out
 
 
+# ── a non-matrix ${{ }} in a marked job's name ─────────────────────────────
+# The sync substitutes only `${{ matrix.* }}` when it builds a context;
+# GitHub evaluates every expression before it posts a check run. Any other
+# `${{ }}` therefore registers a context no run — green or skipped — reports.
+# Scope matches the `uses:` and matrix rules: every workflow, any trigger,
+# no opt-out.
+
+EXPRESSION_NAME_JOB = """\
+name: x
+on:
+  pull_request:
+jobs:
+  release:  # required-check: true
+    name: Release (${{ github.ref_name }})
+    runs-on: ubuntu-latest
+"""
+
+# Unconditional, so the skippable-matrix rule stays silent and any finding
+# here is the expression rule's own.
+MIXED_EXPRESSION_NAME_JOB = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.py }}, ${{ github.head_ref }})
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+EXPRESSION_NAME_UNMARKED = EXPRESSION_NAME_JOB.replace(
+    "  release:  # required-check: true", "  release:"
+)
+
+EXPRESSION_NAME_ADVISORY = EXPRESSION_NAME_JOB.replace(
+    "# required-check: true",
+    "# required-check: false  # the tag in the name changes every release",
+)
+
+EXPRESSION_NAME_NO_PR_TRIGGER = EXPRESSION_NAME_JOB.replace(
+    "on:\n  pull_request:\n", "on:\n  push:\n    branches: [main]\n"
+)
+
+EXPRESSION_NAME_OPTED_OUT = EXPRESSION_NAME_JOB.replace(
+    "  pull_request:\n", f"  pull_request:  # {crr.OPT_OUT}\n"
+)
+
+EXPRESSION_NAME_ALLOWED = EXPRESSION_NAME_JOB.replace(
+    "  release:  # required-check: true\n",
+    f"  release:  # required-check: true\n"
+    f"    # {crr.ALLOW}: the guard never closes on main\n",
+)
+
+# The Codex review's case: the name holds only a matrix reference, but the
+# matrix VALUE is an expression. expand_name substitutes the value as written,
+# so the sync registers `Test (${{ github.head_ref }})` — a context GitHub
+# never posts. A template-only probe misses it; the expanded contexts show it.
+MATRIX_VALUE_IS_AN_EXPRESSION = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.branch }})
+    strategy:
+      matrix:
+        branch: ["${{ github.head_ref }}"]
+    runs-on: ubuntu-latest
+"""
+
+MATRIX_REF_WITHOUT_SPACES = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{matrix.py}})
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+
+def test_flags_marked_job_with_an_expression_name(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_JOB))
+    assert len(found) == 1
+    line, message = found[0]
+    assert line == 5  # `release:` key line
+    assert "Release (${{ github.ref_name }})" in message
+    assert "still holds a" in message
+
+
+def test_flags_expression_beside_a_matrix_ref_even_without_a_skip(tmp_path):
+    # The matrix rule needs a skip; this rule does not — the registered
+    # contexts hold the literal `${{ github.head_ref }}` on every run.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MIXED_EXPRESSION_NAME_JOB))
+    assert len(found) == 1
+    assert "still holds a" in found[0][1]
+
+
+def test_unmarked_job_with_an_expression_name_is_fine(tmp_path):
+    # Nothing registers its name, so no context can go unreported.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_UNMARKED)) == []
+
+
+def test_advisory_job_with_an_expression_name_is_fine(tmp_path):
+    assert crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_ADVISORY)) == []
+
+
+def test_flags_expression_name_without_a_pr_trigger(tmp_path):
+    # sync-required-checks reads the marker from every workflow, on any trigger.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_NO_PR_TRIGGER))
+    assert len(found) == 1
+    assert "still holds a" in found[0][1]
+
+
+def test_flags_expression_name_even_when_workflow_opts_out(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_OPTED_OUT))
+    assert len(found) == 1
+    assert "still holds a" in found[0][1]
+
+
+def test_matrix_context_ok_does_not_suppress_an_expression_name(tmp_path):
+    # That annotation answers the skippable-matrix over-approximation. This
+    # mismatch is exact — no branch state makes the context report — so
+    # nothing suppresses it.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", EXPRESSION_NAME_ALLOWED))
+    assert len(found) == 1
+    assert "still holds a" in found[0][1]
+
+
+def test_flags_a_matrix_value_that_is_an_expression(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_VALUE_IS_AN_EXPRESSION))
+    assert len(found) == 1
+    message = found[0][1]
+    assert "Test (${{ github.head_ref }})" in message
+
+
+def test_matrix_ref_without_spaces_is_not_an_expression(tmp_path):
+    # `${{matrix.py}}` is a matrix reference the sync substitutes; the
+    # leftover-`${{` probe must see it removed, not flag it.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_REF_WITHOUT_SPACES)) == []
+
+
+UNCLOSED_EXPRESSION_NAME = EXPRESSION_NAME_JOB.replace(
+    "name: Release (${{ github.ref_name }})", "name: Release (${{ github.ref_name"
+)
+
+UPPERCASE_MATRIX_REF = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ MATRIX.py }})
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+USES_JOB_WITH_EXPRESSION_NAME = """\
+name: x
+on:
+  pull_request:
+jobs:
+  scan:  # required-check: true
+    name: Scan (${{ github.ref_name }})
+    uses: ./.github/workflows/decide-reusable.yaml
+"""
+
+SKIPPABLE_MATRIX_JOB_WITH_EXPRESSION = MATRIX_JOB_OWN_IF.replace(
+    "name: Test (${{ matrix.py }})",
+    "name: Test (${{ matrix.py }}, ${{ github.head_ref }})",
+)
+
+
+def test_unclosed_expression_is_flagged(tmp_path):
+    # GitHub rejects the workflow anyway; the leftover `${{` keeps the flag
+    # deliberate rather than an accident of MATRIX_REF not matching.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", UNCLOSED_EXPRESSION_NAME))
+    assert len(found) == 1
+    assert "still holds a" in found[0][1]
+
+
+def test_uppercase_matrix_ref_is_flagged(tmp_path):
+    # MATRIX_REF is case-sensitive, and so is the sync's substitution: the
+    # sync registers the literal 'Test (${{ MATRIX.py }})' whatever GitHub
+    # makes of the uppercase form, so the flag stands.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", UPPERCASE_MATRIX_REF))
+    assert len(found) == 1
+    assert "still holds a" in found[0][1]
+
+
+def test_uses_job_with_an_expression_name_gets_only_the_uses_finding(tmp_path):
+    # Rule 4's static-name remedy cannot work on a uses: job, so rule 2 owns
+    # the whole case and the job gets exactly one finding.
+    found = crr.check_file(_write(tmp_path, "wf.yaml", USES_JOB_WITH_EXPRESSION_NAME))
+    assert len(found) == 1
+    assert "uses:" in found[0][1]
+
+
+def test_skippable_matrix_job_with_an_expression_gets_both_findings(tmp_path):
+    # The skip strands the contexts AND the contexts hold `${{` — two true
+    # defects, two findings, and either fix alone leaves the other standing.
+    found = crr.check_file(
+        _write(tmp_path, "wf.yaml", SKIPPABLE_MATRIX_JOB_WITH_EXPRESSION)
+    )
+    messages = [message for _line, message in found]
+    assert len(found) == 2
+    assert any("Waiting for status to be reported" in m for m in messages)
+    assert any("still holds a" in m for m in messages)
+
+
+# ── a matrix reference no axis can ever bind ───────────────────────────────
+# The mirror defect: the name references a key the matrix never defines, so
+# expand_name produces ZERO contexts and the sync requires nothing — the
+# marker silently stops gating merges instead of blocking them.
+
+MATRIX_REF_WITHOUT_ANY_STRATEGY = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.py }})
+    runs-on: ubuntu-latest
+"""
+
+MATRIX_REF_WITH_A_TYPO = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.python }})
+    strategy:
+      matrix:
+        py: ["3.11"]
+    runs-on: ubuntu-latest
+"""
+
+DYNAMIC_AXIS_VALUE = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.shard }})
+    strategy:
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    runs-on: ubuntu-latest
+"""
+
+INCLUDE_ONLY_AXIS = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.py }})
+    strategy:
+      matrix:
+        include:
+          - py: "3.11"
+    runs-on: ubuntu-latest
+"""
+
+DYNAMIC_INCLUDE_AXIS = """\
+name: x
+on:
+  pull_request:
+jobs:
+  test:  # required-check: true
+    name: Test (${{ matrix.shard }})
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+"""
+
+
+def test_flags_matrix_ref_without_any_strategy(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_REF_WITHOUT_ANY_STRATEGY))
+    assert len(found) == 1
+    message = found[0][1]
+    assert "never defines" in message
+    assert "[py]" in message
+
+
+def test_flags_matrix_ref_with_a_typo(tmp_path):
+    found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_REF_WITH_A_TYPO))
+    assert len(found) == 1
+    assert "[python]" in found[0][1]
+
+
+def test_dynamic_axis_value_is_defined(tmp_path):
+    # Only the run can expand `${{ fromJSON(...) }}`; the axis exists, so the
+    # reference binds and nothing here is a defect this lint can prove.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", DYNAMIC_AXIS_VALUE)) == []
+
+
+def test_include_only_axis_is_defined(tmp_path):
+    # A bare `include:` matrix schedules exactly its entries, and expand_name
+    # reads their keys, so the reference binds.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", INCLUDE_ONLY_AXIS)) == []
+
+
+def test_dynamic_include_is_defined(tmp_path):
+    # The canonical dynamic-shard spelling. `include` is an expression string,
+    # not a list, so only the run knows which keys it binds — the same reason
+    # a dynamic axis is exempt. Iterating the string would read it one
+    # character at a time and prove nothing.
+    assert crr.check_file(_write(tmp_path, "wf.yaml", DYNAMIC_INCLUDE_AXIS)) == []
+
+
+def test_main_reports_expression_name_violation(tmp_path, monkeypatch, capsys):
+    wf = _point_at(tmp_path, monkeypatch)
+    _write(wf, "bad.yaml", EXPRESSION_NAME_JOB)
+    assert crr.main() == 1
+    out = capsys.readouterr().out
+    assert "::error file=.github/workflows/bad.yaml,line=5::" in out
+
+
 # ── _skippable_jobs ────────────────────────────────────────────────────────
 
 

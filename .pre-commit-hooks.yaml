@@ -219,7 +219,7 @@
 
 - id: check-required-reporter
   name: "opinionated: classify every always() reporter as required or advisory"
-  description: "An unclassified always() reporter silently escapes the required-status-check set. Mark each reporter required-check true or false. A required-check true marker on a uses: job also fails, because GitHub reports that job under a name the marker cannot predict. A marked matrix job that can skip fails too, because its per-combination check names never report. Opt that one out with matrix-context-ok and a reason."
+  description: "An unclassified always() reporter silently escapes the required-status-check set. Mark each reporter required-check true or false. A required-check true marker on a uses: job also fails, because GitHub reports that job under a name the marker cannot predict. A marked matrix job that can skip fails too, because its per-combination check names never report. Opt that one out with matrix-context-ok and a reason. A marked name that holds a non-matrix expression, in the name or in a matrix value, also fails, because the sync registers text that no run reports. A marked name that references an axis its matrix never defines fails too, because the sync then requires nothing."
   entry: python -m ci_truth_serum.check_required_reporter
   language: python
   additional_dependencies: [PyYAML]

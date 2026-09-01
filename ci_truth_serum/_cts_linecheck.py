@@ -1761,6 +1761,19 @@ def _classification_text(block: str) -> str:
     return "\n".join(eligible)
 
 
+def _matrix_entries(value: object) -> list[dict]:
+    """The `include:`/`exclude:` entries that bind keys readable without a run.
+
+    A dynamic `${{ fromJSON(...) }}` is a string, and a malformed entry is not
+    a mapping. Neither states a key that can be read here, so both drop out —
+    the same rule the axis filter applies to a dynamic axis value. Iterating
+    either would walk it one character (or one scalar) at a time.
+    """
+    if not isinstance(value, list):
+        return []
+    return [entry for entry in value if isinstance(entry, dict)]
+
+
 def matrix_combinations(matrix: dict) -> list[dict]:
     """Expand a job's `strategy.matrix` into the list of variable combinations
     GitHub schedules — the Cartesian product of the axis lists, then `exclude`
@@ -1779,10 +1792,10 @@ def matrix_combinations(matrix: dict) -> list[dict]:
     else:
         combos = [{}]
 
-    for ex in matrix.get("exclude", []) or []:
+    for ex in _matrix_entries(matrix.get("exclude")):
         combos = [c for c in combos if not all(c.get(k) == v for k, v in ex.items())]
 
-    includes = matrix.get("include", []) or []
+    includes = _matrix_entries(matrix.get("include"))
     if not axes:
         # No base matrix: each include entry is its own job (a bare matrix with
         # only `include` schedules exactly those entries).
