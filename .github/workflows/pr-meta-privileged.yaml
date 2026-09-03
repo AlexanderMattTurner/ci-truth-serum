@@ -95,6 +95,9 @@ jobs:
       # the same group as the push/schedule full scans and cancel them). push and
       # schedule carry no pull_request payload → fall back to github.ref, so
       # redundant full scans of the same base still supersede each other.
+      # inert-group-ok: that supersession is the point on a scheduled run — two
+      # scheduled full scans read the same base, so the newer one replaces the
+      # older rather than cancelling unrelated work.
       group: merge-conflict-labeler-${{ github.event.pull_request.number || github.ref }}
       cancel-in-progress: true
     steps:

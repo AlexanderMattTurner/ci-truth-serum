@@ -26,6 +26,7 @@ before importing this module; the tests load each script by path.
 
 import ast
 import itertools
+import json
 import re
 import subprocess
 import sys
@@ -1464,6 +1465,197 @@ def group_collapse_event(group: str, events: Iterable[str]) -> str | None:
         (event for event in sorted(events) if not _group_varies_on(group, event)),
         None,
     )
+
+
+def group_collapse_events(group: str, events: Iterable[str]) -> list[str]:
+    """Every declared event under which GROUP stops naming the ref, sorted.
+
+    `group_collapse_event` answers the same question for the first such event.
+    A lint that must intersect the collapse set with the events a job can still
+    RUN on needs all of them: a group keyed on `${{ github.ref }}` collapses on
+    `pull_request_target` and on `schedule` alike, and a job whose `if:` admits
+    only the second is still exposed.
+    """
+    return [event for event in sorted(events) if not _group_varies_on(group, event)]
+
+
+# The events whose payload carries no `action` field, out of the set the table
+# above models. A condition reading `github.event.action` is therefore false on
+# each of them, so the condition restricts the job to the complement.
+_ACTIONLESS_EVENTS = frozenset(
+    {
+        "push",
+        "create",
+        "schedule",
+        "workflow_dispatch",
+        "merge_group",
+        "fork",
+        "gollum",
+        "page_build",
+        "public",
+        "status",
+    }
+)
+
+# A payload path, and the events whose payload carries its first segment. A
+# condition that demands a value from one of these paths is false on every other
+# event, which is how a job's `if:` excludes an event without naming it.
+_PAYLOAD_EVENTS = (
+    ("github.event.pull_request.", PR_PAYLOAD_EVENTS),
+    ("github.event.workflow_run.", frozenset({"workflow_run"})),
+    ("github.event.action", _KNOWN_EVENTS - _ACTIONLESS_EVENTS),
+)
+
+# `github.event_name` compared against a single-quoted literal, either order.
+_EVENT_NAME_CMP = re.compile(
+    r"^(?:github\.event_name\s*(?P<op1>==|!=)\s*'(?P<lit1>[^']*)'"
+    r"|'(?P<lit2>[^']*)'\s*(?P<op2>==|!=)\s*github\.event_name)$"
+)
+
+# `contains(fromJSON('["a", "b"]'), <term>)` — the list membership form.
+_CONTAINS_FROMJSON = re.compile(
+    r"^contains\s*\(\s*fromJSON\s*\(\s*'(?P<json>[^']*)'\s*\)\s*,"
+    r"\s*(?P<term>[^,()]+?)\s*\)$"
+)
+
+# A payload path demanded to hold a value: `<path> == '<non-empty>'` or
+# `<path> == true`. The polarity matters. GitHub reads an absent path as null,
+# and `null == false` and `null != 'Bot'` are both TRUE, so only the positive
+# form proves the payload is present.
+_PAYLOAD_DEMAND = re.compile(
+    r"^(?P<path>github\.event\.[A-Za-z0-9_.-]+)\s*==\s*"
+    r"(?:'(?P<lit>[^']+)'|(?P<true>true))$"
+)
+
+
+def _split_top_level(expr: str, operator: str) -> list[str]:
+    """EXPR split on OPERATOR, ignoring occurrences inside quotes or parentheses."""
+    parts: list[str] = []
+    current: list[str] = []
+    quoted = False
+    depth = 0
+    index = 0
+    while index < len(expr):
+        char = expr[index]
+        if char == "'":
+            quoted = not quoted
+        elif not quoted and char == "(":
+            depth += 1
+        elif not quoted and char == ")":
+            depth -= 1
+        if not quoted and depth == 0 and expr.startswith(operator, index):
+            parts.append("".join(current))
+            current = []
+            index += len(operator)
+            continue
+        current.append(char)
+        index += 1
+    parts.append("".join(current))
+    return [part.strip() for part in parts]
+
+
+def _strip_parens(term: str) -> str:
+    """TERM with a wrapping pair of parentheses removed, repeatedly.
+
+    `(a) && (b)` opens and closes with a parenthesis but is not wrapped by one
+    pair, so the walk below refuses it: the leading `(` must close on the LAST
+    character for the pair to wrap the whole term."""
+    while term.startswith("(") and term.endswith(")"):
+        quoted = False
+        depth = 0
+        for index, char in enumerate(term):
+            if char == "'":
+                quoted = not quoted
+            elif not quoted and char == "(":
+                depth += 1
+            elif not quoted and char == ")":
+                depth -= 1
+                if depth == 0 and index != len(term) - 1:
+                    return term  # the opening parenthesis closes early
+        if depth != 0:
+            return term  # unbalanced — not a shape to strip
+        term = term[1:-1].strip()
+    return term
+
+
+def _term_events(term: str, declared: frozenset[str]) -> frozenset[str] | None:
+    """The events DECLARED on which TERM can be true, or None for "cannot tell"."""
+    match = _EVENT_NAME_CMP.match(term)
+    if match:
+        literal = match.group("lit1") or match.group("lit2") or ""
+        operator = match.group("op1") or match.group("op2")
+        named = frozenset({literal}) & declared
+        return named if operator == "==" else declared - {literal}
+
+    match = _CONTAINS_FROMJSON.match(term)
+    if match:
+        try:
+            members = json.loads(match.group("json"))
+        except ValueError:
+            return None
+        if not isinstance(members, list) or not all(
+            isinstance(item, str) and item for item in members
+        ):
+            return None
+        inner = match.group("term").strip()
+        if inner == "github.event_name":
+            return frozenset(members) & declared
+        return _payload_events(inner, declared)
+
+    match = _PAYLOAD_DEMAND.match(term)
+    if match:
+        return _payload_events(match.group("path"), declared)
+    return None
+
+
+def _payload_events(path: str, declared: frozenset[str]) -> frozenset[str] | None:
+    """The DECLARED events whose payload can hold PATH, or None if unmodelled."""
+    for prefix, events in _PAYLOAD_EVENTS:
+        if path == prefix or path.startswith(prefix):
+            return events & declared
+    return None
+
+
+def _expression_events(expr: str, declared: frozenset[str]) -> frozenset[str] | None:
+    """The events DECLARED on which EXPR can be true, or None for "cannot tell".
+
+    `||` unions its arms and `&&` intersects them, so the two operators treat an
+    unreadable arm oppositely. An unreadable arm of an `||` can be true anywhere,
+    which makes the whole union unbounded. An unreadable arm of an `&&` only
+    fails to narrow, so the readable arms still bound the result.
+    """
+    expr = _strip_parens(expr.strip())
+    disjuncts = _split_top_level(expr, "||")
+    if len(disjuncts) > 1:
+        arms = [_expression_events(arm, declared) for arm in disjuncts]
+        if any(arm is None for arm in arms):
+            return None
+        return frozenset().union(*arms)
+    conjuncts = _split_top_level(expr, "&&")
+    if len(conjuncts) > 1:
+        arms = [_expression_events(arm, declared) for arm in conjuncts]
+        known = [arm for arm in arms if arm is not None]
+        if not known:
+            return None
+        return frozenset(declared).intersection(*known)
+    return _term_events(expr, declared)
+
+
+def job_admitted_events(if_value: object, declared: Iterable[str]) -> frozenset[str]:
+    """The DECLARED events on which a job's `if:` can still let the job run.
+
+    The reading is deliberately one-sided: a term this code cannot classify
+    restricts nothing, so the answer is an OVER-estimate. A caller that reports
+    a defect on an admitted event therefore reports only what the `if:` fails to
+    rule out, and a job whose real gate lives in a `needs.<gate>.outputs` value
+    reads as admitting every event.
+    """
+    events = frozenset(str(name) for name in declared)
+    expression = unwrap_expression(str(if_value or "")).strip()
+    if not expression:
+        return events
+    admitted = _expression_events(expression, events)
+    return events if admitted is None else events & admitted
 
 
 def group_is_per_ref(group: str, events: Iterable[str] = ()) -> bool:
