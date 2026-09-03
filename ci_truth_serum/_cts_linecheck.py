@@ -1242,6 +1242,12 @@ PER_REF_CONCURRENCY_KEYS = (
 # A `${{ … }}` expression span. Non-greedy: each span ends at its own `}}`.
 _EXPR_SPAN = re.compile(r"\$\{\{(?P<expr>.*?)\}\}", re.DOTALL)
 
+# A single-quoted string literal inside an expression; GitHub escapes a quote
+# inside one by doubling it. `${{ 'github.ref' }}` is the fixed TEXT
+# "github.ref", not a reference to the ref, so a key name found here names
+# nothing and the group is static.
+_LITERAL_SPAN = re.compile(r"'(?:[^']|'')*'")
+
 # The events that dispatch a run against the ref the run is FOR, so `github.ref`
 # and `github.ref_name` name that ref and tell one run from another.
 REF_VARYING_EVENTS = frozenset(
@@ -1436,7 +1442,7 @@ def group_has_per_ref_key(group: str) -> bool:
     substring match would fail open exactly on the workflows this guard exists
     to flag."""
     return any(
-        key in span.group("expr")
+        key in _LITERAL_SPAN.sub(" ", span.group("expr"))
         for span in _EXPR_SPAN.finditer(group)
         for key in PER_REF_CONCURRENCY_KEYS
     )
@@ -1482,13 +1488,15 @@ def group_collapse_events(group: str, events: Iterable[str]) -> list[str]:
 # The events whose payload carries no `action` field, out of the set the table
 # above models. A condition reading `github.event.action` is therefore false on
 # each of them, so the condition restricts the job to the complement.
+# `merge_group` is NOT one of them: its payload carries `checks_requested`, and
+# reading it as actionless would let a per-PR group pass unreported on the merge
+# queue, which is the one place a merge-queue run has no PR number at all.
 _ACTIONLESS_EVENTS = frozenset(
     {
         "push",
         "create",
         "schedule",
         "workflow_dispatch",
-        "merge_group",
         "fork",
         "gollum",
         "page_build",
@@ -1507,15 +1515,20 @@ _PAYLOAD_EVENTS = (
 )
 
 # `github.event_name` compared against a single-quoted literal, either order.
+# Case-insensitive on both halves: GitHub compares two strings without regard to
+# case, and it reads a context path the same way, so `GITHUB.EVENT_NAME ==
+# 'SCHEDULE'` is true on a cron run.
 _EVENT_NAME_CMP = re.compile(
     r"^(?:github\.event_name\s*(?P<op1>==|!=)\s*'(?P<lit1>[^']*)'"
-    r"|'(?P<lit2>[^']*)'\s*(?P<op2>==|!=)\s*github\.event_name)$"
+    r"|'(?P<lit2>[^']*)'\s*(?P<op2>==|!=)\s*github\.event_name)$",
+    re.IGNORECASE,
 )
 
 # `contains(fromJSON('["a", "b"]'), <term>)` — the list membership form.
 _CONTAINS_FROMJSON = re.compile(
     r"^contains\s*\(\s*fromJSON\s*\(\s*'(?P<json>[^']*)'\s*\)\s*,"
-    r"\s*(?P<term>[^,()]+?)\s*\)$"
+    r"\s*(?P<term>[^,()]+?)\s*\)$",
+    re.IGNORECASE,
 )
 
 # A payload path demanded to hold a value: `<path> == '<non-empty>'` or
@@ -1524,7 +1537,8 @@ _CONTAINS_FROMJSON = re.compile(
 # form proves the payload is present.
 _PAYLOAD_DEMAND = re.compile(
     r"^(?P<path>github\.event\.[A-Za-z0-9_.-]+)\s*==\s*"
-    r"(?:'(?P<lit>[^']+)'|(?P<true>true))$"
+    r"(?:'(?P<lit>[^']+)'|(?P<true>true))$",
+    re.IGNORECASE,
 )
 
 
@@ -1584,8 +1598,8 @@ def _term_events(term: str, declared: frozenset[str]) -> frozenset[str] | None:
     if match:
         literal = match.group("lit1") or match.group("lit2") or ""
         operator = match.group("op1") or match.group("op2")
-        named = frozenset({literal}) & declared
-        return named if operator == "==" else declared - {literal}
+        named = _named_events([literal], declared)
+        return named if operator == "==" else declared - named
 
     match = _CONTAINS_FROMJSON.match(term)
     if match:
@@ -1598,8 +1612,8 @@ def _term_events(term: str, declared: frozenset[str]) -> frozenset[str] | None:
         ):
             return None
         inner = match.group("term").strip()
-        if inner == "github.event_name":
-            return frozenset(members) & declared
+        if inner.casefold() == "github.event_name":
+            return _named_events(members, declared)
         return _payload_events(inner, declared)
 
     match = _PAYLOAD_DEMAND.match(term)
@@ -1608,10 +1622,17 @@ def _term_events(term: str, declared: frozenset[str]) -> frozenset[str] | None:
     return None
 
 
+def _named_events(literals: Iterable[str], declared: frozenset[str]) -> frozenset[str]:
+    """The DECLARED events LITERALS names, matched without regard to case."""
+    wanted = {literal.casefold() for literal in literals}
+    return frozenset(event for event in declared if event.casefold() in wanted)
+
+
 def _payload_events(path: str, declared: frozenset[str]) -> frozenset[str] | None:
     """The DECLARED events whose payload can hold PATH, or None if unmodelled."""
+    folded = path.casefold()
     for prefix, events in _PAYLOAD_EVENTS:
-        if path == prefix or path.startswith(prefix):
+        if folded == prefix or folded.startswith(prefix):
             return events & declared
     return None
 
@@ -1694,6 +1715,49 @@ def static_group_reason(group: str, events: Iterable[str]) -> str:
     )
 
 
+def _yaml_comment_mask(text: str) -> bytearray | None:
+    """One byte per character of TEXT: 1 where the character is inside a YAML
+    `#` comment, 0 elsewhere. None when PyYAML cannot tokenize TEXT.
+
+    Comment detection is delegated to PyYAML's own scanner rather than a
+    hand-rolled `split("#")`, because the naive cut is wrong in both
+    directions: a `#` inside a quoted scalar (`title: "#general"`) or inside a
+    block scalar (a shell comment under `run: |`) is content, not a comment.
+    Every span PyYAML reports as a scalar token is protected; a `#` outside one,
+    at line start or after whitespace, opens a comment that runs to end of line
+    — which is exactly YAML's own rule, so what this marks is what GitHub
+    parses. The two callers below read the mask in opposite directions, and
+    share it so they can never disagree about where a comment starts.
+    """
+    try:
+        spans = [
+            (token.start_mark.index, token.end_mark.index)
+            for token in scan(text)
+            if isinstance(token, yaml.tokens.ScalarToken)
+        ]
+    except yaml.YAMLError:
+        return None
+
+    protected = bytearray(len(text))
+    for start, end in spans:
+        protected[start:end] = b"\x01" * (end - start)
+
+    mask = bytearray(len(text))
+    in_comment = False
+    for index, char in enumerate(text):
+        if char == "\n":
+            in_comment = False
+            continue
+        if not in_comment and (
+            char == "#"
+            and not protected[index]
+            and (index == 0 or text[index - 1] in " \t\n")
+        ):
+            in_comment = True
+        mask[index] = 1 if in_comment else 0
+    return mask
+
+
 def strip_yaml_comments(text: str) -> str:
     """TEXT with every YAML `#` comment blanked to spaces, line and column
     offsets preserved so a caller can still report `line=` annotations.
@@ -1705,49 +1769,34 @@ def strip_yaml_comments(text: str) -> str:
     way to silence that is to pad the allowlist with names no workflow uses —
     eroding the very guard that catches a misspelled secret.
 
-    Comment detection is delegated to PyYAML's own scanner rather than a
-    hand-rolled `split("#")`, because the naive cut is a FALSE NEGATIVE
-    machine: a `#` inside a quoted scalar (`title: "#general"`) or inside a
-    block scalar (a shell comment under `run: |`) is content, and cutting there
-    would stop checking a real `secrets.TYPO` later on the same line. Every
-    span PyYAML reports as a scalar token is protected; a `#` outside one, at
-    line start or after whitespace, opens a comment that runs to end of line —
-    which is exactly YAML's own rule, so what this keeps is exactly what GitHub
-    parses.
-
     A file PyYAML cannot even tokenize is returned unchanged: nothing is known
     about where its scalars end, and blanking on a guess could hide a real
     finding.
     """
-    try:
-        spans = [
-            (token.start_mark.index, token.end_mark.index)
-            for token in scan(text)
-            if isinstance(token, yaml.tokens.ScalarToken)
-        ]
-    except yaml.YAMLError:
+    mask = _yaml_comment_mask(text)
+    if mask is None:
         return text
+    return "".join(" " if mask[i] else char for i, char in enumerate(text))
 
-    protected = bytearray(len(text))
-    for start, end in spans:
-        protected[start:end] = b"\x01" * (end - start)
 
-    out: list[str] = []
-    in_comment = False
-    for index, char in enumerate(text):
-        if char == "\n":
-            in_comment = False
-        elif in_comment:
-            char = " "
-        elif (
-            char == "#"
-            and not protected[index]
-            and (index == 0 or text[index - 1] in " \t\n")
-        ):
-            in_comment = True
-            char = " "
-        out.append(char)
-    return "".join(out)
+def yaml_comment_text(text: str) -> str:
+    """TEXT with everything that is NOT a YAML `#` comment blanked to spaces,
+    line and column offsets preserved so a caller can still count lines.
+
+    The inverse of `strip_yaml_comments`, and it exists for the opposite
+    fail-open. A lint that reads an opt-out annotation off raw lines accepts one
+    written inside a quoted scalar — `name: "# allow-x: an example"` — so any
+    job could silence the lint through a string value nobody reads as a
+    directive.
+
+    A file PyYAML cannot tokenize yields all blanks: nothing is known about
+    where its scalars end, so no annotation is honoured and the lint reports.
+    """
+    mask = _yaml_comment_mask(text)
+    return "".join(
+        char if char == "\n" or (mask is not None and mask[i]) else " "
+        for i, char in enumerate(text)
+    )
 
 
 def opted_out(text: str, token: str) -> bool:

@@ -56,6 +56,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     group_has_per_ref_key,
     job_admitted_events,
     workflow_files,
+    yaml_comment_text,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -76,14 +77,21 @@ _MESSAGE = (
 )
 
 
-def _block_opted_out(block_text: str) -> bool:
-    """True if a reason-bearing `# inert-group-ok:` sits in a `#` comment inside
-    the job's source block — never in a string value.
+def _block_opted_out(comment_lines: list[str], block: tuple[int, str]) -> bool:
+    """True if a reason-bearing `# inert-group-ok:` sits in a real YAML comment
+    inside the job's source block.
+
+    COMMENT_LINES is the whole file with every non-comment character blanked, so
+    a `name: "# inert-group-ok: an example"` scalar cannot silence the lint.
+    BLOCK is the (1-based key line, source) pair `_job_blocks` returns, and the
+    block is contiguous, so its line count gives the window.
 
     Line by line, because the shared matcher's reason tail deliberately cannot
     cross a newline: run over the whole block at once, a bare annotation ending a
     line would borrow the next line's first character as its reason."""
-    return any(annotated(line, ALLOW) for line in block_text.splitlines())
+    start = block[0] - 1
+    window = comment_lines[start : start + len(block[1].splitlines())]
+    return any(annotated(line, ALLOW) for line in window)
 
 
 def check_file(path: Path) -> list[tuple[int | None, str]]:
@@ -114,6 +122,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
     events = declared_events(doc)
     blocks = _job_blocks(text)
+    comment_lines = yaml_comment_text(text).splitlines()
     violations: list[tuple[int | None, str]] = []
     for name, cfg in jobs.items():
         if not isinstance(cfg, dict):
@@ -129,7 +138,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
         if not hits:
             continue
         block = blocks.get(str(name))
-        if block and _block_opted_out(block[1]):
+        if block and _block_opted_out(comment_lines, block):
             continue
         violations.append(
             (

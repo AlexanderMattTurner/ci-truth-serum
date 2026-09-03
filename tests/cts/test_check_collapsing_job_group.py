@@ -193,6 +193,52 @@ def test_a_workflow_level_group_is_not_this_lint(tmp_path):
     assert cjg.check_file(_write(tmp_path, body)) == []
 
 
+def test_a_merge_group_action_gate_does_not_exclude_the_merge_queue(tmp_path):
+    """A merge-queue payload carries `action: checks_requested`, so that gate
+    admits `merge_group` — and the merge queue is the one place a run has no PR
+    number at all. Reading merge_group as actionless would drop the report."""
+    events = "  pull_request:\n  merge_group:\n"
+    body = COLLAPSING_JOB.replace(
+        "    if: github.event_name == 'schedule' || github.event_name == 'pull_request'\n",
+        "    if: github.event.action == 'checks_requested'\n",
+    )
+    found = cjg.check_file(_write(tmp_path, _workflow(events, body)))
+    assert len(found) == 1
+    assert "'merge_group'" in found[0][1]
+
+
+def test_an_event_literal_is_matched_without_regard_to_case(tmp_path):
+    """GitHub compares two strings without regard to case, so `== 'SCHEDULE'`
+    admits a cron run. Matching the literal exactly would miss the collapse."""
+    body = COLLAPSING_JOB.replace(
+        "    if: github.event_name == 'schedule' || github.event_name == 'pull_request'\n",
+        "    if: github.event_name == 'SCHEDULE'\n",
+    )
+    found = cjg.check_file(_write(tmp_path, _workflow(PR_AND_SCHEDULE, body)))
+    assert len(found) == 1
+    assert "'schedule'" in found[0][1]
+
+
+def test_a_negated_event_literal_is_matched_without_regard_to_case(tmp_path):
+    """The same rule on the other polarity: `!= 'SCHEDULE'` really does keep the
+    job off a cron run, so nothing is reported."""
+    body = COLLAPSING_JOB.replace(
+        "    if: github.event_name == 'schedule' || github.event_name == 'pull_request'\n",
+        "    if: github.event_name != 'SCHEDULE'\n",
+    )
+    assert cjg.check_file(_write(tmp_path, _workflow(PR_AND_SCHEDULE, body))) == []
+
+
+def test_a_key_name_inside_a_quoted_literal_is_not_a_per_ref_key(tmp_path):
+    """`${{ 'github.ref' }}` is the fixed text `github.ref`, not the ref. The
+    group is fully static, which this lint exempts."""
+    body = COLLAPSING_JOB.replace(
+        "      group: sweep-${{ github.event.pull_request.number }}\n",
+        "      group: sweep-${{ 'github.ref' }}\n",
+    )
+    assert cjg.check_file(_write(tmp_path, _workflow(PR_AND_SCHEDULE, body))) == []
+
+
 # ── the annotation ───────────────────────────────────────────────────────────
 
 
@@ -206,6 +252,18 @@ def test_a_reasoned_annotation_suppresses(tmp_path, where):
         job = "  sweep:\n    " + reason + COLLAPSING_JOB
     body = f"name: x\non:\n{PR_AND_SCHEDULE}jobs:\n{job}"
     assert cjg.check_file(_write(tmp_path, body)) == []
+
+
+def test_an_annotation_inside_a_quoted_scalar_does_not_suppress(tmp_path):
+    """YAML reads `#` inside a quoted scalar as data, so this is a job name that
+    happens to mention the token. Honouring it would let any job silence the
+    lint through a string value nobody reads as a directive."""
+    job = (
+        '  sweep:\n    name: "# inert-group-ok: an example in the docs"\n'
+        + COLLAPSING_JOB
+    )
+    body = f"name: x\non:\n{PR_AND_SCHEDULE}jobs:\n{job}"
+    assert len(cjg.check_file(_write(tmp_path, body))) == 1
 
 
 def test_a_bare_annotation_does_not_suppress(tmp_path):
