@@ -64,7 +64,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     group_has_per_ref_key,
     job_admitted_events,
     workflow_files,
-    yaml_comment_text,
+    yaml_comment_view,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -131,7 +131,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
     events = declared_events(doc)
     blocks = _job_blocks(text)
-    comment_lines = yaml_comment_text(text).splitlines()
+    comment_lines = yaml_comment_view(text)
     violations: list[tuple[int | None, str]] = []
     for name, cfg in jobs.items():
         if not isinstance(cfg, dict):

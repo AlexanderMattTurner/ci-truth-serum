@@ -100,7 +100,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     required_check_shape,
     valid_twin_names,
     workflow_files,
-    yaml_comment_text,
+    yaml_comment_view,
 )
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
@@ -307,9 +307,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     if not isinstance(jobs, dict):
         return []
     blocks = _job_blocks(text)
-    violations = _inert_slot_violations(
-        doc, jobs, blocks, yaml_comment_text(text).splitlines()
-    )
+    violations = _inert_slot_violations(doc, jobs, blocks, yaml_comment_view(text))
 
     storm = _storm_types(doc)
     if not storm:

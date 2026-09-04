@@ -67,6 +67,27 @@ def test_an_opaque_gate_reads_as_admitting_every_event(tmp_path):
     assert len(cjg.check_file(_write(tmp_path, _workflow(PR_AND_SCHEDULE, body)))) == 1
 
 
+def test_an_unreadable_disjunct_unbounds_the_union(tmp_path):
+    """`||` must answer "cannot tell" when ANY arm is unreadable: the opaque arm
+    can be true on a cron run, so the readable arm must not be allowed to bound
+    the union and hide the collapse."""
+    body = COLLAPSING_JOB.replace(
+        "    if: github.event_name == 'schedule' || github.event_name == 'pull_request'\n",
+        "    if: github.event_name == 'pull_request' || needs.decide.outputs.run == 'true'\n",
+    )
+    assert len(cjg.check_file(_write(tmp_path, _workflow(PR_AND_SCHEDULE, body)))) == 1
+
+
+def test_an_unreadable_conjunct_leaves_the_readable_arm_bounding(tmp_path):
+    """`&&` must KEEP the readable arms: an opaque conjunct only fails to narrow,
+    so `pull_request` still bounds the job and the cron collapse stays inert."""
+    body = COLLAPSING_JOB.replace(
+        "    if: github.event_name == 'schedule' || github.event_name == 'pull_request'\n",
+        "    if: needs.decide.outputs.run == 'true' && github.event_name == 'pull_request'\n",
+    )
+    assert cjg.check_file(_write(tmp_path, _workflow(PR_AND_SCHEDULE, body))) == []
+
+
 def test_github_ref_collapses_on_pull_request_target(tmp_path):
     """`pull_request_target` runs in the base repo, so `github.ref` is the base
     branch and every open PR's run shares it."""

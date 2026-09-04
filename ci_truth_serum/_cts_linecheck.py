@@ -1468,10 +1468,7 @@ def group_collapse_event(group: str, events: Iterable[str]) -> str | None:
     is certain: an operand this code cannot classify, an expression that is not
     a plain `||` chain, and an event outside the table above.
     """
-    return next(
-        (event for event in sorted(events) if not _group_varies_on(group, event)),
-        None,
-    )
+    return next(iter(group_collapse_events(group, events)), None)
 
 
 def group_collapse_events(group: str, events: Iterable[str]) -> list[str]:
@@ -1847,49 +1844,6 @@ def static_group_reason(group: str, events: Iterable[str]) -> str:
     )
 
 
-def _yaml_comment_mask(text: str) -> bytearray | None:
-    """One byte per character of TEXT: 1 where the character is inside a YAML
-    `#` comment, 0 elsewhere. None when PyYAML cannot tokenize TEXT.
-
-    Comment detection is delegated to PyYAML's own scanner rather than a
-    hand-rolled `split("#")`, because the naive cut is wrong in both
-    directions: a `#` inside a quoted scalar (`title: "#general"`) or inside a
-    block scalar (a shell comment under `run: |`) is content, not a comment.
-    Every span PyYAML reports as a scalar token is protected; a `#` outside one,
-    at line start or after whitespace, opens a comment that runs to end of line
-    — which is exactly YAML's own rule, so what this marks is what GitHub
-    parses. The two callers below read the mask in opposite directions, and
-    share it so they can never disagree about where a comment starts.
-    """
-    try:
-        spans = [
-            (token.start_mark.index, token.end_mark.index)
-            for token in scan(text)
-            if isinstance(token, yaml.tokens.ScalarToken)
-        ]
-    except yaml.YAMLError:
-        return None
-
-    protected = bytearray(len(text))
-    for start, end in spans:
-        protected[start:end] = b"\x01" * (end - start)
-
-    mask = bytearray(len(text))
-    in_comment = False
-    for index, char in enumerate(text):
-        if char == "\n":
-            in_comment = False
-            continue
-        if not in_comment and (
-            char == "#"
-            and not protected[index]
-            and (index == 0 or text[index - 1] in " \t\n")
-        ):
-            in_comment = True
-        mask[index] = 1 if in_comment else 0
-    return mask
-
-
 def strip_yaml_comments(text: str) -> str:
     """TEXT with every YAML `#` comment blanked to spaces, line and column
     offsets preserved so a caller can still report `line=` annotations.
@@ -1901,34 +1855,49 @@ def strip_yaml_comments(text: str) -> str:
     way to silence that is to pad the allowlist with names no workflow uses —
     eroding the very guard that catches a misspelled secret.
 
+    Comment detection is delegated to PyYAML's own scanner rather than a
+    hand-rolled `split("#")`, because the naive cut is a FALSE NEGATIVE
+    machine: a `#` inside a quoted scalar (`title: "#general"`) or inside a
+    block scalar (a shell comment under `run: |`) is content, and cutting there
+    would stop checking a real `secrets.TYPO` later on the same line. Every
+    span PyYAML reports as a scalar token is protected; a `#` outside one, at
+    line start or after whitespace, opens a comment that runs to end of line —
+    which is exactly YAML's own rule, so what this keeps is exactly what GitHub
+    parses.
+
     A file PyYAML cannot even tokenize is returned unchanged: nothing is known
     about where its scalars end, and blanking on a guess could hide a real
     finding.
     """
-    mask = _yaml_comment_mask(text)
-    if mask is None:
+    try:
+        spans = [
+            (token.start_mark.index, token.end_mark.index)
+            for token in scan(text)
+            if isinstance(token, yaml.tokens.ScalarToken)
+        ]
+    except yaml.YAMLError:
         return text
-    return "".join(" " if mask[i] else char for i, char in enumerate(text))
 
+    protected = bytearray(len(text))
+    for start, end in spans:
+        protected[start:end] = b"\x01" * (end - start)
 
-def yaml_comment_text(text: str) -> str:
-    """TEXT with everything that is NOT a YAML `#` comment blanked to spaces,
-    line and column offsets preserved so a caller can still count lines.
-
-    The inverse of `strip_yaml_comments`, and it exists for the opposite
-    fail-open. A lint that reads an opt-out annotation off raw lines accepts one
-    written inside a quoted scalar — `name: "# allow-x: an example"` — so any
-    job could silence the lint through a string value nobody reads as a
-    directive.
-
-    A file PyYAML cannot tokenize yields all blanks: nothing is known about
-    where its scalars end, so no annotation is honoured and the lint reports.
-    """
-    mask = _yaml_comment_mask(text)
-    return "".join(
-        char if char == "\n" or (mask is not None and mask[i]) else " "
-        for i, char in enumerate(text)
-    )
+    out: list[str] = []
+    in_comment = False
+    for index, char in enumerate(text):
+        if char == "\n":
+            in_comment = False
+        elif in_comment:
+            char = " "
+        elif (
+            char == "#"
+            and not protected[index]
+            and (index == 0 or text[index - 1] in " \t\n")
+        ):
+            in_comment = True
+            char = " "
+        out.append(char)
+    return "".join(out)
 
 
 def opted_out(text: str, token: str) -> bool:
