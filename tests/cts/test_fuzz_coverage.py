@@ -73,6 +73,7 @@ FUZZ_REQUIRED = {
     "check_frozen_head_sha": "check_file",
     "check_ready_for_review": "check_file",
     "check_pending_cancel_concurrency": "check_file",
+    "check_collapsing_job_group": "check_file",
     "check_requires_concurrency": "check_file",
     "check_externalized_markers": "check_file",
     "check_pr_paths": "check_file",

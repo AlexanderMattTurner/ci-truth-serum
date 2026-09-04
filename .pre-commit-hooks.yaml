@@ -297,6 +297,16 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-collapsing-job-group
+  name: "opinionated: no per-ref job concurrency group that goes static on one event"
+  description: A job group keyed on head_ref / the PR number / github.ref is one fixed string on an event that carries no such ref, so every run of that event shares one slot and cancels an unrelated commit's run.
+  entry: python -m ci_truth_serum.check_collapsing_job_group
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
 - id: check-requires-concurrency
   name: "opinionated: require a concurrency block on pull_request workflows"
   description: A PR workflow with no concurrency block stacks a fresh run per push instead of cancelling the superseded one, starving a capped runner pool.

@@ -50,7 +50,7 @@ jobs:
     concurrency:
       # Per-PR: a second close event (rare) queues behind the first rather than
       # racing it. Static-but-per-PR key, and this is never a required check.
-      group: cancel-superseded-pr-runs-${{ github.event.pull_request.number }}
+      group: cancel-superseded-pr-runs-${{ github.event.pull_request.number }}-${{ (github.event_name == 'pull_request_target' && github.event.action == 'closed') && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: false
     steps:
       # Sparse-checkout only the base repo's own scripts (the trusted base ref for
@@ -95,7 +95,10 @@ jobs:
       # the same group as the push/schedule full scans and cancel them). push and
       # schedule carry no pull_request payload → fall back to github.ref, so
       # redundant full scans of the same base still supersede each other.
-      group: merge-conflict-labeler-${{ github.event.pull_request.number || github.ref }}
+      # collapsing-group-ok: that supersession is the point on a scheduled run — two
+      # scheduled full scans read the same base, so the newer one replaces the
+      # older rather than cancelling unrelated work.
+      group: merge-conflict-labeler-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request_target' && contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action))) && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
