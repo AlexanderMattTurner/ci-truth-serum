@@ -1,7 +1,38 @@
 #!/usr/bin/env python3
 """
-Forbid a ref-keyed concurrency group on a required-check workflow that can fire
-more than one run per commit.
+Forbid a concurrency group whose eviction kills a CURRENT sibling's work rather
+than a superseded run's. Two shapes do that, and the lint reports both.
+
+SHAPE 1 — a job that SKIPS still claims the slot.
+
+GitHub claims a job's concurrency slot when it CREATES the job, BEFORE it reads
+the job's `if:`. A run that skips the job therefore still takes the slot, and
+GitHub evicts whatever member was already queued there. When the group holds one
+value across a trigger the job serves AND a trigger it skips, the evicted member
+is a live run's real work on a commit nobody superseded.
+
+`cancel-in-progress` is irrelevant, which is what makes this invisible: the
+victim's jobs report `cancelled` with every step `completed` and `success`, so
+no log names a failure. One measured run finished all eleven steps and was then
+cancelled by a `labeled` run whose jobs all skipped.
+
+Neither of shape 2's conditions is needed here. The workflow need not declare a
+pull_request activity type outside the defaults, because the two triggers can be
+two of the defaults; and it need not back a required check, because the cost is
+the thrown-away work rather than a reddened gate. Fix it by varying the group by
+the same condition the `if:` reads — end the group `-shared` on the triggers the
+job serves and `-inert-${{ github.run_id }}` on the triggers it skips. Write the
+truthy half as a non-empty string: `cond && '' || …` is always inert, because
+GitHub reads the empty string as false. Opt out per job with
+"# inert-group-ok: <reason>".
+
+The sibling `check_collapsing_job_group` owns the neighbouring question: a group
+whose per-ref key is EMPTY on some event, so every run of that event shares one
+slot. There the runs sharing the slot are all runs of one event, so the job's
+`if:` decides whether any work is lost.
+
+SHAPE 2 — a ref-keyed group on a required-check workflow that can fire more than
+one run per commit.
 
 `check_static_concurrency` treats `github.ref` / `github.head_ref` keys as safe
 on the assumption that a ref-keyed run is only ever superseded by a *newer run
@@ -43,7 +74,8 @@ check_cancellable_required_check both prescribe, so a lint that flagged it would
 fire on every application of the blessed fix.
 
 Opt out with "# pending-cancel-ok" for a deliberately-serialized workflow that
-is genuinely never a required check.
+is genuinely never a required check. That token is file-wide and answers shape 2
+only; shape 1 takes the per-job "# inert-group-ok: <reason>" instead.
 """
 
 import sys
@@ -57,13 +89,18 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     TWIN_SHAPE,
     _job_blocks,
     _marked_jobs,
+    annotated,
     concurrency_line,
+    declared_triggers,
     decide_gate_names,
+    group_separates_triggers,
     job_concurrency_line,
+    job_skipped_triggers,
     opted_out,
     required_check_shape,
     valid_twin_names,
     workflow_files,
+    yaml_comment_text,
 )
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
@@ -71,6 +108,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "pending-cancel-ok"
+INERT_OPT_OUT = "inert-group-ok"
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
@@ -158,6 +196,89 @@ def _message(storm: set[str], basis: str) -> str:
     )
 
 
+_INERT_MESSAGE = (
+    "job '{name}' skips on a {skipped} run and runs on a {served} run, and its "
+    "concurrency group '{group}' holds the same value on both. GitHub claims a "
+    "job's group slot when it CREATES the job, BEFORE it reads the `if:`. So the "
+    "run that skips this job still takes the slot, and GitHub evicts the member "
+    "already queued there — a live run's real work, on a commit nobody "
+    "superseded. cancel-in-progress does not change this; it only picks which "
+    "member dies. The victim is hard to recognise, because its jobs report "
+    "'cancelled' with every step completed and successful, so no log names a "
+    "failure. Vary the group by the same condition the `if:` reads — end it "
+    "'-shared' on the triggers the job serves and "
+    "'-inert-${{{{ github.run_id }}}}' on the triggers it skips — or add "
+    "'# " + INERT_OPT_OUT + ": <reason>'."
+)
+
+
+def _inert_slot_violations(
+    doc: dict, jobs: dict, blocks: dict, comment_lines: list[str]
+) -> list[tuple[int | None, str]]:
+    """Every job that claims a shared group slot on a trigger where it SKIPS.
+
+    The pair reported is the first (skipped, served) trigger pair whose group
+    values can coincide. `job_skipped_triggers` answers only with definite
+    skips, so a job whose real gate this reader cannot see raises nothing.
+    """
+    triggers = declared_triggers(doc)
+    violations: list[tuple[int | None, str]] = []
+    for name, cfg in jobs.items():
+        if not isinstance(cfg, dict):
+            continue
+        group = _group_of(cfg.get("concurrency"))
+        if not isinstance(group, str) or not group:
+            continue
+        skipped = job_skipped_triggers(cfg.get("if"), triggers)
+        served = [trigger for trigger in triggers if trigger not in skipped]
+        if not skipped or not served:
+            continue  # the job runs on every trigger, or on none
+        pair = next(
+            (
+                (skip, serve)
+                for skip in skipped
+                for serve in served
+                if not group_separates_triggers(group, skip, serve)
+            ),
+            None,
+        )
+        if pair is None:
+            continue
+        block = blocks.get(str(name))
+        if block and _block_opted_out(comment_lines, block):
+            continue
+        violations.append(
+            (
+                job_concurrency_line(block, block[0] if block else 1),
+                _INERT_MESSAGE.format(
+                    name=name,
+                    skipped=_trigger_name(pair[0]),
+                    served=_trigger_name(pair[1]),
+                    group=group,
+                ),
+            )
+        )
+    return violations
+
+
+def _trigger_name(trigger) -> str:
+    """A trigger written the way a workflow author reads it."""
+    return (
+        f"'{trigger.event}' / '{trigger.action}'"
+        if trigger.action
+        else f"'{trigger.event}'"
+    )
+
+
+def _block_opted_out(comment_lines: list[str], block: tuple[int, str]) -> bool:
+    """True if a reason-bearing `# inert-group-ok:` sits in a real YAML comment
+    inside the job's source block. COMMENT_LINES is the file with every
+    non-comment character blanked, so a quoted scalar cannot silence the lint."""
+    start = block[0] - 1
+    window = comment_lines[start : start + len(block[1].splitlines())]
+    return any(annotated(line, INERT_OPT_OUT) for line in window)
+
+
 def check_file(path: Path) -> list[tuple[int | None, str]]:
     """Return (line, message) for every ref-keyed concurrency group — workflow-
     level OR job-level — on a required-check workflow whose pull_request types
@@ -182,21 +303,28 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     if not isinstance(doc, dict) or opted_out(text, OPT_OUT):
         return []
 
-    storm = _storm_types(doc)
-    if not storm:
-        return []  # one run per SHA — a ref-keyed group only supersedes older SHAs
-
     jobs = doc.get("jobs", {})
     if not isinstance(jobs, dict):
         return []
     blocks = _job_blocks(text)
+    violations = _inert_slot_violations(
+        doc, jobs, blocks, yaml_comment_text(text).splitlines()
+    )
+
+    storm = _storm_types(doc)
+    if not storm:
+        return (
+            violations  # one run per SHA — a ref-keyed group only supersedes older SHAs
+        )
+
     heuristic = required_check_shape(jobs, doc)
     marked = _marked_jobs(blocks, jobs)
     if not (heuristic or marked):
-        return []  # not a required-check shape — a reddened cancel self-describes
+        return (
+            violations  # not a required-check shape — a reddened cancel self-describes
+        )
     basis = heuristic or "the '# required-check: true' marker"
 
-    violations: list[tuple[int | None, str]] = []
     if _ref_keyed(_group_of(doc.get("concurrency"))):
         violations.append(
             (concurrency_line(text), f"workflow-level {_message(storm, basis)}")

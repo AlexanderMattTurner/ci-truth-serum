@@ -32,6 +32,7 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -1535,6 +1536,13 @@ _CONTAINS_FROMJSON = re.compile(
 # `<path> == true`. The polarity matters. GitHub reads an absent path as null,
 # and `null == false` and `null != 'Bot'` are both TRUE, so only the positive
 # form proves the payload is present.
+# `github.event.action` compared against a single-quoted literal, either order.
+_ACTION_CMP = re.compile(
+    r"^(?:github\.event\.action\s*(?P<op1>==|!=)\s*'(?P<lit1>[^']*)'"
+    r"|'(?P<lit2>[^']*)'\s*(?P<op2>==|!=)\s*github\.event\.action)$",
+    re.IGNORECASE,
+)
+
 _PAYLOAD_DEMAND = re.compile(
     r"^(?P<path>github\.event\.[A-Za-z0-9_.-]+)\s*==\s*"
     r"(?:'(?P<lit>[^']+)'|(?P<true>true))$",
@@ -1592,14 +1600,42 @@ def _strip_parens(term: str) -> str:
     return term
 
 
-def _term_events(term: str, declared: frozenset[str]) -> frozenset[str] | None:
-    """The events DECLARED on which TERM can be true, or None for "cannot tell"."""
+def _named_match(literals: Iterable[str], value: str | None) -> bool | None:
+    """Whether VALUE is one of LITERALS, matched the way GitHub matches: without
+    regard to case. None when VALUE is unknown on this trigger."""
+    if value is None:
+        return None
+    return value.casefold() in {literal.casefold() for literal in literals}
+
+
+def _term_truth(term: str, trigger: "Trigger") -> bool | None:
+    """Whether TERM is true on TRIGGER, or None when this reader cannot tell.
+
+    Three shapes are read: a `github.event_name` or `github.event.action`
+    comparison, `contains(fromJSON('[…]'), …)` membership over either, and a
+    demand that a payload path hold a value. The payload demand can only prove
+    FALSE — an event whose payload has no such path cannot satisfy it — because
+    whether the value MATCHES is a runtime fact no static read holds.
+    """
     match = _EVENT_NAME_CMP.match(term)
     if match:
         literal = match.group("lit1") or match.group("lit2") or ""
-        operator = match.group("op1") or match.group("op2")
-        named = _named_events([literal], declared)
-        return named if operator == "==" else declared - named
+        equal = _named_match([literal], trigger.event)
+        return (
+            equal if (match.group("op1") or match.group("op2")) == "==" else not equal
+        )
+
+    match = _ACTION_CMP.match(term)
+    if match:
+        literal = match.group("lit1") or match.group("lit2") or ""
+        if trigger.event.casefold() in _ACTIONLESS_EVENTS:
+            return (match.group("op1") or match.group("op2")) != "=="
+        equal = _named_match([literal], trigger.action)
+        if equal is None:
+            return None
+        return (
+            equal if (match.group("op1") or match.group("op2")) == "==" else not equal
+        )
 
     match = _CONTAINS_FROMJSON.match(term)
     if match:
@@ -1611,72 +1647,168 @@ def _term_events(term: str, declared: frozenset[str]) -> frozenset[str] | None:
             isinstance(item, str) and item for item in members
         ):
             return None
-        inner = match.group("term").strip()
-        if inner.casefold() == "github.event_name":
-            return _named_events(members, declared)
-        return _payload_events(inner, declared)
+        inner = match.group("term").strip().casefold()
+        if inner == "github.event_name":
+            return _named_match(members, trigger.event)
+        if inner == "github.event.action":
+            if trigger.event.casefold() in _ACTIONLESS_EVENTS:
+                return False
+            return _named_match(members, trigger.action)
+        return _payload_truth(inner, trigger)
 
     match = _PAYLOAD_DEMAND.match(term)
     if match:
-        return _payload_events(match.group("path"), declared)
+        return _payload_truth(match.group("path").casefold(), trigger)
     return None
 
 
-def _named_events(literals: Iterable[str], declared: frozenset[str]) -> frozenset[str]:
-    """The DECLARED events LITERALS names, matched without regard to case."""
-    wanted = {literal.casefold() for literal in literals}
-    return frozenset(event for event in declared if event.casefold() in wanted)
+def _payload_truth(path: str, trigger: "Trigger") -> bool | None:
+    """False when TRIGGER's payload cannot hold PATH at all, else None.
 
-
-def _payload_events(path: str, declared: frozenset[str]) -> frozenset[str] | None:
-    """The DECLARED events whose payload can hold PATH, or None if unmodelled."""
-    folded = path.casefold()
+    Never True: the path being present says nothing about the value a demand
+    compares it against, so this reader proves absence and nothing else.
+    """
     for prefix, events in _PAYLOAD_EVENTS:
-        if folded == prefix or folded.startswith(prefix):
-            return events & declared
+        if path == prefix or path.startswith(prefix):
+            return None if trigger.event in events else False
     return None
 
 
-def _expression_events(expr: str, declared: frozenset[str]) -> frozenset[str] | None:
-    """The events DECLARED on which EXPR can be true, or None for "cannot tell".
+def _expression_truth(expr: str, trigger: "Trigger") -> bool | None:
+    """Whether EXPR is true on TRIGGER, in three-valued logic.
 
-    `||` unions its arms and `&&` intersects them, so the two operators treat an
-    unreadable arm oppositely. An unreadable arm of an `||` can be true anywhere,
-    which makes the whole union unbounded. An unreadable arm of an `&&` only
-    fails to narrow, so the readable arms still bound the result.
+    `&&` is false as soon as one arm is false, whatever the others say; `||` is
+    true as soon as one arm is true. Only when no arm settles it does an
+    unreadable arm make the whole answer unknown. That asymmetry is the whole
+    point: a caller asking "does this job SKIP here" must accept only a definite
+    false, and gets one from a single readable arm.
     """
     expr = _strip_parens(expr.strip())
-    disjuncts = _split_top_level(expr, "||")
-    if len(disjuncts) > 1:
-        arms = [_expression_events(arm, declared) for arm in disjuncts]
-        if any(arm is None for arm in arms):
-            return None
-        return frozenset().union(*arms)
-    conjuncts = _split_top_level(expr, "&&")
-    if len(conjuncts) > 1:
-        arms = [_expression_events(arm, declared) for arm in conjuncts]
-        known = [arm for arm in arms if arm is not None]
-        if not known:
-            return None
-        return frozenset(declared).intersection(*known)
-    return _term_events(expr, declared)
+    for operator, decisive in (("||", True), ("&&", False)):
+        arms = _split_top_level(expr, operator)
+        if len(arms) > 1:
+            values = [_expression_truth(arm, trigger) for arm in arms]
+            if decisive in values:
+                return decisive
+            return None if None in values else not decisive
+    return _term_truth(expr, trigger)
+
+
+class Trigger(NamedTuple):
+    """One way a workflow can start: an event, and the activity type when the
+    workflow declares them. `action` is None when the event carries none, or
+    when the workflow names no `types:` filter and GitHub's defaults apply."""
+
+    event: str
+    action: str | None = None
+
+
+# The activity types GitHub sends for a pull-request event when the workflow
+# names no `types:` filter of its own.
+DEFAULT_PR_ACTIONS = ("opened", "synchronize", "reopened")
+
+
+def declared_triggers(doc: object) -> list[Trigger]:
+    """Every (event, activity type) pair a workflow's `on:` block admits.
+
+    A pull-request event expands to one trigger per activity type, because the
+    types are what a job's `if:` most often gates on and what tells a run that
+    carries new code from a run that only re-labels the same commit. Every other
+    event stays one trigger.
+    """
+    triggers = workflow_triggers(doc)
+    if isinstance(triggers, str):
+        names: dict[str, object] = {triggers: None}
+    elif isinstance(triggers, list):
+        names = {str(name): None for name in triggers}
+    elif isinstance(triggers, dict):
+        names = {str(name): value for name, value in triggers.items()}
+    else:
+        return []
+
+    out: list[Trigger] = []
+    for event, config in names.items():
+        if event not in HEAD_REF_EVENTS:
+            out.append(Trigger(event))
+            continue
+        types = config.get("types") if isinstance(config, dict) else None
+        if isinstance(types, str):
+            types = [types]  # GitHub normalizes a scalar filter to a one-item list
+        if not isinstance(types, list) or not types:
+            types = list(DEFAULT_PR_ACTIONS)
+        out.extend(Trigger(event, str(action)) for action in types)
+    return out
+
+
+def job_skipped_triggers(
+    if_value: object, triggers: Iterable[Trigger]
+) -> list[Trigger]:
+    """The TRIGGERS on which a job's `if:` is DEFINITELY false, so GitHub skips
+    the job.
+
+    Definite is the contract. A condition this reader cannot classify yields no
+    entry, so the answer is an under-estimate and a caller that reports on a
+    non-empty answer reports only what it can show.
+    """
+    expression = unwrap_expression(str(if_value or "")).strip()
+    if not expression:
+        return []  # no condition — the job runs on every trigger
+    return [
+        trigger
+        for trigger in triggers
+        if _expression_truth(expression, trigger) is False
+    ]
 
 
 def job_admitted_events(if_value: object, declared: Iterable[str]) -> frozenset[str]:
     """The DECLARED events on which a job's `if:` can still let the job run.
 
-    The reading is deliberately one-sided: a term this code cannot classify
-    restricts nothing, so the answer is an OVER-estimate. A caller that reports
-    a defect on an admitted event therefore reports only what the `if:` fails to
-    rule out, and a job whose real gate lives in a `needs.<gate>.outputs` value
-    reads as admitting every event.
+    An event survives when at least one of its triggers is not a definite skip,
+    so the answer is an OVER-estimate: a job gated through a
+    `needs.<gate>.outputs` value reads as admitting every event.
     """
     events = frozenset(str(name) for name in declared)
-    expression = unwrap_expression(str(if_value or "")).strip()
-    if not expression:
-        return events
-    admitted = _expression_events(expression, events)
-    return events if admitted is None else events & admitted
+    triggers = [
+        trigger
+        for trigger in declared_triggers({"on": {event: None for event in events}})
+        if trigger.event in events
+    ]
+    skipped = set(job_skipped_triggers(if_value, triggers))
+    return frozenset(
+        event
+        for event in events
+        if any(t.event == event and t not in skipped for t in triggers)
+    )
+
+
+def group_separates_triggers(group: str, first: Trigger, second: Trigger) -> bool:
+    """True when GROUP is certain to hold different values on the two triggers.
+
+    A span separates them when it reads something the two triggers disagree
+    about: the run id (never shared), the event name across two events, the
+    activity type across two types, or a key whose STATE differs — empty on one
+    event and naming the ref on the other.
+
+    False is the answer that matters and it means "can share": two runs of the
+    same pull request, one on `synchronize` and one on `labeled`, put the same
+    branch in a `${{ github.head_ref }}` group, so the second run's job takes the
+    slot the first one's job is queued in.
+    """
+    for span in _EXPR_SPAN.finditer(group):
+        expr = _LITERAL_SPAN.sub(" ", span.group("expr")).casefold()
+        if any(key in expr for key in ("github.run_id", "github.run_number")):
+            return True
+        if "github.event_name" in expr and first.event != second.event:
+            return True
+        if "github.event.action" in expr and first.action != second.action:
+            return True
+        states = (
+            _span_state(span.group("expr"), first.event),
+            _span_state(span.group("expr"), second.event),
+        )
+        if _UNKNOWN not in states and states[0] != states[1]:
+            return True
+    return False
 
 
 def group_is_per_ref(group: str, events: Iterable[str] = ()) -> bool:

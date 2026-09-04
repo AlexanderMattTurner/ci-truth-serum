@@ -18,12 +18,20 @@ Every scheduled run gets `labeler-`. The second scheduled run therefore cancels
 the first, which was doing unrelated work on a different commit, and the check
 battery it started is paid for and thrown away.
 
-A job whose `if:` cannot run on the collapsing event is safe, because a skipped
-job claims no slot. So the lint asks two questions and reports only when both
-answers point the same way: does the group collapse on an event the workflow
-declares, and does the job's `if:` still admit that event? The `if:` reading is
-one-sided — a term it cannot classify restricts nothing — so a job gated through
-a `needs.<gate>.outputs` value reads as admitting every event.
+A job whose `if:` cannot run on the collapsing event is exempt, but not for the
+reason it looks like. GitHub claims a job's group slot when it CREATES the job,
+before it reads the `if:`, so a skipping run does take the slot. What makes it
+harmless HERE is that the runs sharing this collapsed slot are all runs of the
+same event, so every one of them skips the job and the eviction costs no work.
+A group that holds one value across the triggers a job SERVES and the triggers
+it SKIPS is the case where the victim is real, and
+`check_pending_cancel_concurrency` owns it.
+
+So the lint asks two questions and reports only when both answers point the same
+way: does the group collapse on an event the workflow declares, and does the
+job's `if:` still admit that event? The `if:` reading is one-sided — a term it
+cannot classify restricts nothing — so a job gated through a
+`needs.<gate>.outputs` value reads as admitting every event.
 
 Three fixes: add a key that varies on the collapsing event (`github.run_id`
 always does), narrow the job's `if:` to the events the group keys on, or drop
@@ -34,10 +42,10 @@ static workflow-level group down onto the expensive job is the remedy
 check_static_concurrency and check_cancellable_required_check both prescribe, so
 a lint that flagged it would fire on every application of the blessed fix.
 
-Opt out with "# inert-group-ok: <reason>" on the job's key line or inside its
-body. Two reasons qualify: the job's real gate makes it inert on the collapsing
-event, or the job serializes every run of that event on purpose. The reason is
-required; a bare annotation does not suppress.
+Opt out with "# collapsing-group-ok: <reason>" on the job's key line or inside
+its body, for a job that serializes every run of the collapsing event on
+purpose, or whose real gate this reader cannot see. The reason is required; a
+bare annotation does not suppress.
 
 This lint is opinionated (Tier 2).
 """
@@ -60,7 +68,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
-ALLOW = "inert-group-ok"
+ALLOW = "collapsing-group-ok"
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
@@ -68,12 +76,13 @@ _MESSAGE = (
     "job '{name}' keys its concurrency group on the ref. That key is empty or "
     "fixed on {events}. Every {first} run of this workflow then shares the one "
     "slot '{group}'. The job's `if:` still lets the job run there, so a sibling "
-    "{first} run cancels it or queues behind it. The cancelled run tested an "
-    "unrelated commit, and its whole check battery is paid for and thrown away. "
-    "Add a key that varies on {first}; github.run_id always does. Or narrow the "
-    "`if:` to the events the group keys on. Or add '# " + ALLOW + ": <reason>' "
-    "when the job is inert on {first}, or serializes every {first} run on "
-    "purpose."
+    "{first} run cancels this one or queues behind it. The cancelled run tested "
+    "an unrelated commit, and its whole check battery is paid for and thrown "
+    "away. Add a key that varies on {first}; github.run_id always does. Or "
+    "narrow the `if:` to the events the group keys on. Or add '# "
+    + ALLOW
+    + ": <reason>' when the job serializes every "
+    "{first} run on purpose."
 )
 
 

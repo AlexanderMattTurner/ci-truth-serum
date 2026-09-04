@@ -67,7 +67,7 @@ jobs:
       pull-requests: write
       id-token: write
     concurrency:
-      group: pr-desc-accuracy-${{ github.event.pull_request.number }}
+      group: pr-desc-accuracy-${{ github.event.pull_request.number }}-${{ (github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.head.repo.full_name == github.repository) && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: false
     steps:
       - name: Checkout repository
@@ -121,7 +121,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
-      group: history-integrity-${{ github.event.pull_request.number || github.ref }}
+      group: history-integrity-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name == 'pull_request' && github.event.action == 'synchronize') && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: true
     permissions:
       contents: read
@@ -162,7 +162,7 @@ jobs:
     permissions:
       contents: read
     concurrency:
-      group: remerge-diff-${{ github.event.pull_request.head.repo.full_name }}-${{ github.head_ref }}
+      group: remerge-diff-${{ github.event.pull_request.head.repo.full_name }}-${{ github.head_ref }}-${{ (github.event_name == 'pull_request' && contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action)) && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: true
     steps:
       # The PR HEAD, not the ephemeral merge ref: refs/pull/N/merge does not
@@ -214,7 +214,7 @@ jobs:
       contents: read
       pull-requests: write
     concurrency:
-      group: remerge-diff-comment-${{ github.event.pull_request.head.repo.full_name }}-${{ github.head_ref }}
+      group: remerge-diff-comment-${{ github.event.pull_request.head.repo.full_name }}-${{ github.head_ref }}-${{ (github.event_name == 'pull_request' && contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) && github.event.pull_request.head.repo.full_name == github.repository) && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: true
     steps:
       # The DEFAULT branch, never the PR head: this job holds pull-requests:

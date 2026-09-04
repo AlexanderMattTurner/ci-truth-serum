@@ -245,7 +245,7 @@ jobs:
     # without cancelling resolves of the others (a push scan carries no PR number
     # at the workflow level, so this must key on the matrix entry).
     concurrency:
-      group: auto-resolve-conflicts-${{ matrix.pr.number }}
+      group: auto-resolve-conflicts-${{ matrix.pr.number }}-${{ (github.event_name != 'push' && github.event_name != 'schedule' && needs.discover.outputs.prs != '' && needs.discover.outputs.prs != '[]') && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: true
     permissions:
       # NO write to contents, and that is the point — see the trust model above.

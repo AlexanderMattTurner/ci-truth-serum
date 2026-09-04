@@ -136,7 +136,7 @@ CHECKS: tuple[Check, ...] = (
     _check("check_inline_run_length", "2", WORKFLOW, MAINTAINABILITY),
     _check("check_concurrency", "2", WORKFLOW, CONCURRENCY),
     _check("check_static_concurrency", "2", WORKFLOW, CONCURRENCY, REQUIRED_CHECKS),
-    _check("check_pending_cancel_concurrency", "2", WORKFLOW, CONCURRENCY),
+    _check("check_pending_cancel_concurrency", "2", WORKFLOW, CONCURRENCY, COST),
     _check("check_collapsing_job_group", "2", WORKFLOW, CONCURRENCY, COST),
     _check("check_requires_concurrency", "2", WORKFLOW, CONCURRENCY, COST),
     _check("check_externalized_markers", "2", WORKFLOW, MAINTAINABILITY),

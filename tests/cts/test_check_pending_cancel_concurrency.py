@@ -4,7 +4,13 @@ a required-check workflow whose `on.pull_request.types` includes an activity
 type outside {opened, synchronize, reopened}. Those types fire extra runs on the
 SAME head SHA; GitHub's one-running + one-pending slot per group then cancels a
 current-SHA sibling, whose always() reporter resolves 'cancelled' and reddens
-the required check with no real failure."""
+the required check with no real failure.
+
+The second half of the file covers SHAPE 1, added later: GitHub claims a job's
+slot before it reads the `if:`, so a run that SKIPS the job still evicts the
+member queued in that slot. That shape needs neither a non-default activity type
+nor a required check.
+"""
 
 from pathlib import Path
 
@@ -494,3 +500,139 @@ def test_shapeless_twin_is_not_a_required_check_route(tmp_path):
         "    if: always() && needs.decide.result != 'success'\n", ""
     )
     assert pc.check_file(_write(tmp_path, STORM_TRIGGER + REF_GROUP + jobs)) == []
+
+
+# ── shape 1: a skipping run claims the slot ──────────────────────────────────
+# Nothing below declares a non-default activity type or a required check, so a
+# finding here can only come from the shape-1 arm.
+
+SHARED_SLOT_WORKFLOW = (
+    "name: x\n"
+    "on:\n  pull_request:\n    types: [opened, synchronize, labeled]\n"
+    "jobs:\n"
+    "  breakdown:\n"
+    "    if: github.event.action != 'labeled'\n"
+    "    runs-on: ubuntu-latest\n"
+    "    concurrency:\n"
+    "      group: breakdown-${{ github.head_ref }}\n"
+    "      cancel-in-progress: true\n"
+    "    steps: []\n"
+)
+
+
+def _only(violations: list) -> str:
+    assert len(violations) == 1, violations
+    return violations[0][1]
+
+
+def test_a_skipping_trigger_sharing_the_slot_is_an_error(tmp_path):
+    """A `labeled` run skips the job, claims `breakdown-<branch>` anyway, and
+    evicts the run queued in that same slot. The report names the first serving
+    trigger, `opened`, but every one of them shares the slot."""
+    message = _only(pc.check_file(_write(tmp_path, SHARED_SLOT_WORKFLOW)))
+    assert "'labeled'" in message and "'opened'" in message
+    assert "BEFORE it reads the `if:`" in message
+
+
+def test_no_required_check_and_no_extra_types_are_needed(tmp_path):
+    """Shape 2 needs both; shape 1 needs neither. With the default activity
+    types and no reporter at all, the eviction still happens — here between a
+    `push` run that skips and a pull-request run that serves."""
+    body = (
+        "name: x\non:\n  pull_request:\n  push:\n"
+        "jobs:\n"
+        "  scan:\n"
+        "    if: github.event_name == 'pull_request'\n"
+        "    runs-on: ubuntu-latest\n"
+        "    concurrency:\n"
+        "      group: scan-${{ github.event.pull_request.number || github.run_number }}\n"
+        "    steps: []\n"
+    )
+    # github.run_number varies per run, so the group cannot be shared at all.
+    assert pc.check_file(_write(tmp_path, body)) == []
+    shared = body.replace(
+        "      group: scan-${{ github.event.pull_request.number || github.run_number }}\n",
+        "      group: scan-${{ github.event.pull_request.number || github.ref }}\n",
+    )
+    assert "'push'" in _only(pc.check_file(_write(tmp_path, shared)))
+
+
+def test_a_job_that_runs_on_every_trigger_is_clean(tmp_path):
+    """With no `if:` there is no skipping run, so no slot is claimed for
+    nothing."""
+    body = SHARED_SLOT_WORKFLOW.replace(
+        "    if: github.event.action != 'labeled'\n", ""
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_run_id_keyed_group_is_clean(tmp_path):
+    """A group of one can hold no sibling to evict."""
+    body = SHARED_SLOT_WORKFLOW.replace(
+        "      group: breakdown-${{ github.head_ref }}\n",
+        "      group: breakdown-${{ github.head_ref }}-${{ github.run_id }}\n",
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_the_shared_inert_suffix_is_the_accepted_fix(tmp_path):
+    """The remedy the message prescribes must actually clear the lint: `shared`
+    on the triggers the job serves, a run-id group on the ones it skips."""
+    body = SHARED_SLOT_WORKFLOW.replace(
+        "      group: breakdown-${{ github.head_ref }}\n",
+        "      group: breakdown-${{ github.head_ref }}-${{ (github.event.action != "
+        "'labeled') && 'shared' || format('inert-{0}', github.run_id) }}\n",
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_key_that_is_empty_on_the_skipping_trigger_separates_the_runs(tmp_path):
+    """`github.head_ref` is empty on a cron run and names the branch on a
+    pull-request run, so the two groups differ and neither can evict the other.
+    Reporting here would fire on a group that is already correct."""
+    body = (
+        "name: x\non:\n  pull_request:\n  schedule:\n    - cron: '0 * * * *'\n"
+        "jobs:\n"
+        "  scan:\n"
+        "    if: github.event_name == 'pull_request'\n"
+        "    runs-on: ubuntu-latest\n"
+        "    concurrency:\n"
+        "      group: scan-${{ github.head_ref }}\n"
+        "    steps: []\n"
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_an_unreadable_gate_raises_nothing(tmp_path):
+    """`job_skipped_triggers` answers only with DEFINITE skips, so a job gated
+    through a `needs.<gate>.outputs` value is never reported."""
+    body = SHARED_SLOT_WORKFLOW.replace(
+        "    if: github.event.action != 'labeled'\n",
+        "    if: needs.decide.outputs.run == 'true'\n",
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_reasoned_annotation_suppresses_shape_one(tmp_path):
+    body = SHARED_SLOT_WORKFLOW.replace(
+        "  breakdown:\n",
+        "  breakdown: # inert-group-ok: the labeled run is a no-op here\n",
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_bare_annotation_does_not_suppress_shape_one(tmp_path):
+    body = SHARED_SLOT_WORKFLOW.replace(
+        "  breakdown:\n", "  breakdown: # inert-group-ok\n"
+    )
+    assert len(pc.check_file(_write(tmp_path, body))) == 1
+
+
+def test_an_annotation_inside_a_quoted_scalar_does_not_suppress_shape_one(tmp_path):
+    """YAML reads `#` inside a quoted scalar as data, not as a directive."""
+    body = SHARED_SLOT_WORKFLOW.replace(
+        "    runs-on: ubuntu-latest\n",
+        '    name: "# inert-group-ok: an example in the docs"\n    runs-on: ubuntu-latest\n',
+        1,
+    )
+    assert len(pc.check_file(_write(tmp_path, body))) == 1

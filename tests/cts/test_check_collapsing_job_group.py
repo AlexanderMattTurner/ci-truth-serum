@@ -99,8 +99,9 @@ def test_every_collapsing_event_is_named(tmp_path):
 
 
 def test_an_if_that_excludes_the_collapsing_event_is_clean(tmp_path):
-    """A skipped job claims no slot, so a group that only collapses where the
-    job cannot run is inert."""
+    """GitHub claims the slot before it reads the `if:`, so the skipping run does
+    take it — but every run sharing this collapsed slot is a run of the same
+    event, so all of them skip and the eviction costs no work."""
     body = COLLAPSING_JOB.replace(
         "    if: github.event_name == 'schedule' || github.event_name == 'pull_request'\n",
         "    if: github.event_name == 'pull_request'\n",
@@ -245,7 +246,7 @@ def test_a_key_name_inside_a_quoted_literal_is_not_a_per_ref_key(tmp_path):
 @pytest.mark.parametrize("where", ["key", "body"])
 def test_a_reasoned_annotation_suppresses(tmp_path, where):
     """The annotation is read from the job's key line and from its body alike."""
-    reason = "# inert-group-ok: two cron runs read one base on purpose\n"
+    reason = "# collapsing-group-ok: two cron runs read one base on purpose\n"
     if where == "key":
         job = "  sweep: " + reason + COLLAPSING_JOB
     else:
@@ -259,7 +260,7 @@ def test_an_annotation_inside_a_quoted_scalar_does_not_suppress(tmp_path):
     happens to mention the token. Honouring it would let any job silence the
     lint through a string value nobody reads as a directive."""
     job = (
-        '  sweep:\n    name: "# inert-group-ok: an example in the docs"\n'
+        '  sweep:\n    name: "# collapsing-group-ok: an example in the docs"\n'
         + COLLAPSING_JOB
     )
     body = f"name: x\non:\n{PR_AND_SCHEDULE}jobs:\n{job}"
@@ -268,7 +269,7 @@ def test_an_annotation_inside_a_quoted_scalar_does_not_suppress(tmp_path):
 
 def test_a_bare_annotation_does_not_suppress(tmp_path):
     """The reason is required — a bare token is a silencer, not a decision."""
-    job = "  sweep:\n    # inert-group-ok\n" + COLLAPSING_JOB
+    job = "  sweep:\n    # collapsing-group-ok\n" + COLLAPSING_JOB
     body = f"name: x\non:\n{PR_AND_SCHEDULE}jobs:\n{job}"
     assert len(cjg.check_file(_write(tmp_path, body))) == 1
 
@@ -277,7 +278,7 @@ def test_an_annotation_in_a_sibling_job_does_not_suppress(tmp_path):
     """The annotation is scoped to the job it sits in."""
     body = (
         f"name: x\non:\n{PR_AND_SCHEDULE}jobs:\n"
-        "  other:\n    # inert-group-ok: unrelated\n    runs-on: ubuntu-latest\n    steps: []\n"
+        "  other:\n    # collapsing-group-ok: unrelated\n    runs-on: ubuntu-latest\n    steps: []\n"
         "  sweep:\n" + COLLAPSING_JOB
     )
     assert len(cjg.check_file(_write(tmp_path, body))) == 1
