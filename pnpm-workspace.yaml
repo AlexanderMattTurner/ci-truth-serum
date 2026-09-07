@@ -1,0 +1,8 @@
+overrides:
+  # GHSA-ph9p-34f9-6g65 (high): path traversal via prefix/postfix in tmp < 0.2.6.
+  # GHSA-52f5-9888-hmc6 (low): symlink write via dir param in tmp <= 0.2.3.
+  # Transitive: @stryker-mutator/core > @inquirer/editor > external-editor > tmp.
+  tmp: ">=0.2.6"
+  # GHSA-2g4f-4pwh-qvx6 (moderate): ReDoS in ajv $data option, fixed in 8.18.0.
+  # Transitive: @stryker-mutator/core > ajv@8.17.1.
+  ajv: ">=8.18.0"
