@@ -28,7 +28,13 @@ retry_cmd() {
     return 2
   }
   shift 2
+<<<<<<< local
   # retry-loop-ok: this IS the retry primitive the check steers callers toward, so it must implement the attempt-and-sleep loop it replaces everywhere else.
+||||||| base
+=======
+  # retry-loop-ok: this loop IS the repo's one retry primitive every other
+  # caller is asked to delegate to — it has no helper of its own to call.
+>>>>>>> template
   while [[ "$attempt" -le "$max" ]]; do
     "$@" && return 0
     if [[ "$attempt" -lt "$max" ]]; then
