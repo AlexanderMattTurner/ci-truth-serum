@@ -1,0 +1,8 @@
+overrides:
+  # GHSA-ph9p-34f9-6g65 (high): tmp path traversal via unsanitized prefix/postfix
+  # GHSA-52f5-9888-hmc6 (low): tmp arbitrary temp file write via symlink (superseded above)
+  tmp: ">=0.2.6"
+  # GHSA-7w5x-hrqm-74c2 (high): smol-toml DoS via malformed TOML documents
+  smol-toml: ">=1.7.1"
+  # GHSA-2g4f-4pwh-qvx6 (moderate): ajv ReDoS when using $data option
+  ajv: ">=8.18.0"
