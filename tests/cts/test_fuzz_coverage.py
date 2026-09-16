@@ -135,6 +135,7 @@ FUZZ_REQUIRED = {
     "check_shell_source_declarations": "violations",
     "check_sleep_as_sync": "violations",
     "check_sparse_checkout_closure": "checkouts",
+    "check_secondary_checkout_imports": "executions",
     "check_test_helper_kwargs": "findings",
     "check_truncating_pr_json": "violations",
     "check_unbounded_waits": "violations",

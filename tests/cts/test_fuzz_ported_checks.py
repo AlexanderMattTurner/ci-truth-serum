@@ -56,6 +56,9 @@ shell_source_declarations = load_hook(
     "check_shell_source_declarations.py", "fuzz_shell_source_declarations"
 )
 sleep_as_sync = load_hook("check_sleep_as_sync.py", "fuzz_sleep_as_sync")
+secondary_checkout_imports = load_hook(
+    "check_secondary_checkout_imports.py", "fuzz_secondary_checkout_imports"
+)
 sparse_checkout_closure = load_hook(
     "check_sparse_checkout_closure.py", "fuzz_sparse_checkout_closure"
 )
@@ -307,6 +310,59 @@ def test_sparse_checkout_closure_checkouts_is_total_on_parseable_yaml(
     assert isinstance(result, list)
     for checkout in result:
         assert 1 <= checkout.line
+
+
+# ── check_secondary_checkout_imports.executions: the same text-only shape as
+# `checkouts` above, over fragments that hit its branches — a `path:` checkout,
+# an install step, a `run:` that hands a file under the checkout dir to node
+# or bash, and a run body the bash grammar must survive. ─────────────────────
+
+_SECONDARY_FRAGMENTS = [
+    "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n"
+    "        with:\n          path: _ci\n",
+    "      - run: node _ci/x.mjs\n",
+    "      - run: exec node ./_ci/x.mjs --flag\n",
+    "      - run: bash _ci/run.sh\n",
+    "      - run: _ci/run.sh\n",
+    "      - run: pnpm install\n",
+    "      - run: yarn\n",
+    "      - uses: actions/setup-node@v4\n",
+    '      - run: |\n          if [ x ]; then node "$D/_ci/x.mjs"; fi\n',
+    "      - run: ${{ github.workspace }}/_ci/x.mjs\n",
+    "jobs:\n  b:\n    steps: 3\n",
+    "[]",
+    "key: value\n",
+]
+
+
+@st.composite
+def _secondary_yaml(draw: st.DrawFn) -> str:
+    parts = draw(st.lists(st.sampled_from(_SECONDARY_FRAGMENTS), max_size=4))
+    if draw(st.booleans()):
+        parts.append(draw(st.text(alphabet=string.printable, max_size=40)))
+    return "\n".join(parts)
+
+
+@given(_secondary_yaml())
+def test_secondary_checkout_imports_executions_is_total(text: str) -> None:
+    n_lines = text.count("\n") + 1
+    result = secondary_checkout_imports.executions(text, Path("wf.yaml"))
+    assert secondary_checkout_imports.executions(text, Path("wf.yaml")) == result
+    assert result is None or isinstance(result, list)
+    for execution in result or []:
+        assert 1 <= execution.line <= n_lines
+        assert 1 <= execution.checkout_line <= n_lines
+        assert execution.path and not execution.path.startswith(
+            execution.directory + "/"
+        )
+        assert not secondary_checkout_imports.is_bare("node:" + execution.path)
+
+
+@given(st.text(max_size=80))
+def test_is_bare_is_total_and_deterministic(specifier: str) -> None:
+    assert secondary_checkout_imports.is_bare(
+        specifier
+    ) is secondary_checkout_imports.is_bare(specifier)
 
 
 # ── entrypoints whose module calls `ast.parse` directly, with no try/except

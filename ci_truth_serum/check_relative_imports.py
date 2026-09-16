@@ -93,19 +93,21 @@ def _literal_text(node) -> str | None:
     return "".join(parts)
 
 
-def relative_specifiers(source: str, path: str) -> list[tuple[int, str]]:
-    """Every static RELATIVE specifier in SOURCE, as (1-based line, specifier).
+def specifiers(source: str, path: str) -> list[tuple[int, str]]:
+    """Every static specifier in SOURCE, as (1-based line, specifier).
 
     Exported so a test drives the extraction on its own: this is the half
     that decides what counts as an import, and a miss here is a silent clean
-    pass over the very files it should have flagged.
+    pass over the very files it should have flagged. This check reads the
+    relative ones through `relative_specifiers`;
+    `check_secondary_checkout_imports` reads the bare ones.
     """
     root = parse(source, path)
     found: list[tuple[int, str]] = []
 
     def record(node) -> None:
         text = _literal_text(node)
-        if text is not None and text.startswith("."):
+        if text is not None:
             found.append((node.start_point[0] + 1, text))
 
     for statement in iter_nodes(root, *_FROM_STATEMENTS):
@@ -123,6 +125,13 @@ def relative_specifiers(source: str, path: str) -> list[tuple[int, str]]:
             record(args[0])
 
     return found
+
+
+def relative_specifiers(source: str, path: str) -> list[tuple[int, str]]:
+    """The `specifiers` of SOURCE that name a path relative to the file."""
+    return [
+        (line, spec) for line, spec in specifiers(source, path) if spec.startswith(".")
+    ]
 
 
 def _resolves(specifier: str, path: str) -> bool:
