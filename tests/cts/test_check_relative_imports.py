@@ -55,6 +55,41 @@ def test_bare_and_subpath_specifiers_are_not_relative() -> None:
     assert _specifiers(src) == ["./real.mjs"]
 
 
+# ── runtime_specifiers: what a runtime actually resolves ──────────────────
+_TYPE_ONLY_SOURCE = "\n".join(
+    [
+        'import type { A } from "type-a";',
+        'import { type B } from "type-b";',
+        'export type { C } from "type-c";',
+        'import { type D, e } from "value-e";',
+        'import f from "value-f";',
+        'const g = require("value-g");',
+    ]
+)
+
+
+def test_runtime_specifiers_drop_the_type_only_statements() -> None:
+    found = [spec for _, spec in mod.runtime_specifiers(_TYPE_ONLY_SOURCE, "f.ts")]
+    assert found == ["value-e", "value-f"]
+
+
+def test_specifiers_keep_every_statement_the_source_declares() -> None:
+    found = [spec for _, spec in mod.specifiers(_TYPE_ONLY_SOURCE, "f.ts")]
+    assert found == ["type-a", "type-b", "type-c", "value-e", "value-f"]
+
+
+def test_require_specifiers_read_the_commonjs_calls() -> None:
+    src = "\n".join(
+        [
+            'const a = require("pkg-a");',
+            'const { b } = require("./b.cjs");',
+            "const c = require(name);",
+            'const d = notRequire("pkg-d");',
+        ]
+    )
+    assert mod.require_specifiers(src, "f.cjs") == [(1, "pkg-a"), (2, "./b.cjs")]
+
+
 def test_a_relative_looking_path_in_a_string_or_comment_is_not_an_import() -> None:
     src = "\n".join(
         [

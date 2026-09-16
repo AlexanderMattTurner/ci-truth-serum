@@ -521,6 +521,25 @@
   files: ^\.github/(workflows|actions)/
   types: [yaml]
 
+- id: check-secondary-checkout-imports
+  name: "opinionated: a script run from a secondary checkout imports only what is installed"
+  description: A job that checks out a second tree with `path:` and runs a Node script out of it has no node_modules there, so a bare import in that script is ERR_MODULE_NOT_FOUND on the runner and nowhere else. Fires only when the job also installs no Node dependencies. Follows one shell hop (`bash dir/x.sh` whose script runs `node …`).
+  entry: python -m ci_truth_serum.check_secondary_checkout_imports
+  language: python
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
+  pass_filenames: false
+  # The verdict changes from either side: the workflow that names the script,
+  # and the script (or the shell entrypoint) whose imports it reads. A
+  # workflow-only filter never runs on the commit that adds the bare import.
+  files: '(^\.github/(workflows|actions)/.*\.ya?ml$)|\.(js|mjs|cjs|jsx|ts|mts|cts|tsx|sh|bash)$'
+
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
 - id: check-absolute-symlinks

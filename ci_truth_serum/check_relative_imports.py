@@ -93,25 +93,40 @@ def _literal_text(node) -> str | None:
     return "".join(parts)
 
 
-def relative_specifiers(source: str, path: str) -> list[tuple[int, str]]:
-    """Every static RELATIVE specifier in SOURCE, as (1-based line, specifier).
+def _literal_entry(node) -> tuple[int, str] | None:
+    """NODE as a (1-based line, specifier) pair, when it spells a literal."""
+    text = _literal_text(node)
+    return None if text is None else (node.start_point[0] + 1, text)
 
-    Exported so a test drives the extraction on its own: this is the half
-    that decides what counts as an import, and a miss here is a silent clean
-    pass over the very files it should have flagged.
+
+def _type_only(statement) -> bool:
+    """True when STATEMENT declares TypeScript types alone.
+
+    The runtime erases such a statement before it resolves anything, so the
+    module it names is never loaded. Two shapes carry the `type` keyword:
+    the statement itself (`import type { X } from "m"`, `export type … from
+    "m"`), and every specifier in a named list (`import { type X } from "m"`).
     """
+    if any(child.type == "type" for child in statement.children):
+        return True
+    marked = list(iter_nodes(statement, "import_specifier", "export_specifier"))
+    return bool(marked) and all(
+        any(child.type == "type" for child in node.children) for node in marked
+    )
+
+
+def _static_specifiers(source: str, path: str, runtime_only: bool):
+    """Every static specifier in SOURCE. RUNTIME_ONLY drops the type-only ones."""
     root = parse(source, path)
     found: list[tuple[int, str]] = []
 
-    def record(node) -> None:
-        text = _literal_text(node)
-        if text is not None and text.startswith("."):
-            found.append((node.start_point[0] + 1, text))
-
     for statement in iter_nodes(root, *_FROM_STATEMENTS):
         node = statement.child_by_field_name("source")
-        if node is not None:
-            record(node)
+        if node is None or (runtime_only and _type_only(statement)):
+            continue
+        entry = _literal_entry(node)
+        if entry is not None:
+            found.append(entry)
 
     for call in iter_nodes(root, "call_expression"):
         function = call.child_by_field_name("function")
@@ -119,10 +134,60 @@ def relative_specifiers(source: str, path: str) -> list[tuple[int, str]]:
         if function is None or function.type != "import" or arguments is None:
             continue
         args = [arg for arg in arguments.named_children if arg.type != "comment"]
-        if args:
-            record(args[0])
+        entry = _literal_entry(args[0]) if args else None
+        if entry is not None:
+            found.append(entry)
 
     return found
+
+
+def specifiers(source: str, path: str) -> list[tuple[int, str]]:
+    """Every static specifier in SOURCE, as (1-based line, specifier).
+
+    Exported so a test drives the extraction on its own: this is the half
+    that decides what counts as an import, and a miss here is a silent clean
+    pass over the very files it should have flagged. This check reads the
+    relative ones through `relative_specifiers`;
+    `check_secondary_checkout_imports` reads the bare ones.
+    """
+    return _static_specifiers(source, path, runtime_only=False)
+
+
+def runtime_specifiers(source: str, path: str) -> list[tuple[int, str]]:
+    """The `specifiers` of SOURCE that the runtime resolves.
+
+    A TypeScript type-only statement is erased before the module loads, so it
+    can never be a resolution failure. A checker that asks whether a package
+    must be installed reads this; a checker that asks what the source declares
+    reads `specifiers`.
+    """
+    return _static_specifiers(source, path, runtime_only=True)
+
+
+def require_specifiers(source: str, path: str) -> list[tuple[int, str]]:
+    """Every static `require("x")` argument in SOURCE, as (1-based line,
+    specifier). CommonJS resolves the argument when the call runs, so a `.cjs`
+    entrypoint needs the package the same way an `import` does."""
+    found: list[tuple[int, str]] = []
+    for call in iter_nodes(parse(source, path), "call_expression"):
+        function = call.child_by_field_name("function")
+        arguments = call.child_by_field_name("arguments")
+        if function is None or arguments is None or function.type != "identifier":
+            continue
+        if function.text.decode("utf-8", "replace") != "require":
+            continue
+        args = [arg for arg in arguments.named_children if arg.type != "comment"]
+        entry = _literal_entry(args[0]) if args else None
+        if entry is not None:
+            found.append(entry)
+    return found
+
+
+def relative_specifiers(source: str, path: str) -> list[tuple[int, str]]:
+    """The `specifiers` of SOURCE that name a path relative to the file."""
+    return [
+        (line, spec) for line, spec in specifiers(source, path) if spec.startswith(".")
+    ]
 
 
 def _resolves(specifier: str, path: str) -> bool:

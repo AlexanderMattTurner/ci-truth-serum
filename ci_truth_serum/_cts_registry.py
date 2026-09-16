@@ -169,6 +169,9 @@ CHECKS: tuple[Check, ...] = (
     _check(
         "check_sparse_checkout_closure", "2", WORKFLOW, CORRECTNESS, REQUIRED_CHECKS
     ),
+    _check(
+        "check_secondary_checkout_imports", "2", WORKFLOW, CORRECTNESS, REQUIRED_CHECKS
+    ),
     # ── Extras · off-theme bonus ──
     _check("check_unnamed_regex_groups", "extras", PYTHON, MAINTAINABILITY),
     _check(
