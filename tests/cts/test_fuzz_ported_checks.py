@@ -317,9 +317,12 @@ def test_sparse_checkout_closure_checkouts_is_total_on_parseable_yaml(
 # an install step, a `run:` that hands a file under the checkout dir to node
 # or bash, and a run body the bash grammar must survive. ─────────────────────
 
-_SECONDARY_FRAGMENTS = [
+_SECONDARY_JOB = (
     "jobs:\n  a:\n    steps:\n      - uses: actions/checkout@v4\n"
-    "        with:\n          path: _ci\n",
+    "        with:\n          path: _ci\n"
+)
+_SECONDARY_FRAGMENTS = [
+    _SECONDARY_JOB,
     "      - run: node _ci/x.mjs\n",
     "      - run: exec node ./_ci/x.mjs --flag\n",
     "      - run: bash _ci/run.sh\n",
@@ -329,6 +332,9 @@ _SECONDARY_FRAGMENTS = [
     "      - uses: actions/setup-node@v4\n",
     '      - run: |\n          if [ x ]; then node "$D/_ci/x.mjs"; fi\n',
     "      - run: ${{ github.workspace }}/_ci/x.mjs\n",
+    "      - run: node x.mjs\n        working-directory: _ci\n",
+    "      - run: _ci/x.py\n",
+    "      - if: false\n        run: node _ci/x.mjs\n",
     "jobs:\n  b:\n    steps: 3\n",
     "[]",
     "key: value\n",
@@ -337,7 +343,10 @@ _SECONDARY_FRAGMENTS = [
 
 @st.composite
 def _secondary_yaml(draw: st.DrawFn) -> str:
-    parts = draw(st.lists(st.sampled_from(_SECONDARY_FRAGMENTS), max_size=4))
+    # Half the examples open with the job header, so the step fragments below it
+    # reach the branches that build an Execution.
+    parts = [_SECONDARY_JOB] if draw(st.booleans()) else []
+    parts += draw(st.lists(st.sampled_from(_SECONDARY_FRAGMENTS), max_size=4))
     if draw(st.booleans()):
         parts.append(draw(st.text(alphabet=string.printable, max_size=40)))
     return "\n".join(parts)
@@ -352,10 +361,16 @@ def test_secondary_checkout_imports_executions_is_total(text: str) -> None:
     for execution in result or []:
         assert 1 <= execution.line <= n_lines
         assert 1 <= execution.checkout_line <= n_lines
-        assert execution.path and not execution.path.startswith(
-            execution.directory + "/"
+        # Every path the producer returns was matched on one of its own suffix
+        # sets, and every runner on one of its own runner sets.
+        assert execution.path.endswith(
+            secondary_checkout_imports._JS_SUFFIXES
+            + secondary_checkout_imports._SHELL_SUFFIXES
         )
-        assert not secondary_checkout_imports.is_bare("node:" + execution.path)
+        assert execution.runner in (
+            secondary_checkout_imports._JS_RUNNERS
+            | secondary_checkout_imports._SHELL_RUNNERS
+        )
 
 
 @given(st.text(max_size=80))
