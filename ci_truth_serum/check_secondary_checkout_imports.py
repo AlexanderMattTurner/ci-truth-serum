@@ -21,11 +21,15 @@ red on every pull request, and the log named a module nobody had removed.
 The rule. For each job that checks out a tree with a literal `with.path:` and
 INSTALLS NO NODE DEPENDENCIES anywhere in the job, every JavaScript or
 TypeScript file the job executes out of that tree is read through the
-ECMAScript grammar, and each static import specifier that is neither relative,
-nor absolute, nor a `node:` builtin, nor a `#subpath`, is a violation. Both
-conditions must hold: a job that runs `npm ci`, `pnpm install`, `yarn`,
-`bun install`, or uses `actions/setup-node`, `pnpm/action-setup` or
-`oven-sh/setup-bun`, has decided its own dependencies and is out of scope.
+ECMAScript grammar, and each static specifier the runtime cannot resolve on its
+own is a violation. A relative path, an absolute path, a `node:` builtin and a
+`#subpath` always resolve. The runner decides the rest: deno resolves `npm:`,
+`jsr:` and a URL through its own cache, and bun resolves `bun:`. A `require()`
+argument counts, and a TypeScript type-only import does not — the runtime
+erases it. Both conditions must hold: a job that runs `npm ci`, `pnpm install`,
+`yarn`, `bun install`, or uses `actions/setup-node`, `pnpm/action-setup` or
+`oven-sh/setup-bun`, has decided its own dependencies and is out of scope. A
+step with `if: false` never runs, so it neither executes a file nor installs.
 
 What counts as executing a file out of the tree, all read from the `run:`
 body's bash grammar rather than its text:
@@ -39,14 +43,21 @@ body's bash grammar rather than its text:
     a variable (`"$SCRIPTS/checks/x.mjs"`), so the literal trailing path
     segments are resolved against the shell script's own directory and its
     ancestors, then against every tracked file by suffix. A second hop is not
-    followed.
+    followed. A shell script the bash grammar cannot read is reported, never
+    passed.
+  * The tracked siblings each of those files relative-imports, one level down.
+    The runtime loads a sibling while it loads the entrypoint.
+
+A step's `working-directory`, and the `defaults.run.working-directory` of its
+job or of the workflow, move where a relative operand starts.
 
 Blind spots, each deliberate:
 
   * A `with.path:` or a script path that carries a `${{ }}` expression or a
     shell expansion is decided at a level this cannot model, and is skipped.
   * A checkout of ANOTHER repository (`with.repository:`) serves files this
-    tree does not hold, and is skipped.
+    tree does not hold, and is skipped. `repository: ${{ github.repository }}`
+    names this repository, so it is read.
   * A dynamic `import(name)` with a computed argument has no static target.
   * A `node_modules` directory committed into the tree would make the import
     work; this check does not look for one.
@@ -60,6 +71,7 @@ Globs every workflow (a `path:` checkout lives only on a job's own
 """
 
 import argparse
+import posixpath
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,6 +82,8 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
+    UnparseableShellError,
+    assert_parseable,
     command_words,
     iter_nodes,
     parse as parse_bash,
@@ -81,7 +95,10 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     workflow_files,
 )
-from check_relative_imports import specifiers  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from check_relative_imports import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    require_specifiers,
+    runtime_specifiers,
+)
 from check_sparse_checkout_closure import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _git_repo_root,
     tracked_files,
@@ -97,13 +114,46 @@ OPT_OUT = "allow-secondary-checkout-import"
 _INSTALLER_ACTIONS = ("actions/setup-node", "pnpm/action-setup", "oven-sh/setup-bun")
 _PACKAGE_MANAGERS = frozenset({"npm", "pnpm", "yarn", "bun"})
 _INSTALL_VERBS = frozenset({"ci", "install", "i", "add"})
+# Package-manager options that consume the word after them. The install verb is
+# the first operand, and an option's value is not an operand: `npm --prefix _ci
+# ci` installs.
+_VALUE_OPTIONS = frozenset(
+    {
+        "--prefix",
+        "-C",
+        "--dir",
+        "--cwd",
+        "--filter",
+        "-F",
+        "--workspace",
+        "-w",
+        "--registry",
+        "--loglevel",
+        "--config",
+        "--userconfig",
+        "--cache",
+    }
+)
 
-# Words that run the command after them in the same argv position.
-_WRAPPERS = frozenset({"exec", "command", "env", "corepack", "nice", "time"})
+# Words that run the command after them in the same argv position, each mapped
+# to its own options that take a value. That value is not the program the
+# wrapper runs.
+_WRAPPER_VALUE_OPTIONS = {
+    "exec": ("-a",),
+    "command": (),
+    "env": ("-u", "--unset", "-C", "--chdir", "-S", "--split-string"),
+    "corepack": (),
+    "nice": ("-n", "--adjustment"),
+    "time": ("-o", "--output", "-f", "--format"),
+}
+_WRAPPERS = frozenset(_WRAPPER_VALUE_OPTIONS)
 _JS_RUNNERS = frozenset({"node", "bun", "tsx", "ts-node", "deno"})
 _SHELL_RUNNERS = frozenset({"bash", "sh", "zsh", "source", "."})
-_JS_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".mts", ".cts")
+_JS_SUFFIXES = (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx")
 _SHELL_SUFFIXES = (".sh", ".bash")
+# The runtime of a file the step runs with no runner word in front of it.
+_DEFAULT_JS_RUNNER = "node"
+_DEFAULT_SHELL_RUNNER = "bash"
 # Characters whose presence in a path segment means the shell computes it.
 _EXPANSION_CHARS = frozenset("$`(){}*?")
 
@@ -122,26 +172,37 @@ NODE_BUILTINS = frozenset(
     """.split()
 )
 
-# A specifier opening with one of these resolves without a package.
+# A specifier opening with one of these resolves without a package, whatever
+# runs the file.
 _NOT_BARE_PREFIXES = ("./", "../", "/", "node:", "#", "data:", "file:")
+# What each runner resolves by itself, beyond the prefixes above. Deno fetches
+# `npm:`, `jsr:` and a URL into its own global cache; Bun serves `bun:`.
+_RUNNER_PREFIXES = {
+    "deno": ("npm:", "jsr:", "http:", "https:"),
+    "bun": ("bun:",),
+}
 
 
 @dataclass(frozen=True)
 class Execution:
     """One file a job runs out of a secondary checkout: the JOB, the checkout's
-    `with.path:` DIRECTORY, the tree-relative PATH of the file, the 1-based LINE
-    of the step that runs it, and the CHECKOUT_LINE of the checkout step."""
+    `with.path:` DIRECTORY, the tree-relative PATH of the file, the RUNNER that
+    runs it, the 1-based LINE of the step that runs it, and the CHECKOUT_LINE of
+    the checkout step."""
 
     job: str
     directory: str
     path: str
+    runner: str
     line: int
     checkout_line: int
 
 
-def is_bare(specifier: str) -> bool:
-    """True when SPECIFIER resolves through `node_modules` and nowhere else."""
-    if specifier in (".", "..") or specifier.startswith(_NOT_BARE_PREFIXES):
+def is_bare(specifier: str, runner: str = _DEFAULT_JS_RUNNER) -> bool:
+    """True when SPECIFIER resolves through `node_modules` and nowhere else.
+    RUNNER decides it: deno and bun resolve schemes node cannot."""
+    prefixes = _NOT_BARE_PREFIXES + _RUNNER_PREFIXES.get(runner, ())
+    if specifier in (".", "..") or specifier.startswith(prefixes):
         return False
     name = specifier.split("?", 1)[0]
     return name not in NODE_BUILTINS
@@ -149,12 +210,25 @@ def is_bare(specifier: str) -> bool:
 
 def _plain_words(command) -> list[str]:
     """COMMAND's words with quotes and wrapper programs stripped, so the head is
-    the program that runs. After `env`, its `K=V` assignments and flags go too."""
+    the program that runs.
+
+    Each wrapper's own options go too, with the value of an option that takes
+    one: `command -p node x.mjs` and `nice -n 5 node x.mjs` both run node. An
+    empty list means the command runs no program at all.
+    """
     words = [unquote(word) for word in command_words(command)]
-    while words and words[0] in _WRAPPERS:
-        wrapper = words.pop(0)
-        if wrapper == "env":
-            while words and ("=" in words[0] or words[0].startswith("-")):
+    while words and words[0].rsplit("/", 1)[-1] in _WRAPPERS:
+        wrapper = words.pop(0).rsplit("/", 1)[-1]
+        value_options = _WRAPPER_VALUE_OPTIONS[wrapper]
+        while words and (
+            words[0].startswith("-") or (wrapper == "env" and "=" in words[0])
+        ):
+            option = words.pop(0)
+            # `command -v` / `-V` prints where a program lives and runs nothing.
+            if wrapper == "command" and not option.startswith("--"):
+                if set(option[1:]) & set("vV"):
+                    return []
+            if option in value_options and words:
                 words.pop(0)
     return words
 
@@ -162,6 +236,35 @@ def _plain_words(command) -> list[str]:
 def _operand(words: list[str]) -> str:
     """The first word after the program that is neither a flag nor `run`."""
     return next((w for w in words[1:] if not w.startswith("-") and w != "run"), "")
+
+
+def _package_operands(words: list[str]) -> list[str]:
+    """WORDS with every option, and the value an option takes, removed. What is
+    left starts with the subcommand: `--prefix _ci ci` gives `["ci"]`."""
+    operands: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        index += 1
+        if not word.startswith("-"):
+            operands.append(word)
+        elif word in _VALUE_OPTIONS:
+            index += 1
+    return operands
+
+
+def _never_runs(step: JsonObject) -> bool:
+    """True when STEP's `if:` is the constant false. GitHub never runs the step,
+    so it neither executes a script nor installs a dependency."""
+    condition = step.get("if")
+    if isinstance(condition, bool):
+        return not condition
+    if not isinstance(condition, str):
+        return False
+    text = condition.strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        text = text[3:-2].strip()
+    return text.lower() == "false"
 
 
 def _installs_dependencies(steps: list[JsonObject]) -> bool:
@@ -180,7 +283,8 @@ def _installs_dependencies(steps: list[JsonObject]) -> bool:
             program = words[0].rsplit("/", 1)[-1]
             if program not in _PACKAGE_MANAGERS:
                 continue
-            verb = next((w for w in words[1:] if not w.startswith("-")), "")
+            operands = _package_operands(words[1:])
+            verb = operands[0] if operands else ""
             if verb in _INSTALL_VERBS or (program == "yarn" and not verb):
                 return True
     return False
@@ -200,10 +304,22 @@ def _secondary_checkouts(steps: list[JsonObject]) -> list[tuple[str, int]]:
         # `path: .` is the workspace itself, a full checkout by another name.
         if path.strip().strip("/") in ("", "."):
             continue
-        if with_inputs.get("repository"):
+        if not _is_this_repository(with_inputs.get("repository")):
             continue
         found.append((path.strip().strip("/"), step.get("__line__", 1)))
     return found
+
+
+def _is_this_repository(repository: Any) -> bool:
+    """True when a checkout's `repository:` input names the repository under
+    test. An absent input and `${{ github.repository }}` both name it; any other
+    value serves files this tree does not hold."""
+    if not repository:
+        return True
+    text = str(repository).strip()
+    if text.startswith("${{") and text.endswith("}}"):
+        return text[3:-2].strip() == "github.repository"
+    return False
 
 
 def _under(word: str, directory: str) -> str | None:
@@ -217,24 +333,62 @@ def _under(word: str, directory: str) -> str | None:
     return None
 
 
-def _executed(run: str, directory: str) -> list[str]:
-    """The tree-relative paths RUN executes out of DIRECTORY: a JavaScript file
-    handed to a runner or run directly, and a shell script handed to a shell or
-    run directly. The caller follows the shell script one hop."""
-    found: list[str] = []
+def _at(word: str, working_directory: str) -> str:
+    """WORD as a workspace-relative path when the step runs in
+    WORKING_DIRECTORY. An absolute path and a word the shell computes stay as
+    written."""
+    if not working_directory or word.startswith("/") or _EXPANSION_CHARS & set(word):
+        return word
+    return posixpath.normpath(f"{working_directory}/{word}")
+
+
+def _executed(
+    run: str, directory: str, working_directory: str = ""
+) -> list[tuple[str, str]]:
+    """Each (tree-relative path, runner) RUN executes out of DIRECTORY: a
+    JavaScript file handed to a runner or run directly, and a shell script handed
+    to a shell or run directly. The caller follows the shell script one hop. The
+    step runs in WORKING_DIRECTORY, so a relative operand starts there."""
+    found: list[tuple[str, str]] = []
     for command in iter_nodes(parse_bash(run), "command"):
         words = _plain_words(command)
         if not words:
             continue
         program = words[0].rsplit("/", 1)[-1]
-        if program in _JS_RUNNERS or program in _SHELL_RUNNERS:
-            candidate = _operand(words)
-        else:
-            candidate = words[0]
-        path = _under(candidate, directory)
-        if path is not None and path.endswith(_JS_SUFFIXES + _SHELL_SUFFIXES):
-            found.append(path)
+        named_runner = program in _JS_RUNNERS or program in _SHELL_RUNNERS
+        candidate = _operand(words) if named_runner else words[0]
+        path = _under(_at(candidate, working_directory), directory)
+        if path is None:
+            continue
+        if path.endswith(_JS_SUFFIXES):
+            found.append((path, program if named_runner else _DEFAULT_JS_RUNNER))
+        elif path.endswith(_SHELL_SUFFIXES):
+            found.append((path, program if named_runner else _DEFAULT_SHELL_RUNNER))
     return found
+
+
+def _defaults_working_directory(holder: JsonObject) -> str | None:
+    """The `defaults.run.working-directory` HOLDER sets, else None."""
+    defaults = holder.get("defaults")
+    run = defaults.get("run") if isinstance(defaults, dict) else None
+    value = run.get("working-directory") if isinstance(run, dict) else None
+    return value if isinstance(value, str) else None
+
+
+def _working_directory(
+    doc: JsonObject, job: JsonObject, step: JsonObject
+) -> str | None:
+    """Where STEP's `run:` body executes, relative to the workspace: the step's
+    own `working-directory`, else the job's `defaults.run`, else the workflow's.
+    None means an expression decides it, so no path in the body can be read."""
+    own = step.get("working-directory")
+    candidates = [
+        own if isinstance(own, str) else None,
+        _defaults_working_directory(job),
+        _defaults_working_directory(doc),
+    ]
+    value = next((c for c in candidates if c is not None), "")
+    return None if "${{" in value else value.strip().strip("/")
 
 
 def executions(text: str, workflow: Path) -> list[Execution] | None:
@@ -255,7 +409,7 @@ def executions(text: str, workflow: Path) -> list[Execution] | None:
         raw_steps = job.get("steps")
         if not isinstance(raw_steps, list):
             continue
-        steps = [s for s in raw_steps if isinstance(s, dict)]
+        steps = [s for s in raw_steps if isinstance(s, dict) and not _never_runs(s)]
         checkouts = _secondary_checkouts(steps)
         if not checkouts or _installs_dependencies(steps):
             continue
@@ -263,11 +417,16 @@ def executions(text: str, workflow: Path) -> list[Execution] | None:
             run = step.get("run")
             if not isinstance(run, str):
                 continue
+            working_directory = _working_directory(doc, job, step)
+            if working_directory is None:
+                continue
             line = step.get("__line__", 1)
             for directory, checkout_line in checkouts:
                 found += [
-                    Execution(str(job_name), directory, path, line, checkout_line)
-                    for path in _executed(run, directory)
+                    Execution(
+                        str(job_name), directory, path, runner, line, checkout_line
+                    )
+                    for path, runner in _executed(run, directory, working_directory)
                 ]
     return found
 
@@ -287,13 +446,14 @@ def _literal_tail(word: str) -> str:
 def _resolve_tail(tail: str, script: str, files: frozenset[str]) -> str | None:
     """The tracked file TAIL names when SCRIPT runs it: tried against SCRIPT's
     own directory and each ancestor up to the root, then by suffix across the
-    whole tree. A tail that names several tracked files is ambiguous and
-    resolves to none."""
+    whole tree. Each candidate is normalized, so a `..` segment walks up a
+    directory rather than becoming a path `git ls-files` never emits. A tail
+    that names several tracked files is ambiguous and resolves to none."""
     if not tail:
         return None
     directory = script.rsplit("/", 1)[0] if "/" in script else ""
     while True:
-        candidate = f"{directory}/{tail}" if directory else tail
+        candidate = posixpath.normpath(f"{directory}/{tail}" if directory else tail)
         if candidate in files:
             return candidate
         if not directory:
@@ -303,41 +463,95 @@ def _resolve_tail(tail: str, script: str, files: frozenset[str]) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def scripts_run_by_shell(text: str, script: str, files: frozenset[str]) -> list[str]:
-    """The tracked JavaScript files the shell SCRIPT with TEXT hands to a
-    runner. Reads the bash grammar; a `${{ }}`-free script has nothing to
-    neutralize."""
-    found: list[str] = []
+def scripts_run_by_shell(
+    text: str, script: str, files: frozenset[str]
+) -> list[tuple[str, str]]:
+    """Each (tracked JavaScript file, runner) the shell SCRIPT with TEXT hands to
+    a runner.
+
+    Reads the bash grammar. A file the grammar cannot read raises
+    `UnparseableShellError`: tree-sitter recovers from an unparsed construct by
+    dropping later nodes, so an empty result would be a clean pass over a script
+    this never inspected.
+    """
+    assert_parseable(text)
+    found: list[tuple[str, str]] = []
     for command in iter_nodes(parse_bash(text), "command"):
         words = _plain_words(command)
-        if not words or words[0].rsplit("/", 1)[-1] not in _JS_RUNNERS:
+        if not words:
+            continue
+        runner = words[0].rsplit("/", 1)[-1]
+        if runner not in _JS_RUNNERS:
             continue
         operand = _operand(words)
         if not operand.endswith(_JS_SUFFIXES):
             continue
         resolved = _resolve_tail(_literal_tail(operand), script, files)
-        if resolved is not None and resolved not in found:
-            found.append(resolved)
+        if resolved is not None and (resolved, runner) not in found:
+            found.append((resolved, runner))
+    return found
+
+
+def _relative_target(specifier: str, importer: str) -> str | None:
+    """The tree-relative file SPECIFIER names when IMPORTER loads it, or None
+    when the specifier names a package rather than a path."""
+    if not specifier.startswith("."):
+        return None
+    bare = specifier.split("?", 1)[0].split("#", 1)[0]
+    return posixpath.normpath(posixpath.join(posixpath.dirname(importer), bare))
+
+
+def _relative_closure(
+    entries: list[tuple[str, str]], root: Path, files: frozenset[str]
+) -> list[tuple[str, str]]:
+    """The tracked files ENTRIES relative-import, one level down, each with the
+    runner of the file that imports it. The runtime loads a sibling while it
+    loads the entrypoint, so a bare import there fails the same way."""
+    found: list[tuple[str, str]] = []
+    seen = {path for path, _runner in entries}
+    for path, runner in entries:
+        source = (root / path).read_text(encoding="utf-8", errors="replace")
+        imported = runtime_specifiers(source, path) + require_specifiers(source, path)
+        for _line, specifier in imported:
+            target = _relative_target(specifier, path)
+            if target is None or target in seen or target not in files:
+                continue
+            if not is_js_source(target):
+                continue
+            seen.add(target)
+            found.append((target, runner))
     return found
 
 
 def javascript_files(
     execution: Execution, root: Path, files: frozenset[str]
-) -> list[str]:
-    """The tracked JavaScript files EXECUTION reaches: the file itself, or the
-    ones a shell script hands to a runner, one hop down."""
+) -> list[tuple[str, str]]:
+    """Each (tracked JavaScript file, runner) EXECUTION reaches: the file itself,
+    or the ones a shell script hands to a runner one hop down, plus the tracked
+    siblings each of those relative-imports."""
     path = execution.path
     if path not in files:
         return []
     if is_js_source(path):
-        return [path]
-    text = (root / path).read_text(encoding="utf-8", errors="replace")
-    return scripts_run_by_shell(text, path, files)
+        entries = [(path, execution.runner)]
+    else:
+        text = (root / path).read_text(encoding="utf-8", errors="replace")
+        entries = scripts_run_by_shell(text, path, files)
+    return entries + _relative_closure(entries, root, files)
 
 
-def bare_imports(source: str, path: str) -> list[tuple[int, str]]:
-    """Every (1-based line, specifier) in SOURCE that needs a package."""
-    return [(line, spec) for line, spec in specifiers(source, path) if is_bare(spec)]
+def bare_imports(
+    source: str, path: str, runner: str = _DEFAULT_JS_RUNNER
+) -> list[tuple[int, str]]:
+    """Every (1-based line, specifier) in SOURCE that needs a package RUNNER
+    cannot resolve by itself.
+
+    A TypeScript type-only import is erased before the runtime resolves
+    anything, so it is out. A `require()` argument is in: CommonJS resolves it
+    through `node_modules` the same way an `import` does.
+    """
+    imported = runtime_specifiers(source, path) + require_specifiers(source, path)
+    return sorted((line, spec) for line, spec in imported if is_bare(spec, runner))
 
 
 def _excused(lines: list[str], execution: Execution) -> bool:
@@ -383,17 +597,20 @@ def main(argv: list[str] | None = None) -> int:
         for execution in found:
             if _excused(lines, execution):
                 continue
-            # The shell hop parses a tracked script with the same grammar, and
-            # one past its size bound fails loudly rather than reading as clean.
+            # The shell hop parses a tracked script with the same grammar. One
+            # past its size bound, and one the grammar cannot read, each fail
+            # loudly rather than reading as clean.
             try:
                 scripts = javascript_files(execution, root, files)
-            except PathologicalInputError as err:
-                print(f"::error file={rel},line={execution.line}::{err}")
+            except (PathologicalInputError, UnparseableShellError) as err:
+                print(
+                    f"::error file={rel},line={execution.line}::{execution.path}: {err}"
+                )
                 total += 1
                 continue
-            for script in scripts:
+            for script, runner in scripts:
                 source = (root / script).read_text(encoding="utf-8", errors="replace")
-                for line, specifier in bare_imports(source, script):
+                for line, specifier in bare_imports(source, script, runner):
                     print(
                         f"::error file={rel},line={execution.line}::job "
                         f"{execution.job}: `{script}:{line}` imports "

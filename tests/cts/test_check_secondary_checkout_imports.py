@@ -66,16 +66,28 @@ def _write(root: Path, rel: str, body: str) -> None:
     path.write_text(body, encoding="utf-8")
 
 
-def _repo(tmp_path: Path, workflow: str, fragment: str = FRAGMENT_MJS) -> Path:
+def _repo(
+    tmp_path: Path,
+    workflow: str,
+    fragment: str = FRAGMENT_MJS,
+    sibling: str = "export const fragments = 1;\n",
+    gate: str = GATE_SH,
+) -> Path:
     init_test_repo(tmp_path)
     _write(tmp_path, ".github/workflows/pr-meta.yaml", workflow)
-    _write(tmp_path, ".github/scripts/pr/changelog-gate.sh", GATE_SH)
+    _write(tmp_path, ".github/scripts/pr/changelog-gate.sh", gate)
     _write(tmp_path, ".github/scripts/checks/changelog-fragment.mjs", fragment)
-    _write(
-        tmp_path,
-        ".github/scripts/checks/lib/fragments.mjs",
-        "export const fragments = 1;\n",
-    )
+    _write(tmp_path, ".github/scripts/checks/lib/fragments.mjs", sibling)
+    commit_all(tmp_path)
+    return tmp_path
+
+
+def _repo_with(tmp_path: Path, workflow: str, sources: dict[str, str]) -> Path:
+    """A committed repo holding WORKFLOW and each path in SOURCES."""
+    init_test_repo(tmp_path)
+    _write(tmp_path, ".github/workflows/pr-meta.yaml", workflow)
+    for rel, body in sources.items():
+        _write(tmp_path, rel, body)
     commit_all(tmp_path)
     return tmp_path
 
@@ -110,6 +122,26 @@ def test_a_relative_absolute_builtin_or_subpath_specifier_is_not_bare(specifier:
     assert not mod.is_bare(specifier)
 
 
+@pytest.mark.parametrize(
+    ("specifier", "runner"),
+    [
+        ("npm:smol-toml", "deno"),
+        ("jsr:@std/toml", "deno"),
+        ("https://deno.land/x/y.ts", "deno"),
+        ("http://deno.land/x/y.ts", "deno"),
+        ("bun:test", "bun"),
+    ],
+)
+def test_a_specifier_its_own_runner_resolves_is_not_bare(specifier: str, runner: str):
+    assert not mod.is_bare(specifier, runner)
+    assert mod.is_bare(specifier), "node resolves none of these schemes"
+
+
+@pytest.mark.parametrize("runner", ["node", "bun", "tsx", "deno"])
+def test_a_package_specifier_is_bare_under_every_runner(runner: str):
+    assert mod.is_bare("smol-toml", runner)
+
+
 def test_every_node_builtin_is_not_bare_with_or_without_the_prefix():
     assert mod.NODE_BUILTINS, (
         "the builtin set is empty — every bare check below would fire"
@@ -142,6 +174,10 @@ def test_a_secondary_checkout_job_with_no_install_yields_its_executed_script():
         "      - run: yarn install --immutable\n",
         "      - run: yarn\n",
         "      - run: bun install\n",
+        "      - run: npm --prefix _ci ci\n",
+        "      - run: npm --registry https://r.example ci\n",
+        "      - run: pnpm --filter web install\n",
+        "      - run: yarn --cwd _ci\n",
     ],
 )
 def test_a_job_that_installs_node_dependencies_is_out_of_scope(install_step: str):
@@ -175,6 +211,11 @@ def test_a_package_manager_command_that_installs_nothing_keeps_the_job_in_scope(
         "./_ci_scripts/.github/scripts/checks/x.mjs",
         "_ci_scripts/.github/scripts/checks/x.mjs arg",
         'node "_ci_scripts/.github/scripts/checks/x.mjs"',
+        "command -p node _ci_scripts/.github/scripts/checks/x.mjs",
+        "exec -a gate node _ci_scripts/.github/scripts/checks/x.mjs",
+        "nice -n 5 node _ci_scripts/.github/scripts/checks/x.mjs",
+        "env -u HOME node _ci_scripts/.github/scripts/checks/x.mjs",
+        "/usr/bin/time -o t.log node _ci_scripts/.github/scripts/checks/x.mjs",
     ],
 )
 def test_each_way_of_running_a_script_out_of_the_tree_is_read(run: str):
@@ -191,10 +232,35 @@ def test_each_way_of_running_a_script_out_of_the_tree_is_read(run: str):
         "node ${{ github.workspace }}/_ci_scripts/x.mjs",
         "ruff check _ci_scripts/.github/scripts/x.py",
         "cat _ci_scripts/README.md",
+        "command -v node _ci_scripts/.github/scripts/checks/x.mjs",
+        "command -pv node _ci_scripts/.github/scripts/checks/x.mjs",
     ],
 )
 def test_a_command_that_runs_nothing_out_of_the_tree_yields_no_execution(run: str):
     assert mod.executions(_workflow(run=run), Path("w.yaml")) == []
+
+
+@pytest.mark.parametrize(
+    "suffix", [".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"]
+)
+def test_every_javascript_suffix_is_read_as_an_executed_file(suffix: str):
+    run = f"node _ci_scripts/.github/scripts/checks/x{suffix}"
+    [execution] = mod.executions(_workflow(run=run), Path("w.yaml"))
+    assert execution.path == f".github/scripts/checks/x{suffix}"
+
+
+@pytest.mark.parametrize(
+    ("run", "runner"),
+    [
+        ("node _ci_scripts/.github/scripts/checks/x.mjs", "node"),
+        ("deno run _ci_scripts/.github/scripts/checks/x.ts", "deno"),
+        ("bun _ci_scripts/.github/scripts/checks/x.ts", "bun"),
+        ("_ci_scripts/.github/scripts/checks/x.mjs", "node"),
+    ],
+)
+def test_the_execution_carries_the_runner_that_runs_the_file(run: str, runner: str):
+    [execution] = mod.executions(_workflow(run=run), Path("w.yaml"))
+    assert execution.runner == runner
 
 
 def test_a_checkout_path_the_expression_language_decides_is_skipped():
@@ -208,6 +274,73 @@ def test_a_checkout_of_another_repository_is_skipped():
         "          path: _ci_scripts\n          repository: other/tools\n",
     )
     assert mod.executions(text, Path("w.yaml")) == []
+
+
+@pytest.mark.parametrize(
+    "repository", ["${{ github.repository }}", "${{github.repository}}"]
+)
+def test_a_checkout_naming_this_repository_by_expression_stays_in_scope(
+    repository: str,
+):
+    text = _workflow().replace(
+        "          path: _ci_scripts\n",
+        f"          path: _ci_scripts\n          repository: {repository}\n",
+    )
+    [execution] = mod.executions(text, Path("w.yaml"))
+    assert execution.path == ".github/scripts/pr/changelog-gate.sh"
+
+
+@pytest.mark.parametrize("condition", ["false", "${{ false }}"])
+def test_a_step_that_never_runs_executes_nothing(condition: str):
+    text = _workflow().replace(
+        "      - run: bash", f"      - if: {condition}\n        run: bash"
+    )
+    assert mod.executions(text, Path("w.yaml")) == []
+
+
+def test_an_install_step_that_never_runs_does_not_take_the_job_out_of_scope():
+    text = _workflow("      - if: false\n        run: npm ci\n")
+    assert len(mod.executions(text, Path("w.yaml"))) == 1
+
+
+_CHECKOUT_STEP = (
+    "      - uses: actions/checkout@abc\n        with:\n          path: _ci_scripts\n"
+)
+_WORKING_DIRECTORY_PLACES = {
+    "step": (
+        "on: pull_request\njobs:\n  gate:\n    runs-on: ubuntu-latest\n    steps:\n"
+        f"{_CHECKOUT_STEP}"
+        "      - run: node .github/scripts/checks/x.mjs\n"
+        "        working-directory: _ci_scripts\n"
+    ),
+    "job defaults": (
+        "on: pull_request\njobs:\n  gate:\n    runs-on: ubuntu-latest\n"
+        "    defaults:\n      run:\n        working-directory: _ci_scripts\n"
+        f"    steps:\n{_CHECKOUT_STEP}"
+        "      - run: node .github/scripts/checks/x.mjs\n"
+    ),
+    "workflow defaults": (
+        "on: pull_request\n"
+        "defaults:\n  run:\n    working-directory: _ci_scripts\n"
+        "jobs:\n  gate:\n    runs-on: ubuntu-latest\n    steps:\n"
+        f"{_CHECKOUT_STEP}"
+        "      - run: node .github/scripts/checks/x.mjs\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("workflow", _WORKING_DIRECTORY_PLACES.values())
+def test_a_relative_operand_starts_at_the_working_directory(workflow: str):
+    [execution] = mod.executions(workflow, Path("w.yaml"))
+    assert execution.directory == "_ci_scripts"
+    assert execution.path == ".github/scripts/checks/x.mjs"
+
+
+def test_a_working_directory_an_expression_decides_is_skipped():
+    workflow = _WORKING_DIRECTORY_PLACES["step"].replace(
+        "working-directory: _ci_scripts", "working-directory: ${{ env.DIR }}"
+    )
+    assert mod.executions(workflow, Path("w.yaml")) == []
 
 
 def test_a_checkout_into_the_workspace_itself_is_a_full_checkout():
@@ -241,17 +374,35 @@ _FILES = frozenset(
 def test_a_variable_built_node_operand_resolves_by_its_literal_tail():
     assert mod.scripts_run_by_shell(
         GATE_SH, ".github/scripts/pr/changelog-gate.sh", _FILES
-    ) == [".github/scripts/checks/changelog-fragment.mjs"]
+    ) == [(".github/scripts/checks/changelog-fragment.mjs", "node")]
 
 
-def test_a_relative_node_operand_resolves_against_the_scripts_own_directory():
-    text = "node ../checks/changelog-fragment.mjs\n"
-    files = _FILES | {".github/scripts/pr/../checks/changelog-fragment.mjs"}
-    # `../` is a literal segment, so the tail is tried as written first; the
-    # suffix fallback then finds the one tracked file ending in the tail.
+@pytest.mark.parametrize(
+    "operand",
+    [
+        "../checks/changelog-fragment.mjs",
+        '"$(dirname "$0")/../checks/changelog-fragment.mjs"',
+    ],
+)
+def test_a_parent_segment_walks_up_a_directory(operand: str):
+    # `git ls-files` never emits a path holding `..`, so the candidate is
+    # normalized before the membership test.
     assert mod.scripts_run_by_shell(
-        text, ".github/scripts/pr/changelog-gate.sh", files
-    ) == [".github/scripts/pr/../checks/changelog-fragment.mjs"]
+        f"node {operand}\n", ".github/scripts/pr/changelog-gate.sh", _FILES
+    ) == [(".github/scripts/checks/changelog-fragment.mjs", "node")]
+
+
+def test_the_shell_hop_reports_the_runner_the_script_names():
+    text = 'deno run "$SCRIPTS/checks/changelog-fragment.mjs"\n'
+    assert mod.scripts_run_by_shell(
+        text, ".github/scripts/pr/changelog-gate.sh", _FILES
+    ) == [(".github/scripts/checks/changelog-fragment.mjs", "deno")]
+
+
+def test_a_shell_entrypoint_the_grammar_cannot_read_is_refused():
+    text = GATE_SH.replace("set -euo pipefail\n", 'x="${x%%]*}"\n')
+    with pytest.raises(mod.UnparseableShellError):
+        mod.scripts_run_by_shell(text, ".github/scripts/pr/changelog-gate.sh", _FILES)
 
 
 def test_a_tail_naming_two_tracked_files_resolves_to_neither():
@@ -321,6 +472,109 @@ def test_main_flags_a_javascript_file_run_directly_out_of_the_tree(tmp_path: Pat
         _workflow(run="node _ci_scripts/.github/scripts/checks/changelog-fragment.mjs"),
     )
     assert mod.main(["--repo-root", str(repo)]) == 1
+
+
+def test_main_flags_a_bare_import_in_a_file_the_entrypoint_imports(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    clean = FRAGMENT_MJS.replace(
+        'import { parse as parseToml } from "smol-toml";\n', ""
+    )
+    repo = _repo(
+        tmp_path,
+        _workflow(),
+        fragment=clean,
+        sibling='import { parse } from "smol-toml";\nexport const fragments = parse;\n',
+    )
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert (
+        '`.github/scripts/checks/lib/fragments.mjs:1` imports "smol-toml"'
+        in capsys.readouterr().out
+    )
+
+
+def test_main_reports_a_shell_entrypoint_the_grammar_cannot_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    gate = GATE_SH.replace("set -euo pipefail\n", 'x="${x%%]*}"\n')
+    repo = _repo(tmp_path, _workflow(), gate=gate)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert ".github/scripts/pr/changelog-gate.sh" in out
+    assert "the bash grammar could not parse this file" in out
+
+
+_DENO_WORKFLOW = _workflow(run="deno run _ci_scripts/.github/scripts/checks/fetch.ts")
+
+
+def test_main_passes_a_deno_script_importing_the_schemes_deno_resolves(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    source = (
+        'import { parse } from "npm:smol-toml";\n'
+        'import { toml } from "jsr:@std/toml";\n'
+        'import { x } from "https://deno.land/x/y.ts";\n'
+        "console.log(parse, toml, x);\n"
+    )
+    repo = _repo_with(
+        tmp_path, _DENO_WORKFLOW, {".github/scripts/checks/fetch.ts": source}
+    )
+    assert mod.main(["--repo-root", str(repo)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_flags_a_package_import_in_the_same_deno_script(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    source = 'import { parse } from "smol-toml";\nconsole.log(parse);\n'
+    repo = _repo_with(
+        tmp_path, _DENO_WORKFLOW, {".github/scripts/checks/fetch.ts": source}
+    )
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert '"smol-toml"' in capsys.readouterr().out
+
+
+def test_main_passes_a_typescript_entrypoint_importing_only_types(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    source = (
+        'import type { Parsed } from "smol-toml";\n'
+        'import { type Options } from "yaml";\n'
+        'export type { Parsed } from "smol-toml";\n'
+        "export const parsed: Parsed | Options = 1 as never;\n"
+    )
+    workflow = _workflow(run="tsx _ci_scripts/.github/scripts/checks/types.ts")
+    repo = _repo_with(tmp_path, workflow, {".github/scripts/checks/types.ts": source})
+    assert mod.main(["--repo-root", str(repo)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_main_flags_a_value_import_beside_the_type_only_ones(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    source = (
+        'import type { Parsed } from "yaml";\n'
+        'import { parse } from "smol-toml";\n'
+        "export const parsed: Parsed = parse('a=1') as never;\n"
+    )
+    workflow = _workflow(run="tsx _ci_scripts/.github/scripts/checks/types.ts")
+    repo = _repo_with(tmp_path, workflow, {".github/scripts/checks/types.ts": source})
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert '"smol-toml"' in out
+    assert '"yaml"' not in out
+
+
+def test_main_flags_a_require_call_in_a_commonjs_entrypoint(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    source = 'const { parse } = require("smol-toml");\nconsole.log(parse);\n'
+    workflow = _workflow(run="node _ci_scripts/.github/scripts/checks/gate.cjs")
+    repo = _repo_with(tmp_path, workflow, {".github/scripts/checks/gate.cjs": source})
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert '`.github/scripts/checks/gate.cjs:1` imports "smol-toml"' in (
+        capsys.readouterr().out
+    )
 
 
 @pytest.mark.parametrize(
