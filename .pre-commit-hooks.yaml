@@ -527,10 +527,18 @@
   entry: python -m ci_truth_serum.check_secondary_checkout_imports
   language: python
   additional_dependencies:
-    [PyYAML, tree-sitter, tree-sitter-bash, tree-sitter-javascript, tree-sitter-typescript]
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
   pass_filenames: false
-  files: ^\.github/(workflows|actions)/
-  types: [yaml]
+  # The verdict changes from either side: the workflow that names the script,
+  # and the script (or the shell entrypoint) whose imports it reads. A
+  # workflow-only filter never runs on the commit that adds the bare import.
+  files: '(^\.github/(workflows|actions)/.*\.ya?ml$)|\.(js|mjs|cjs|jsx|ts|mts|cts|tsx|sh|bash)$'
 
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
