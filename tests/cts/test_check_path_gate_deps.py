@@ -476,6 +476,55 @@ def test_a_numeric_derive_value_reads_the_seed(tmp_path, monkeypatch, capsys):
     assert ".github/actions/setup" in capsys.readouterr().out
 
 
+DECLARED_PLUS_COMPOSITE_STEPS = "# gate-deps: bin/\n- uses: ./.github/actions/setup\n"
+BIN_TOOL = {"bin/tool.sh": "#!/bin/bash\n"}
+
+
+def test_a_derived_gate_still_checks_a_declared_dep(tmp_path, monkeypatch, capsys):
+    """The derivation the decide job runs is static analysis, so it misses a
+    `# gate-deps:` path — that comment exists because no scan reaches the
+    dependency. The seed is the one place such a path can be matched, and this
+    seed omits it. The composite the scan does reach stays not applicable."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^docs/", DECLARED_PLUS_COMPOSITE_STEPS),
+        {**ACTION, **BIN_TOOL},
+    )
+    assert cpgd.main() == 1
+    out = capsys.readouterr().out
+    assert "`bin`" in out and "bin/tool.sh" in out
+    assert ".github/actions/setup" not in out
+    assert out.count("::error") == 1
+
+
+def test_a_derived_gate_passes_when_its_seed_covers_the_declared_dep(
+    tmp_path, monkeypatch, capsys
+):
+    """A seed matching the declared path leaves nothing for the lint to report,
+    so the seed's patterns really decide the declared dependency."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^bin/", DECLARED_PLUS_COMPOSITE_STEPS),
+        {**ACTION, **BIN_TOOL},
+    )
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_a_declared_dep_the_scan_also_finds_stays_not_applicable(
+    tmp_path, monkeypatch, capsys
+):
+    """A declaration naming a path the scan reaches anyway — the composite this
+    step `uses:` — is inside the derivation's closure, so declaring it does not
+    put it back under the seed."""
+    steps = "# gate-deps: .github/actions/setup\n- uses: ./.github/actions/setup\n"
+    _repo(tmp_path, monkeypatch, _derived_workflow("^docs/", steps), ACTION)
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_paths_regex_covering_script_passes(tmp_path, monkeypatch, capsys):
     _repo(
         tmp_path,

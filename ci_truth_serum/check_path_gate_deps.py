@@ -8,9 +8,11 @@ of dorny/paths-filter glob groups, or a `paths-regex:` single extended-regex
 (ERE) string matched at runtime by `grep -qE` against the changed-file list
 (an empty `paths-regex` is a deliberately keyword-only gate — path coverage is
 not applicable, so nothing is ever reported uncovered for it). A call passing
-`derive-paths-regex: true` is the same case for a different reason: the decide
-job widens the committed value with the closure of the jobs it gates when it
-RUNS, so the committed value is a seed and a static read of it answers nothing. When the filter
+`derive-paths-regex: true` asks the decide job to widen the committed value with
+the closure of the jobs it gates when it RUNS, so the committed value is only a
+seed. That derivation is static analysis, so it covers the dependencies this
+lint DISCOVERS and nothing declared by hand: a `# gate-deps:` path is still
+matched against the seed. When the filter
 omits a file the gated job actually depends on, a PR changing only that file
 skips the job and the `always()` reporter goes green — a fail-open exactly when
 the dependency changed. That has recurred (a composite action omitted from
@@ -189,7 +191,9 @@ def is_decide_job(job: object) -> bool:
     )
 
 
-def decide_matchers(with_: dict) -> list[re.Pattern[str]]:
+def decide_matchers(
+    with_: dict, *, exempt_derived: bool = True
+) -> list[re.Pattern[str]]:
     """The file matchers for one decide job, as the union of its declared shapes.
 
     `filters:` globs translate through `glob_to_regex`. A `paths-regex:` ERE
@@ -213,12 +217,17 @@ def decide_matchers(with_: dict) -> list[re.Pattern[str]]:
     case where that is not a concession. The decide job widens the committed
     value with the execution closure of the jobs it gates — every local composite
     action, every script their `run:` bodies invoke, and the load edges under
-    those — which is a superset of what this lint computes, and a derivation that
-    cannot run emits `run=true`. So the dependency this lint exists to protect
-    cannot be silently skipped, and the committed value it would read is a seed
-    holding only the terms no scan reaches.
+    those — which is a superset of the dependencies this lint DISCOVERS, and a
+    derivation that cannot run emits `run=true`. So a discovered dependency
+    cannot be silently skipped, and the committed value is a seed holding only
+    the terms no scan reaches.
+
+    That superset stops where the scan stops. A `# gate-deps:` path is declared
+    because no static scan reaches it, so the derivation misses it too. For those
+    paths `analyze` passes EXEMPT_DERIVED false and gets the seed's own matchers,
+    because the seed is the one place a declared path can be matched.
     """
-    if _derives_paths_regex(with_):
+    if exempt_derived and _derives_paths_regex(with_):
         return [re.compile("")]
     matchers = [glob_to_regex(p) for p in filter_patterns(with_.get("filters"))]
     regex = with_.get("paths-regex")
@@ -345,6 +354,10 @@ def analyze(doc: object, text: str, read_repo_file) -> list[tuple[int | None, st
         return []
     blocks = _job_blocks(text)
     compiled = {jid: decide_matchers(job["with"]) for jid, job in decide_jobs.items()}
+    seeds = {
+        jid: decide_matchers(job["with"], exempt_derived=False)
+        for jid, job in decide_jobs.items()
+    }
 
     found: list[tuple[int | None, str]] = []
     for job_id, job in jobs.items():
@@ -357,6 +370,7 @@ def analyze(doc: object, text: str, read_repo_file) -> list[tuple[int | None, st
         # The job only skips when EVERY referenced gate is closed, so a dep
         # covered by ANY referenced decide job's filters cannot fail open.
         patterns = [pat for gate in gates for pat in compiled[gate]]
+        seed_patterns = [pat for gate in gates for pat in seeds[gate]]
         gate_names = "/".join(sorted(gates))
         block = blocks.get(job_id, (0, ""))[1]
         deps, missing = job_dependencies(job, read_repo_file)
@@ -379,10 +393,21 @@ def analyze(doc: object, text: str, read_repo_file) -> list[tuple[int | None, st
                     f"out of the gate (`# {OPT_OUT}: {dep} <reason>`).",
                 )
             )
-        for dep in dict.fromkeys(deps + declared_deps(block, *decide_blocks)):
+        # A `# gate-deps:` path is declared because no static scan reaches it,
+        # and the decide job's run-time derivation is a static scan too. So a
+        # derived gate is not applicable for what job_dependencies DISCOVERS,
+        # while a declared path is still matched against the committed seed.
+        discovered = dict.fromkeys(deps)
+        checks = [(dep, patterns) for dep in discovered]
+        checks += [
+            (dep, seed_patterns)
+            for dep in declared_deps(block, *decide_blocks)
+            if dep not in discovered
+        ]
+        for dep, dep_patterns in checks:
             if dep in suppressed:
                 continue
-            unmatched = uncovered_files(dep, patterns)
+            unmatched = uncovered_files(dep, dep_patterns)
             if not unmatched:
                 continue
             found.append(
