@@ -396,25 +396,11 @@ def test_empty_paths_regex_is_match_all_no_finding(tmp_path, monkeypatch, capsys
 
 
 def _derived_workflow(seed: str, steps: str) -> str:
-    return textwrap.dedent(
-        """\
-        name: x
-        on:
-          push:
-        jobs:
-          decide:
-            uses: ./.github/workflows/decide-reusable.yaml
-            with:
-              derive-paths-regex: true
-              paths-regex: '{seed}'
-          work:
-            needs: decide
-            if: needs.decide.outputs.run == 'true'
-            runs-on: ubuntu-latest
-            steps:
-        {steps}
-        """
-    ).format(seed=seed, steps=textwrap.indent(steps.rstrip(), "      "))
+    """The paths-regex workflow with the derivation input beside its seed. Built
+    from that helper so both variants carry one spelling of the decide shape."""
+    return _paths_regex_workflow(seed, steps).replace(
+        "      paths-regex:", "      derive-paths-regex: true\n      paths-regex:"
+    )
 
 
 def test_a_derived_gate_reports_no_uncovered_dep(tmp_path, monkeypatch, capsys):
@@ -439,6 +425,21 @@ def test_an_unresolved_derive_expression_still_reads_the_seed(
         monkeypatch,
         _derived_workflow("^docs/", COMPOSITE_STEPS).replace(
             "derive-paths-regex: true", "derive-paths-regex: ${{ inputs.derive }}"
+        ),
+        ACTION,
+    )
+    assert cpgd.main() == 1
+    assert ".github/actions/setup" in capsys.readouterr().out
+
+
+def test_an_explicit_derive_false_reads_the_seed(tmp_path, monkeypatch, capsys):
+    """`derive-paths-regex: false` asks the decide job for no derivation, so the
+    committed value is the whole filter. This one omits the composite."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^docs/", COMPOSITE_STEPS).replace(
+            "derive-paths-regex: true", "derive-paths-regex: false"
         ),
         ACTION,
     )
