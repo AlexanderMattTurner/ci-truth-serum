@@ -395,6 +395,136 @@ def test_empty_paths_regex_is_match_all_no_finding(tmp_path, monkeypatch, capsys
     assert capsys.readouterr().out == ""
 
 
+def _derived_workflow(seed: str, steps: str) -> str:
+    """The paths-regex workflow with the derivation input beside its seed. Built
+    from that helper so both variants carry one spelling of the decide shape."""
+    return _paths_regex_workflow(seed, steps).replace(
+        "      paths-regex:", "      derive-paths-regex: true\n      paths-regex:"
+    )
+
+
+def test_a_derived_gate_reports_no_uncovered_dep(tmp_path, monkeypatch, capsys):
+    """The decide job widens the committed seed with the closure of the jobs it
+    gates when it RUNS, so the seed holds only the terms no scan reaches and a
+    static read of it answers nothing. The same composite reported uncovered
+    against a plain seed must report nothing here."""
+    _repo(tmp_path, monkeypatch, _derived_workflow("^docs/", COMPOSITE_STEPS), ACTION)
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_an_unresolved_derive_expression_still_reads_the_seed(
+    tmp_path, monkeypatch, capsys
+):
+    """`derive-paths-regex: ${{ inputs.derive }}` reaches here as its own text,
+    and a caller whose input resolves false derives nothing. Reading it as true
+    would exempt that gate from this lint on a value nobody can see, so only the
+    literal true does."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^docs/", COMPOSITE_STEPS).replace(
+            "derive-paths-regex: true", "derive-paths-regex: ${{ inputs.derive }}"
+        ),
+        ACTION,
+    )
+    assert cpgd.main() == 1
+    assert ".github/actions/setup" in capsys.readouterr().out
+
+
+def test_an_explicit_derive_false_reads_the_seed(tmp_path, monkeypatch, capsys):
+    """`derive-paths-regex: false` asks the decide job for no derivation, so the
+    committed value is the whole filter. This one omits the composite."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^docs/", COMPOSITE_STEPS).replace(
+            "derive-paths-regex: true", "derive-paths-regex: false"
+        ),
+        ACTION,
+    )
+    assert cpgd.main() == 1
+    assert ".github/actions/setup" in capsys.readouterr().out
+
+
+def test_a_derived_gate_with_no_seed_is_still_a_decide_job():
+    """A caller may pass the derivation alone. Reading that as "not a decide job"
+    would leave its gated jobs unchecked for a different reason and read as a
+    clean pass either way, so the recognition has to name the input."""
+    job = {
+        "uses": "./.github/workflows/decide-reusable.yaml",
+        "with": {"derive-paths-regex": True},
+    }
+    assert cpgd.is_decide_job(job)
+    assert any(m.search("anything/at/all") for m in cpgd.decide_matchers(job["with"]))
+
+
+def test_a_numeric_derive_value_reads_the_seed(tmp_path, monkeypatch, capsys):
+    """`1 == True` in Python, so a membership test over `(True, "true", "True")`
+    reads `derive-paths-regex: 1` as on and exempts the gate on a value no reader
+    takes for the boolean the input accepts. The committed seed decides instead,
+    and this one omits the composite."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^docs/", COMPOSITE_STEPS).replace(
+            "derive-paths-regex: true", "derive-paths-regex: 1"
+        ),
+        ACTION,
+    )
+    assert cpgd.main() == 1
+    assert ".github/actions/setup" in capsys.readouterr().out
+
+
+DECLARED_PLUS_COMPOSITE_STEPS = "# gate-deps: bin/\n- uses: ./.github/actions/setup\n"
+BIN_TOOL = {"bin/tool.sh": "#!/bin/bash\n"}
+
+
+def test_a_derived_gate_still_checks_a_declared_dep(tmp_path, monkeypatch, capsys):
+    """The derivation the decide job runs is static analysis, so it misses a
+    `# gate-deps:` path — that comment exists because no scan reaches the
+    dependency. The seed is the one place such a path can be matched, and this
+    seed omits it. The composite the scan does reach stays not applicable."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^docs/", DECLARED_PLUS_COMPOSITE_STEPS),
+        {**ACTION, **BIN_TOOL},
+    )
+    assert cpgd.main() == 1
+    out = capsys.readouterr().out
+    assert "`bin`" in out and "bin/tool.sh" in out
+    assert ".github/actions/setup" not in out
+    assert out.count("::error") == 1
+
+
+def test_a_derived_gate_passes_when_its_seed_covers_the_declared_dep(
+    tmp_path, monkeypatch, capsys
+):
+    """A seed matching the declared path leaves nothing for the lint to report,
+    so the seed's patterns really decide the declared dependency."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^bin/", DECLARED_PLUS_COMPOSITE_STEPS),
+        {**ACTION, **BIN_TOOL},
+    )
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_a_declared_dep_the_scan_also_finds_stays_not_applicable(
+    tmp_path, monkeypatch, capsys
+):
+    """A declaration naming a path the scan reaches anyway — the composite this
+    step `uses:` — is inside the derivation's closure, so declaring it does not
+    put it back under the seed."""
+    steps = "# gate-deps: .github/actions/setup\n- uses: ./.github/actions/setup\n"
+    _repo(tmp_path, monkeypatch, _derived_workflow("^docs/", steps), ACTION)
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_paths_regex_covering_script_passes(tmp_path, monkeypatch, capsys):
     _repo(
         tmp_path,
