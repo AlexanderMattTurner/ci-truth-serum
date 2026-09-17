@@ -395,6 +395,69 @@ def test_empty_paths_regex_is_match_all_no_finding(tmp_path, monkeypatch, capsys
     assert capsys.readouterr().out == ""
 
 
+def _derived_workflow(seed: str, steps: str) -> str:
+    return textwrap.dedent(
+        """\
+        name: x
+        on:
+          push:
+        jobs:
+          decide:
+            uses: ./.github/workflows/decide-reusable.yaml
+            with:
+              derive-paths-regex: true
+              paths-regex: '{seed}'
+          work:
+            needs: decide
+            if: needs.decide.outputs.run == 'true'
+            runs-on: ubuntu-latest
+            steps:
+        {steps}
+        """
+    ).format(seed=seed, steps=textwrap.indent(steps.rstrip(), "      "))
+
+
+def test_a_derived_gate_reports_no_uncovered_dep(tmp_path, monkeypatch, capsys):
+    """The decide job widens the committed seed with the closure of the jobs it
+    gates when it RUNS, so the seed holds only the terms no scan reaches and a
+    static read of it answers nothing. The same composite reported uncovered
+    against a plain seed must report nothing here."""
+    _repo(tmp_path, monkeypatch, _derived_workflow("^docs/", COMPOSITE_STEPS), ACTION)
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_an_unresolved_derive_expression_still_reads_the_seed(
+    tmp_path, monkeypatch, capsys
+):
+    """`derive-paths-regex: ${{ inputs.derive }}` reaches here as its own text,
+    and a caller whose input resolves false derives nothing. Reading it as true
+    would exempt that gate from this lint on a value nobody can see, so only the
+    literal true does."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^docs/", COMPOSITE_STEPS).replace(
+            "derive-paths-regex: true", "derive-paths-regex: ${{ inputs.derive }}"
+        ),
+        ACTION,
+    )
+    assert cpgd.main() == 1
+    assert ".github/actions/setup" in capsys.readouterr().out
+
+
+def test_a_derived_gate_with_no_seed_is_still_a_decide_job():
+    """A caller may pass the derivation alone. Reading that as "not a decide job"
+    would leave its gated jobs unchecked for a different reason and read as a
+    clean pass either way, so the recognition has to name the input."""
+    job = {
+        "uses": "./.github/workflows/decide-reusable.yaml",
+        "with": {"derive-paths-regex": True},
+    }
+    assert cpgd.is_decide_job(job)
+    assert any(m.search("anything/at/all") for m in cpgd.decide_matchers(job["with"]))
+
+
 def test_paths_regex_covering_script_passes(tmp_path, monkeypatch, capsys):
     _repo(
         tmp_path,

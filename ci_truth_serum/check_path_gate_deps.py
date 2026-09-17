@@ -7,7 +7,10 @@ decide call declares its change filter in one of two shapes: a `filters:` spec
 of dorny/paths-filter glob groups, or a `paths-regex:` single extended-regex
 (ERE) string matched at runtime by `grep -qE` against the changed-file list
 (an empty `paths-regex` is a deliberately keyword-only gate — path coverage is
-not applicable, so nothing is ever reported uncovered for it). When the filter
+not applicable, so nothing is ever reported uncovered for it). A call passing
+`derive-paths-regex: true` is the same case for a different reason: the decide
+job widens the committed value with the closure of the jobs it gates when it
+RUNS, so the committed value is a seed and a static read of it answers nothing. When the filter
 omits a file the gated job actually depends on, a PR changing only that file
 skips the job and the `always()` reporter goes green — a fail-open exactly when
 the dependency changed. That has recurred (a composite action omitted from
@@ -154,8 +157,10 @@ def filter_patterns(filters_value: object) -> list[str]:
 
 
 def is_decide_job(job: object) -> bool:
-    """True for a job calling decide-reusable.yaml with a `filters:` or
-    `paths-regex:` input (the two change-filter shapes decide-reusable accepts)."""
+    """True for a job calling decide-reusable.yaml with a `filters:`,
+    `paths-regex:` or `derive-paths-regex:` input — the change-filter shapes
+    decide-reusable accepts. The third names no filter itself: it asks the decide
+    job to derive one when it runs, so a caller may pass it with a seed or alone."""
     if not isinstance(job, dict):
         return False
     uses = str(job.get("uses", "")).partition("@")[0]
@@ -166,6 +171,7 @@ def is_decide_job(job: object) -> bool:
         and (
             isinstance(with_.get("filters"), str)
             or isinstance(with_.get("paths-regex"), str)
+            or with_.get("derive-paths-regex") in (True, "true", "True")
         )
     )
 
@@ -189,7 +195,18 @@ def decide_matchers(with_: dict) -> list[re.Pattern[str]]:
     A BLANK line is the empty pattern, which grep matches against every path.
     It is dropped rather than honoured: reading it as match-everything would
     report a whole gate covered on a pattern nobody wrote deliberately.
+
+    `derive-paths-regex: true` also becomes match-everything, and it is the one
+    case where that is not a concession. The decide job widens the committed
+    value with the execution closure of the jobs it gates — every local composite
+    action, every script their `run:` bodies invoke, and the load edges under
+    those — which is a superset of what this lint computes, and a derivation that
+    cannot run emits `run=true`. So the dependency this lint exists to protect
+    cannot be silently skipped, and the committed value it would read is a seed
+    holding only the terms no scan reaches.
     """
+    if with_.get("derive-paths-regex") in (True, "true", "True"):
+        return [re.compile("")]
     matchers = [glob_to_regex(p) for p in filter_patterns(with_.get("filters"))]
     regex = with_.get("paths-regex")
     if isinstance(regex, str):
