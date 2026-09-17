@@ -25,7 +25,15 @@ name: PR review advisory comment
 # gate anything.
 on: # zizmor: ignore[dangerous-triggers]
   workflow_run:
+<<<<<<< local
     # unfiltered-listener-ok: the advisory answers pull requests, whose head branch is any branch of this repo or of a fork
+||||||| base
+=======
+    # unfiltered-listener-ok: "PR review advisory" triggers on plain
+    # pull_request from any head branch (including forks), and every one of
+    # those completions needs its label/summary computed here — there is no
+    # branch subset to narrow to.
+>>>>>>> template
     workflows: ["PR review advisory"]
     types: [completed]
 
