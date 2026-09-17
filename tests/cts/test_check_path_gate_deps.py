@@ -458,6 +458,23 @@ def test_a_derived_gate_with_no_seed_is_still_a_decide_job():
     assert any(m.search("anything/at/all") for m in cpgd.decide_matchers(job["with"]))
 
 
+def test_a_numeric_derive_value_reads_the_seed(tmp_path, monkeypatch, capsys):
+    """`1 == True` in Python, so a membership test over `(True, "true", "True")`
+    reads `derive-paths-regex: 1` as on and exempts the gate on a value no reader
+    takes for the boolean the input accepts. The committed seed decides instead,
+    and this one omits the composite."""
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _derived_workflow("^docs/", COMPOSITE_STEPS).replace(
+            "derive-paths-regex: true", "derive-paths-regex: 1"
+        ),
+        ACTION,
+    )
+    assert cpgd.main() == 1
+    assert ".github/actions/setup" in capsys.readouterr().out
+
+
 def test_paths_regex_covering_script_passes(tmp_path, monkeypatch, capsys):
     _repo(
         tmp_path,

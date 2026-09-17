@@ -156,6 +156,19 @@ def filter_patterns(filters_value: object) -> list[str]:
     return patterns
 
 
+def _derives_paths_regex(with_: dict) -> bool:
+    """True when a decide call asks the decide job to derive its paths-regex.
+
+    YAML reads the bare word `true` as a boolean and a quoted `'true'` as the
+    string, so both spellings count. Every other value reads the committed seed,
+    including an unresolved `${{ }}` expression and a number — `1 == True` in
+    Python, so a plain membership test reads `derive-paths-regex: 1` as on. The
+    exemption a derived gate earns rests on a value a reader can see.
+    """
+    value = with_.get("derive-paths-regex")
+    return value is True or value in ("true", "True")
+
+
 def is_decide_job(job: object) -> bool:
     """True for a job calling decide-reusable.yaml with a `filters:`,
     `paths-regex:` or `derive-paths-regex:` input — the change-filter shapes
@@ -171,7 +184,7 @@ def is_decide_job(job: object) -> bool:
         and (
             isinstance(with_.get("filters"), str)
             or isinstance(with_.get("paths-regex"), str)
-            or with_.get("derive-paths-regex") in (True, "true", "True")
+            or _derives_paths_regex(with_)
         )
     )
 
@@ -205,7 +218,7 @@ def decide_matchers(with_: dict) -> list[re.Pattern[str]]:
     cannot be silently skipped, and the committed value it would read is a seed
     holding only the terms no scan reaches.
     """
-    if with_.get("derive-paths-regex") in (True, "true", "True"):
+    if _derives_paths_regex(with_):
         return [re.compile("")]
     matchers = [glob_to_regex(p) for p in filter_patterns(with_.get("filters"))]
     regex = with_.get("paths-regex")
