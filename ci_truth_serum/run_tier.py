@@ -36,11 +36,13 @@ The registry itself is ``ci_truth_serum/_cts_registry.py``, which also carries e
 check's tags. ``run_selection`` runs a selection over those tags.
 """
 
+import importlib
 import os
 import re
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from identify import identify
@@ -59,6 +61,7 @@ from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     SHELL,
     SHELL_OR_DOCKERFILE,
     SHELL_OR_WORKFLOW_YAML,
+    PER_FILE,
     SHELL_PYTHON_OR_WORKFLOW_YAML,
     TIERS,
     WORKFLOW,
@@ -140,6 +143,61 @@ def run_check(module: str, argv: list[str]) -> int:
     ).returncode
 
 
+def run_in_process(module: str, argv: list[str]) -> int:
+    """Run one member inside THIS interpreter; return its exit code.
+
+    This is what makes a shared parse possible. `run_check` gives each member
+    its own interpreter, so nothing a member parsed can reach the next one. The
+    per-file pass below calls every member of a file in one process, where
+    `_cts_py_ast.parse_whole` and `_cts_bash_ast.parse` hand the second member
+    the tree the first one paid for.
+
+    The subprocess also gave failure isolation for free: a member that raised
+    printed its traceback and left the others to run. Keeping that is the one
+    recovery this except clause performs, and it re-raises nothing only because
+    the caller turns the status into a failed run. The traceback still prints,
+    so a raising member is as loud as it was.
+    """
+    check = importlib.import_module(f"ci_truth_serum.{module}")
+    try:
+        return check.main(argv)
+    except SystemExit as stop:
+        return 0 if stop.code in (0, None) else 1
+    except Exception:  # pylint: disable=broad-except
+        traceback.print_exc()
+        return 1
+
+
+def run_per_file(
+    members: list[tuple[str, str]],
+    files: list[str],
+    extra: dict[str, list[str]],
+    seconds: dict[str, float],
+) -> int:
+    """Run each per-file MEMBER over FILES, one FILE at a time; return the status.
+
+    The loop is file-outer on purpose. Member-outer, a member finishes the whole
+    tree before the next one starts, so a cache would have to hold every file's
+    tree at once — 1292 MB of them on a consumer with 2516 Python files. File-
+    outer, every member sees one file while it is the current one, so a cache of
+    a single entry is enough and the memory stays flat.
+
+    Only a member the registry marks `per_file` may come through here. See
+    `Check.per_file`.
+    """
+    rc = 0
+    for path in files:
+        for module, kind in members:
+            if not matches(path, kind):
+                continue
+            started = time.monotonic()
+            failed = run_in_process(module, [*extra.get(module, []), path])
+            seconds[module] = seconds.get(module, 0.0) + time.monotonic() - started
+            if failed:
+                rc = 1
+    return rc
+
+
 def run_members(
     members: list[tuple[str, str]],
     files: list[str],
@@ -165,20 +223,42 @@ def run_members(
     unscanned: list[str] = []
     seconds: dict[str, float] = {}
     in_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+
+    # A member with no file of its kind is unscanned whichever pass would have
+    # run it, so the two passes are split only after that question is answered.
+    scannable: list[tuple[str, str]] = []
     for module, kind in members:
-        argv = selected_files(kind, files)
-        if argv is None:
+        if selected_files(kind, files) is None:
             unscanned.append(module)
-            continue
+        else:
+            scannable.append((module, kind))
+
+    per_file = [(m, k) for m, k in scannable if m in PER_FILE]
+    whole_list = [(m, k) for m, k in scannable if m not in PER_FILE]
+
+    for module, kind in whole_list:
         # Actions cancels the job at its cap mid-member, and a cancelled run
         # reaches no line below this loop. This marker is what names the member
         # that was running when it died.
         if in_actions:
             print(f"--- run_tier: starting {module}", file=sys.stderr, flush=True)
         started = time.monotonic()
-        failed = run_check(module, [*extra.get(module, []), *argv])
+        failed = run_check(
+            module, [*extra.get(module, []), *selected_files(kind, files)]
+        )
         seconds[module] = time.monotonic() - started
         if failed:
+            rc = 1
+
+    if per_file:
+        if in_actions:
+            names = ", ".join(module for module, _ in per_file)
+            print(
+                f"--- run_tier: starting per-file pass ({names})",
+                file=sys.stderr,
+                flush=True,
+            )
+        if run_per_file(per_file, files, extra, seconds):
             rc = 1
     return rc, unscanned, seconds
 

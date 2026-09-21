@@ -86,12 +86,34 @@ TAGS: frozenset[str] = frozenset(
 
 
 class Check(NamedTuple):
-    """One aggregated check: its module, its tier, the files it reads, its tags."""
+    """One aggregated check: its module, its tier, the files it reads, its tags,
+    and whether it is a pure per-file map."""
 
     module: str
     tier: str
     kind: str
     tags: frozenset[str]
+    per_file: bool = False
+    """True when this check may be driven one file at a time.
+
+    `run_tier` hands a per-file member one path per call, so each file is parsed
+    once and every member after the first reads the tree already in the cache.
+    Two properties are needed, and a member that lacks either keeps the whole
+    file list — which costs speed and never correctness.
+
+    It must report the same findings either way. A check that compares files to
+    each other, counts across the tree, or sweeps for references does not:
+    driven per file it would still exit 0 while reporting none of its cross-file
+    findings, which is the false green this pack refuses.
+
+    Its `main` must also do no tree-scale work of its own, because here that work
+    runs once per file. Measured on this repository,
+    `check_duplicate_class_names` took 144x longer driven per file and
+    `check_test_helper_kwargs` 47x, both because `main` re-derived the tracked
+    tree on every call.
+
+    `tests/cts/test_per_file_members.py` holds both to account.
+    """
 
     @property
     def hook_id(self) -> str:
@@ -99,28 +121,44 @@ class Check(NamedTuple):
         return self.module.replace("_", "-")
 
 
-def _check(module: str, tier: str, kind: str, *tags: str) -> Check:
-    return Check(module, tier, kind, frozenset(tags))
+def _check(
+    module: str, tier: str, kind: str, *tags: str, per_file: bool = False
+) -> Check:
+    return Check(module, tier, kind, frozenset(tags), per_file)
 
 
 CHECKS: tuple[Check, ...] = (
     # ── Tier 1 · honesty + identity (default-on) ──
     _check("check_workflow_pipefail", "1", WORKFLOW, HONESTY),
-    _check("check_exit_suppression", "1", SHELL, HONESTY),
-    _check("check_stderr_suppression", "1", SHELL, HONESTY),
-    _check("check_substitution_exit_swallow", "1", SHELL, HONESTY),
+    _check("check_exit_suppression", "1", SHELL, HONESTY, per_file=True),
+    _check("check_stderr_suppression", "1", SHELL, HONESTY, per_file=True),
+    _check("check_substitution_exit_swallow", "1", SHELL, HONESTY, per_file=True),
     _check("check_argument_exit_swallow", "1", SHELL, HONESTY),
-    _check("check_soft_timeout", "1", SHELL, HONESTY, COST),
-    _check("check_flock_fixed_fd", "1", SHELL, HONESTY, CONCURRENCY),
-    _check("check_pipefail_grep_pipe", "1", SHELL, HONESTY),
+    _check("check_soft_timeout", "1", SHELL, HONESTY, COST, per_file=True),
+    _check("check_flock_fixed_fd", "1", SHELL, HONESTY, CONCURRENCY, per_file=True),
+    _check("check_pipefail_grep_pipe", "1", SHELL, HONESTY, per_file=True),
     _check("check_folded_scalar_comment", "1", WORKFLOW, HONESTY),
     _check("check_runner_var_foreign_shell", "1", WORKFLOW, HONESTY),
-    _check("check_gh_slurp_jq", "1", SHELL_OR_WORKFLOW_YAML, HONESTY),
-    _check("check_truncating_pr_json", "1", SHELL_PYTHON_OR_WORKFLOW_YAML, HONESTY),
+    _check("check_gh_slurp_jq", "1", SHELL_OR_WORKFLOW_YAML, HONESTY, per_file=True),
+    _check(
+        "check_truncating_pr_json",
+        "1",
+        SHELL_PYTHON_OR_WORKFLOW_YAML,
+        HONESTY,
+        per_file=True,
+    ),
     _check("check_pr_paths", "1", WORKFLOW, HONESTY, REQUIRED_CHECKS),
-    _check("check_pinned_base_images", "1", DOCKERFILE, SUPPLY_CHAIN),
-    _check("check_pinned_downloads", "1", SHELL_OR_DOCKERFILE, SUPPLY_CHAIN),
-    _check("check_versionless_install", "1", SHELL_OR_WORKFLOW_YAML, SUPPLY_CHAIN),
+    _check("check_pinned_base_images", "1", DOCKERFILE, SUPPLY_CHAIN, per_file=True),
+    _check(
+        "check_pinned_downloads", "1", SHELL_OR_DOCKERFILE, SUPPLY_CHAIN, per_file=True
+    ),
+    _check(
+        "check_versionless_install",
+        "1",
+        SHELL_OR_WORKFLOW_YAML,
+        SUPPLY_CHAIN,
+        per_file=True,
+    ),
     _check("check_frozen_head_sha", "1", WORKFLOW, HONESTY, SECURITY),
     _check("check_ready_for_review", "1", WORKFLOW, HONESTY, REQUIRED_CHECKS),
     _check("check_provenance_repo_url", "1", WORKFLOW, SUPPLY_CHAIN),
@@ -157,14 +195,16 @@ CHECKS: tuple[Check, ...] = (
     _check("check_workflow_secret_names", "2", WORKFLOW, SECRETS),
     _check("check_pin_comment_truth", "2", WORKFLOW, SUPPLY_CHAIN),
     _check("check_divergent_action_pins", "2", WORKFLOW, SUPPLY_CHAIN),
-    _check("check_stderr_merge_parse", "2", SHELL_OR_WORKFLOW_YAML, HONESTY),
-    _check("check_echo_fallback", "2", SHELL, HONESTY),
-    _check("check_bare_return_status", "2", SHELL, HONESTY, CORRECTNESS),
-    _check("check_bare_mkdir", "2", SHELL, HONESTY, CORRECTNESS),
-    _check("check_env_arith", "2", SHELL, CORRECTNESS),
-    _check("check_curl_retry", "2", SHELL, CORRECTNESS, COST),
-    _check("check_retry_loop", "2", SHELL, MAINTAINABILITY),
-    _check("check_unbounded_waits", "2", SHELL, CORRECTNESS, COST),
+    _check(
+        "check_stderr_merge_parse", "2", SHELL_OR_WORKFLOW_YAML, HONESTY, per_file=True
+    ),
+    _check("check_echo_fallback", "2", SHELL, HONESTY, per_file=True),
+    _check("check_bare_return_status", "2", SHELL, HONESTY, CORRECTNESS, per_file=True),
+    _check("check_bare_mkdir", "2", SHELL, HONESTY, CORRECTNESS, per_file=True),
+    _check("check_env_arith", "2", SHELL, CORRECTNESS, per_file=True),
+    _check("check_curl_retry", "2", SHELL, CORRECTNESS, COST, per_file=True),
+    _check("check_retry_loop", "2", SHELL, MAINTAINABILITY, per_file=True),
+    _check("check_unbounded_waits", "2", SHELL, CORRECTNESS, COST, per_file=True),
     _check("check_shell_source_declarations", "2", SHELL, CORRECTNESS, MAINTAINABILITY),
     _check(
         "check_sparse_checkout_closure", "2", WORKFLOW, CORRECTNESS, REQUIRED_CHECKS
@@ -173,21 +213,38 @@ CHECKS: tuple[Check, ...] = (
         "check_secondary_checkout_imports", "2", WORKFLOW, CORRECTNESS, REQUIRED_CHECKS
     ),
     # ── Extras · off-theme bonus ──
-    _check("check_unnamed_regex_groups", "extras", PYTHON, MAINTAINABILITY),
     _check(
-        "check_replacement_expansion", "extras", JS_OR_PYTHON, CORRECTNESS, SECURITY
+        "check_unnamed_regex_groups", "extras", PYTHON, MAINTAINABILITY, per_file=True
     ),
-    _check("check_unpaged_all", "extras", JS_OR_PYTHON, HONESTY, CORRECTNESS),
-    _check("check_global_stdio_swap", "extras", PYTHON, MAINTAINABILITY),
+    _check(
+        "check_replacement_expansion",
+        "extras",
+        JS_OR_PYTHON,
+        CORRECTNESS,
+        SECURITY,
+        per_file=True,
+    ),
+    _check(
+        "check_unpaged_all", "extras", JS_OR_PYTHON, HONESTY, CORRECTNESS, per_file=True
+    ),
+    _check("check_global_stdio_swap", "extras", PYTHON, MAINTAINABILITY, per_file=True),
     _check("check_claude_model", "extras", WORKFLOW, AGENTS, SUPPLY_CHAIN),
-    _check("check_drift_guards", "extras", DRIFT, TESTS),
-    _check("check_graceful_handwave", "extras", PROSE_OR_COMMENTED_CODE, DOCS),
-    _check("check_historical_comments", "extras", COMMENTED_CODE, DOCS),
-    _check("check_doc_line_refs", "extras", MARKDOWN, DOCS),
+    _check("check_drift_guards", "extras", DRIFT, TESTS, per_file=True),
+    _check(
+        "check_graceful_handwave",
+        "extras",
+        PROSE_OR_COMMENTED_CODE,
+        DOCS,
+        per_file=True,
+    ),
+    _check("check_historical_comments", "extras", COMMENTED_CODE, DOCS, per_file=True),
+    _check("check_doc_line_refs", "extras", MARKDOWN, DOCS, per_file=True),
     _check("check_workflow_refs", "extras", REFERENCING_TEXT, DOCS),
-    _check("check_flag_arity", "extras", SHELL, CORRECTNESS),
-    _check("check_secret_file_perms", "extras", SHELL, SECRETS, SECURITY),
-    _check("check_case_default", "extras", SHELL, CORRECTNESS),
+    _check("check_flag_arity", "extras", SHELL, CORRECTNESS, per_file=True),
+    _check(
+        "check_secret_file_perms", "extras", SHELL, SECRETS, SECURITY, per_file=True
+    ),
+    _check("check_case_default", "extras", SHELL, CORRECTNESS, per_file=True),
     _check("check_cron_comment", "extras", WORKFLOW, SCHEDULING, DOCS),
     _check("check_cron_alert_coverage", "extras", WORKFLOW, SCHEDULING, ALERTING),
     _check("check_external_clock_targets", "extras", WORKFLOW, SCHEDULING),
@@ -196,27 +253,44 @@ CHECKS: tuple[Check, ...] = (
     _check(
         "check_workflow_run_branch_filter", "extras", WORKFLOW, SECURITY, CORRECTNESS
     ),
-    _check("check_toolchain_skips", "extras", PYTHON, TESTS, HONESTY),
-    _check("check_stray_tool_markup", "extras", PROSE_OR_COMMENTED_CODE, AGENTS, DOCS),
+    _check("check_toolchain_skips", "extras", PYTHON, TESTS, HONESTY, per_file=True),
+    _check(
+        "check_stray_tool_markup",
+        "extras",
+        PROSE_OR_COMMENTED_CODE,
+        AGENTS,
+        DOCS,
+        per_file=True,
+    ),
     _check("check_test_predicate_shadow", "extras", SHELL, TESTS),
     _check("check_dead_shell_functions", "extras", SHELL, MAINTAINABILITY),
-    _check("check_cwd_scoped_git", "extras", PYTHON, CORRECTNESS),
-    _check("check_unspecified_encoding", "extras", PYTHON, CORRECTNESS),
+    _check("check_cwd_scoped_git", "extras", PYTHON, CORRECTNESS, per_file=True),
+    _check("check_unspecified_encoding", "extras", PYTHON, CORRECTNESS, per_file=True),
     _check(
         "check_duplicate_module_constant",
         "extras",
         PYTHON,
         CORRECTNESS,
         MAINTAINABILITY,
+        per_file=True,
     ),
     _check("check_duplicate_class_names", "extras", PYTHON, MAINTAINABILITY),
-    _check("check_big_tuple_annotations", "extras", PYTHON, MAINTAINABILITY),
-    _check("check_unreset_module_state", "extras", PYTHON, TESTS, CORRECTNESS),
-    _check("check_sleep_as_sync", "extras", PYTHON, TESTS),
-    _check("check_positional_git_argv", "extras", PYTHON, TESTS),
+    _check(
+        "check_big_tuple_annotations", "extras", PYTHON, MAINTAINABILITY, per_file=True
+    ),
+    _check(
+        "check_unreset_module_state",
+        "extras",
+        PYTHON,
+        TESTS,
+        CORRECTNESS,
+        per_file=True,
+    ),
+    _check("check_sleep_as_sync", "extras", PYTHON, TESTS, per_file=True),
+    _check("check_positional_git_argv", "extras", PYTHON, TESTS, per_file=True),
     _check("check_test_helper_kwargs", "extras", PYTHON, TESTS),
-    _check("check_wall_clock_assertions", "extras", JS_OR_PYTHON, TESTS),
-    _check("check_relative_imports", "extras", JS, CORRECTNESS),
+    _check("check_wall_clock_assertions", "extras", JS_OR_PYTHON, TESTS, per_file=True),
+    _check("check_relative_imports", "extras", JS, CORRECTNESS, per_file=True),
     _check("check_path_shadowed_interpreter", "extras", WORKFLOW, AGENTS, CORRECTNESS),
 )
 
@@ -225,6 +299,11 @@ TIERS: dict[str, list[tuple[str, str]]] = {
     tier: [(c.module, c.kind) for c in CHECKS if c.tier == tier]
     for tier in ("1", "2", "extras")
 }
+
+# The members `run_tier` may drive one file at a time. Read from the registry, so
+# a check added later keeps the whole file list until someone marks it and the
+# contract test agrees.
+PER_FILE: frozenset[str] = frozenset(c.module for c in CHECKS if c.per_file)
 
 
 def by_tag(tag: str) -> list[Check]:

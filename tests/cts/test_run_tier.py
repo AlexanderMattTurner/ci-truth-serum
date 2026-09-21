@@ -269,6 +269,13 @@ def test_skip_removes_named_member(tmp_path, monkeypatch):
         return _Done()
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
+    # A per-file member never reaches `subprocess.run` — `run_tier` calls it in
+    # this interpreter so the members of one file share its parse. Both routes
+    # are recorded, so the question this test asks ("is the peer still run?")
+    # is answered whichever route runs the peer.
+    monkeypatch.setattr(
+        rt, "run_in_process", lambda module, argv: called.append(module) or 0
+    )
     rc = _run(["1", "--skip", "check_exit_suppression", str(shell_file)])
     assert rc == 0
     assert "check_exit_suppression" not in called
@@ -309,6 +316,11 @@ def _record_argv(monkeypatch) -> dict[str, list[str]]:
         return _Done()
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
+    # Same reason as `test_skip_removes_named_member`: a per-file member is run
+    # in process, so its argv has to be recorded there to be seen at all.
+    monkeypatch.setattr(
+        rt, "run_in_process", lambda module, argv: seen.__setitem__(module, argv) or 0
+    )
     return seen
 
 
