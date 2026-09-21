@@ -464,6 +464,46 @@ def run_source_checks(
     return status
 
 
+def run_message_checks(
+    argv: list[str],
+    find_violations: Callable[[str, str], list[tuple[int, str]]],
+) -> int:
+    """Drive a lint that gives each hit its OWN message over ARGV.
+
+    The sibling of `run_source_checks`, for a lint that reports more than one
+    kind of defect. FIND_VIOLATIONS(text, path) returns (1-based line, message)
+    pairs. Each one prints ``<path>:<lineno>: <message>``. Everything else —
+    which read failures are skipped and why, and the refusal an unparseable
+    file earns — follows `run_source_checks`, whose docstring carries the
+    reasoning.
+
+    A caller with several messages must use THIS, not one `run_source_checks`
+    pass per message. A pass per message reads each file again, prints an
+    unparseable-file refusal once per pass, groups the hits by message instead
+    of by line, and — the reason this exists — reports nothing at all for a
+    defect kind the caller forgot to give a pass. Here every hit carries its
+    message already, so a new kind is reported by construction.
+    """
+    status = 0
+    for path in argv:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        reason = unparseable_shell_reason(path, text) or unparseable_python_reason(
+            path, text
+        )
+        if reason is not None:
+            print(f"{path}: {reason}", file=sys.stderr)
+            status = 1
+            continue
+        for lineno, message in find_violations(text, path):
+            print(f"{path}:{lineno}: {message}", file=sys.stderr)
+            status = 1
+    return status
+
+
 # A path that names a test file: a tests/ (or __tests__/, specs/) directory
 # component, a `test_*` or `conftest` module, or a `test.*` / `spec.*` /
 # `*.test.*` / `*.spec.*` suite. One definition, so a lint that scopes itself to

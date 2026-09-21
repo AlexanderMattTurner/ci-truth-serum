@@ -7,28 +7,39 @@ name: Mutation testing
 # .github/scripts/mutation_shards.py). Slices run in parallel so wall-clock is
 # the slowest single module, not the serial sum, and an aggregate step demands
 # one report per shard so a vanished slice can't score a subset as the whole.
-# Both sides are change-gated via decide-reusable: on a PR they run only when
-# files they depend on changed; a weekly schedule re-checks main.
+# This runs on a DAILY schedule, on demand, and for now on a pull request. One
+# cosmic-ray pass reruns the offline suite once per mutant, so the cost is paid
+# once a day against main rather than on every push to every branch. A mutant
+# that survives is a prompt to add a test, and a prompt does not have to arrive
+# before a merge to be worth acting on.
 #
-# The Python side is also INCREMENTAL. Each shard caches its cosmic-ray session
-# under a key that is a content hash of the shard's own inputs, so a run
-# recomputes a mutant only when something it depends on changed. A second push
-# to a pull request therefore re-runs the shards for the modules that push
-# touched and restores the rest, and the weekly cron seeds the main-scoped
-# caches a first push can read.
+# The Python side is INCREMENTAL. Each shard caches its cosmic-ray session under
+# a key that is a content hash of the shard's own inputs, so a run recomputes a
+# mutant only when something it depends on changed and restores the rest. Each
+# daily run therefore pays for the modules the day's merges touched.
+#
+# Both sides keep their decide-reusable path gates. With no pull_request event
+# those gates open on every run this workflow has, so they cost a runner start
+# and select nothing; they stay because the shards and the aggregate read their
+# outputs, and rewiring that graph is a larger change than the schedule.
 #
 # Gate semantics: a shard fails only when its unmutated baseline is red or
-# cosmic-ray errors — a surviving mutant is a prompt to add a test, not a build
-# break — so "required" here means every shard ran cleanly and reported, not that
-# the score is perfect. The mutation-passed reporter is an `if: always()` summary
-# so it always concludes (even when the gates are closed), which lets it be a
-# stable required status check. Concurrency is keyed per PR (and per run off a
-# PR) so a superseded run goes red rather than stranding the required check.
+# cosmic-ray errors — a surviving mutant is diagnostic, not a build break. The
+# mutation-passed reporter is an `if: always()` summary so a run always reaches a
+# conclusion. It is NOT a required check: a workflow with no pull_request trigger
+# posts no status on a pull request, so requiring it would leave every pull
+# request waiting on a check that never reports. A red daily run reaches a person
+# through build-publish-notify.yaml's workflow_run notifier.
 
 on:
   schedule:
     # cron-alert: false  # alerted repo-wide by build-publish-notify.yaml's workflow_run notifier, which check-failure-notifier-coverage holds exhaustive over every push/schedule workflow — this workflow has no in-workflow sink for this lint to credit
-    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+    - cron: "0 6 * * *" # daily 06:00 UTC
+  # `pull_request` stays until the branch-protection ruleset stops requiring
+  # mutation-passed. sync-required-checks.yaml rewrites that ruleset from the
+  # `required-check:` annotation below, and only on a push to main, so the two
+  # agree one merge after this one. A head with no pull_request trigger posts no
+  # status, and a required context that never reports holds the merge open.
   pull_request:
   workflow_dispatch:
     inputs:
@@ -38,13 +49,12 @@ on:
         default: dev
 
 concurrency:
-  # The fallback is github.run_id, not github.ref: off a pull request (the cron
-  # and workflow_dispatch) github.ref is the default branch for EVERY run, so a
-  # ref fallback puts all of them in one slot. cancel-in-progress would then let
-  # a manual dispatch cancel the cron run whole — including the always()
-  # reporter — and the required check would strand. run_id gives each non-PR run
-  # its own slot; a PR still supersedes itself by number.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  # The key is github.run_id, not github.ref: every run here is off a pull
+  # request, so github.ref is the default branch for ALL of them and a ref key
+  # would put them in one slot. cancel-in-progress would then let a manual
+  # dispatch cancel the daily run whole, reporter included. run_id gives each run
+  # its own slot, so nothing here cancels anything else.
+  group: ${{ github.workflow }}-${{ github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -234,10 +244,9 @@ jobs:
       - name: Run Stryker
         run: pnpm mutation
 
-  # Stable Required check: runs even when the gates close or a job is
-  # cancelled/skipped, so a protected branch never gets stuck on a check that
-  # never reports.
-  mutation-passed: # required-check: true
+  # Runs even when the gates close or a job is cancelled or skipped, so every
+  # run reaches one conclusion a person can read.
+  mutation-passed: # required-check: false  # sync-required-checks.yaml drops it from the ruleset on the next push to main, which is what lets the pull_request trigger go
     if: always()
     needs: [decide-py, decide-js, plan, mutation, aggregate, mutation-js]
     runs-on: ubuntu-latest

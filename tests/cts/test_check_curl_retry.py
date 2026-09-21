@@ -1,17 +1,40 @@
-"""Tests for ci_truth_serum/check_curl_retry.py — the lint that requires a
-retry on a file-writing ``curl`` download.
+"""Tests for ci_truth_serum/check_curl_retry.py — the lint that requires curl's
+own widened retry on a file-writing ``curl`` download.
 
-Drives ``violations()`` directly for the parsing rules and ``main()`` for the
-argv/exit-code contract.
+Drives ``violations()`` and ``findings()`` directly for the parsing rules, and
+``main()`` for the argv/exit-code contract.
 """
+
+import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
-from tests._helpers import load_hook
+from tests._helpers import HOOKS_DIR, REPO_ROOT, load_hook
 
+_SRC = HOOKS_DIR / "check_curl_retry.py"
 mod = load_hook("check_curl_retry.py", "check_curl_retry")
+_linecheck = load_hook("_cts_linecheck.py", "_cts_linecheck")
 
-_WRAPPERS = frozenset({"gb_retry", "retry_cmd"})
+
+def _tracked_shell_files() -> list[str]:
+    """Every tracked shell file in this repo, by the same definition the hook's
+    `types: [shell]` selector uses. `tracked_shell_files` reads the index of
+    the current directory, so this runs it at the repo root."""
+    here = Path.cwd()
+    os.chdir(REPO_ROOT)
+    try:
+        return _linecheck.tracked_shell_files()
+    finally:
+        os.chdir(here)
+
+
+# The flag pair that the consumer config in the field passed to the retired
+# `--retry-wrapper`. Kept here to pin that a wrapper no longer exempts anything.
+_WRAPPERS = ("gb_retry", "retry_cmd")
+
+_WIDENED = "--retry 3 --retry-all-errors"
 
 
 @pytest.mark.parametrize(
@@ -29,17 +52,26 @@ _WRAPPERS = frozenset({"gb_retry", "retry_cmd"})
         'timeout 30 curl -fsSL "$u" -o "$f"',
         # `--output=<file>` writes to disk exactly as `--output <file>` does.
         'curl -fsSL "$u" --output=/tmp/f',
+        # `--retry-delay` alone starts no retry: it only shapes a ladder
+        # `--retry` would begin, so the download is still single-shot.
+        'curl -fsSL --retry-delay 2 --retry-max-time 60 "$u" -o "$f"',
     ],
 )
 def test_fires_on_single_shot_output_curl(line: str) -> None:
     assert mod.violations(line) == [1]
+    assert mod.violations(line, mod.ARM_MISSING) == [1]
+    assert mod.violations(line, mod.ARM_NARROW) == []
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        # a retry flag makes it resilient
-        'curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$file"',
+        # a widened retry flag makes it resilient
+        f'curl -fsSL {_WIDENED} --retry-delay 2 "$url" -o "$file"',
+        # the narrower widener is accepted too
+        'curl -fsSL --retry 3 --retry-connrefused "$url" -o "$file"',
+        # `--retry=N` is the same flag, spelled with `=`
+        'curl -fsSL --retry=3 --retry-all-errors "$u" -o "$f"',
         # no -o: a var-capturing fetch is out of scope
         'json="$(curl -fsSL --connect-timeout 10 "$api")"',
         # a comment
@@ -62,6 +94,56 @@ def test_clean_lines_do_not_fire(text: str) -> None:
     assert mod.violations(text) == []
 
 
+# ── arm B: a `--retry` too narrow to cover a refused or aborted connection ───
+@pytest.mark.parametrize(
+    "line",
+    [
+        'curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$file"',
+        'curl -fsSL --retry=6 --retry-max-time 60 "$u" --output "$f"',
+        'timeout 30 curl -fsSLo "$f" --retry 3 "$u"',
+    ],
+)
+def test_fires_on_a_narrow_retry(line: str) -> None:
+    assert mod.violations(line, mod.ARM_NARROW) == [1]
+    assert mod.violations(line, mod.ARM_MISSING) == []
+
+
+@pytest.mark.parametrize("widener", sorted(mod._WIDENING_FLAGS))  # noqa: SLF001  # pylint: disable=protected-access
+def test_each_widening_flag_clears_arm_b(widener: str) -> None:
+    # Driven from the module's own set, so a new widening flag fails here until
+    # this test knows it. The refusing direction sits directly below.
+    assert mod.violations(f'curl -fsSL --retry 3 {widener} "$u" -o "$f"') == []
+    assert mod.violations('curl -fsSL --retry 3 "$u" -o "$f"', mod.ARM_NARROW) == [1]
+
+
+def test_one_line_reports_under_one_arm_only() -> None:
+    assert mod.findings('curl -fsSL --retry 3 "$u" -o "$f"') == [(1, mod.ARM_NARROW)]
+    assert mod.findings('curl -fsSL "$u" -o "$f"') == [(1, mod.ARM_MISSING)]
+
+
+# ── a flag the script computes into a variable still counts ─────────────────
+def test_a_widening_flag_carried_by_a_variable_clears_arm_b() -> None:
+    text = 'widen="--retry-connrefused"\ncurl -fsSL --retry 6 "$widen" -o "$f" "$u"\n'
+    assert mod.violations(text) == []
+
+
+def test_a_retry_flag_carried_by_an_array_clears_arm_a() -> None:
+    text = 'OPTS=(--retry 3 --retry-all-errors)\ncurl "${OPTS[@]}" -o "$f" "$u"\n'
+    assert mod.violations(text) == []
+
+
+def test_an_array_carrying_only_a_narrow_retry_still_fires_arm_b() -> None:
+    # The refusing counterpart: resolving the variable must not bless the call
+    # outright, only credit the flags the variable actually holds.
+    text = 'OPTS=(--retry 3)\ncurl "${OPTS[@]}" -o "$f" "$u"\n'
+    assert mod.violations(text, mod.ARM_NARROW) == [2]
+
+
+def test_a_variable_holding_no_retry_flag_leaves_arm_a_firing() -> None:
+    text = 'OPTS=(-fsSL --connect-timeout 10)\ncurl "${OPTS[@]}" -o "$f" "$u"\n'
+    assert mod.violations(text, mod.ARM_MISSING) == [2]
+
+
 @pytest.mark.parametrize("destination", sorted(mod._NO_FILE_DESTINATIONS))  # noqa: SLF001  # pylint: disable=protected-access
 def test_a_destination_that_holds_no_bytes_is_not_a_download(destination: str) -> None:
     # A throughput probe writing to /dev/null, or a capture into a variable, owes
@@ -76,16 +158,22 @@ def test_a_bare_curl_to_a_real_file_still_fires() -> None:
     assert mod.violations("curl -sS -o /tmp/payload -w '%{http_code}' \"$u\"") == [1]
 
 
-@pytest.mark.parametrize("wrapper", sorted(_WRAPPERS))
-def test_a_configured_retry_wrapper_satisfies_the_rule(wrapper: str) -> None:
-    assert (
-        mod.violations(f'{wrapper} 3 2 curl -fsSL "$url" -o "$file"', _WRAPPERS) == []
+# ── the retired `--retry-wrapper` exempts nothing ───────────────────────────
+@pytest.mark.parametrize("wrapper", _WRAPPERS)
+def test_a_retry_wrapper_no_longer_exempts_a_download(wrapper: str) -> None:
+    # The field defect: `retry_cmd 3 2 curl …` gave up about six seconds after
+    # the first failure, because a proxy aborted every CONNECT at once.
+    line = (
+        f'{wrapper} 3 2 curl -fsSL --connect-timeout 10 --max-time 120 "$url" -o "$tmp"'
     )
+    assert mod.violations(line, mod.ARM_MISSING) == [1]
 
 
-def test_an_unconfigured_wrapper_name_does_not_satisfy_the_rule() -> None:
-    # With no --retry-wrapper given, only curl's own --retry flag is a retry.
-    assert mod.violations('gb_retry 3 2 curl -fsSL "$url" -o "$file"') == [1]
+@pytest.mark.parametrize("wrapper", _WRAPPERS)
+def test_a_wrapper_around_a_widened_curl_is_clean(wrapper: str) -> None:
+    # The positive marker for the rule above: the wrapper is not itself banned,
+    # so the only thing arm A asks for is curl's own widened retry.
+    assert mod.violations(f'{wrapper} 3 2 curl -fsSL {_WIDENED} "$url" -o "$tmp"') == []
 
 
 def test_two_downloads_on_one_line_report_once() -> None:
@@ -95,6 +183,10 @@ def test_two_downloads_on_one_line_report_once() -> None:
 def test_opt_out_needs_no_reason() -> None:
     # curl-retry's marker does not require a stated reason, unlike retry-loop's.
     assert mod.violations('curl -fsSL "$u" -o "$f"  # curl-retry-ok\n') == []
+
+
+def test_opt_out_covers_both_arms() -> None:
+    assert mod.violations('curl --retry 3 -o "$f" "$u"  # curl-retry-ok: POST\n') == []
 
 
 def test_opt_out_on_line_above() -> None:
@@ -112,16 +204,45 @@ def test_probe_message_string_does_not_fire() -> None:
     assert mod.violations('gb_warn "curl -fsSL \\"$u\\" -o \\"$f\\""\n') == []
 
 
+def test_probe_message_string_holding_a_narrow_retry_does_not_fire() -> None:
+    # Arm B's own probe: the banned idiom inside a logger's message string.
+    assert mod.violations('gb_warn "curl --retry 3 -o f https://x"\n') == []
+
+
 def test_probe_heredoc_body_does_not_fire() -> None:
     text = 'cat <<\'EOF\' >/tmp/x\ncurl -fsSL "$u" -o "$f"\nEOF\n'
     assert mod.violations(text) == []
 
 
-# ── non-vacuity ──────────────────────────────────────────────────────────────
-def test_non_vacuous_default_flag_config() -> None:
-    """A default run (no --retry-wrapper) still flags a real single-shot download —
-    guards against the wrapper flag silently swallowing every case."""
-    assert mod.violations('curl -fsSL "$url" -o "$file"\n', frozenset()) == [1]
+def test_probe_heredoc_body_holding_a_narrow_retry_does_not_fire() -> None:
+    text = "cat <<'EOF' > doc.txt\ncurl --retry 3 -o f https://x\nEOF\n"
+    assert mod.violations(text) == []
+
+
+def test_the_probes_are_not_vacuous() -> None:
+    # The positive marker both probes need: the SAME idiom, executed rather than
+    # printed, fires under each arm.
+    assert mod.findings('curl -fsSL "$u" -o "$f"\n') == [(1, mod.ARM_MISSING)]
+    assert mod.findings("curl --retry 3 -o f https://x\n") == [(1, mod.ARM_NARROW)]
+
+
+# ── pathological input fails loudly ─────────────────────────────────────────
+def test_pathological_input_fails_loudly(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An input the grammar refuses to parse is reported and exits 1 — never
+    skipped as a silent no-findings pass — and the paths beside it are still
+    checked."""
+    pathological = tmp_path / "huge.sh"
+    pathological.write_text("cmd " + "| cmd " * 3000 + "\n", encoding="utf-8")
+    with pytest.raises(mod.PathologicalInputError):
+        mod.violations(pathological.read_text(encoding="utf-8"))
+    bad = tmp_path / "bad.sh"
+    bad.write_text('curl -fsSL "$u" -o "$f"\n', encoding="utf-8")
+    assert mod.main([str(pathological), str(bad)]) == 1
+    err = capsys.readouterr().err
+    assert "pipe bytes" in err
+    assert f"{bad}:1: single-shot" in err
 
 
 # ── main() argv/exit-code contract ───────────────────────────────────────────
@@ -141,23 +262,296 @@ def test_main_reports_a_hit_and_exits_1(tmp_path, capsys) -> None:
     assert f"{path}:1:" in capsys.readouterr().err
 
 
-def test_main_names_the_configured_wrappers_in_the_remedy(tmp_path, capsys) -> None:
+def test_main_gives_each_arm_its_own_message(tmp_path, capsys) -> None:
     path = tmp_path / "s.sh"
-    path.write_text('curl -fsSL "$url" -o "$file"\n', encoding="utf-8")
-    assert mod.main(["--retry-wrapper", "gb_retry", str(path)]) == 1
-    assert "gb_retry" in capsys.readouterr().err
-
-
-def test_main_falls_back_to_generic_wording_with_no_wrappers_configured(
-    tmp_path, capsys
-) -> None:
-    path = tmp_path / "s.sh"
-    path.write_text('curl -fsSL "$url" -o "$file"\n', encoding="utf-8")
+    path.write_text(
+        'curl -fsSL "$u" -o "$a"\ncurl -fsSL --retry 3 "$u" -o "$b"\n',
+        encoding="utf-8",
+    )
     assert mod.main([str(path)]) == 1
-    assert "wrap it in your retry helper" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert f"{path}:1: {mod.MESSAGES[mod.ARM_MISSING]}" in err
+    assert f"{path}:2: {mod.MESSAGES[mod.ARM_NARROW]}" in err
+    assert mod.MESSAGES[mod.ARM_MISSING] != mod.MESSAGES[mod.ARM_NARROW]
+
+
+def test_a_third_arm_is_reported_rather_than_dropped(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    """`main()` reports whatever `findings()` returns, so a new arm is reported
+    the moment it exists. The old loop walked MESSAGES instead and reported
+    nothing for an arm it did not know — a clean verdict on a real defect."""
+    third = "hypothetical"
+    monkeypatch.setitem(mod.MESSAGES, third, "a third shape nobody has met yet")
+    monkeypatch.setattr(mod, "_download_arm", lambda *_: third)
+    path = tmp_path / "s.sh"
+    path.write_text('curl -fsSL "$u" -o "$f"\n', encoding="utf-8")
+    assert mod.main([str(path)]) == 1
+    assert f"{path}:1: a third shape nobody has met yet" in capsys.readouterr().err
+
+
+def test_an_arm_with_no_message_fails_loudly(tmp_path, monkeypatch) -> None:
+    """The refusing counterpart. An arm missing from MESSAGES raises instead of
+    passing the file clean, so the gap cannot hide as a green run."""
+    monkeypatch.setattr(mod, "_download_arm", lambda *_: "unregistered")
+    path = tmp_path / "s.sh"
+    path.write_text('curl -fsSL "$u" -o "$f"\n', encoding="utf-8")
+    with pytest.raises(KeyError):
+        mod.main([str(path)])
+
+
+def test_hits_come_out_in_line_order(tmp_path, capsys) -> None:
+    """One pass over the file, so a narrow hit above a missing one is reported
+    above it. A pass per arm grouped them by arm instead."""
+    path = tmp_path / "s.sh"
+    path.write_text(
+        'curl --retry 3 "$u" -o a\ncurl "$u" -o b\ncurl --retry 3 "$u" -o c\n',
+        encoding="utf-8",
+    )
+    assert mod.main([str(path)]) == 1
+    reported = [
+        line.split(":")[1]
+        for line in capsys.readouterr().err.splitlines()
+        if str(path) in line
+    ]
+    assert reported == ["1", "2", "3"]
+
+
+def test_main_still_accepts_the_retired_wrapper_flag(tmp_path, capsys) -> None:
+    # Backward compatibility: a consumer config that still passes the flag keeps
+    # running. The download is reported all the same.
+    path = tmp_path / "s.sh"
+    path.write_text('retry_cmd 3 2 curl -fsSL "$url" -o "$file"\n', encoding="utf-8")
+    assert mod.main(["--retry-wrapper=retry_cmd", str(path)]) == 1
+    err = capsys.readouterr().err
+    assert "--retry-wrapper is retired and ignored (retry_cmd)" in err
+    assert f"{path}:1:" in err
+
+
+def test_main_says_nothing_about_the_flag_when_it_is_absent(tmp_path, capsys) -> None:
+    path = tmp_path / "s.sh"
+    path.write_text(f'curl {_WIDENED} "$url" -o "$file"\n', encoding="utf-8")
+    assert mod.main([str(path)]) == 0
+    assert "retired" not in capsys.readouterr().err
 
 
 def test_main_clean_file_exits_0(tmp_path) -> None:
     path = tmp_path / "s.sh"
-    path.write_text('curl -fsSL --retry 3 "$url" -o "$file"\n', encoding="utf-8")
+    path.write_text(f'curl -fsSL {_WIDENED} "$url" -o "$file"\n', encoding="utf-8")
     assert mod.main([str(path)]) == 0
+
+
+# ── `--retry 0` is the flag with no attempt in it ───────────────────────────
+@pytest.mark.parametrize("count", ["--retry 0", "--retry=0", "--retry 00"])
+def test_a_literal_zero_count_reads_as_no_retry(count: str) -> None:
+    # curl makes the one request and stops, so the download is as single-shot
+    # as one carrying no `--retry` at all.
+    assert mod.violations(f'curl {count} -o f "$u"', mod.ARM_MISSING) == [1]
+
+
+def test_a_zero_count_reports_arm_a_even_beside_a_widening_flag() -> None:
+    # There are no attempts for `--retry-all-errors` to widen.
+    line = 'curl --retry 0 --retry-all-errors -o f "$u"'
+    assert mod.findings(line) == [(1, mod.ARM_MISSING)]
+
+
+def test_a_nonzero_count_beside_it_stays_clean() -> None:
+    # The positive marker: the smallest count that does retry still clears.
+    assert mod.violations('curl --retry 1 --retry-all-errors -o f "$u"') == []
+
+
+def test_a_count_from_a_variable_still_credits_the_retry() -> None:
+    # The stated limit: only a zero WRITTEN AT THE CALL SITE reads as zero. A
+    # count that arrives through a variable credits the retry, so a legitimate
+    # computed count is never reported. `n=0` here is the hardest case for that
+    # rule, and it must still clear.
+    text = 'n=0\ncurl --retry "$n" --retry-all-errors -o f "$u"\n'
+    assert mod.violations(text) == []
+
+
+def test_an_unresolved_count_credits_the_retry() -> None:
+    # No assignment reaches the call, so the count is unknown. Arm A must stay
+    # silent; only the missing widening flag is reported.
+    assert mod.findings('curl --retry "$n" -o f "$u"') == [(1, mod.ARM_NARROW)]
+
+
+def test_a_zero_count_in_one_operation_only() -> None:
+    line = 'curl --retry 0 "$a" -o a --next --retry 3 --retry-all-errors "$b" -o b'
+    assert mod.violations(line, mod.ARM_MISSING) == [1]
+
+
+# ── the four fail-open holes, each pinned in both directions ────────────────
+def test_an_assignment_after_the_call_credits_nothing() -> None:
+    # A: the shell runs the assignment AFTER the download, so the flags never
+    # reach curl. Source order is what the grammar can answer, and it credits
+    # less rather than more.
+    late = 'curl "${OPTS[@]}" -o f "$u"\nOPTS=(--retry 3 --retry-all-errors)\n'
+    assert mod.violations(late, mod.ARM_MISSING) == [1]
+
+
+def test_an_assignment_before_the_call_still_credits() -> None:
+    early = 'OPTS=(--retry 3 --retry-all-errors)\ncurl "${OPTS[@]}" -o f "$u"\n'
+    assert mod.violations(early) == []
+
+
+def test_the_latest_reaching_assignment_wins() -> None:
+    # A second assignment overwrites the first, so the call reads the later
+    # value. The earlier widened value must not credit the call.
+    text = (
+        "OPTS=(--retry 3 --retry-all-errors)\n"
+        "OPTS=(--retry 3)\n"
+        'curl "${OPTS[@]}" -o f "$u"\n'
+    )
+    assert mod.violations(text, mod.ARM_NARROW) == [3]
+
+
+def test_a_local_declaration_carries_the_flag() -> None:
+    # The real-world shape: a function-local variable assigned above the call.
+    # `local x=…` is a declaration_command wrapping a variable_assignment, so
+    # the same walk finds it.
+    text = (
+        "fetch() {\n"
+        "  local widen=--retry-connrefused\n"
+        '  curl -fsSL --retry 6 "$widen" "$1" -o "$2"\n'
+        "}\n"
+    )
+    assert mod.violations(text) == []
+
+
+def test_a_local_declaration_without_the_flag_still_fires() -> None:
+    text = (
+        "fetch() {\n"
+        "  local widen=--silent\n"
+        '  curl -fsSL --retry 6 "$widen" "$1" -o "$2"\n'
+        "}\n"
+    )
+    assert mod.violations(text, mod.ARM_NARROW) == [3]
+
+
+def test_a_name_inside_a_larger_word_credits_nothing() -> None:
+    # B: both names sit inside a URL, so curl receives one address and no flag.
+    text = 'retry=--retry\nwide=--retry-all-errors\ncurl "https://example/$retry/$wide" -o f\n'
+    assert mod.violations(text, mod.ARM_MISSING) == [3]
+
+
+def test_a_name_that_is_the_whole_argument_still_credits() -> None:
+    text = 'retry=--retry\nwide=--retry-all-errors\ncurl "$retry" 3 "$wide" -o f https://e\n'
+    assert mod.violations(text) == []
+
+
+@pytest.mark.parametrize(
+    "argument", ["$wide", "${wide}", '"$wide"', '"${wide}"', '"${wide[@]}"']
+)
+def test_each_whole_argument_expansion_spelling_credits(argument: str) -> None:
+    # The accepted spellings, enumerated: a negative assertion alone would pass
+    # when the reader stops recognising every one of them.
+    text = f"wide=--retry-all-errors\ncurl --retry 3 {argument} -o f https://e\n"
+    assert mod.violations(text) == []
+
+
+@pytest.mark.parametrize(
+    "argument", ['"https://e/$wide"', "https://e/$wide", '"x$wide"']
+)
+def test_an_embedded_expansion_does_not_credit(argument: str) -> None:
+    text = f"wide=--retry-all-errors\ncurl --retry 3 {argument} -o f\n"
+    assert mod.violations(text, mod.ARM_NARROW) == [2]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['"$(echo --retry 3 --retry-all-errors)"', "$(flags)", "$((1 + 1))"],
+)
+def test_a_computed_value_credits_nothing(value: str) -> None:
+    # C: the words come from a program this check cannot run, so the literals
+    # nested inside are that program's arguments, not the variable's value.
+    text = f'OPTS={value}\ncurl $OPTS -o f "$u"\n'
+    assert mod.violations(text, mod.ARM_MISSING) == [2]
+
+
+def test_a_literal_value_beside_the_computed_one_still_credits() -> None:
+    text = 'OPTS="--retry 3 --retry-all-errors"\ncurl $OPTS -o f "$u"\n'
+    assert mod.violations(text) == []
+
+
+@pytest.mark.parametrize("separator", ["--next", "-:"])
+def test_a_later_operation_is_judged_on_its_own(separator: str) -> None:
+    # D: curl starts a separate operation at `--next`, with its own flags. A
+    # widened first download says nothing about the second.
+    line = (
+        f'curl --retry 3 --retry-all-errors "$a" -o a {separator} --retry 3 "$b" -o b'
+    )
+    assert mod.violations(line, mod.ARM_NARROW) == [1]
+
+
+@pytest.mark.parametrize("separator", ["--next", "-:"])
+def test_every_operation_widened_is_clean(separator: str) -> None:
+    line = (
+        f'curl --retry 3 --retry-all-errors "$a" -o a {separator} '
+        '--retry 3 --retry-all-errors "$b" -o b'
+    )
+    assert mod.violations(line) == []
+
+
+def test_a_later_operation_with_no_retry_reports_arm_a() -> None:
+    line = 'curl --retry 3 --retry-all-errors "$a" -o a --next "$b" -o b'
+    assert mod.violations(line, mod.ARM_MISSING) == [1]
+
+
+@pytest.mark.parametrize("flag", sorted(mod._WIDENING_FLAGS))  # noqa: SLF001  # pylint: disable=protected-access
+def test_a_negation_after_a_widening_flag_clears_it(flag: str) -> None:
+    # D: curl reads its arguments in order and the last spelling of a boolean
+    # wins. Driven from the module's set, so a new flag needs its negation here.
+    assert mod.violations(f'curl --retry 3 {flag} --no-{flag[2:]} -o f "$u"') == [1]
+
+
+@pytest.mark.parametrize("flag", sorted(mod._WIDENING_FLAGS))  # noqa: SLF001  # pylint: disable=protected-access
+def test_a_widening_flag_after_its_negation_wins(flag: str) -> None:
+    # The refusing counterpart: order decides, so the LAST spelling stands.
+    assert mod.violations(f'curl --retry 3 --no-{flag[2:]} {flag} -o f "$u"') == []
+
+
+def test_a_negation_of_the_other_flag_does_not_clear_this_one() -> None:
+    line = 'curl --retry 3 --retry-all-errors --no-retry-connrefused -o f "$u"'
+    assert mod.violations(line) == []
+
+
+def test_a_negation_carried_by_a_variable_is_read_in_place() -> None:
+    # The substituted words take the variable's position in the stream, so a
+    # negation written after it still wins.
+    text = 'w=--retry-all-errors\ncurl --retry 3 "$w" --no-retry-all-errors -o f "$u"\n'
+    assert mod.violations(text, mod.ARM_NARROW) == [2]
+
+
+# ── the shipped tree is clean under this lint ────────────────────────────────
+def test_repo_shell_tree_is_clean() -> None:
+    """Dogfood: this repo's own tracked shell files must not violate. A finding
+    here is either a real single-shot download to fix or a false positive to
+    answer, and both must block rather than sit undetected.
+
+    The population is `tracked_shell_files()`, this repo's one definition of
+    it, and NOT a `*.sh`/`*.bash` glob. The hook registers `types: [shell]`, so
+    `identify` hands it every extensionless file with a shell shebang as well —
+    `.hooks/pre-commit` and its siblings. A glob here would leave exactly those
+    files scanned in anger and unscanned by this test."""
+    paths = _tracked_shell_files()
+    assert paths, "no tracked shell files found — the dogfood check would be vacuous"
+    assert any("/" not in path and "." not in path for path in paths) or any(
+        path.startswith(".hooks/") for path in paths
+    ), "no extensionless shell file in the population — the widening above is vacuous"
+    result = subprocess.run(
+        ["python", "-m", "ci_truth_serum.check_curl_retry", *paths],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_module_parses_the_grammar_rather_than_the_text() -> None:
+    """Meta-contract (.claude/rules/shell-lint-parsing.md): every structural
+    question here is answered by `_cts_bash_ast`, so the module must import the
+    parser and must not carry a quote-state scanner or `shlex`."""
+    source = _SRC.read_text(encoding="utf-8")
+    assert "from _cts_bash_ast import" in source
+    assert "shlex" not in source
