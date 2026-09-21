@@ -284,6 +284,148 @@ def test_main_clean_file_exits_0(tmp_path) -> None:
     assert mod.main([str(path)]) == 0
 
 
+# ── the four fail-open holes, each pinned in both directions ────────────────
+def test_an_assignment_after_the_call_credits_nothing() -> None:
+    # A: the shell runs the assignment AFTER the download, so the flags never
+    # reach curl. Source order is what the grammar can answer, and it credits
+    # less rather than more.
+    late = 'curl "${OPTS[@]}" -o f "$u"\nOPTS=(--retry 3 --retry-all-errors)\n'
+    assert mod.violations(late, mod.ARM_MISSING) == [1]
+
+
+def test_an_assignment_before_the_call_still_credits() -> None:
+    early = 'OPTS=(--retry 3 --retry-all-errors)\ncurl "${OPTS[@]}" -o f "$u"\n'
+    assert mod.violations(early) == []
+
+
+def test_the_latest_reaching_assignment_wins() -> None:
+    # A second assignment overwrites the first, so the call reads the later
+    # value. The earlier widened value must not credit the call.
+    text = (
+        "OPTS=(--retry 3 --retry-all-errors)\n"
+        "OPTS=(--retry 3)\n"
+        'curl "${OPTS[@]}" -o f "$u"\n'
+    )
+    assert mod.violations(text, mod.ARM_NARROW) == [3]
+
+
+def test_a_local_declaration_carries_the_flag() -> None:
+    # The real-world shape: a function-local variable assigned above the call.
+    # `local x=…` is a declaration_command wrapping a variable_assignment, so
+    # the same walk finds it.
+    text = (
+        "fetch() {\n"
+        "  local widen=--retry-connrefused\n"
+        '  curl -fsSL --retry 6 "$widen" "$1" -o "$2"\n'
+        "}\n"
+    )
+    assert mod.violations(text) == []
+
+
+def test_a_local_declaration_without_the_flag_still_fires() -> None:
+    text = (
+        "fetch() {\n"
+        "  local widen=--silent\n"
+        '  curl -fsSL --retry 6 "$widen" "$1" -o "$2"\n'
+        "}\n"
+    )
+    assert mod.violations(text, mod.ARM_NARROW) == [3]
+
+
+def test_a_name_inside_a_larger_word_credits_nothing() -> None:
+    # B: both names sit inside a URL, so curl receives one address and no flag.
+    text = 'retry=--retry\nwide=--retry-all-errors\ncurl "https://example/$retry/$wide" -o f\n'
+    assert mod.violations(text, mod.ARM_MISSING) == [3]
+
+
+def test_a_name_that_is_the_whole_argument_still_credits() -> None:
+    text = 'retry=--retry\nwide=--retry-all-errors\ncurl "$retry" 3 "$wide" -o f https://e\n'
+    assert mod.violations(text) == []
+
+
+@pytest.mark.parametrize(
+    "argument", ["$wide", "${wide}", '"$wide"', '"${wide}"', '"${wide[@]}"']
+)
+def test_each_whole_argument_expansion_spelling_credits(argument: str) -> None:
+    # The accepted spellings, enumerated: a negative assertion alone would pass
+    # when the reader stops recognising every one of them.
+    text = f"wide=--retry-all-errors\ncurl --retry 3 {argument} -o f https://e\n"
+    assert mod.violations(text) == []
+
+
+@pytest.mark.parametrize(
+    "argument", ['"https://e/$wide"', "https://e/$wide", '"x$wide"']
+)
+def test_an_embedded_expansion_does_not_credit(argument: str) -> None:
+    text = f"wide=--retry-all-errors\ncurl --retry 3 {argument} -o f\n"
+    assert mod.violations(text, mod.ARM_NARROW) == [2]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['"$(echo --retry 3 --retry-all-errors)"', "$(flags)", "$((1 + 1))"],
+)
+def test_a_computed_value_credits_nothing(value: str) -> None:
+    # C: the words come from a program this check cannot run, so the literals
+    # nested inside are that program's arguments, not the variable's value.
+    text = f'OPTS={value}\ncurl $OPTS -o f "$u"\n'
+    assert mod.violations(text, mod.ARM_MISSING) == [2]
+
+
+def test_a_literal_value_beside_the_computed_one_still_credits() -> None:
+    text = 'OPTS="--retry 3 --retry-all-errors"\ncurl $OPTS -o f "$u"\n'
+    assert mod.violations(text) == []
+
+
+@pytest.mark.parametrize("separator", ["--next", "-:"])
+def test_a_later_operation_is_judged_on_its_own(separator: str) -> None:
+    # D: curl starts a separate operation at `--next`, with its own flags. A
+    # widened first download says nothing about the second.
+    line = (
+        f'curl --retry 3 --retry-all-errors "$a" -o a {separator} --retry 3 "$b" -o b'
+    )
+    assert mod.violations(line, mod.ARM_NARROW) == [1]
+
+
+@pytest.mark.parametrize("separator", ["--next", "-:"])
+def test_every_operation_widened_is_clean(separator: str) -> None:
+    line = (
+        f'curl --retry 3 --retry-all-errors "$a" -o a {separator} '
+        '--retry 3 --retry-all-errors "$b" -o b'
+    )
+    assert mod.violations(line) == []
+
+
+def test_a_later_operation_with_no_retry_reports_arm_a() -> None:
+    line = 'curl --retry 3 --retry-all-errors "$a" -o a --next "$b" -o b'
+    assert mod.violations(line, mod.ARM_MISSING) == [1]
+
+
+@pytest.mark.parametrize("flag", sorted(mod._WIDENING_FLAGS))  # noqa: SLF001  # pylint: disable=protected-access
+def test_a_negation_after_a_widening_flag_clears_it(flag: str) -> None:
+    # D: curl reads its arguments in order and the last spelling of a boolean
+    # wins. Driven from the module's set, so a new flag needs its negation here.
+    assert mod.violations(f'curl --retry 3 {flag} --no-{flag[2:]} -o f "$u"') == [1]
+
+
+@pytest.mark.parametrize("flag", sorted(mod._WIDENING_FLAGS))  # noqa: SLF001  # pylint: disable=protected-access
+def test_a_widening_flag_after_its_negation_wins(flag: str) -> None:
+    # The refusing counterpart: order decides, so the LAST spelling stands.
+    assert mod.violations(f'curl --retry 3 --no-{flag[2:]} {flag} -o f "$u"') == []
+
+
+def test_a_negation_of_the_other_flag_does_not_clear_this_one() -> None:
+    line = 'curl --retry 3 --retry-all-errors --no-retry-connrefused -o f "$u"'
+    assert mod.violations(line) == []
+
+
+def test_a_negation_carried_by_a_variable_is_read_in_place() -> None:
+    # The substituted words take the variable's position in the stream, so a
+    # negation written after it still wins.
+    text = 'w=--retry-all-errors\ncurl --retry 3 "$w" --no-retry-all-errors -o f "$u"\n'
+    assert mod.violations(text, mod.ARM_NARROW) == [2]
+
+
 # ── the shipped tree is clean under this lint ────────────────────────────────
 def test_repo_shell_tree_is_clean() -> None:
     """Dogfood: this repo's own tracked shell files must not violate. A finding

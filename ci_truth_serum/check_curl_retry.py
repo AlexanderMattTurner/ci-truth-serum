@@ -35,6 +35,17 @@ variable and ``/dev/null`` discards, so neither leaves a partial file. A
 var-capturing ``curl "$(…)"`` fetch (no ``-o``) is out of scope; it is a
 separate, noisier class.
 
+curl reads its argument list IN ORDER, so this check does too. ``--next``
+starts a separate operation with its own flags, and each operation is judged on
+its own. A boolean flag's last spelling wins, so ``--no-retry-all-errors``
+turns an earlier ``--retry-all-errors`` back off.
+
+A flag the script assigns to a variable counts, under three limits. The
+assignment must START before the call in source order. The expansion must be
+the WHOLE argument, because a name inside a URL sends no flag to curl. The
+assignment's value must be literal, because the words of a ``$(…)`` are unknown
+here.
+
 ``--retry-wrapper NAME`` is retired. A wrapper no longer exempts a download.
 ``main()`` still accepts the flag and ignores it, so an existing consumer
 config keeps running. A site that must stay single-shot opts out with
@@ -45,13 +56,14 @@ lines or the comment block above them. The same marker covers both shapes.
 import argparse
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ARGUMENT_TYPES,
     PathologicalInputError,
-    command_words,
     iter_nodes,
     node_text,
     parse,
@@ -86,6 +98,22 @@ _MESSAGE_COMMANDS = frozenset({"echo", "printf", "warn", "status", "die", "log",
 # The flags that widen curl's retry set past its default transient replies, so
 # that a refused or aborted connection (exit 56) is retried too.
 _WIDENING_FLAGS = frozenset({"--retry-all-errors", "--retry-connrefused"})
+
+# The `--no-` spelling that turns each widening flag back off. curl's manual:
+# every boolean option is enabled with `--option` and disabled with
+# `--no-option`. `--retry`, `--retry-delay` and `--retry-max-time` each take a
+# value, so none of the three has a `--no-` form.
+_WIDENING_NEGATIONS = {f"--no-{flag[2:]}": flag for flag in _WIDENING_FLAGS}
+
+# curl starts a separate operation at each of these, with its own URL, its own
+# output file and its own flags.
+_OPERATION_SEPARATORS = frozenset({"--next", "-:"})
+
+# The node types that make an assignment's value COMPUTED. A value holding one
+# of these names words no lint can read, so it credits nothing.
+_COMPUTED_VALUE_TYPES = frozenset(
+    {"command_substitution", "process_substitution", "arithmetic_expansion"}
+)
 
 
 def _is_message(name: str) -> bool:
@@ -133,76 +161,191 @@ def _is_retry_flag(word: str) -> bool:
     return word == "--retry" or word.startswith("--retry=")
 
 
-def _literal_tokens(value: Node) -> set[str]:
-    """The literal words under VALUE, an assignment's right-hand side. The
-    grammar names each literal piece — a bare `word`, a `raw_string`, the
-    `string_content` inside a double-quoted string — so an array's parentheses
-    and an expansion's own text never arrive as tokens. One piece can still
-    hold several flags (`f="--retry 3 --retry-all-errors"`), and the shell
-    word-splits it, so this does too."""
-    tokens: set[str] = set()
+def _widened(tokens: list[str]) -> bool:
+    """True when TOKENS leave a widening flag ON.
+
+    curl reads its argument list in order, and the last spelling of a boolean
+    flag wins. So ``--retry-all-errors --no-retry-all-errors`` widens nothing.
+    Each flag is tracked on its own, because ``--no-retry-connrefused`` says
+    nothing about ``--retry-all-errors``. A set of the words cannot answer
+    this: a set has no order.
+    """
+    state = dict.fromkeys(_WIDENING_FLAGS, False)
+    for token in tokens:
+        if token in state:
+            state[token] = True
+        elif token in _WIDENING_NEGATIONS:
+            state[_WIDENING_NEGATIONS[token]] = False
+    return any(state.values())
+
+
+def _literal_tokens(value: Node) -> list[str] | None:
+    """The literal words under VALUE, an assignment's right-hand side, in
+    source order. ``None`` says VALUE is COMPUTED, so its words are unknown.
+
+    The grammar names each literal piece: a bare `word`, a `raw_string`, the
+    `string_content` inside a double-quoted string. An array's parentheses and
+    an expansion's own text never arrive as tokens. One piece can still hold
+    several flags (`f="--retry 3 --retry-all-errors"`), and the shell
+    word-splits it, so this does too.
+
+    A value that holds a command substitution, a process substitution or an
+    arithmetic expansion answers ``None``. Its words come from a program this
+    check cannot run. The literals NESTED inside such a piece are that
+    program's own arguments, not the variable's value, so
+    `OPTS="$(echo --retry 3)"` must credit nothing.
+    """
+    if next(iter_nodes(value, *_COMPUTED_VALUE_TYPES), None) is not None:
+        return None
+    tokens: list[str] = []
     for node in iter_nodes(value, "word", "raw_string", "string_content"):
-        tokens.update(unquote(token) for token in node_text(node).split())
+        tokens.extend(unquote(token) for token in node_text(node).split())
     return tokens
 
 
-def _flag_carrying_names(root: Node) -> tuple[frozenset[str], frozenset[str]]:
-    """The variable names this script assigns a curl retry flag to: the ones
-    that carry ``--retry``, and the ones that carry a widening flag.
+class Carrier(NamedTuple):
+    """One assignment that puts curl retry flags into a variable. ``tokens``
+    holds the literal words of its value, in order."""
+
+    start_byte: int
+    name: str
+    tokens: tuple[str, ...]
+
+
+def _flag_carrying_assignments(root: Node) -> list[Carrier]:
+    """Every assignment in ROOT whose value holds literal words, with the byte
+    offset where the assignment starts.
 
     A script often computes the flag rather than writing it at the call site:
-    ``retry_widen="--retry-connrefused"`` on one line, then ``curl …
-    "$retry_widen" -o f`` on the next. The grammar finds the assignment and its
-    VALUE node. Inside that value the tokens are read as literal text, because
-    an unquoted expansion is exactly what the shell word-splits back into
-    flags.
+    `retry_widen="--retry-connrefused"` on one line, then
+    `curl … "$retry_widen" -o f` on the next. The grammar finds the assignment
+    and its VALUE node. `_operation_tokens` then compares the offset against
+    the curl command, so an assignment that starts AFTER the call credits
+    nothing.
     """
-    retry: set[str] = set()
-    widening: set[str] = set()
+    carriers: list[Carrier] = []
     for node in iter_nodes(root, "variable_assignment"):
         name = node.child_by_field_name("name")
         value = node.child_by_field_name("value")
         if name is None or value is None:
             continue
         tokens = _literal_tokens(value)
-        if any(_is_retry_flag(token) for token in tokens):
-            retry.add(node_text(name))
-        if tokens & _WIDENING_FLAGS:
-            widening.add(node_text(name))
-    return frozenset(retry), frozenset(widening)
+        if tokens is None:
+            continue
+        carriers.append(Carrier(node.start_byte, node_text(name), tuple(tokens)))
+    return carriers
 
 
-def _expanded_names(command: Node) -> set[str]:
-    """Every variable name COMMAND reads. ``$x``, ``${x}`` and ``"${x[@]}"``
-    all carry a ``variable_name`` node, so one walk covers each spelling."""
-    return {node_text(n) for n in iter_nodes(command, "variable_name")}
+def _standalone_expansion_name(node: Node) -> str | None:
+    """The one variable name NODE expands, when NODE is an argument that is
+    NOTHING BUT that expansion: `$x`, `${x}`, `"${x[@]}"`. Anything else
+    answers ``None``.
+
+    An expansion inside a larger word is not a flag. In
+    `curl "https://example/$retry/$wide" -o f` both names sit inside a URL, so
+    the request goes to a different address and curl gets no flag at all. The
+    grammar separates the two: a whole-argument expansion is an `expansion` or
+    a `simple_expansion` node, while an embedded one is one child of a `string`
+    or a `concatenation`.
+    """
+    if node.type == "string":
+        inner = [child for child in node.children if child.type != '"']
+        return _standalone_expansion_name(inner[0]) if len(inner) == 1 else None
+    if node.type not in ("expansion", "simple_expansion"):
+        return None
+    names = [node_text(n) for n in iter_nodes(node, "variable_name")]
+    return names[0] if len(names) == 1 else None
 
 
-def _download_arm(
-    words: list[str], read_names: set[str], carriers: tuple[frozenset[str], ...]
+def _word_nodes(command: Node) -> list[Node]:
+    """COMMAND's name node followed by its argument nodes, in source order —
+    the nodes whose texts `command_words` returns."""
+    return [
+        child
+        for child in command.children
+        if child.type == "command_name" or child.type in ARGUMENT_TYPES
+    ]
+
+
+def _operations(nodes: list[Node]) -> list[list[Node]]:
+    """NODES split at each `--next` (short spelling `-:`).
+
+    curl runs a separate operation for every `--next`. Each one has its own
+    URL, its own output file and its own retry flags, so a widened first
+    download says nothing about the second.
+    """
+    parts: list[list[Node]] = [[]]
+    for node in nodes:
+        if unquote(node_text(node)) in _OPERATION_SEPARATORS:
+            parts.append([])
+        else:
+            parts[-1].append(node)
+    return parts
+
+
+def _operation_tokens(
+    nodes: list[Node], carriers: list[Carrier], before_byte: int
+) -> list[str]:
+    """One operation's words, in the order curl reads them, with a variable
+    that carries flags replaced by the words it carries.
+
+    Only an assignment that STARTS before BEFORE_BYTE counts, and the latest
+    such assignment wins. Source order is the approximation here, and it is the
+    conservative one. The real question is dominance: which assignments run
+    before this call, over every branch, loop and function this call can be
+    reached through. This check does not answer that. It asks the weaker
+    question the grammar answers on its own, and the weaker question only ever
+    credits LESS. An assignment written after the call gives the call nothing.
+    The cost is a false positive on a script that assigns the flag below the
+    line that uses it, and `# curl-retry-ok` answers that. A fail-open would
+    not be recoverable, because a clean verdict on an un-retried download is
+    the defect this check exists to report.
+    """
+    tokens: list[str] = []
+    for node in nodes:
+        name = _standalone_expansion_name(node)
+        reaching = [
+            carrier
+            for carrier in carriers
+            if carrier.name == name and carrier.start_byte < before_byte
+        ]
+        if reaching:
+            tokens.extend(max(reaching, key=lambda c: c.start_byte).tokens)
+        else:
+            tokens.append(unquote(node_text(node)))
+    return tokens
+
+
+def _operation_arm(
+    nodes: list[Node], carriers: list[Carrier], before_byte: int
 ) -> str | None:
-    """The shape WORDS (a command's name followed by its arguments) are in, or
-    ``None`` when they are clean. Read over the whole word list, not just the
-    command word, because a wrapper can stand in front of curl: `timeout 30
-    curl -o f url` is still the download this check judges. CARRIERS holds the
-    variable names that carry a retry flag and a widening flag, so a flag the
-    script computes into a variable counts as present."""
+    """The shape one curl operation is in, or ``None`` when it is clean."""
+    if not _writes_a_file([node_text(node) for node in nodes]):
+        return None
+    tokens = _operation_tokens(nodes, carriers, before_byte)
+    if not any(_is_retry_flag(token) for token in tokens):
+        return ARM_MISSING
+    return None if _widened(tokens) else ARM_NARROW
+
+
+def _download_arm(command: Node, carriers: list[Carrier]) -> str | None:
+    """The shape COMMAND is in, or ``None`` when it is clean. Read over the
+    whole word list, not just the command word, because a wrapper can stand in
+    front of curl: `timeout 30 curl -o f url` is still the download this check
+    judges. The first offending operation names the arm."""
+    nodes = _word_nodes(command)
+    words = [node_text(node) for node in nodes]
     if not words:
         return None
-    name, rest = words[0], words[1:]
-    if _is_lookup(name, rest) or _is_message(name):
+    if _is_lookup(words[0], words[1:]) or _is_message(words[0]):
         return None
-    if "curl" not in words or not _writes_a_file(words):
+    if "curl" not in words:
         return None
-    bare = {unquote(word) for word in words}
-    retry_names, widening_names = carriers
-    if not any(_is_retry_flag(word) for word in bare) and not (
-        read_names & retry_names
-    ):
-        return ARM_MISSING
-    if bare & _WIDENING_FLAGS or read_names & widening_names:
-        return None
-    return ARM_NARROW
+    for operation in _operations(nodes):
+        arm = _operation_arm(operation, carriers, command.start_byte)
+        if arm is not None:
+            return arm
+    return None
 
 
 def findings(text: str) -> list[tuple[int, str]]:
@@ -211,10 +354,10 @@ def findings(text: str) -> list[tuple[int, str]]:
     under the first arm that claims it."""
     physical = text.splitlines()
     root = parse(text)
-    carriers = _flag_carrying_names(root)
+    carriers = _flag_carrying_assignments(root)
     hits: dict[int, str] = {}
     for node in iter_nodes(root, "command"):
-        arm = _download_arm(command_words(node), _expanded_names(node), carriers)
+        arm = _download_arm(node, carriers)
         if arm is None:
             continue
         start = node.start_point[0] + 1

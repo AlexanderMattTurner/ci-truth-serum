@@ -124,17 +124,30 @@ switch. Both probes were run against it before it landed, and its suite pins bot
 verdicts.
 
 `check_curl_retry` is the twelfth row and was written on the grammar from the
-start. Its two structural questions are the usual pair: is this `curl` a command
-or a word in a sentence a command prints, and where does this command start and
-end (a backslash-continued download is one command, so an `-o` three lines down
-is still its flag). A third one arrived when the check grew its second arm: is
-this flag WRITTEN at the call site, or assigned to a variable the call expands?
-`retry_widen="--retry-connrefused"` then `curl … "$retry_widen" -o f` carries the
-flag, and a word scan of the curl line alone reads two real downloads in
-`agent-glovebox` as defects. The grammar names the assignment and its value
-node, so the check credits the flags that value holds and nothing else. Both
-probes were run against it before it landed, and its suite pins both verdicts
-under each arm.
+start. It began with the usual pair. Is this `curl` a command, or a word in a
+sentence a command prints? Where does this command start and end, so that a
+backslash-continued download is one command with an `-o` three lines down?
+
+Its second arm added four more, and each one is a place a word scan reports a
+clean verdict on a download that has no working retry:
+
+| The structural question                           | The node that answers it                                                     |
+| ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Is this flag written here, or held in a variable? | a `variable_assignment`, and the literal pieces of its `value`               |
+| Does that assignment reach this call?             | `start_byte`, compared against the command's                                 |
+| Is this expansion the WHOLE argument?             | an `expansion` argument, versus one child of a `string` or a `concatenation` |
+| Is this value literal, or computed?               | a `command_substitution` child makes the words unknown                       |
+
+The grammar answers each one. A word scan of the curl line alone reads
+`retry_widen="--retry-connrefused"` plus `curl … "$retry_widen" -o f` as a
+defect, and two real downloads in `agent-glovebox` have that shape. Reading the
+words as an unordered SET fails the other way: `curl … "https://e/$retry/$wide"`
+holds both names inside a URL, so curl gets an address and no flag, and a set of
+the words says the call is retried. Source order is the approximation the check
+keeps, and it is the conservative one: dominance analysis would say which
+assignments actually run before the call, and the weaker question only ever
+credits fewer flags. Both probes were run against the check before it landed,
+and its suite pins both verdicts under each arm.
 
 ## The rule is not about bash
 
