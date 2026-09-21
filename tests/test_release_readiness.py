@@ -190,10 +190,16 @@ def _run(
     ref_name: str = "",
 ) -> subprocess.CompletedProcess:
     env = git_env()
+    # git_env() carries the whole process environment, and a GitHub runner always
+    # sets these two. release-readiness.sh reads GITHUB_REF_NAME to pick the branch
+    # it pushes the release to, so the runner's own ref decides where the release
+    # lands: `main` on a push to main, which happens to match this sandbox repo's
+    # branch, and `<n>/merge` on a pull request, which does not. The release then
+    # goes to a ref no assertion reads. Drop both before the explicit values below.
+    for var in (*CREDENTIAL_VARS, "GITHUB_REF_NAME", "GITHUB_TOKEN"):
+        env.pop(var, None)
     if ref_name:
         env["GITHUB_REF_NAME"] = ref_name
-    for var in CREDENTIAL_VARS:
-        env.pop(var, None)
     env.update(credentials)
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["GH_TOKEN"] = "gh-token-stub"
