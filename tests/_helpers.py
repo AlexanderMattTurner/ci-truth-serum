@@ -113,3 +113,17 @@ def copy_script_to(script_name: str, dest_dir: Path) -> Path:
             dest.chmod(0o755)
             return dest
     raise FileNotFoundError(f"Could not find {script_name} in any known location")
+
+
+def unscanned_note(err: str) -> str:
+    """Just the `did not run` note out of ERR.
+
+    A caller asking whether a member is named AS UNSCANNED must read the note,
+    not all of stderr. Searching the whole stream answered the same question
+    only while the note was the only thing in it: `run_tier` and
+    `run_selection` also print a start marker naming every member they run, so
+    a member that RAN appears in stderr too.
+    """
+    lines = err.split("\n")
+    start = next(i for i, line in enumerate(lines) if "did not run" in line)
+    return "\n".join(lines[start:])

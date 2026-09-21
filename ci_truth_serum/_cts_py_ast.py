@@ -23,6 +23,7 @@ enumerating with it would slide every later line number off by the difference.
 import ast
 import re
 import warnings
+from functools import lru_cache
 
 # Every line ending Python's parser counts as one. `str.split("\n")` counts only
 # the last of them, so a file written with CR or CRLF endings would have `ast`
@@ -30,7 +31,7 @@ import warnings
 # raw text — which is how an opt-out annotation gets read off the wrong line, or a
 # finding lands past the end of the file. `lines` below is the one enumeration
 # that agrees with what `trees` reports.
-_LINE_ENDING = re.compile(r"\r\n?")
+LINE_ENDING = re.compile(r"\r\n?")
 
 # A line that OPENS a block (`with redirect_stdout(buf):`, `if x:`) is not a
 # statement on its own, so the per-line recovery below re-tries it with the
@@ -53,6 +54,31 @@ def _parse(source: str) -> ast.Module:
         return ast.parse(source)
 
 
+@lru_cache(maxsize=1)
+def parse_whole(source: str) -> ast.Module:
+    """``_parse``, memoized on SOURCE, for the WHOLE-FILE callers only.
+
+    PROBLEM CLASS — one file was parsed once per check that read it. ``run_tier``
+    hands the same file to every member of a tier, and each member parsed it
+    again: the check that asks whether the file parses at all
+    (``_cts_linecheck.unparseable_python_reason``) threw its tree away, and the
+    detector behind it then parsed the same text a second time. On a consumer
+    with 2516 Python files one pass costs 4.63 s, and the tier ran about thirty
+    of them.
+
+    ``maxsize=1`` is the whole cache, because the callers that share a parse ask
+    for the same source one after the other. It mirrors ``_cts_bash_ast.parse``,
+    where ``assert_parseable`` and the detector behind it already share one parse
+    this way.
+
+    The per-line recovery below must NOT come through here. ``_line_trees``
+    calls ``ast.increment_lineno`` on what it gets back, so two identical lines
+    in one file would hit this cache and be shifted twice. It calls the uncached
+    ``_parse`` instead, and it runs only on a file that already failed to parse.
+    """
+    return _parse(source)
+
+
 def _fragment(line: str) -> "ast.Module | None":
     """LINE parsed on its own — as a statement, or as a block header completed
     with a ``pass`` body — or None when it is not Python at all."""
@@ -69,7 +95,7 @@ def lines(source: str) -> list[str]:
     ``lines(source)[node.lineno - 1]`` is the line the node is on, whatever line
     endings the file was written with. Every caller that reads a line by number
     (an opt-out annotation, a range check) enumerates through here."""
-    return _LINE_ENDING.sub("\n", source).split("\n")
+    return LINE_ENDING.sub("\n", source).split("\n")
 
 
 def _line_trees(source: str) -> list[ast.Module]:
@@ -101,9 +127,9 @@ def trees(source: str) -> list[ast.Module]:
     is handled the same way as a syntax error — it says the same thing about the
     text, and the per-line pass still reaches every line that is real Python.
     """
-    normalized = _LINE_ENDING.sub("\n", source)
+    normalized = LINE_ENDING.sub("\n", source)
     try:
-        return [_parse(normalized)]
+        return [parse_whole(normalized)]
     except (SyntaxError, ValueError):
         return _line_trees(normalized)
 
