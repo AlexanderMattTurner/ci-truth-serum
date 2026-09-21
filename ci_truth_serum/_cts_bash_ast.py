@@ -105,8 +105,19 @@ def _parser() -> Parser:
     return Parser(Language(tree_sitter_bash.language()))
 
 
+# Big enough that a file's own tree survives the fragment parses its detector
+# makes — a `run:` block, a literal script, a `bash -c` argument all come
+# through here too, and a one-entry cache would let them evict the whole-file
+# tree between the two callers that share it.
+@lru_cache(maxsize=32)
 def parse(script: str) -> Node:
     """The root node of SCRIPT parsed as bash.
+
+    Memoized on SCRIPT. `run_tier` hands one file to every member of a tier in
+    turn, and each member parsed it again: the check that asks whether the file
+    parses at all (`assert_parseable`) threw its tree away, and the detector
+    behind it parsed the same text a second time. A tree-sitter tree is read
+    only to these lints, so one parse serves every caller of it.
 
     tree-sitter NEVER raises on malformed input — a syntax error surfaces as
     ``ERROR`` nodes in the tree, so callers fail OPEN (treat unparseable spans as

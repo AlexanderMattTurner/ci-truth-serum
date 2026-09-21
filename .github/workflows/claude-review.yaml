@@ -250,7 +250,7 @@ jobs:
     # One review per PR at a time; a newer push supersedes an in-flight run (latest
     # head wins). Keyed by PR number, so it never strands a required check.
     concurrency:
-      group: claude-merge-delta-review-${{ github.event.pull_request.number }}
+      group: claude-merge-delta-review-${{ github.event.pull_request.number }}-${{ (contains(fromJSON('["opened","ready_for_review","synchronize"]'), github.event.action) && github.event.pull_request.draft == false && github.event.pull_request.user.type != 'Bot') && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: true
     permissions:
       contents: read # checkout the trusted base commit
@@ -380,7 +380,7 @@ jobs:
     # One resolver per PR at a time; a newer push supersedes an in-flight run
     # (latest head wins). Keyed by PR number, so it never strands a required check.
     concurrency:
-      group: claude-review-thread-resolve-${{ github.event.pull_request.number }}
+      group: claude-review-thread-resolve-${{ github.event.pull_request.number }}-${{ (github.event.action == 'synchronize' && github.event.pull_request.draft == false && github.event.pull_request.user.type != 'Bot') && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: true
     permissions:
       contents: read # checkout the trusted base branch

@@ -387,8 +387,14 @@ def test_job_blocks_linenos_in_range(text: str) -> None:
 
 @given(
     matrix=st.dictionaries(
-        st.text(alphabet=string.ascii_letters + "_-", min_size=1, max_size=6),
-        st.lists(st.integers() | st.text(max_size=6), max_size=4)
+        # 'include' and 'exclude' are 7 characters: a shorter cap can never
+        # generate the two keys whose value shape this function branches on.
+        st.sampled_from(["include", "exclude"])
+        | st.text(alphabet=string.ascii_letters + "_-", min_size=1, max_size=8),
+        # A bare string is the dynamic `${{ fromJSON(...) }}` spelling, which
+        # only the run expands.
+        st.text(max_size=12)
+        | st.lists(st.integers() | st.text(max_size=6), max_size=4)
         | st.lists(
             st.dictionaries(st.text(max_size=6), st.integers(), max_size=3), max_size=3
         ),
@@ -399,6 +405,17 @@ def test_matrix_combinations_never_crashes(matrix: dict) -> None:
     combos = linecheck.matrix_combinations(matrix)
     assert isinstance(combos, list)
     assert all(isinstance(c, dict) for c in combos)
+
+
+def test_matrix_combinations_reads_no_combination_from_a_dynamic_include() -> None:
+    # Only the run expands `${{ fromJSON(...) }}`, so no key it binds is
+    # readable here. Iterating the string walked it one character at a time.
+    dynamic = "${{ fromJSON(needs.plan.outputs.matrix) }}"
+    assert linecheck.matrix_combinations({"include": dynamic}) == [{}]
+    assert linecheck.matrix_combinations({"exclude": dynamic}) == [{}]
+    assert linecheck.matrix_combinations({"py": ["3.11"], "include": dynamic}) == [
+        {"py": "3.11"}
+    ]
 
 
 @given(

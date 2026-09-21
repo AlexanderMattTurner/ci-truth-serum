@@ -219,7 +219,7 @@
 
 - id: check-required-reporter
   name: "opinionated: classify every always() reporter as required or advisory"
-  description: "An unclassified always() reporter silently escapes the required-status-check set. Mark each reporter required-check true or false. A required-check true marker on a uses: job also fails, because GitHub reports that job under a name the marker cannot predict. A marked matrix job that can skip fails too, because its per-combination check names never report. Opt that one out with matrix-context-ok and a reason."
+  description: "An unclassified always() reporter silently escapes the required-status-check set. Mark each reporter required-check true or false. A required-check true marker on a uses: job also fails, because GitHub reports that job under a name the marker cannot predict. A marked matrix job that can skip fails too, because its per-combination check names never report. Opt that one out with matrix-context-ok and a reason. A marked name that holds a non-matrix expression, in the name or in a matrix value, also fails, because the sync registers text that no run reports. A marked name that references an axis its matrix never defines fails too, because the sync then requires nothing."
   entry: python -m ci_truth_serum.check_required_reporter
   language: python
   additional_dependencies: [PyYAML]
@@ -295,6 +295,16 @@
   additional_dependencies: [PyYAML]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-collapsing-job-group
+  name: "opinionated: no per-ref job concurrency group that goes static on one event"
+  description: A job group keyed on head_ref / the PR number / github.ref is one fixed string on an event that carries no such ref, so every run of that event shares one slot and cancels an unrelated commit's run.
+  entry: python -m ci_truth_serum.check_collapsing_job_group
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
   types: [yaml]
 
 - id: check-requires-concurrency
@@ -510,6 +520,25 @@
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
   types: [yaml]
+
+- id: check-secondary-checkout-imports
+  name: "opinionated: a script run from a secondary checkout imports only what is installed"
+  description: A job that checks out a second tree with `path:` and runs a Node script out of it has no node_modules there, so a bare import in that script is ERR_MODULE_NOT_FOUND on the runner and nowhere else. Fires only when the job also installs no Node dependencies. Follows one shell hop (`bash dir/x.sh` whose script runs `node …`).
+  entry: python -m ci_truth_serum.check_secondary_checkout_imports
+  language: python
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
+  pass_filenames: false
+  # The verdict changes from either side: the workflow that names the script,
+  # and the script (or the shell entrypoint) whose imports it reads. A
+  # workflow-only filter never runs on the commit that adds the bare import.
+  files: '(^\.github/(workflows|actions)/.*\.ya?ml$)|\.(js|mjs|cjs|jsx|ts|mts|cts|tsx|sh|bash)$'
 
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.

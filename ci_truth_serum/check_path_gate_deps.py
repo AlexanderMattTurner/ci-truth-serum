@@ -7,7 +7,12 @@ decide call declares its change filter in one of two shapes: a `filters:` spec
 of dorny/paths-filter glob groups, or a `paths-regex:` single extended-regex
 (ERE) string matched at runtime by `grep -qE` against the changed-file list
 (an empty `paths-regex` is a deliberately keyword-only gate — path coverage is
-not applicable, so nothing is ever reported uncovered for it). When the filter
+not applicable, so nothing is ever reported uncovered for it). A call passing
+`derive-paths-regex: true` asks the decide job to widen the committed value with
+the closure of the jobs it gates when it RUNS, so the committed value is only a
+seed. That derivation is static analysis, so it covers the dependencies this
+lint DISCOVERS and nothing declared by hand: a `# gate-deps:` path is still
+matched against the seed. When the filter
 omits a file the gated job actually depends on, a PR changing only that file
 skips the job and the `always()` reporter goes green — a fail-open exactly when
 the dependency changed. That has recurred (a composite action omitted from
@@ -153,9 +158,24 @@ def filter_patterns(filters_value: object) -> list[str]:
     return patterns
 
 
+def _derives_paths_regex(with_: dict) -> bool:
+    """True when a decide call asks the decide job to derive its paths-regex.
+
+    YAML reads the bare word `true` as a boolean and a quoted `'true'` as the
+    string, so both spellings count. Every other value reads the committed seed,
+    including an unresolved `${{ }}` expression and a number — `1 == True` in
+    Python, so a plain membership test reads `derive-paths-regex: 1` as on. The
+    exemption a derived gate earns rests on a value a reader can see.
+    """
+    value = with_.get("derive-paths-regex")
+    return value is True or value in ("true", "True")
+
+
 def is_decide_job(job: object) -> bool:
-    """True for a job calling decide-reusable.yaml with a `filters:` or
-    `paths-regex:` input (the two change-filter shapes decide-reusable accepts)."""
+    """True for a job calling decide-reusable.yaml with a `filters:`,
+    `paths-regex:` or `derive-paths-regex:` input — the change-filter shapes
+    decide-reusable accepts. The third names no filter itself: it asks the decide
+    job to derive one when it runs, so a caller may pass it with a seed or alone."""
     if not isinstance(job, dict):
         return False
     uses = str(job.get("uses", "")).partition("@")[0]
@@ -166,11 +186,14 @@ def is_decide_job(job: object) -> bool:
         and (
             isinstance(with_.get("filters"), str)
             or isinstance(with_.get("paths-regex"), str)
+            or _derives_paths_regex(with_)
         )
     )
 
 
-def decide_matchers(with_: dict) -> list[re.Pattern[str]]:
+def decide_matchers(
+    with_: dict, *, exempt_derived: bool = True
+) -> list[re.Pattern[str]]:
     """The file matchers for one decide job, as the union of its declared shapes.
 
     `filters:` globs translate through `glob_to_regex`. A `paths-regex:` ERE
@@ -189,7 +212,23 @@ def decide_matchers(with_: dict) -> list[re.Pattern[str]]:
     A BLANK line is the empty pattern, which grep matches against every path.
     It is dropped rather than honoured: reading it as match-everything would
     report a whole gate covered on a pattern nobody wrote deliberately.
+
+    `derive-paths-regex: true` also becomes match-everything, and it is the one
+    case where that is not a concession. The decide job widens the committed
+    value with the execution closure of the jobs it gates — every local composite
+    action, every script their `run:` bodies invoke, and the load edges under
+    those — which is a superset of the dependencies this lint DISCOVERS, and a
+    derivation that cannot run emits `run=true`. So a discovered dependency
+    cannot be silently skipped, and the committed value is a seed holding only
+    the terms no scan reaches.
+
+    That superset stops where the scan stops. A `# gate-deps:` path is declared
+    because no static scan reaches it, so the derivation misses it too. For those
+    paths `analyze` passes EXEMPT_DERIVED false and gets the seed's own matchers,
+    because the seed is the one place a declared path can be matched.
     """
+    if exempt_derived and _derives_paths_regex(with_):
+        return [re.compile("")]
     matchers = [glob_to_regex(p) for p in filter_patterns(with_.get("filters"))]
     regex = with_.get("paths-regex")
     if isinstance(regex, str):
@@ -315,6 +354,10 @@ def analyze(doc: object, text: str, read_repo_file) -> list[tuple[int | None, st
         return []
     blocks = _job_blocks(text)
     compiled = {jid: decide_matchers(job["with"]) for jid, job in decide_jobs.items()}
+    seeds = {
+        jid: decide_matchers(job["with"], exempt_derived=False)
+        for jid, job in decide_jobs.items()
+    }
 
     found: list[tuple[int | None, str]] = []
     for job_id, job in jobs.items():
@@ -327,6 +370,7 @@ def analyze(doc: object, text: str, read_repo_file) -> list[tuple[int | None, st
         # The job only skips when EVERY referenced gate is closed, so a dep
         # covered by ANY referenced decide job's filters cannot fail open.
         patterns = [pat for gate in gates for pat in compiled[gate]]
+        seed_patterns = [pat for gate in gates for pat in seeds[gate]]
         gate_names = "/".join(sorted(gates))
         block = blocks.get(job_id, (0, ""))[1]
         deps, missing = job_dependencies(job, read_repo_file)
@@ -349,10 +393,21 @@ def analyze(doc: object, text: str, read_repo_file) -> list[tuple[int | None, st
                     f"out of the gate (`# {OPT_OUT}: {dep} <reason>`).",
                 )
             )
-        for dep in dict.fromkeys(deps + declared_deps(block, *decide_blocks)):
+        # A `# gate-deps:` path is declared because no static scan reaches it,
+        # and the decide job's run-time derivation is a static scan too. So a
+        # derived gate is not applicable for what job_dependencies DISCOVERS,
+        # while a declared path is still matched against the committed seed.
+        discovered = dict.fromkeys(deps)
+        checks = [(dep, patterns) for dep in discovered]
+        checks += [
+            (dep, seed_patterns)
+            for dep in declared_deps(block, *decide_blocks)
+            if dep not in discovered
+        ]
+        for dep, dep_patterns in checks:
             if dep in suppressed:
                 continue
-            unmatched = uncovered_files(dep, patterns)
+            unmatched = uncovered_files(dep, dep_patterns)
             if not unmatched:
                 continue
             found.append(

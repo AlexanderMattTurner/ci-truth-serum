@@ -12,11 +12,14 @@ Two layers:
     tmp repo.
 """
 
+import threading
+import time
 from pathlib import Path
 
+import pytest
 import yaml
 
-from tests._helpers import REPO_ROOT, load_hook
+from tests._helpers import REPO_ROOT, load_hook, unscanned_note
 
 
 def _run(argv):
@@ -224,21 +227,29 @@ def test_run_check_spawns_the_module_with_its_files(monkeypatch):
     class _Done:
         returncode = 0
 
-    def _fake(cmd, check):
+        stdout = b""
+
+        stderr = b""
+
+    def _fake(cmd, check, capture_output=False):
         captured["cmd"] = cmd
         return _Done()
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
-    assert rt.run_check("check_pr_paths", []) == 0
+    assert rt.run_check("check_pr_paths", []) == (0, b"", b"")
     assert captured["cmd"][1:] == ["-m", "ci_truth_serum.check_pr_paths"]
 
 
 def test_run_check_reports_the_module_exit_code(monkeypatch):
     class _Done:
         returncode = 1
+        stdout = b""
+        stderr = b""
 
-    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
-    assert rt.run_check("check_pr_paths", []) == 1
+    monkeypatch.setattr(
+        rt.subprocess, "run", lambda cmd, check, capture_output=False: _Done()
+    )
+    assert rt.run_check("check_pr_paths", []) == (1, b"", b"")
 
 
 # ── main ──────────────────────────────────────────────────────────────────
@@ -263,12 +274,23 @@ def test_skip_removes_named_member(tmp_path, monkeypatch):
     class _Done:
         returncode = 0
 
-    def _fake(cmd, check):
+        stdout = b""
+
+        stderr = b""
+
+    def _fake(cmd, check, capture_output=False):
         # cmd = [sys.executable, "-m", "ci_truth_serum.<module>", ...]
         called.append(cmd[2].removeprefix("ci_truth_serum."))
         return _Done()
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
+    # A per-file member never reaches `subprocess.run` — `run_tier` calls it in
+    # this interpreter so the members of one file share its parse. Both routes
+    # are recorded, so the question this test asks ("is the peer still run?")
+    # is answered whichever route runs the peer.
+    monkeypatch.setattr(
+        rt, "run_in_process", lambda module, argv: called.append(module) or 0
+    )
     rc = _run(["1", "--skip", "check_exit_suppression", str(shell_file)])
     assert rc == 0
     assert "check_exit_suppression" not in called
@@ -304,11 +326,20 @@ def _record_argv(monkeypatch) -> dict[str, list[str]]:
     class _Done:
         returncode = 0
 
-    def _fake(cmd, check):
+        stdout = b""
+
+        stderr = b""
+
+    def _fake(cmd, check, capture_output=False):
         seen[cmd[2].removeprefix("ci_truth_serum.")] = cmd[3:]
         return _Done()
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
+    # Same reason as `test_skip_removes_named_member`: a per-file member is run
+    # in process, so its argv has to be recorded there to be seen at all.
+    monkeypatch.setattr(
+        rt, "run_in_process", lambda module, argv: seen.__setitem__(module, argv) or 0
+    )
     return seen
 
 
@@ -439,14 +470,20 @@ def test_a_hand_run_with_no_files_says_which_checks_did_not_run(
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
+    # The start marker is printed only under Actions, and it names every member
+    # that runs. Set here rather than left to the ambient environment, so this
+    # exercises the same output a CI run produces — the gap that let two of
+    # these assertions reach CI red while passing locally.
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     assert _run(["1"]) == 0
     err = capsys.readouterr().err
     assert "did not run" in err
+    note = unscanned_note(err)
     # Names each one, so the reader can see the shell lints are the gap.
-    assert "check_exit_suppression" in err
-    assert "check_pinned_base_images" in err
-    # A workflow lint DID run, so it must not appear in the unscanned list.
-    assert "check_pr_paths" not in err
+    assert "check_exit_suppression" in note
+    assert "check_pinned_base_images" in note
+    # A workflow lint DID run, so it must not be named as unscanned.
+    assert "check_pr_paths" not in note
     # The command that scans the whole tree, which is the remedy.
     assert "git ls-files -z | xargs -0" in err
 
@@ -478,7 +515,13 @@ def test_a_run_that_scans_every_member_prints_no_note(monkeypatch, capsys):
     class _Done:
         returncode = 0
 
-    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
+        stdout = b""
+
+        stderr = b""
+
+    monkeypatch.setattr(
+        rt.subprocess, "run", lambda cmd, check, capture_output=False: _Done()
+    )
     assert _run(["1"]) == 0
     assert "did not run" not in capsys.readouterr().err
 
@@ -495,7 +538,13 @@ def test_a_skipped_member_is_not_reported_as_unscanned(monkeypatch, capsys):
     class _Done:
         returncode = 0
 
-    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
+        stdout = b""
+
+        stderr = b""
+
+    monkeypatch.setattr(
+        rt.subprocess, "run", lambda cmd, check, capture_output=False: _Done()
+    )
     assert _run(["1", "--skip", "check_exit_suppression"]) == 0
     assert "did not run" not in capsys.readouterr().err
 
@@ -510,3 +559,155 @@ def test_main_tier1_passes_on_clean_repo(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     assert _run(["1"]) == 0
+
+
+# ── run_in_process ────────────────────────────────────────────────────────────
+# The per-file pass runs its members here rather than in a subprocess, which is
+# what lets them share a file's parse. The subprocess it replaced gave failure
+# isolation for free, so these pin what this function must do instead.
+
+
+class _Stub:
+    """A member module whose `main` does whatever the test needs."""
+
+    def __init__(self, main):
+        self.main = main
+
+
+def _stub_module(monkeypatch, main):
+    monkeypatch.setattr(rt.importlib, "import_module", lambda name: _Stub(main))
+
+
+def test_run_in_process_reports_the_members_own_status(monkeypatch):
+    _stub_module(monkeypatch, lambda argv: 0)
+    assert rt.run_in_process("anything", ["a.py"]) == 0
+    _stub_module(monkeypatch, lambda argv: 1)
+    assert rt.run_in_process("anything", ["a.py"]) == 1
+
+
+def test_run_in_process_passes_the_argv_through(monkeypatch):
+    seen = []
+    _stub_module(monkeypatch, lambda argv: seen.append(argv) or 0)
+    rt.run_in_process("anything", ["--flag", "a.py"])
+    assert seen == [["--flag", "a.py"]]
+
+
+@pytest.mark.parametrize(
+    ("code", "status"), [(0, 0), (None, 0), (1, 1), (2, 1)], ids=str
+)
+def test_run_in_process_maps_a_members_exit_code(monkeypatch, code, status):
+    """`run_file_cli` exits 2 for a usage error and 1 for findings, and a member
+    that completes exits 0. Only 0 is a pass, so everything else is a failed
+    run — reporting a usage error as a pass is the false green this pack
+    refuses."""
+
+    def _exit(argv):
+        raise SystemExit(code)
+
+    _stub_module(monkeypatch, _exit)
+    assert rt.run_in_process("anything", ["a.py"]) == status
+
+
+def test_a_raising_member_is_a_failure_and_still_prints_its_traceback(
+    monkeypatch, capsys
+):
+    """The subprocess printed the traceback and left the other members to run.
+    Swallowing it here would turn a crashing check into a silent pass."""
+
+    def _boom(argv):
+        raise RuntimeError("boom")
+
+    _stub_module(monkeypatch, _boom)
+    assert rt.run_in_process("anything", ["a.py"]) == 1
+    assert "RuntimeError: boom" in capsys.readouterr().err
+
+
+def test_a_member_that_cannot_be_imported_is_a_failure_not_an_abort(
+    monkeypatch, capsys
+):
+    """The import runs inside the isolation boundary too.
+
+    A member whose module fails to import — a missing dependency, a failure at
+    import time — used to end the whole tier, because the import sat above the
+    `try`. The subprocess it replaced recorded that member as failed and let
+    every other member run.
+    """
+
+    def _no_module(name):
+        raise ImportError("no module named " + name)
+
+    monkeypatch.setattr(rt.importlib, "import_module", _no_module)
+    assert rt.run_in_process("anything", ["a.py"]) == 1
+    assert "ImportError" in capsys.readouterr().err
+
+
+def test_one_broken_member_does_not_stop_the_per_file_pass(monkeypatch, capsys):
+    """The isolation property, end to end: the member after a raising one runs."""
+    ran = []
+
+    def _import(name):
+        module = name.removeprefix("ci_truth_serum.")
+        if module == "breaks":
+
+            def _boom(argv):
+                raise RuntimeError("boom")
+
+            return _Stub(_boom)
+        return _Stub(lambda argv: ran.append((module, argv)) or 0)
+
+    monkeypatch.setattr(rt.importlib, "import_module", _import)
+    seconds: dict[str, float] = {}
+    members = [("breaks", ["a.py"]), ("runs", ["a.py"])]
+    assert rt.run_per_file(members, ["a.py"], {}, seconds) == 1
+    assert ran == [("runs", ["a.py"])]
+    assert "RuntimeError: boom" in capsys.readouterr().err
+    # Both members are timed, including the one that raised.
+    assert set(seconds) == {"breaks", "runs"}
+
+
+# ── run_whole_list ────────────────────────────────────────────────────────────
+
+
+def test_whole_list_output_is_written_before_the_pool_drains(monkeypatch, capfd):
+    """A member's findings reach the log when IT finishes, not when the last one does.
+
+    Actions cancels the capped job this runner exists for, and the members run
+    with their output captured rather than inherited. Holding every member's
+    output until the pool drains therefore loses every finding already in hand —
+    the inherited streams this replaced showed them as they were produced.
+    """
+    released = threading.Event()
+    first_seen = threading.Event()
+
+    def _fake_run(module, argv):
+        if module == "slow":
+            # Finishes only once the test has read the fast member's output.
+            released.wait(timeout=10)
+            return rt.CheckRun(0, b"", b"slow finding\n")
+        return rt.CheckRun(0, b"", b"fast finding\n")
+
+    monkeypatch.setattr(rt, "run_check", _fake_run)
+
+    seconds: dict[str, float] = {}
+    members = [("fast", ["a.sh"]), ("slow", ["b.sh"])]
+    done = []
+    worker = threading.Thread(
+        target=lambda: done.append(rt.run_whole_list(members, seconds))
+    )
+    worker.start()
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if "fast finding" in capfd.readouterr().err:
+                first_seen.set()
+                break
+            time.sleep(0.01)
+    finally:
+        released.set()
+        worker.join(timeout=10)
+
+    assert first_seen.is_set(), (
+        "the fast member's finding did not reach stderr until the slow member "
+        "finished, so a job cancelled at its cap would print neither"
+    )
+    assert done == [0]

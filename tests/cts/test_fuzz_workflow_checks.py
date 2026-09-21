@@ -39,6 +39,9 @@ pending_cancel = load_hook(
 requires_concurrency = load_hook(
     "check_requires_concurrency.py", "fuzz_requires_concurrency"
 )
+collapsing_job_group = load_hook(
+    "check_collapsing_job_group.py", "fuzz_collapsing_job_group"
+)
 pr_paths = load_hook("check_pr_paths.py", "fuzz_pr_paths")
 claude_model = load_hook("check_claude_model.py", "fuzz_claude_model")
 externalized_markers = load_hook(
@@ -76,6 +79,7 @@ WORKFLOW_CHECKS = [
     ("check_ready_for_review", ready_for_review.check_file, True),
     ("check_pending_cancel_concurrency", pending_cancel.check_file, True),
     ("check_requires_concurrency", requires_concurrency.check_file, False),
+    ("check_collapsing_job_group", collapsing_job_group.check_file, True),
     ("check_pr_paths", pr_paths.check_file, False),
     ("check_claude_model", claude_model.check_file, True),
     ("check_externalized_markers", externalized_markers.check_file, True),
@@ -112,6 +116,12 @@ _WORKFLOW_FRAGMENTS = [
         "jobs:\n  scan:\n    concurrency:\n"
         "      group: ${{ github.head_ref || github.ref }}\n"
         "      cancel-in-progress: false\n"
+    ),
+    (
+        "jobs:\n  sweep:\n    if: github.event_name == 'schedule'\n"
+        "    concurrency:\n"
+        "      group: sweep-${{ github.event.pull_request.number }}\n"
+        "      cancel-in-progress: true\n"
     ),
     "permissions:\n  contents: read\n",
     "jobs:\n  decide:\n    uses: ./.github/workflows/decide-reusable.yaml\n",
