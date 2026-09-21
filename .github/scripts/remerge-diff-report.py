@@ -94,17 +94,11 @@ def _git(*args: str) -> str:
     # instead of leaving it implicit, so an in-process caller elsewhere can
     # never silently inherit a stale one.
     return subprocess.run(
-<<<<<<< local
-        ["git", "-C", REPO_ROOT, *args], capture_output=True, text=True, check=True
-||||||| base
-        ["git", *args], capture_output=True, text=True, check=True
-=======
-        ["git", *args],
+        ["git", "-C", REPO_ROOT, *args],
         capture_output=True,
         text=True,
         check=True,
         cwd=os.getcwd(),
->>>>>>> template
     ).stdout
 
 

@@ -61,15 +61,9 @@ anthropic_auth_headers() {
 _anthropic_report_failure() {
   local code="$1" msg
   echo "Claude API call failed (HTTP $code) using auth mode: $AUTH_MODE" >&2
-<<<<<<< local
-  msg=$(jq -r '.error.message // empty' "$_ANTHROPIC_RESPONSE_FILE" 2>/dev/null || true) # allow-exit-suppress: a non-Anthropic-shaped body fails to parse, and the caller already falls back to the raw body below
-||||||| base
-  msg=$(jq -r '.error.message // empty' "$_ANTHROPIC_RESPONSE_FILE" 2>/dev/null || true)
-=======
   # allow-exit-suppress: a jq failure (a non-JSON or malformed body) leaves msg
   # empty, which the branch below already handles by printing the raw body.
-  msg=$(jq -r '.error.message // empty' "$_ANTHROPIC_RESPONSE_FILE" 2>/dev/null || true)
->>>>>>> template
+  msg=$(jq -r '.error.message // empty' "$_ANTHROPIC_RESPONSE_FILE" 2>/dev/null || true) # allow-exit-suppress: a non-Anthropic-shaped body fails to parse, and the caller already falls back to the raw body below
   if [[ -n "$msg" ]]; then
     echo "API error: $msg" >&2
   else
