@@ -258,7 +258,9 @@ def test_a_model_verdict_cuts_the_release_onto_the_checked_out_branch(
     result = _run(repo, bin_dir, summary, {"ANTHROPIC_API_KEY": "sk-ant-api-dummy"})
     assert result.returncode == 0, result.stdout + result.stderr
 
-    assert _origin_head_subject(origin, branch) == "chore(release): v1.0.1"
+    assert _origin_head_subject(origin, branch) == "chore(release): v1.0.1", (
+        result.stdout + result.stderr
+    )
     assert '"version": "1.0.1"' in _origin_file(origin, branch, "package.json")
     assert "## [1.0.1] - " in _origin_file(origin, branch, "CHANGELOG.md")
     assert "- Fixed a crash." in _origin_file(origin, branch, "CHANGELOG.md")
@@ -300,7 +302,9 @@ def test_a_detached_checkout_pushes_to_the_branch_actions_names(
         ref_name=branch,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _origin_head_subject(origin, branch) == "chore(release): v1.0.1"
+    assert _origin_head_subject(origin, branch) == "chore(release): v1.0.1", (
+        result.stdout + result.stderr
+    )
 
 
 @pytest.mark.parametrize(
@@ -323,7 +327,7 @@ def test_the_cut_version_follows_the_models_bump(
     assert result.returncode == 0, result.stdout + result.stderr
     assert (
         _origin_head_subject(origin, branch) == f"chore(release): v{expected_version}"
-    )
+    ), result.stdout + result.stderr
 
 
 def test_a_no_release_verdict_pushes_nothing(tmp_path: Path) -> None:
@@ -452,7 +456,9 @@ def test_a_commit_that_landed_first_is_rebased_onto_and_pushed(tmp_path: Path) -
     result = _run(repo, bin_dir, summary, {"ANTHROPIC_API_KEY": "sk-ant-api-dummy"})
     assert result.returncode == 0, result.stdout + result.stderr
 
-    assert _origin_head_subject(origin, branch) == "chore(release): v1.0.1"
+    assert _origin_head_subject(origin, branch) == "chore(release): v1.0.1", (
+        result.stdout + result.stderr
+    )
     subjects = _git(origin, "log", "--format=%s", branch).splitlines()
     assert subjects[:3] == [
         "chore(release): v1.0.1",
