@@ -137,20 +137,14 @@ def selected_files(kind: str, files: list[str]) -> list[str] | None:
     return [f for f in files if matches(f, kind)] or None
 
 
-def run_check(module: str, argv: list[str]) -> int:
-    """Run one member check as its own subprocess; return its exit code."""
-    return subprocess.run(
-        [sys.executable, "-m", f"ci_truth_serum.{module}", *argv], check=False
-    ).returncode
+def run_check(module: str, argv: list[str]) -> tuple[int, bytes, bytes]:
+    """Run one member as its own subprocess; return its exit code and output.
 
-
-def run_check_captured(module: str, argv: list[str]) -> tuple[int, bytes, bytes]:
-    """`run_check`, with the member's output captured rather than inherited.
-
-    Several members run at once (see `run_whole_list`), and a member writes its
-    findings as `path:line: message` lines. Inherited streams would interleave
-    those lines between members, so a reader could not tell which check refused
-    what. Captured, the caller prints each member's output whole and in registry
+    The output is captured rather than inherited because several members run at
+    once (see `run_whole_list`), and a member writes its findings as
+    `path:line: message` lines. Inherited streams would interleave those lines
+    between members, so a reader could not tell which check refused what.
+    Captured, the caller prints each member's output whole and in registry
     order — the order a serial run produced.
     """
     done = subprocess.run(
@@ -192,7 +186,7 @@ def run_whole_list(
         module, kind = member
         started = time.monotonic()
         argv = [*extra.get(module, []), *selected_files(kind, files)]
-        status, out, err = run_check_captured(module, argv)
+        status, out, err = run_check(module, argv)
         seconds[module] = time.monotonic() - started
         return module, status, out, err
 

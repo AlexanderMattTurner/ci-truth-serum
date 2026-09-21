@@ -233,7 +233,7 @@ def test_run_check_spawns_the_module_with_its_files(monkeypatch):
         return _Done()
 
     monkeypatch.setattr(rt.subprocess, "run", _fake)
-    assert rt.run_check("check_pr_paths", []) == 0
+    assert rt.run_check("check_pr_paths", []) == (0, b"", b"")
     assert captured["cmd"][1:] == ["-m", "ci_truth_serum.check_pr_paths"]
 
 
@@ -246,7 +246,7 @@ def test_run_check_reports_the_module_exit_code(monkeypatch):
     monkeypatch.setattr(
         rt.subprocess, "run", lambda cmd, check, capture_output=False: _Done()
     )
-    assert rt.run_check("check_pr_paths", []) == 1
+    assert rt.run_check("check_pr_paths", []) == (1, b"", b"")
 
 
 # ── main ──────────────────────────────────────────────────────────────────
