@@ -24,7 +24,6 @@ Imported as a sibling: the scripts run as ``python3 ci_truth_serum/check_*.py`` 
 before importing this module; the tests load each script by path.
 """
 
-import ast
 import itertools
 import json
 import re
@@ -390,8 +389,19 @@ def unparseable_python_reason(path: str, text: str) -> str | None:
     """
     if not is_python_source(path):
         return None
+    # Through `_cts_py_ast`, not a bare `ast.parse`, so this parse and the
+    # detector's own parse of the same file are ONE parse. Both normalize line
+    # endings the same way, which is what makes them one cache key. This module
+    # is loaded BY PATH, so the sibling import needs this directory on the path
+    # first — the same prelude every check script carries.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _cts_py_ast import (  # pylint: disable=import-outside-toplevel
+        LINE_ENDING,
+        parse_whole,
+    )
+
     try:
-        ast.parse(text)
+        parse_whole(LINE_ENDING.sub("\n", text))
     except (SyntaxError, ValueError) as err:
         version = ".".join(str(n) for n in sys.version_info[:3])
         return (
