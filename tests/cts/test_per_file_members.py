@@ -17,9 +17,11 @@ on every call. Neither carries the mark.
 
 The findings test cannot rest on this repository alone. The tree is clean — the
 package lints itself — so comparing findings over it compares two empty sets and
-proves nothing. The corpus below therefore carries a file each marked member
-objects to, taken from the member's own refusal, and the test fails a member it
-could not make report.
+proves nothing. `REFUSALS` below therefore carries a positive fixture for three
+marked members, one per file class and detector style, so the per-file driving
+is proven to report on each of those shapes. Every other mark rests on the sweep
+over this tree, so a NEW mark is not proven to report until it gains a fixture
+here.
 """
 
 import contextlib
@@ -72,6 +74,7 @@ def test_a_marked_member_reports_the_same_findings_either_way(
     stops that emptiness from being the whole test.
     """
     differed = {}
+    compared: list[str] = []
     for module in PER_FILE:
         corpus = [path for path in tracked if run_tier.matches(path, KIND[module])]
         if not corpus:
@@ -80,12 +83,17 @@ def test_a_marked_member_reports_the_same_findings_either_way(
         per_file: set[str] = set()
         for path in corpus:
             per_file |= _findings(module, [path])
+        compared.append(module)
         if whole != per_file:
             differed[module] = (
                 sorted(whole - per_file)[:2],
                 sorted(per_file - whole)[:2],
             )
     assert not differed, f"marked members that report differently per file: {differed}"
+    # `assert not differed` alone also passes over a sweep that compared nothing:
+    # a broken `matches`, an empty `PER_FILE`, or a `tracked` that returned no
+    # files would each satisfy it while checking no member at all.
+    assert compared, "no marked member had a file of its kind in this tree"
 
 
 # One file each member objects to. The point is only that the member reports
@@ -110,9 +118,22 @@ def test_a_marked_member_can_be_made_to_report(module: str, tmp_path: Path) -> N
     target = tmp_path / name
     target.write_text(body, encoding="utf-8")
 
-    whole = _findings(module, [str(target)])
+    second = tmp_path / f"second_{name}"
+    second.write_text(body, encoding="utf-8")
+
+    whole = _findings(module, [str(target), str(second)])
     assert whole, f"{module} did not object to its own fixture — the fixture is stale"
-    assert whole == _findings(module, [str(target)])
+    assert len(whole) == 2, f"{module} reported {whole} over two copies of one refusal"
+
+    per_file = _findings(module, [str(target)]) | _findings(module, [str(second)])
+    # Two violating files, so both sides are non-empty and the comparison is
+    # real. This is also what catches a member that accumulates across calls:
+    # driven one file at a time it is called twice, and a module-level tally
+    # would make the second call report the first file again.
+    assert whole == per_file, (
+        f"{module} reports differently per file. Only whole-list: "
+        f"{sorted(whole - per_file)}. Only per-file: {sorted(per_file - whole)}."
+    )
 
 
 def test_a_marked_member_does_no_tree_scale_work_per_call(tmp_path: Path) -> None:
