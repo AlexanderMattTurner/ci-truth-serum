@@ -183,9 +183,15 @@ def _make_repo(
 
 
 def _run(
-    repo: Path, bin_dir: Path, summary: Path, credentials: dict[str, str]
+    repo: Path,
+    bin_dir: Path,
+    summary: Path,
+    credentials: dict[str, str],
+    ref_name: str = "",
 ) -> subprocess.CompletedProcess:
     env = git_env()
+    if ref_name:
+        env["GITHUB_REF_NAME"] = ref_name
     for var in CREDENTIAL_VARS:
         env.pop(var, None)
     env.update(credentials)
@@ -270,6 +276,31 @@ def test_a_model_verdict_cuts_the_release_onto_the_checked_out_branch(
     summary_text = summary.read_text(encoding="utf-8")
     assert MODEL_RATIONALE in summary_text
     assert f"Cut release `v1.0.1` onto `{branch}`." in summary_text
+
+
+def test_a_detached_checkout_pushes_to_the_branch_actions_names(
+    tmp_path: Path,
+) -> None:
+    """actions/checkout can leave the runner on a detached HEAD, where
+    `git rev-parse --abbrev-ref HEAD` answers the literal "HEAD" and the push
+    would name the bogus ref HEAD:HEAD. GITHUB_REF_NAME carries the real branch,
+    so the release still lands on it."""
+    repo, origin, _, bin_dir = _make_repo(tmp_path, FIXED_ONLY)
+    _install_curl_stub(bin_dir, "200", HEALTHY_BODY)
+    summary = tmp_path / "summary.md"
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    _git(repo, "checkout", "-q", "--detach")
+    assert _git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+
+    result = _run(
+        repo,
+        bin_dir,
+        summary,
+        {"ANTHROPIC_API_KEY": "sk-ant-api-dummy"},
+        ref_name=branch,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert _origin_head_subject(origin, branch) == "chore(release): v1.0.1"
 
 
 @pytest.mark.parametrize(

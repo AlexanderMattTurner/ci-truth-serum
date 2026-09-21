@@ -312,7 +312,11 @@ cut_release() {
   # goes through the shared assembler (--release writes the dated section and
   # deletes the consumed fragments) — the same operation release-prep.sh performs
   # for a human PR.
-  branch=$(git rev-parse --abbrev-ref HEAD)
+  # GITHUB_REF_NAME first: actions/checkout can leave the runner on a detached
+  # HEAD, where `git rev-parse --abbrev-ref HEAD` answers the literal "HEAD" and
+  # the push below would name the bogus ref HEAD:HEAD. version-bump.sh reads the
+  # branch the same way. Only a local run falls back to git.
+  branch="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
   release_date=$(date -u +%Y-%m-%d)
   NEW_VERSION="$CANDIDATE" node -e '
 const fs = require("fs");
