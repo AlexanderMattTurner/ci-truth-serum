@@ -89,8 +89,16 @@ REPO_ROOT = subprocess.run(
 
 
 def _git(*args: str) -> str:
+    # cwd-git-ok: explicitly names the process's own working directory (the
+    # repo this script is invoked against, in CI or in a test's scratch repo)
+    # instead of leaving it implicit, so an in-process caller elsewhere can
+    # never silently inherit a stale one.
     return subprocess.run(
-        ["git", "-C", REPO_ROOT, *args], capture_output=True, text=True, check=True
+        ["git", "-C", REPO_ROOT, *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=os.getcwd(),
     ).stdout
 
 
@@ -180,6 +188,7 @@ def _mechanical_tree(parent1: str, parent2: str) -> str:
         capture_output=True,
         text=True,
         check=False,
+        cwd=os.getcwd(),
     )
     tree = res.stdout.split("\n", 1)[0]
     # Exit 1 is git's conflicted-but-written verdict. Anything else — or no tree
