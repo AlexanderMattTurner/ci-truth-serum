@@ -9,7 +9,7 @@ and the note that names the members no file reached.
 
 from pathlib import Path
 
-from tests._helpers import load_hook
+from tests._helpers import load_hook, unscanned_note
 
 rs = load_hook("run_selection.py", "run_selection")
 reg = load_hook("_cts_registry.py", "_registry_for_selection")
@@ -200,11 +200,18 @@ def test_ignoring_the_only_check_that_would_fire_passes(tmp_path, monkeypatch):
 
 def test_the_note_names_the_members_no_file_reached(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(_repo_with_pr_paths_violation(tmp_path))
+    # `run_selection` prints a start marker naming every member it runs, under
+    # Actions. Set here rather than left to the ambient environment, so the
+    # assertions below are made against the output CI actually produces.
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     rs.main(["--select", "tag:honesty", "--ignore", "check:check-pr-paths"])
     err = capsys.readouterr().err
     assert "did not run" in err
+    # The note is what names a member as unscanned; the marker above names every
+    # member that RAN, so these two assertions are scoped to the note alone.
+    note = unscanned_note(err)
     # A shell lint with no shell file passed is the case; a workflow lint ran.
-    assert "check_exit_suppression" in err
-    assert "check_folded_scalar_comment" not in err
+    assert "check_exit_suppression" in note
+    assert "check_folded_scalar_comment" not in note
     # The remedy repeats the caller's own selection, so it is copy-pasteable.
     assert "--select tag:honesty --ignore check:check-pr-paths" in err

@@ -45,6 +45,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import NamedTuple
 
 from identify import identify
 
@@ -137,7 +138,32 @@ def selected_files(kind: str, files: list[str]) -> list[str] | None:
     return [f for f in files if matches(f, kind)] or None
 
 
-def run_check(module: str, argv: list[str]) -> tuple[int, bytes, bytes]:
+class CheckRun(NamedTuple):
+    """What one member's subprocess left behind."""
+
+    status: int
+    stdout: bytes
+    stderr: bytes
+
+
+class MemberRun(NamedTuple):
+    """A `CheckRun` with the member that produced it."""
+
+    module: str
+    status: int
+    stdout: bytes
+    stderr: bytes
+
+
+class TierRun(NamedTuple):
+    """What a whole tier run reports back."""
+
+    status: int
+    unscanned: list[str]
+    seconds: dict[str, float]
+
+
+def run_check(module: str, argv: list[str]) -> CheckRun:
     """Run one member as its own subprocess; return its exit code and output.
 
     The output is captured rather than inherited because several members run at
@@ -152,7 +178,7 @@ def run_check(module: str, argv: list[str]) -> tuple[int, bytes, bytes]:
         check=False,
         capture_output=True,
     )
-    return done.returncode, done.stdout, done.stderr
+    return CheckRun(done.returncode, done.stdout, done.stderr)
 
 
 def workers() -> int:
@@ -167,9 +193,7 @@ def workers() -> int:
 
 
 def run_whole_list(
-    members: list[tuple[str, str]],
-    files: list[str],
-    extra: dict[str, list[str]],
+    members: list[tuple[str, list[str]]],
     seconds: dict[str, float],
 ) -> int:
     """Run each whole-list MEMBER over the files of its kind, several at once.
@@ -182,27 +206,27 @@ def run_whole_list(
     if not members:
         return 0
 
-    def one(member: tuple[str, str]) -> tuple[str, int, bytes, bytes]:
-        module, kind = member
+    def one(member: tuple[str, list[str]]) -> MemberRun:
+        module, argv = member
         started = time.monotonic()
-        argv = [*extra.get(module, []), *selected_files(kind, files)]
-        status, out, err = run_check(module, argv)
+        run = run_check(module, argv)
         seconds[module] = time.monotonic() - started
-        return module, status, out, err
-
-    with ThreadPoolExecutor(max_workers=workers()) as pool:
-        # `map` yields in submission order, so what prints below is the registry
-        # order a serial run printed, whatever order the members finished in.
-        results = list(pool.map(one, members))
+        return MemberRun(module, *run)
 
     rc = 0
-    for _module, status, out, err in results:
-        sys.stdout.buffer.write(out)
-        sys.stderr.buffer.write(err)
-        if status:
-            rc = 1
-    sys.stdout.flush()
-    sys.stderr.flush()
+    with ThreadPoolExecutor(max_workers=workers()) as pool:
+        # `map` yields in submission order, so what prints here is the registry
+        # order a serial run printed, whatever order the members finished in.
+        # Printed as each one yields rather than after the last: Actions cancels
+        # this job at its cap, and holding the output to the end would lose
+        # every finding already in hand — the case this runner exists for.
+        for run in pool.map(one, members):
+            sys.stdout.buffer.write(run.stdout)
+            sys.stderr.buffer.write(run.stderr)
+            sys.stdout.flush()
+            sys.stderr.flush()
+            if run.status:
+                rc = 1
     return rc
 
 
@@ -221,8 +245,11 @@ def run_in_process(module: str, argv: list[str]) -> int:
     the caller turns the status into a failed run. The traceback still prints,
     so a raising member is as loud as it was.
     """
-    check = importlib.import_module(f"ci_truth_serum.{module}")
     try:
+        # Imported inside the boundary, not above it: a member whose module
+        # fails to import would otherwise escape and end the whole tier, where
+        # the subprocess it replaced recorded it as failed and let the rest run.
+        check = importlib.import_module(f"ci_truth_serum.{module}")
         return check.main(argv)
     except SystemExit as stop:
         return 0 if stop.code in (0, None) else 1
@@ -232,7 +259,7 @@ def run_in_process(module: str, argv: list[str]) -> int:
 
 
 def run_per_file(
-    members: list[tuple[str, str]],
+    members: list[tuple[str, list[str]]],
     files: list[str],
     extra: dict[str, list[str]],
     seconds: dict[str, float],
@@ -248,10 +275,15 @@ def run_per_file(
     Only a member the registry marks `per_file` may come through here. See
     `Check.per_file`.
     """
+    # Each member's files were classified once already, in `run_members`. This
+    # tests membership against that answer rather than asking `matches` again
+    # per (file, member) — a second classification sweep is the duplicate work
+    # this runner exists to remove.
+    mine = {module: set(argv) for module, argv in members}
     rc = 0
     for path in files:
-        for module, kind in members:
-            if not matches(path, kind):
+        for module, _argv in members:
+            if path not in mine[module]:
                 continue
             started = time.monotonic()
             failed = run_in_process(module, [*extra.get(module, []), path])
@@ -265,7 +297,7 @@ def run_members(
     members: list[tuple[str, str]],
     files: list[str],
     extra: dict[str, list[str]] | None = None,
-) -> tuple[int, list[str], dict[str, float]]:
+) -> TierRun:
     """Run each (module, kind) member over FILES; return the exit code, the
     members that had no file of their kind to scan, and each member's seconds.
 
@@ -289,15 +321,19 @@ def run_members(
 
     # A member with no file of its kind is unscanned whichever pass would have
     # run it, so the two passes are split only after that question is answered.
-    scannable: list[tuple[str, str]] = []
+    # The classification is kept, not recomputed: `selected_files` answers both
+    # "can this member run at all" and "over which files", and both passes below
+    # take the second answer from here.
+    scannable: list[tuple[str, list[str]]] = []
     for module, kind in members:
-        if selected_files(kind, files) is None:
+        argv = selected_files(kind, files)
+        if argv is None:
             unscanned.append(module)
         else:
-            scannable.append((module, kind))
+            scannable.append((module, argv))
 
-    per_file = [(m, k) for m, k in scannable if m in PER_FILE]
-    whole_list = [(m, k) for m, k in scannable if m not in PER_FILE]
+    per_file = [(m, a) for m, a in scannable if m in PER_FILE]
+    whole_list = [(m, a) for m, a in scannable if m not in PER_FILE]
 
     if whole_list:
         # Actions cancels the job at its cap mid-run, and a cancelled run reaches
@@ -311,7 +347,8 @@ def run_members(
                 file=sys.stderr,
                 flush=True,
             )
-        if run_whole_list(whole_list, files, extra, seconds):
+        prepared = [(m, [*extra.get(m, []), *a]) for m, a in whole_list]
+        if run_whole_list(prepared, seconds):
             rc = 1
 
     if per_file:
@@ -324,7 +361,7 @@ def run_members(
             )
         if run_per_file(per_file, files, extra, seconds):
             rc = 1
-    return rc, unscanned, seconds
+    return TierRun(rc, unscanned, seconds)
 
 
 def report_seconds(seconds: dict[str, float], subject: str) -> None:
