@@ -1,26 +1,18 @@
 # shellcheck shell=bash
 # release-model-call.bash — shared Anthropic-call plumbing for the two release
-# scripts (release-readiness.sh and release-prep.sh), plus the deterministic
-# floor release-readiness.sh falls back to.
+# scripts (release-readiness.sh and release-prep.sh).
 # Contract: sourced into strict-mode (set -euo pipefail) callers; do not re-set
 # shell options.
 #
 # Both scripts ask a model one small question — "does this merit a release" and
 # "is this bump minor or patch". A single credential answering that question is a
 # single point of failure for the whole release pipeline: when it hits its usage
-# cap the daily cron fails, no release PR is opened, and changelog fragments pile
-# up against one tag. Two layers remove that:
+# cap the daily cron fails, no release is cut, and changelog fragments pile up
+# against one tag. anthropic_call walks a LADDER of credentials, so one exhausted
+# key does not end the attempt.
 #
-#   1. anthropic_call walks a LADDER of credentials, so one exhausted key does
-#      not end the attempt.
-#   2. bump_from_fragments derives the bump from data already on disk, so a
-#      total credential outage degrades to a mechanical answer rather than to
-#      nothing at all.
-#
-# Layer 2 is safe precisely because the release still lands through a human: the
-# readiness path only OPENS a PR, so a mechanically-derived bump is reviewed
-# before it ships. release-prep.sh pushes a commit instead, so it does NOT take
-# the floor — it fails loudly with the per-rung reasons.
+# Both callers push a release commit, so neither takes a mechanical answer when
+# every rung is dead. Each fails loudly with the per-rung reasons instead.
 #
 # This file is sourced, not executed: it defines functions and sets no state.
 
@@ -108,8 +100,8 @@ _is_terminal_status() {
 
 # anthropic_call REQUEST_BODY RESPONSE_FILE — POST to the Messages API, walking
 # the credential ladder. Returns 0 with the 200 body in RESPONSE_FILE, or 1 when
-# every rung is exhausted (the caller then decides whether to take a
-# deterministic floor or fail).
+# every rung is exhausted. Both callers then fail, because each pushes a release
+# commit that nobody reviews.
 anthropic_call() {
   local request_body="$1" response_file="$2"
   local name credential code attempt rungs=0
@@ -157,37 +149,4 @@ _report_rung_failure() {
   else
     echo "Credential $name failed (HTTP $code); response body was not Anthropic-shaped." >&2
   fi
-}
-
-# bump_from_fragments CHANGELOG_DIR — print "minor" or "patch" derived from the
-# pending fragments alone, with no model call.
-#
-# The fragment discipline already encodes the judgment the model is asked to
-# re-derive: a fragment exists only for a user-facing change (internal churn gets
-# none), and its CATEGORY is the semver signal. added/changed/removed/deprecated
-# describe a changed surface, so they take the minor; fixed/security leave the
-# surface alone and take the patch. The pipeline never cuts a major, so minor is
-# the ceiling and an empty or missing directory floors at patch.
-bump_from_fragments() {
-  local dir="$1" path base category
-  for path in "$dir"/*.md; do
-    # An unmatched glob stays literal, so the -e test is what makes an empty or
-    # missing directory fall through to the patch floor.
-    [[ -e "$path" ]] || continue
-    base="${path##*/}"
-    [[ "$base" == "README.md" ]] && continue
-    # <id>.<category>.md — the category is the field before the extension.
-    category="${base%.md}"
-    category="${category##*.}"
-    case "$category" in
-    added | changed | removed | deprecated)
-      printf 'minor\n'
-      return 0
-      ;;
-    # fixed, security, and any malformed name leave the surface alone, so they
-    # add nothing here and fall through to the patch floor after the loop.
-    *) ;;
-    esac
-  done
-  printf 'patch\n'
 }

@@ -71,7 +71,7 @@ The scheduled release-readiness run failed and could not cut a release.
 - Failed run: $RUN_URL
 - Commit: \`${GITHUB_SHA:-unknown}\`
 $reason_block
-Read the reason above (or the run log) for the specific cause. Common causes: the Claude credential (\`ANTHROPIC_API_KEY\`) being rejected — a bad/revoked key or an exhausted usage cap (regains access on a future date) fails the readiness call — or the branch push / PR creation failing (\`GITHUB_TOKEN\` needs contents:write + pull-requests:write). This issue closes automatically once a release-readiness run succeeds."
+Read the reason above (or the run log) for the specific cause. Two causes are common. Every Claude credential rung was rejected, because a key is revoked or its usage cap is spent; the run then cuts no release, because nothing judged it. Or the branch rules refused the release push; \`TEMPLATE_SYNC_TOKEN_ORG\` needs contents:write and permission to bypass the pull-request rule on the default branch. This issue closes automatically once a release-readiness run succeeds."
     echo "Opened a release-failure tracking issue."
   fi
   ;;
