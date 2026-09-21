@@ -40,11 +40,6 @@ starts a separate operation with its own flags, and each operation is judged on
 its own. A boolean flag's last spelling wins, so ``--no-retry-all-errors``
 turns an earlier ``--retry-all-errors`` back off.
 
-``--retry 0`` asks for no attempt at all, so it reads as the first shape. Only
-a LITERAL zero reads that way: a count this check cannot resolve, such as
-``--retry "$n"``, credits the retry, because refusing it would report a
-legitimate computed count as a defect.
-
 A flag the script assigns to a variable counts, under three limits. The
 assignment must START before the call in source order. The expansion must be
 the WHOLE argument, because a name inside a URL sends no flag to curl. The
@@ -164,34 +159,6 @@ def _is_retry_flag(word: str) -> bool:
     ``--retry`` starts; on their own they retry nothing, so a prefix match on
     ``--retry`` would read a dead knob as resilience."""
     return word == "--retry" or word.startswith("--retry=")
-
-
-def _is_zero(count: str) -> bool:
-    """True when COUNT is a literal zero. A count this check cannot read — a
-    variable, a substitution, an empty tail — is not zero here."""
-    return count.isdigit() and int(count) == 0
-
-
-def _starts_a_retry(tokens: list[str]) -> bool:
-    """True when TOKENS ask curl for at least one more attempt.
-
-    ``--retry 0`` is the flag with the work taken out: curl makes the one
-    request and stops, so the download is as single-shot as one with no
-    ``--retry`` at all.
-
-    Only a LITERAL zero counts as zero. A count the check cannot read — a
-    variable, a substitution — credits the retry, because refusing it would
-    report a legitimate computed count as a defect.
-    """
-    for index, token in enumerate(tokens):
-        if token == "--retry":
-            count = tokens[index + 1] if index + 1 < len(tokens) else ""
-            if not _is_zero(count):
-                return True
-        elif token.startswith("--retry="):
-            if not _is_zero(token.removeprefix("--retry=")):
-                return True
-    return False
 
 
 def _widened(tokens: list[str]) -> bool:
@@ -356,7 +323,7 @@ def _operation_arm(
     if not _writes_a_file([node_text(node) for node in nodes]):
         return None
     tokens = _operation_tokens(nodes, carriers, before_byte)
-    if not _starts_a_retry(tokens):
+    if not any(_is_retry_flag(token) for token in tokens):
         return ARM_MISSING
     return None if _widened(tokens) else ARM_NARROW
 
