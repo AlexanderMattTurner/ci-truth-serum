@@ -7,7 +7,7 @@ name: Mutation testing
 # .github/scripts/mutation_shards.py). Slices run in parallel so wall-clock is
 # the slowest single module, not the serial sum, and an aggregate step demands
 # one report per shard so a vanished slice can't score a subset as the whole.
-# This runs on a DAILY schedule and on demand, never per pull request. One
+# This runs on a DAILY schedule, on demand, and for now on a pull request. One
 # cosmic-ray pass reruns the offline suite once per mutant, so the cost is paid
 # once a day against main rather than on every push to every branch. A mutant
 # that survives is a prompt to add a test, and a prompt does not have to arrive
@@ -35,6 +35,12 @@ on:
   schedule:
     # cron-alert: false  # alerted repo-wide by build-publish-notify.yaml's workflow_run notifier, which check-failure-notifier-coverage holds exhaustive over every push/schedule workflow — this workflow has no in-workflow sink for this lint to credit
     - cron: "0 6 * * *" # daily 06:00 UTC
+  # `pull_request` stays until the branch-protection ruleset stops requiring
+  # mutation-passed. sync-required-checks.yaml rewrites that ruleset from the
+  # `required-check:` annotation below, and only on a push to main, so the two
+  # agree one merge after this one. A head with no pull_request trigger posts no
+  # status, and a required context that never reports holds the merge open.
+  pull_request:
   workflow_dispatch:
     inputs:
       hypothesis_profile:
@@ -240,7 +246,7 @@ jobs:
 
   # Runs even when the gates close or a job is cancelled or skipped, so every
   # run reaches one conclusion a person can read.
-  mutation-passed: # required-check: false  # no pull_request trigger, so this posts no status on a pull request and cannot gate one
+  mutation-passed: # required-check: false  # sync-required-checks.yaml drops it from the ruleset on the next push to main, which is what lets the pull_request trigger go
     if: always()
     needs: [decide-py, decide-js, plan, mutation, aggregate, mutation-js]
     runs-on: ubuntu-latest
