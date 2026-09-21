@@ -112,6 +112,11 @@ class Check(NamedTuple):
     `check_test_helper_kwargs` 47x, both because `main` re-derived the tracked
     tree on every call.
 
+    A member whose own FLAGS can make it self-discovering fails that second
+    property too, and the registry cannot see `--check-arg`. `check_flag_arity`
+    reads `tracked_shell_files()` instead of its argv whenever `--all` is
+    passed, so it stays unmarked however it is invoked.
+
     `tests/cts/test_per_file_members.py` holds both to account.
     """
 
@@ -240,7 +245,7 @@ CHECKS: tuple[Check, ...] = (
     _check("check_historical_comments", "extras", COMMENTED_CODE, DOCS, per_file=True),
     _check("check_doc_line_refs", "extras", MARKDOWN, DOCS, per_file=True),
     _check("check_workflow_refs", "extras", REFERENCING_TEXT, DOCS),
-    _check("check_flag_arity", "extras", SHELL, CORRECTNESS, per_file=True),
+    _check("check_flag_arity", "extras", SHELL, CORRECTNESS),
     _check(
         "check_secret_file_perms", "extras", SHELL, SECRETS, SECURITY, per_file=True
     ),
