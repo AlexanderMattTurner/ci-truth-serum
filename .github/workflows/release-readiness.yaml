@@ -3,14 +3,15 @@ name: Release readiness check
 # Has the default branch accumulated enough user-facing change since the last
 # release to merit cutting a new vX.Y.Z release? Claude weighs the pending
 # changelog.d/ fragments (security fixes, features, fix volume, cadence) and
-# writes a verdict to the job summary. When a release IS warranted it opens a
-# `release`-labelled PR: bumps package.json and rolls the CHANGELOG on a fresh
-# `auto-release/vX.Y.Z` branch, then opens a pull request for it. It never pushes
-# to the default branch and needs no ruleset-bypass credential — the release lands
-# only when a human merges the PR, and tag-release.yaml then cuts the tag on that
-# merge. release-prep.yaml is the parallel HUMAN path (a maintainer labels a
-# hand-made PR); the shared `release` label makes an already-open release PR (human
-# or auto) stand this path down so the two never collide.
+# writes a verdict to the job summary. When a release IS warranted it cuts one
+# directly: bumps package.json, rolls the CHANGELOG, commits that, and pushes the
+# commit straight to the default branch — no PR, because the commit only advances
+# the version and folds in fragments a reviewer already read. tag-release.yaml
+# fires on that push and cuts the tag. The push rides TEMPLATE_SYNC_TOKEN_ORG,
+# which must be allowed to bypass the default branch's pull-request rule.
+# release-prep.yaml is the parallel HUMAN path (a maintainer labels a hand-made
+# PR); the shared `release` label makes an open release PR stand this path down,
+# so the two never cut colliding releases.
 
 on:
   schedule:
@@ -31,25 +32,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write # push the auto-release/vX.Y.Z branch (never the default branch)
-      pull-requests: write # open the release PR + the concurrent-release probe (gh pr list)
+      contents: write # push the release commit to the default branch
+      pull-requests: read # the concurrent-release probe (gh pr list) + the label it filters on
       issues: write # open/close the release-failure tracking issue (see the final steps)
     steps:
       - name: Checkout
-        # The org PAT, because GITHUB_TOKEN cannot open the release PR. This
-        # organization keeps "Allow GitHub Actions to create and approve pull
-        # requests" off, so `gh pr create` under GITHUB_TOKEN fails. A PAT acts as
-        # its owner account, which that setting does not restrict, and the PR it
-        # opens starts the PR checks a GITHUB_TOKEN PR never triggers. The push is
-        # still a NEW branch, never the default branch, so no ruleset bypass is
-        # involved. Credentials stay persisted for cut_release's branch push.
-        # GITHUB_TOKEN is the fallback for a fork, which cuts no release.
+        # Credentials stay persisted: cut_release pushes the release commit with
+        # them. The org PAT, never GITHUB_TOKEN, for two reasons. A push that
+        # GITHUB_TOKEN makes starts no workflow, so tag-release.yaml would never
+        # fire and the new version would stay untagged. The default branch also
+        # requires a pull request, and only the PAT's identity may bypass that
+        # rule. Without the secret the push is refused, and release-readiness.sh
+        # says so instead of retrying.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
-          # Full history so the release branch shares a merge-base with the default
-          # branch and the PR shows only the release commit.
+          # Full history so the release commit rebases onto the branch tip when a
+          # push lands between this run's checkout and its own push.
           fetch-depth: 0
-          token: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
+          token: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG }}
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -61,18 +61,17 @@ jobs:
         # passed as separate env vars rather than one var holding a `||` fallback
         # expression: the script tries them in order and logs WHICH one answered,
         # and an unconfigured secret arrives as an empty var the ladder skips.
-        # A ladder that runs dry is not fatal here — the script falls back to the
-        # bump derived from the pending changelog.d/ fragments and says so.
+        # A ladder that runs dry IS fatal here: this path pushes the release with
+        # no human in between, so the script cuts nothing without a verdict.
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
           CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
-          # Same org PAT as the checkout: `gh pr create` under GITHUB_TOKEN is
-          # refused by the organization's pull-request setting (see the Checkout
-          # step). gh also reads this for the label and concurrent-release probes.
-          GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
+          # Same org PAT as the checkout (see that step). gh reads it for the
+          # `release` label and the concurrent-release probe.
+          GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG }}
         # tee the combined output so the failure step can quote the real reason in
         # the tracking issue. pipefail keeps the script's exit code across the tee.
         run: |

@@ -1,40 +1,45 @@
 #!/usr/bin/env bash
 # Automated release-readiness check. Decides whether the default branch has
 # accumulated enough user-facing change since the last release to merit cutting a
-# new vX.Y.Z release. On a `should_release` verdict it opens a release PR: it bumps
-# package.json and rolls the pending changelog.d/ fragments into a dated CHANGELOG
-# section on a fresh `auto-release/vX.Y.Z` branch, then opens a `release`-labelled
-# pull request for that branch. It never pushes to the default branch and needs no
-# ruleset-bypass credential — the release lands only when a human merges the PR,
-# and tag-release.yaml then fires on that merge and cuts the vX.Y.Z tag. The push
-# and the PR ride GH_TOKEN, which the workflow fills from the org PAT: the
-# organization refuses a pull request opened by GITHUB_TOKEN.
-# release-prep.yaml is the parallel HUMAN path (a maintainer
-# labels a hand-made PR); the shared `release` label means an already-open release
-# PR — human or auto — makes this path stand down so the two never collide, and
-# because this path's own PR carries that label, the next scheduled run also stands
-# down while it is open. The verdict comes from a model call over a ladder of
-# credentials; when every rung is missing or rejected the run does not die — it
-# derives the bump from the pending fragment categories and says loudly, in the
-# log, the job summary and the PR body, that no model judged it.
+# new vX.Y.Z release. On a `should_release` verdict it cuts the release itself. It
+# bumps package.json, pins the README `rev:` examples, rolls the pending
+# changelog.d/ fragments into a dated CHANGELOG section, commits that, and pushes
+# the commit to the branch this run checked out. There is no pull request. The
+# commit only advances the version and folds in fragments a reviewer already read,
+# so a PR bought a CI round and a human wait for nothing. tag-release.yaml fires on
+# that push and cuts the vX.Y.Z tag.
+#
+# The push rides GH_TOKEN, which the workflow fills from TEMPLATE_SYNC_TOKEN_ORG.
+# That identity must be allowed to bypass the pull-request rule on the default
+# branch. It must also be a PAT. A push that GITHUB_TOKEN makes starts no workflow,
+# so tag-release.yaml would never fire and the new version would stay untagged. A
+# denied push is a configuration error, so this script says so and stops. It does
+# not retry an identical 403.
+#
+# release-prep.yaml is the parallel HUMAN path: a maintainer labels a hand-made PR.
+# The `release` label is the shared marker. An open release PR makes this path stand
+# down, so the two paths never cut colliding releases.
+#
+# The verdict comes from a model call over a ladder of credentials. When every rung
+# is missing or rejected, this run cuts nothing and fails. The push reaches the
+# default branch with no human in between, so a bump that nobody judged must not
+# ship.
 set -euo pipefail
 # Repo content (package.json, CHANGELOG, changelog.d, the assembler) is read from
 # the checked-out working tree — the job runs from the repo root.
 ROOT="$(git rev-parse --show-toplevel)"
-# shellcheck source=lib/retry.bash disable=SC1091
-source "$ROOT/.github/scripts/lib/retry.bash"
 # shellcheck source=../../bin/lib/release-model-call.bash disable=SC1091
 source "$ROOT/bin/lib/release-model-call.bash"
 
 # Fail fast when a credential the run needs is unset — a dropped workflow env var
 # must abort loudly here, before any real work, not surface as a misparse deep in
-# the run. GH_TOKEN (github.token) is the concurrent-release probe, label + branch
-# push, and PR creation, so without it the run cannot do its job at all. The model
+# the run. GH_TOKEN carries the concurrent-release probe, the label, and the push
+# of the release commit, so without it the run cannot do its job at all. The model
 # credentials are deliberately NOT guarded here: anthropic_call walks a ladder of
 # them and the run still completes on the deterministic floor when every rung is
 # missing or rejected, so demanding any one of them up front would abort a run
 # that a later rung — or no credential at all — could have finished.
-: "${GH_TOKEN:?GH_TOKEN is not set. The workflow must pass the org PAT or github.token.}"
+: "${GH_TOKEN:?GH_TOKEN is not set. The workflow must pass the org PAT.}"
 
 ASSEMBLE_CHANGELOG="${ASSEMBLE_CHANGELOG:-$ROOT/scripts/assemble-changelog.mjs}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
@@ -168,32 +173,34 @@ REQUEST_BODY=$(jq -n --arg prompt "$PROMPT" --arg system "$CLAUDE_CODE_SYSTEM" \
 RESPONSE_FILE="$(mktemp)"
 trap 'rm -f "$RESPONSE_FILE"' EXIT
 
-# DEGRADED marks a verdict that came from the deterministic floor rather than the
-# model, so every downstream surface (log, job summary, PR body) can say so.
-DEGRADED=""
 if anthropic_call "$REQUEST_BODY" "$RESPONSE_FILE"; then
   INPUT=$(jq -c '.content[] | select(.type == "tool_use") | .input' "$RESPONSE_FILE")
   SHOULD_RELEASE=$(printf '%s' "$INPUT" | jq -r '.should_release')
   BUMP=$(printf '%s' "$INPUT" | jq -r '.recommended_bump')
   RATIONALE=$(printf '%s' "$INPUT" | jq -r '.rationale')
-  # A 200 whose body does not carry a well-formed verdict is an unexpected state,
-  # not a credential outage — the floor below is not the right answer for it.
+  # A 200 whose body does not carry a well-formed verdict is an unexpected state.
   if [[ "$SHOULD_RELEASE" != "true" && "$SHOULD_RELEASE" != "false" ]] || [[ "$BUMP" != "minor" && "$BUMP" != "patch" ]]; then
     echo "Error: unexpected decision from Claude (should_release=$SHOULD_RELEASE bump=$BUMP)" >&2
     echo "Response stop_reason: $(jq -r '.stop_reason // "unknown"' "$RESPONSE_FILE")" >&2
     exit 1
   fi
 else
-  # Every credential rung is missing or rejected. Killing the run here is what
-  # stalled the release pipeline: this check only OPENS a PR, so the safe answer
-  # is the mechanical one a human then reviews. Say so at maximum volume — an
-  # unannounced degradation is a green run reporting a judgment nobody made.
-  DEGRADED="1"
-  SHOULD_RELEASE="true"
-  BUMP=$(bump_from_fragments "$ROOT/changelog.d")
-  RATIONALE="DEGRADED: no model verdict. Every configured credential rung was missing or rejected (see the per-rung reasons in the run log), so this \`$BUMP\` bump was derived mechanically from the pending changelog.d/ fragment categories, NOT from a model's judgment of whether a release is warranted. Review the bump and the contents before merging."
-  echo "::warning title=Release readiness degraded::No model credential answered; the bump was derived from changelog.d/ fragment categories instead."
-  echo "WARNING: degraded to the deterministic bump floor (bump_from_fragments) — bump=$BUMP" >&2
+  # Every credential rung is missing or rejected. This path pushes the release to
+  # the default branch, so nobody reviews the cut before it ships. A bump derived
+  # from the fragment categories alone would be a release that no judgment backs,
+  # so stop instead. The run fails, and the workflow's failure step opens the
+  # tracking issue that names the dead credential.
+  echo "::error title=Release readiness has no model verdict::Every configured credential rung was missing or rejected. No release was cut."
+  echo "Error: no model verdict, so this run cut no release. Fix the Anthropic credentials — the per-rung reasons are above." >&2
+  {
+    echo "## Release readiness"
+    echo
+    echo "> [!WARNING]"
+    echo "> **No release cut — no model verdict.** Every configured credential rung was missing"
+    echo "> or rejected. This path pushes the release straight to the default branch, so it does"
+    echo "> not cut one on a judgment nobody made."
+  } >>"$SUMMARY"
+  exit 1
 fi
 
 IFS='.' read -r MAJOR MINOR PATCH_NUM <<<"$CURRENT_VERSION"
@@ -203,13 +210,74 @@ patch) CANDIDATE="${MAJOR}.${MINOR}.$((PATCH_NUM + 1))" ;;
 esac
 echo "Decision: should_release=$SHOULD_RELEASE bump=$BUMP candidate=v$CANDIDATE"
 
-# Open the release as a pull request: bump package.json, roll the pending
-# changelog.d/ fragments into a dated CHANGELOG section on a fresh
-# `auto-release/vX.Y.Z` branch, push that branch (an ordinary push — never the
-# default branch, so no ruleset bypass), and open a `release`-labelled PR. A human
-# merges it; tag-release.yaml fires on that merge and cuts the vX.Y.Z tag.
+# release_push_die MESSAGE — report a push the branch rules refused, on every
+# surface a maintainer reads, then stop. Every later attempt gets the same answer,
+# so a retry only buries the reason.
+release_push_die() {
+  local msg="$1"
+  echo "::error title=Release push denied::${msg}"
+  echo "Error: ${msg}" >&2
+  {
+    echo
+    echo "## Release blocked — the push credential cannot write to the default branch"
+    echo
+    echo "$msg"
+  } >>"$SUMMARY"
+  exit 1
+}
+
+# The push budget. A test overrides both so it drives the retry path without
+# waiting out the real backoff.
+RELEASE_PUSH_ATTEMPTS="${RELEASE_PUSH_ATTEMPTS:-4}"
+RELEASE_PUSH_RETRY_DELAY="${RELEASE_PUSH_RETRY_DELAY:-2}"
+
+# push_release_commit BRANCH — push the release commit to BRANCH on origin.
+#
+# A commit that lands on BRANCH between this run's checkout and its push makes the
+# push a non-fast-forward. Rebase onto the new tip and try again. Never force-push
+# the default branch. A push the branch rules refuse is a configuration error, so
+# report it and stop.
+push_release_commit() {
+  local branch="$1" attempt=1 out=""
+  while :; do # retry-loop-ok: each attempt must rebase onto the new branch tip between tries, and retry_cmd runs the same command again with no hook to do that
+    if out=$(timeout --kill-after=15 60 git push --no-verify origin "HEAD:$branch" 2>&1); then
+      return 0
+    fi
+    case "$out" in
+    *"protected branch"* | *"pull request"* | *denied* | *403*)
+      release_push_die "The branch rules on '$branch' refused the release push. Allow TEMPLATE_SYNC_TOKEN_ORG to bypass the pull-request rule on '$branch', or this path can cut no release. git said: $out"
+      ;;
+    *) ;;
+    esac
+    if ((attempt == RELEASE_PUSH_ATTEMPTS)); then
+      break
+    fi
+    echo "Release push to '$branch' failed (attempt $attempt). Refreshing and retrying:" >&2
+    echo "$out" >&2
+    if ! timeout --kill-after=15 60 git fetch origin "$branch"; then
+      echo "Error: the release push failed and origin/$branch could not be fetched, so the commit cannot be rebased onto the branch tip." >&2
+      exit 1
+    fi
+    # allow-externalized-marker: the rebase lives here because this repo externalizes inline run: bodies. The invariant the inline guard protects holds — release-readiness.yaml checks out with fetch-depth: 0, so the release commit rebases onto a full graph.
+    if ! git rebase "origin/$branch"; then
+      git rebase --abort
+      echo "Error: the release commit conflicts with concurrent work on '$branch'. The next scheduled run recomputes the release against the updated branch." >&2
+      exit 1
+    fi
+    sleep "$((attempt * RELEASE_PUSH_RETRY_DELAY))"
+    attempt=$((attempt + 1))
+  done
+  echo "Error: could not push the release commit to '$branch' after $RELEASE_PUSH_ATTEMPTS attempts. git said:" >&2
+  echo "$out" >&2
+  exit 1
+}
+
+# Cut the release on the branch this run checked out: bump package.json, pin the
+# README `rev:` examples, roll the pending changelog.d/ fragments into a dated
+# CHANGELOG section, commit that, and push the commit. tag-release.yaml fires on
+# the push and cuts the vX.Y.Z tag.
 cut_release() {
-  local others release_date pr_branch
+  local others release_date branch
 
   # Ensure the shared `release` label exists FIRST — the stand-down probe below
   # filters on it, and `gh pr list --label release` errors ("could not resolve to
@@ -222,10 +290,11 @@ cut_release() {
     exit 1
   fi
 
-  # Stand down if a release PR is already open — human (release-prep.yaml, a
-  # maintainer-labelled PR) or a still-open auto-release PR from an earlier run.
-  # Either already carries the pending fragments, so cutting a second would collide.
-  # The `release` label is the shared marker. Fail closed on a gh error.
+  # Stand down if a HUMAN release is in flight (release-prep.yaml, a maintainer
+  # labelled a PR). That PR carries its own bump and roll on a branch this run
+  # cannot see, so the fragments still read as pending here and this run would cut
+  # a second, colliding release. The `release` label is the shared marker. Fail
+  # closed on a gh error.
   if ! others=$(gh pr list --state open --label release --json number --jq '[.[].number] | join(", #")'); then
     echo "Error: could not list open 'release' PRs to check for a concurrent release." >&2
     exit 1
@@ -239,12 +308,15 @@ cut_release() {
     return 0
   fi
 
-  # Materialize the release commit on a fresh branch off the current HEAD. The
-  # CHANGELOG roll goes through the shared assembler (--release writes the dated
-  # section and deletes the consumed fragments) — the same operation release-prep.sh
-  # performs for human PRs.
-  pr_branch="auto-release/v$CANDIDATE"
-  git checkout -q -b "$pr_branch"
+  # Build the release commit on the branch this run checked out. The CHANGELOG roll
+  # goes through the shared assembler (--release writes the dated section and
+  # deletes the consumed fragments) — the same operation release-prep.sh performs
+  # for a human PR.
+  # GITHUB_REF_NAME first: actions/checkout can leave the runner on a detached
+  # HEAD, where `git rev-parse --abbrev-ref HEAD` answers the literal "HEAD" and
+  # the push below would name the bogus ref HEAD:HEAD. version-bump.sh reads the
+  # branch the same way. Only a local run falls back to git.
+  branch="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
   release_date=$(date -u +%Y-%m-%d)
   NEW_VERSION="$CANDIDATE" node -e '
 const fs = require("fs");
@@ -253,8 +325,8 @@ pkg.version = process.env.NEW_VERSION;
 fs.writeFileSync(process.argv[1], JSON.stringify(pkg, null, 2) + "\n");
 ' "$ROOT/package.json"
   # Same pin move release-prep.sh makes for a human release PR: the README's
-  # `rev:` examples must name the tag this release cuts, or the release PR is
-  # born red on tests/cts/test_readme_rev.py.
+  # `rev:` examples must name the tag this release cuts, or the default branch
+  # lands red on tests/cts/test_readme_rev.py.
   node "${PIN_README_REV:-$ROOT/scripts/pin-readme-rev.mjs}" "$CANDIDATE" "$ROOT/README.md"
   node "$ASSEMBLE_CHANGELOG" --release "$CANDIDATE" --date "$release_date"
 
@@ -262,58 +334,22 @@ fs.writeFileSync(process.argv[1], JSON.stringify(pkg, null, 2) + "\n");
     -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
     commit -aqm "chore(release): v$CANDIDATE"
 
-  # A prior run's branch for this same version can linger when its PR was closed
-  # unmerged (GitHub auto-deletes a PR branch only on merge). The stand-down above
-  # proved no OPEN release PR references it, so a same-named remote branch is stale
-  # — delete it so the push below is a clean create, not a non-fast-forward
-  # rejection that would retry deterministically and wedge every future run.
-  # Absence is the normal case (the `if` swallows the delete's non-zero without
-  # aborting under set -e); a real push problem still surfaces at the push below.
-  if timeout --kill-after=15 60 git push --no-verify origin --delete "$pr_branch" 2>/dev/null; then
-    echo "Deleted a stale remote branch '$pr_branch' from an earlier closed release PR."
-  fi
-
-  # Ordinary branch push, retried with backoff on transient failures.
-  if ! retry_cmd 4 2 timeout --kill-after=15 60 git push --no-verify -u origin "$pr_branch"; then
-    echo "Error: failed to push the release branch '$pr_branch' after 4 attempts." >&2
-    exit 1
-  fi
-
-  local pr_url
-  if ! pr_url=$(gh pr create --label release \
-    --title "chore(release): v$CANDIDATE" \
-    --body "Automated release readiness cut this \`$BUMP\` release (\`v$CURRENT_VERSION\` → \`v$CANDIDATE\`). Merging tags \`v$CANDIDATE\` via tag-release.yaml.
-
-> $RATIONALE"); then
-    echo "Error: pushed '$pr_branch' but failed to open the release PR." >&2
-    echo "       When gh reports 'GitHub Actions is not permitted to create or approve" >&2
-    echo "       pull requests', GH_TOKEN fell back to GITHUB_TOKEN. Set the" >&2
-    echo "       TEMPLATE_SYNC_TOKEN_ORG secret, or turn on the organization setting" >&2
-    echo "       'Allow GitHub Actions to create and approve pull requests'." >&2
-    exit 1
-  fi
+  push_release_commit "$branch"
 
   {
     echo
-    echo "Opened automated release PR for \`v$CANDIDATE\`: $pr_url"
+    echo "Cut release \`v$CANDIDATE\` onto \`$branch\`. tag-release.yaml cuts the \`v$CANDIDATE\` tag."
   } >>"$SUMMARY"
 }
 
 if [[ "$SHOULD_RELEASE" == "true" ]]; then
-  VERDICT="**Release recommended** → opening a release PR for \`v$CANDIDATE\` (\`$BUMP\` bump)"
+  VERDICT="**Release recommended** → cutting \`v$CANDIDATE\` (\`$BUMP\` bump)"
 else
   VERDICT="**No release recommended yet**"
 fi
 {
   echo "## Release readiness"
   echo
-  if [[ -n "$DEGRADED" ]]; then
-    echo "> [!WARNING]"
-    echo "> **No model verdict — degraded to the deterministic bump floor.** Every configured"
-    echo "> credential rung was missing or rejected, so the bump below comes from the pending"
-    echo "> changelog.d/ fragment categories alone. A human reviews it on the PR before it ships."
-    echo
-  fi
   echo "$VERDICT"
   echo
   echo "- Current release: \`v$CURRENT_VERSION\`"
