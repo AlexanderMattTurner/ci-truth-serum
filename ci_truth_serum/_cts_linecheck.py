@@ -393,7 +393,10 @@ def unparseable_python_reason(path: str, text: str) -> str | None:
         return None
     # Through `_cts_py_ast`, not a bare `ast.parse`, so this parse and the
     # detector's own parse of the same file are ONE parse. Both normalize line
-    # endings the same way, which is what makes them one cache key. This module
+    # endings the same way, which is what makes them one cache key. The sibling
+    # import resolves through the directory this module puts on `sys.path` when
+    # it loads, so it needs no prelude of its own — the same entry that lets the
+    # four inserts this change removes go.
     from _cts_py_ast import (  # pylint: disable=import-outside-toplevel
         LINE_ENDING,
         parse_whole,
