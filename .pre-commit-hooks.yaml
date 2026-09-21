@@ -473,8 +473,8 @@
   types: [shell]
 
 - id: check-curl-retry
-  name: "opinionated: require a retry on a file-writing curl download"
-  description: "A single-shot `curl -o file` fails the whole install for one dropped packet. Name your own retry helpers with `--retry-wrapper NAME`."
+  name: "opinionated: require curl's own widened retry on a file-writing curl download"
+  description: "A single-shot `curl -o file` fails the whole install for one dropped packet. A caller-side retry wrapper does not count. Plain `--retry` skips a refused connection, so add `--retry-all-errors`."
   entry: python -m ci_truth_serum.check_curl_retry
   language: python
   additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]

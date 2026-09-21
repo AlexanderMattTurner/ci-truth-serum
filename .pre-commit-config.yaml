@@ -98,8 +98,6 @@ repos:
           - check_retry_loop=--retry-helper=.github/scripts/lib/retry.bash
           - --check-arg
           - check_retry_loop=--wrapper=retry_cmd
-          - --check-arg
-          - check_curl_retry=--retry-wrapper=retry_cmd
         language: python
         additional_dependencies:
           [

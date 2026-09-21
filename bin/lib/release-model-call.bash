@@ -81,6 +81,7 @@ _anthropic_status() {
   # very log the degraded PR body sends a human to read.
   : >"$2"
   # pin-exempt: Anthropic API JSON response, parsed by jq — never executed/extracted
+  # curl-retry-ok: a POST that the server may have already processed, so curl must not re-send it on a transport error; the caller's ladder decides the next try
   curl -s -o "$2" -w "%{http_code}" \
     --max-time 30 --retry 3 --retry-delay 2 "$ANTHROPIC_API_URL" \
     -H "Content-Type: application/json" \

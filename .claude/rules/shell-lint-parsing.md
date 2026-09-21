@@ -70,6 +70,7 @@ Neither is executed code, so a finding is a false positive:
 | `check_drift_guards`              | no                        | no                      |
 | `check_argument_exit_swallow`     | no                        | no                      |
 | `check_soft_timeout`              | no                        | no                      |
+| `check_curl_retry`                | no                        | no                      |
 
 The top five fired on one or both probes and were rewritten on the grammar, which
 removed the class rather than the instance. **Every lint in the table now parses**;
@@ -122,6 +123,19 @@ two of the nine were live defects — a hung package install and a stranded kill
 switch. Both probes were run against it before it landed, and its suite pins both
 verdicts.
 
+`check_curl_retry` is the twelfth row and was written on the grammar from the
+start. Its two structural questions are the usual pair: is this `curl` a command
+or a word in a sentence a command prints, and where does this command start and
+end (a backslash-continued download is one command, so an `-o` three lines down
+is still its flag). A third one arrived when the check grew its second arm: is
+this flag WRITTEN at the call site, or assigned to a variable the call expands?
+`retry_widen="--retry-connrefused"` then `curl … "$retry_widen" -o f` carries the
+flag, and a word scan of the curl line alone reads two real downloads in
+`agent-glovebox` as defects. The grammar names the assignment and its value
+node, so the check credits the flags that value holds and nothing else. Both
+probes were run against it before it landed, and its suite pins both verdicts
+under each arm.
+
 ## The rule is not about bash
 
 "Where is the comment" is the same structural question in every language, and a
@@ -130,12 +144,12 @@ narration — `check_drift_guards`, `check_graceful_handwave`,
 `check_historical_comments`, `check_workflow_refs` — now ask `_cts_comments`, which
 picks the parser the PATH names:
 
-| language | the parser  | what the text scan got wrong                                                        |
-| -------- | ----------- | ----------------------------------------------------------------------------------- |
-| Python   | `tokenize`  | a `#` in a string literal — and an opt-out token there SUPPRESSED, failing open     |
+| language | the parser      | what the text scan got wrong                                                        |
+| -------- | --------------- | ----------------------------------------------------------------------------------- |
+| Python   | `tokenize`      | a `#` in a string literal — and an opt-out token there SUPPRESSED, failing open     |
 | shell    | `_cts_bash_ast` | a heredoc body read as a run of comments                                            |
 | JS/TS    | `_cts_js_ast`   | a `//` inside a string or template literal; a `/* … */` after code on the same line |
-| YAML     | none        | nothing — its parsers discard comments, so the delimiter scan is the decision       |
+| YAML     | none            | nothing — its parsers discard comments, so the delimiter scan is the decision       |
 
 Nor is it only about comments. The lints that read PYTHON ask the same shape of
 structural question, and answered it the same wrong way until they were moved onto
