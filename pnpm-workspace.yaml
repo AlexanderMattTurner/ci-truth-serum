@@ -1,0 +1,11 @@
+packages:
+  - "."
+
+overrides:
+  # GHSA-ph9p-34f9-6g65 (HIGH): tmp Path Traversal via unsanitized prefix/postfix
+  # GHSA-52f5-9888-hmc6 (LOW, same pkg): tmp symlink arbitrary write
+  # Transitive: @stryker-mutator/core > @inquirer/prompts > @inquirer/editor > external-editor > tmp
+  tmp: ">=0.2.6"
+  # GHSA-2g4f-4pwh-qvx6 (MODERATE): ajv ReDoS when using $data option
+  # Transitive: @stryker-mutator/core > ajv (currently resolved to 8.17.1, needs >=8.18.0)
+  ajv: ">=8.18.0"
