@@ -224,7 +224,11 @@ def test_run_check_spawns_the_module_with_its_files(monkeypatch):
     class _Done:
         returncode = 0
 
-    def _fake(cmd, check):
+        stdout = b""
+
+        stderr = b""
+
+    def _fake(cmd, check, capture_output=False):
         captured["cmd"] = cmd
         return _Done()
 
@@ -236,8 +240,12 @@ def test_run_check_spawns_the_module_with_its_files(monkeypatch):
 def test_run_check_reports_the_module_exit_code(monkeypatch):
     class _Done:
         returncode = 1
+        stdout = b""
+        stderr = b""
 
-    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
+    monkeypatch.setattr(
+        rt.subprocess, "run", lambda cmd, check, capture_output=False: _Done()
+    )
     assert rt.run_check("check_pr_paths", []) == 1
 
 
@@ -263,7 +271,11 @@ def test_skip_removes_named_member(tmp_path, monkeypatch):
     class _Done:
         returncode = 0
 
-    def _fake(cmd, check):
+        stdout = b""
+
+        stderr = b""
+
+    def _fake(cmd, check, capture_output=False):
         # cmd = [sys.executable, "-m", "ci_truth_serum.<module>", ...]
         called.append(cmd[2].removeprefix("ci_truth_serum."))
         return _Done()
@@ -311,7 +323,11 @@ def _record_argv(monkeypatch) -> dict[str, list[str]]:
     class _Done:
         returncode = 0
 
-    def _fake(cmd, check):
+        stdout = b""
+
+        stderr = b""
+
+    def _fake(cmd, check, capture_output=False):
         seen[cmd[2].removeprefix("ci_truth_serum.")] = cmd[3:]
         return _Done()
 
@@ -490,7 +506,13 @@ def test_a_run_that_scans_every_member_prints_no_note(monkeypatch, capsys):
     class _Done:
         returncode = 0
 
-    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
+        stdout = b""
+
+        stderr = b""
+
+    monkeypatch.setattr(
+        rt.subprocess, "run", lambda cmd, check, capture_output=False: _Done()
+    )
     assert _run(["1"]) == 0
     assert "did not run" not in capsys.readouterr().err
 
@@ -507,7 +529,13 @@ def test_a_skipped_member_is_not_reported_as_unscanned(monkeypatch, capsys):
     class _Done:
         returncode = 0
 
-    monkeypatch.setattr(rt.subprocess, "run", lambda cmd, check: _Done())
+        stdout = b""
+
+        stderr = b""
+
+    monkeypatch.setattr(
+        rt.subprocess, "run", lambda cmd, check, capture_output=False: _Done()
+    )
     assert _run(["1", "--skip", "check_exit_suppression"]) == 0
     assert "did not run" not in capsys.readouterr().err
 

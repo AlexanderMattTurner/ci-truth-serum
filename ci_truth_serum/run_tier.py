@@ -43,6 +43,7 @@ import subprocess
 import sys
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from identify import identify
@@ -143,6 +144,74 @@ def run_check(module: str, argv: list[str]) -> int:
     ).returncode
 
 
+def run_check_captured(module: str, argv: list[str]) -> tuple[int, bytes, bytes]:
+    """`run_check`, with the member's output captured rather than inherited.
+
+    Several members run at once (see `run_whole_list`), and a member writes its
+    findings as `path:line: message` lines. Inherited streams would interleave
+    those lines between members, so a reader could not tell which check refused
+    what. Captured, the caller prints each member's output whole and in registry
+    order — the order a serial run produced.
+    """
+    done = subprocess.run(
+        [sys.executable, "-m", f"ci_truth_serum.{module}", *argv],
+        check=False,
+        capture_output=True,
+    )
+    return done.returncode, done.stdout, done.stderr
+
+
+def workers() -> int:
+    """How many members may run at once.
+
+    Each one is a subprocess, so the parent thread only waits on it. The bound
+    is the machine's cores: the consumer that hit its job's cap runs this on a
+    2-core runner, and one worker per core is what that machine can overlap. The
+    ceiling keeps a large build machine from starting ninety interpreters.
+    """
+    return max(1, min(os.cpu_count() or 1, 8))
+
+
+def run_whole_list(
+    members: list[tuple[str, str]],
+    files: list[str],
+    extra: dict[str, list[str]],
+    seconds: dict[str, float],
+) -> int:
+    """Run each whole-list MEMBER over the files of its kind, several at once.
+
+    These members are already isolated processes, so running them together
+    changes nothing about what any of them reads or reports. It is where the
+    remaining time is: 41 of the 90 checks self-discover `.github/` and take no
+    file list, so each one parses that tree again in its own interpreter.
+    """
+    if not members:
+        return 0
+
+    def one(member: tuple[str, str]) -> tuple[str, int, bytes, bytes]:
+        module, kind = member
+        started = time.monotonic()
+        argv = [*extra.get(module, []), *selected_files(kind, files)]
+        status, out, err = run_check_captured(module, argv)
+        seconds[module] = time.monotonic() - started
+        return module, status, out, err
+
+    with ThreadPoolExecutor(max_workers=workers()) as pool:
+        # `map` yields in submission order, so what prints below is the registry
+        # order a serial run printed, whatever order the members finished in.
+        results = list(pool.map(one, members))
+
+    rc = 0
+    for _module, status, out, err in results:
+        sys.stdout.buffer.write(out)
+        sys.stderr.buffer.write(err)
+        if status:
+            rc = 1
+    sys.stdout.flush()
+    sys.stderr.flush()
+    return rc
+
+
 def run_in_process(module: str, argv: list[str]) -> int:
     """Run one member inside THIS interpreter; return its exit code.
 
@@ -236,18 +305,19 @@ def run_members(
     per_file = [(m, k) for m, k in scannable if m in PER_FILE]
     whole_list = [(m, k) for m, k in scannable if m not in PER_FILE]
 
-    for module, kind in whole_list:
-        # Actions cancels the job at its cap mid-member, and a cancelled run
-        # reaches no line below this loop. This marker is what names the member
-        # that was running when it died.
+    if whole_list:
+        # Actions cancels the job at its cap mid-run, and a cancelled run reaches
+        # no line below. This marker is what names the members in flight when it
+        # died; several run at once, so it names the set rather than one member.
         if in_actions:
-            print(f"--- run_tier: starting {module}", file=sys.stderr, flush=True)
-        started = time.monotonic()
-        failed = run_check(
-            module, [*extra.get(module, []), *selected_files(kind, files)]
-        )
-        seconds[module] = time.monotonic() - started
-        if failed:
+            names = ", ".join(module for module, _ in whole_list)
+            print(
+                f"--- run_tier: starting {len(whole_list)} members, "
+                f"{workers()} at a time: {names}",
+                file=sys.stderr,
+                flush=True,
+            )
+        if run_whole_list(whole_list, files, extra, seconds):
             rc = 1
 
     if per_file:
