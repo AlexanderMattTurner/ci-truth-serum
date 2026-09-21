@@ -1302,3 +1302,36 @@ def test_annotation_window_spans_a_wrapped_comment_block() -> None:
 def test_annotation_window_stops_at_a_blank_line() -> None:
     lines = ["# tok: about something else", "", "code()"]
     assert lc.annotation_window(lines, 3) == [2, 3]
+
+
+# ── run_message_checks: one pass, and each hit carries its own message ───────
+def test_run_message_checks_prints_each_hit_with_its_own_message(
+    tmp_path, capsys
+) -> None:
+    path = tmp_path / "s.sh"
+    path.write_text("one\ntwo\n", encoding="utf-8")
+    status = lc.run_message_checks(
+        [str(path)], lambda _text, _path: [(1, "first kind"), (2, "second kind")]
+    )
+    err = capsys.readouterr().err
+    assert status == 1
+    assert f"{path}:1: first kind" in err
+    assert f"{path}:2: second kind" in err
+
+
+def test_run_message_checks_reports_an_unparseable_file_once(tmp_path, capsys) -> None:
+    """One pass, so one refusal. A pass per message printed the same refusal
+    once per message. The refusal also refuses to call the file clean."""
+    path = tmp_path / "broken.sh"
+    path.write_text("if then\n", encoding="utf-8")
+    assert lc.unparseable_shell_reason(str(path), path.read_text(encoding="utf-8"))
+    status = lc.run_message_checks([str(path)], lambda _text, _path: [])
+    err = capsys.readouterr().err
+    assert status == 1
+    assert err.count(str(path)) == 1
+
+
+def test_run_message_checks_clean_file_returns_0(tmp_path) -> None:
+    path = tmp_path / "s.sh"
+    path.write_text("true\n", encoding="utf-8")
+    assert lc.run_message_checks([str(path)], lambda _text, _path: []) == 0

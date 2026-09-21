@@ -5,6 +5,7 @@ Drives ``violations()`` and ``findings()`` directly for the parsing rules, and
 ``main()`` for the argv/exit-code contract.
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,20 @@ from tests._helpers import HOOKS_DIR, REPO_ROOT, load_hook
 
 _SRC = HOOKS_DIR / "check_curl_retry.py"
 mod = load_hook("check_curl_retry.py", "check_curl_retry")
+_linecheck = load_hook("_cts_linecheck.py", "_cts_linecheck")
+
+
+def _tracked_shell_files() -> list[str]:
+    """Every tracked shell file in this repo, by the same definition the hook's
+    `types: [shell]` selector uses. `tracked_shell_files` reads the index of
+    the current directory, so this runs it at the repo root."""
+    here = Path.cwd()
+    os.chdir(REPO_ROOT)
+    try:
+        return _linecheck.tracked_shell_files()
+    finally:
+        os.chdir(here)
+
 
 # The flag pair that the consumer config in the field passed to the retired
 # `--retry-wrapper`. Kept here to pin that a wrapper no longer exempts anything.
@@ -260,6 +275,48 @@ def test_main_gives_each_arm_its_own_message(tmp_path, capsys) -> None:
     assert mod.MESSAGES[mod.ARM_MISSING] != mod.MESSAGES[mod.ARM_NARROW]
 
 
+def test_a_third_arm_is_reported_rather_than_dropped(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    """`main()` reports whatever `findings()` returns, so a new arm is reported
+    the moment it exists. The old loop walked MESSAGES instead and reported
+    nothing for an arm it did not know — a clean verdict on a real defect."""
+    third = "hypothetical"
+    monkeypatch.setitem(mod.MESSAGES, third, "a third shape nobody has met yet")
+    monkeypatch.setattr(mod, "_download_arm", lambda *_: third)
+    path = tmp_path / "s.sh"
+    path.write_text('curl -fsSL "$u" -o "$f"\n', encoding="utf-8")
+    assert mod.main([str(path)]) == 1
+    assert f"{path}:1: a third shape nobody has met yet" in capsys.readouterr().err
+
+
+def test_an_arm_with_no_message_fails_loudly(tmp_path, monkeypatch) -> None:
+    """The refusing counterpart. An arm missing from MESSAGES raises instead of
+    passing the file clean, so the gap cannot hide as a green run."""
+    monkeypatch.setattr(mod, "_download_arm", lambda *_: "unregistered")
+    path = tmp_path / "s.sh"
+    path.write_text('curl -fsSL "$u" -o "$f"\n', encoding="utf-8")
+    with pytest.raises(KeyError):
+        mod.main([str(path)])
+
+
+def test_hits_come_out_in_line_order(tmp_path, capsys) -> None:
+    """One pass over the file, so a narrow hit above a missing one is reported
+    above it. A pass per arm grouped them by arm instead."""
+    path = tmp_path / "s.sh"
+    path.write_text(
+        'curl --retry 3 "$u" -o a\ncurl "$u" -o b\ncurl --retry 3 "$u" -o c\n',
+        encoding="utf-8",
+    )
+    assert mod.main([str(path)]) == 1
+    reported = [
+        line.split(":")[1]
+        for line in capsys.readouterr().err.splitlines()
+        if str(path) in line
+    ]
+    assert reported == ["1", "2", "3"]
+
+
 def test_main_still_accepts_the_retired_wrapper_flag(tmp_path, capsys) -> None:
     # Backward compatibility: a consumer config that still passes the flag keeps
     # running. The download is reported all the same.
@@ -282,6 +339,45 @@ def test_main_clean_file_exits_0(tmp_path) -> None:
     path = tmp_path / "s.sh"
     path.write_text(f'curl -fsSL {_WIDENED} "$url" -o "$file"\n', encoding="utf-8")
     assert mod.main([str(path)]) == 0
+
+
+# ── `--retry 0` is the flag with no attempt in it ───────────────────────────
+@pytest.mark.parametrize("count", ["--retry 0", "--retry=0", "--retry 00"])
+def test_a_literal_zero_count_reads_as_no_retry(count: str) -> None:
+    # curl makes the one request and stops, so the download is as single-shot
+    # as one carrying no `--retry` at all.
+    assert mod.violations(f'curl {count} -o f "$u"', mod.ARM_MISSING) == [1]
+
+
+def test_a_zero_count_reports_arm_a_even_beside_a_widening_flag() -> None:
+    # There are no attempts for `--retry-all-errors` to widen.
+    line = 'curl --retry 0 --retry-all-errors -o f "$u"'
+    assert mod.findings(line) == [(1, mod.ARM_MISSING)]
+
+
+def test_a_nonzero_count_beside_it_stays_clean() -> None:
+    # The positive marker: the smallest count that does retry still clears.
+    assert mod.violations('curl --retry 1 --retry-all-errors -o f "$u"') == []
+
+
+def test_a_count_from_a_variable_still_credits_the_retry() -> None:
+    # The stated limit: only a zero WRITTEN AT THE CALL SITE reads as zero. A
+    # count that arrives through a variable credits the retry, so a legitimate
+    # computed count is never reported. `n=0` here is the hardest case for that
+    # rule, and it must still clear.
+    text = 'n=0\ncurl --retry "$n" --retry-all-errors -o f "$u"\n'
+    assert mod.violations(text) == []
+
+
+def test_an_unresolved_count_credits_the_retry() -> None:
+    # No assignment reaches the call, so the count is unknown. Arm A must stay
+    # silent; only the missing widening flag is reported.
+    assert mod.findings('curl --retry "$n" -o f "$u"') == [(1, mod.ARM_NARROW)]
+
+
+def test_a_zero_count_in_one_operation_only() -> None:
+    line = 'curl --retry 0 "$a" -o a --next --retry 3 --retry-all-errors "$b" -o b'
+    assert mod.violations(line, mod.ARM_MISSING) == [1]
 
 
 # ── the four fail-open holes, each pinned in both directions ────────────────
@@ -430,16 +526,18 @@ def test_a_negation_carried_by_a_variable_is_read_in_place() -> None:
 def test_repo_shell_tree_is_clean() -> None:
     """Dogfood: this repo's own tracked shell files must not violate. A finding
     here is either a real single-shot download to fix or a false positive to
-    answer, and both must block rather than sit undetected."""
-    tracked = subprocess.run(
-        ["git", "ls-files", "-z", "*.sh", "*.bash"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split("\0")
-    paths = [path for path in tracked if path]
+    answer, and both must block rather than sit undetected.
+
+    The population is `tracked_shell_files()`, this repo's one definition of
+    it, and NOT a `*.sh`/`*.bash` glob. The hook registers `types: [shell]`, so
+    `identify` hands it every extensionless file with a shell shebang as well —
+    `.hooks/pre-commit` and its siblings. A glob here would leave exactly those
+    files scanned in anger and unscanned by this test."""
+    paths = _tracked_shell_files()
     assert paths, "no tracked shell files found — the dogfood check would be vacuous"
+    assert any("/" not in path and "." not in path for path in paths) or any(
+        path.startswith(".hooks/") for path in paths
+    ), "no extensionless shell file in the population — the widening above is vacuous"
     result = subprocess.run(
         ["python", "-m", "ci_truth_serum.check_curl_retry", *paths],
         cwd=REPO_ROOT,

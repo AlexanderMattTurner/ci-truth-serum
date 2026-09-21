@@ -40,6 +40,11 @@ starts a separate operation with its own flags, and each operation is judged on
 its own. A boolean flag's last spelling wins, so ``--no-retry-all-errors``
 turns an earlier ``--retry-all-errors`` back off.
 
+``--retry 0`` asks for no attempt at all, so it reads as the first shape. Only
+a zero WRITTEN AT THE CALL SITE reads that way: a count that arrives through a
+variable, such as ``--retry "$n"``, credits the retry, because reading it as
+zero would report a legitimate computed count as a defect.
+
 A flag the script assigns to a variable counts, under three limits. The
 assignment must START before the call in source order. The expansion must be
 the WHOLE argument, because a name inside a URL sends no flag to curl. The
@@ -72,7 +77,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
-    run_source_checks,
+    run_message_checks,
 )
 
 OPT_OUT = "curl-retry-ok"
@@ -161,7 +166,35 @@ def _is_retry_flag(word: str) -> bool:
     return word == "--retry" or word.startswith("--retry=")
 
 
-def _widened(tokens: list[str]) -> bool:
+def _is_zero(count: str) -> bool:
+    """True when COUNT is a literal zero. A count this check cannot read — a
+    variable, a substitution, an empty tail — is not zero here."""
+    return count.isdigit() and int(count) == 0
+
+
+def _starts_a_retry(tokens: list["Token"]) -> bool:
+    """True when TOKENS ask curl for at least one more attempt.
+
+    ``--retry 0`` is the flag with the work taken out: curl makes the one
+    request and stops, so the download is as single-shot as one with no
+    ``--retry`` at all.
+
+    Only a count WRITTEN AT THE CALL SITE as a literal zero reads that way. A
+    count that arrives through a variable credits the retry, because reading it
+    as zero would report a legitimate computed count as a defect.
+    """
+    for index, token in enumerate(tokens):
+        if token.text == "--retry":
+            count = tokens[index + 1] if index + 1 < len(tokens) else _EMPTY_TOKEN
+            if not (count.literal and _is_zero(count.text)):
+                return True
+        elif token.text.startswith("--retry="):
+            if not (token.literal and _is_zero(token.text.removeprefix("--retry="))):
+                return True
+    return False
+
+
+def _widened(tokens: list["Token"]) -> bool:
     """True when TOKENS leave a widening flag ON.
 
     curl reads its argument list in order, and the last spelling of a boolean
@@ -172,10 +205,10 @@ def _widened(tokens: list[str]) -> bool:
     """
     state = dict.fromkeys(_WIDENING_FLAGS, False)
     for token in tokens:
-        if token in state:
-            state[token] = True
-        elif token in _WIDENING_NEGATIONS:
-            state[_WIDENING_NEGATIONS[token]] = False
+        if token.text in state:
+            state[token.text] = True
+        elif token.text in _WIDENING_NEGATIONS:
+            state[_WIDENING_NEGATIONS[token.text]] = False
     return any(state.values())
 
 
@@ -198,9 +231,22 @@ def _literal_tokens(value: Node) -> list[str] | None:
     if next(iter_nodes(value, *_COMPUTED_VALUE_TYPES), None) is not None:
         return None
     tokens: list[str] = []
-    for node in iter_nodes(value, "word", "raw_string", "string_content"):
+    for node in iter_nodes(value, "word", "number", "raw_string", "string_content"):
         tokens.extend(unquote(token) for token in node_text(node).split())
     return tokens
+
+
+class Token(NamedTuple):
+    """One word of a curl operation, as curl reads it. ``literal`` is true for
+    a word written at the call site, and false for one this check substituted
+    out of a variable. That difference decides whether a ``0`` is the count
+    curl will really see."""
+
+    text: str
+    literal: bool
+
+
+_EMPTY_TOKEN = Token("", literal=True)
 
 
 class Carrier(NamedTuple):
@@ -285,7 +331,7 @@ def _operations(nodes: list[Node]) -> list[list[Node]]:
 
 def _operation_tokens(
     nodes: list[Node], carriers: list[Carrier], before_byte: int
-) -> list[str]:
+) -> list[Token]:
     """One operation's words, in the order curl reads them, with a variable
     that carries flags replaced by the words it carries.
 
@@ -301,7 +347,7 @@ def _operation_tokens(
     not be recoverable, because a clean verdict on an un-retried download is
     the defect this check exists to report.
     """
-    tokens: list[str] = []
+    tokens: list[Token] = []
     for node in nodes:
         name = _standalone_expansion_name(node)
         reaching = [
@@ -310,9 +356,10 @@ def _operation_tokens(
             if carrier.name == name and carrier.start_byte < before_byte
         ]
         if reaching:
-            tokens.extend(max(reaching, key=lambda c: c.start_byte).tokens)
+            carried = max(reaching, key=lambda c: c.start_byte).tokens
+            tokens.extend(Token(word, literal=False) for word in carried)
         else:
-            tokens.append(unquote(node_text(node)))
+            tokens.append(Token(unquote(node_text(node)), literal=True))
     return tokens
 
 
@@ -323,7 +370,7 @@ def _operation_arm(
     if not _writes_a_file([node_text(node) for node in nodes]):
         return None
     tokens = _operation_tokens(nodes, carriers, before_byte)
-    if not any(_is_retry_flag(token) for token in tokens):
+    if not _starts_a_retry(tokens):
         return ARM_MISSING
     return None if _widened(tokens) else ARM_NARROW
 
@@ -436,21 +483,24 @@ def main(argv: list[str]) -> int:
         )
     # One path at a time, so a file the shell grammar refuses to parse (over
     # _MAX_PIPE_BYTES of piped bytes) fails LOUDLY, naming the path, instead of
-    # taking the whole run down with an uncaught traceback. Each arm makes its
-    # own pass so that every hit carries the message for its own shape; `parse`
-    # caches the tree, so the second pass re-walks it rather than re-reading it.
+    # taking the whole run down with an uncaught traceback.
+    #
+    # `findings` already says which arm each hit is, so the message is looked
+    # up per HIT. A pass per arm would report nothing for an arm missing from
+    # MESSAGES, and a silent pass over a real defect is what this module exists
+    # to prevent. `MESSAGES[arm]` raises instead.
     status = 0
     for path in args.files:
         try:
-            for arm, message in MESSAGES.items():
-                status = max(
-                    status,
-                    run_source_checks(
-                        [path],
-                        lambda text, _path, selected=arm: violations(text, selected),
-                        message,
-                    ),
-                )
+            status = max(
+                status,
+                run_message_checks(
+                    [path],
+                    lambda text, _path: [
+                        (line, MESSAGES[arm]) for line, arm in findings(text)
+                    ],
+                ),
+            )
         except PathologicalInputError as err:
             print(f"{path}: {err}", file=sys.stderr)
             status = 1
