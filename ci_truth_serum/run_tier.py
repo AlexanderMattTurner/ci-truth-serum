@@ -36,9 +36,11 @@ The registry itself is ``ci_truth_serum/_cts_registry.py``, which also carries e
 check's tags. ``run_selection`` runs a selection over those tags.
 """
 
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from identify import identify
@@ -142,9 +144,9 @@ def run_members(
     members: list[tuple[str, str]],
     files: list[str],
     extra: dict[str, list[str]] | None = None,
-) -> tuple[int, list[str]]:
-    """Run each (module, kind) member over FILES; return the exit code and the
-    members that had no file of their kind to scan.
+) -> tuple[int, list[str], dict[str, float]]:
+    """Run each (module, kind) member over FILES; return the exit code, the
+    members that had no file of their kind to scan, and each member's seconds.
 
     EXTRA maps a module to the flags `--check-arg` gave it. They precede the
     file arguments, which is where argparse wants them.
@@ -152,18 +154,46 @@ def run_members(
     The second value is what separates a member that passed from one that never
     ran: both leave exit code 0, and a caller that reports one as the other is
     the false green this pack exists to refuse.
+
+    The third value is what names the member to cut. This runner is the whole
+    cost of the job that runs it, and that job is capped, so a reader who cannot
+    attribute the seconds re-measures them by hand against a consumer tree.
+    `report_seconds` prints them.
     """
     extra = extra or {}
     rc = 0
     unscanned: list[str] = []
+    seconds: dict[str, float] = {}
+    in_actions = os.environ.get("GITHUB_ACTIONS") == "true"
     for module, kind in members:
         argv = selected_files(kind, files)
         if argv is None:
             unscanned.append(module)
             continue
-        if run_check(module, [*extra.get(module, []), *argv]):
+        # Actions cancels the job at its cap mid-member, and a cancelled run
+        # reaches no line below this loop. This marker is what names the member
+        # that was running when it died.
+        if in_actions:
+            print(f"--- run_tier: starting {module}", file=sys.stderr, flush=True)
+        started = time.monotonic()
+        failed = run_check(module, [*extra.get(module, []), *argv])
+        seconds[module] = time.monotonic() - started
+        if failed:
             rc = 1
-    return rc, unscanned
+    return rc, unscanned, seconds
+
+
+def report_seconds(seconds: dict[str, float], subject: str) -> None:
+    """Name each member's wall clock, slowest first, on stderr.
+
+    Only under Actions, where the job log is where this is read. A hand run
+    reads its own wall clock.
+    """
+    if not seconds or os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    print(f"--- {subject} seconds, slowest first", file=sys.stderr)
+    for module, took in sorted(seconds.items(), key=lambda row: -row[1]):
+        print(f"{took:8.1f}  {module}", file=sys.stderr)
 
 
 def report_unscanned(
@@ -261,7 +291,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(2)
 
     members = [(m, k) for m, k in TIERS[tier] if m not in skips]
-    rc, unscanned = run_members(members, files, extra)
+    rc, unscanned, seconds = run_members(members, files, extra)
+    report_seconds(seconds, f"tier {tier} member")
     report_unscanned(
         unscanned,
         files,

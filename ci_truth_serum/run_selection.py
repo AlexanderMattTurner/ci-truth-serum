@@ -38,6 +38,7 @@ from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     by_tag,
 )
 from run_tier import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    report_seconds,
     report_unscanned,
     run_members,
 )
@@ -159,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    rc, unscanned = run_members([(c.module, c.kind) for c in chosen], files)
+    rc, unscanned, seconds = run_members([(c.module, c.kind) for c in chosen], files)
+    report_seconds(seconds, "selected member")
     flags = " ".join(
         [f"--select {s}" for s in selects] + [f"--ignore {s}" for s in ignores]
     )
