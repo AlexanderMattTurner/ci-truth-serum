@@ -227,6 +227,19 @@ def test_an_annotation_anywhere_in_the_job_block_suppresses(tmp_path):
     assert uc.check_file(path) == []
 
 
+def test_a_hash_inside_a_string_value_does_not_suppress(tmp_path):
+    """The job-scoped read takes the block's COMMENTS. A `#` inside a quoted
+    scalar is a value the job's author writes, so it marks nothing. The run-body
+    read above stays raw, where a `#` is a real shell comment."""
+    path = _write(
+        tmp_path,
+        "name: x\non:\n  push:\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        '    env:\n      NOTE: "# cache-exempt: fake reason in a value"\n'
+        f"    steps:\n{_run('pip install ruff==0.14.0')}",
+    )
+    assert len(uc.check_file(path)) == 1
+
+
 def test_an_annotation_without_a_reason_does_not_suppress(tmp_path):
     """A bare token is a claim with no argument behind it, so it does not count."""
     path = _write(tmp_path, _job(_run("# cache-exempt\npip install ruff==0.14.0")))

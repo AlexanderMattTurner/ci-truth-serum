@@ -175,6 +175,19 @@ def test_opt_out_token_in_string_value_does_not_suppress(tmp_path):
     assert "static" in result[1]
 
 
+def test_a_hash_inside_a_string_value_does_not_suppress(tmp_path):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The author of any
+    workflow picks its `group:`, so honouring one would let that author switch
+    this check off by naming it."""
+    body = (
+        f'name: x\non:\n  pull_request:\nconcurrency:\n  group: "# {sc.OPT_OUT}"\n'
+        "  cancel-in-progress: false\n" + REQUIRED_CHECK_JOBS
+    )
+    result = sc.check_file(_write(tmp_path, body))
+    assert result is not None
+    assert "static" in result[1]
+
+
 def test_malformed_yaml_is_reported_not_raised(tmp_path):
     """An unparseable workflow is reported as a violation (line None), not a crash."""
     result = sc.check_file(_write(tmp_path, "on: [pull_request\nconcurrency: {\n"))

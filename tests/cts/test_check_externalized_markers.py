@@ -172,6 +172,47 @@ def test_opt_out_inside_referenced_script_suppresses_finding():
     assert em.analyze(doc, reader, MARKERS) == []
 
 
+def test_a_hash_inside_an_action_quoted_value_suppresses_nothing():
+    """A composite action's manifest is YAML. A `#` inside a quoted scalar is a
+    value the action's own author writes, so honouring it would switch this
+    check off for that action."""
+    doc = {"jobs": {"j": {"steps": [{"uses": "./.github/actions/a"}]}}}
+    reader = _reader(
+        {
+            ".github/actions/a/action.yml": (
+                "runs:\n  using: composite\n  steps:\n"
+                '    - name: "x # allow-externalized-marker: pretend"\n'
+                "      shell: bash\n      run: git rebase -i\n"
+            )
+        }
+    )
+    assert len(em.analyze(doc, reader, MARKERS)) == 1
+
+
+def test_a_real_comment_in_an_action_still_suppresses():
+    """Non-vacuity for the row above: the marker in a real YAML comment, and the
+    marker inside the action's own `run:` body, both still count."""
+    doc = {"jobs": {"j": {"steps": [{"uses": "./.github/actions/a"}]}}}
+    body = (
+        "runs:\n  using: composite\n  steps:\n"
+        "{placement}"
+        "    - shell: bash\n      run: git rebase -i\n"
+    )
+    real = body.format(placement="    # allow-externalized-marker: reviewed\n")
+    assert (
+        em.analyze(doc, _reader({".github/actions/a/action.yml": real}), MARKERS) == []
+    )
+    script = (
+        "runs:\n  using: composite\n  steps:\n"
+        "    - shell: bash\n      run: |\n"
+        "        # allow-externalized-marker: reviewed\n        git rebase -i\n"
+    )
+    assert (
+        em.analyze(doc, _reader({".github/actions/a/action.yml": script}), MARKERS)
+        == []
+    )
+
+
 def test_nested_composite_is_not_followed_one_hop_only():
     """Documented limit: a marker inside a composite that itself `uses:` a further
     nested composite is NOT resolved. Asserts the current (miss) behavior so a

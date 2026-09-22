@@ -71,6 +71,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     strip_yaml_comments,
     workflow_files as _workflow_files,
+    yaml_script_view,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -156,7 +157,9 @@ def _inert_message(tool: str) -> str:
     )
 
 
-def _opted_out(source_lines: list[str], index: int, token: str) -> bool:
+def _opted_out(
+    source_lines: list[str], markers: list[str], index: int, token: str
+) -> bool:
     """True when the annotation TOKEN (with a reason) annotates the grant.
 
     Placement is `annotation_window`'s call, not this check's: the grant line
@@ -165,10 +168,15 @@ def _opted_out(source_lines: list[str], index: int, token: str) -> bool:
     above, so a narrower window leaves such a grant with no way to opt out of
     both at once.
 
-    Reads the ORIGINAL lines, not the comment-stripped scan text: the annotation
-    lives in a comment, which is exactly what the scan text has blanked out.
+    Three views of the file, and each answers one question. SOURCE_LINES is the
+    file as written, and it shapes the window: which lines are blank, and which
+    hold only a comment. MARKERS is where a marker may be written on each of
+    those lines — a real YAML comment, or a `run:` value in any style, where a
+    grant sits beside its own shell comment. A `#` inside a quoted scalar is
+    neither, so `name: "# <token>"` marks nothing. The scan text of `findings`
+    is the third view, and it finds the grant itself.
     """
-    return annotated_near(source_lines, index + 1, token)
+    return annotated_near(source_lines, index + 1, token, comments=markers)
 
 
 def findings(text: str) -> list[tuple[int, str]]:
@@ -183,6 +191,9 @@ def findings(text: str) -> list[tuple[int, str]]:
     # Scanned with YAML comments blanked (offsets preserved) so a grant merely
     # TALKED ABOUT in a comment is not linted as a live grant.
     scan_lines = strip_yaml_comments(text).splitlines()
+    # Where a marker may be written: a real YAML comment, or a `run:` block
+    # scalar's body, where the `#` is the script's own comment.
+    marker_lines = yaml_script_view(text)
 
     out: list[tuple[int, str]] = []
     for index, scanned in enumerate(scan_lines):
@@ -193,7 +204,7 @@ def findings(text: str) -> list[tuple[int, str]]:
             continue
         for bare, token in _BARE_CLASSES:
             hit = bare.search(scanned)
-            if hit and not _opted_out(source_lines, index, token):
+            if hit and not _opted_out(source_lines, marker_lines, index, token):
                 out.append((index + 1, _bare_message(hit.group("tool"), token)))
         inert = _INERT_PATH_RULE.search(scanned)
         if inert:

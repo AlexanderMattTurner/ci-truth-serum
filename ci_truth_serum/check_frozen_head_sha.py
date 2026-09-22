@@ -56,6 +56,7 @@ from _cts_bash_ast import parse  # noqa: E402,I001  # pylint: disable=wrong-impo
 from _cts_linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import yaml_script_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -216,6 +217,25 @@ def _step_block(lines: list[str], start_1based: int) -> str:
     return "\n".join(block)
 
 
+def _step_opted_out(block: str) -> bool:
+    """True when a reason-bearing `# frozen-head-ok:` marks this step.
+
+    The step holds two languages, and `yaml_script_view` keeps the surface each
+    one writes a marker on:
+
+      * a real YAML comment beside the step's keys;
+      * the step's `run:` value, whatever style it is written in, where a `#`
+        opens a shell comment. This is where the marker goes beside the line
+        that spends the SHA. A one-line `run: 'git diff  # frozen-head-ok: x'`
+        carries the marker as surely as a `run: |` body does.
+
+    The view blanks every other byte. A `#` inside a quoted scalar is a value,
+    so `name: "# frozen-head-ok: x"` marks nothing — the step's own author
+    writes that name, and honouring it would let them switch the check off.
+    """
+    return any(_ALLOW_RE.search(shown) for shown in yaml_script_view(block))
+
+
 def _iter_steps(container: object) -> list[dict]:
     """The step dicts of a job/composite-action `steps:` list."""
     steps = container.get("steps") if isinstance(container, dict) else None
@@ -263,7 +283,7 @@ def find_violations(text: str) -> list[tuple[int | None, str]]:
         an env var has one edit to make, so it earns one line."""
         line = step.get("__line__")
         block = _step_block(lines, line) if isinstance(line, int) else ""
-        if _ALLOW_RE.search(block) or line in flagged:
+        if _step_opted_out(block) or line in flagged:
             return
         flagged.add(line)
         violations.append((line, message))

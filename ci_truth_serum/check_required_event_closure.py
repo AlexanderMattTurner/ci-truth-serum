@@ -46,6 +46,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     unwrap_expression,
     workflow_triggers,
+    yaml_comment_view,
 )
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -335,6 +336,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
     blocks = _job_blocks(text)
     lines = text.splitlines()
+    comments = yaml_comment_view(text)
     required = _marked_jobs(blocks, jobs)
 
     violations: list[tuple[int | None, str]] = []
@@ -349,7 +351,11 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
                 continue
             start, block = blocks.get(name, (1, ""))
             span_end = start + len(block.splitlines()) - 1
-            if annotated_near(lines, start, OPT_OUT, span_end=span_end):
+            # LINES shapes the window; COMMENTS says what each line holds, so a
+            # `#` inside a quoted scalar in the job's block opts nobody out.
+            if annotated_near(
+                lines, start, OPT_OUT, span_end=span_end, comments=comments
+            ):
                 continue
             try:
                 excluded = _excluded_on(cond, pairs)

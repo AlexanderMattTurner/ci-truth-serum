@@ -49,6 +49,17 @@ def test_pin_records_parsing(line: str, version: str | None, opted: bool) -> Non
     ]
 
 
+def test_a_hash_glued_to_the_sha_is_no_comment() -> None:
+    """`@<sha>#v4` has no space before the `#`, so YAML reads the whole token as
+    the `uses:` VALUE. Nothing there is a comment, so it claims no version and
+    opts nothing out — the pin is still reported as undocumented."""
+    sha = "a" * 40
+    glued = mod.pin_records(f"      - uses: actions/checkout@{sha}#v4\n")
+    assert glued == [(1, f"actions/checkout@{sha}", None, False)]
+    opt = mod.pin_records(f"      - uses: actions/checkout@{sha}#pin-comment-ok\n")
+    assert opt == [(1, f"actions/checkout@{sha}", None, False)]
+
+
 def test_pin_records_subpath_action_keeps_full_ref() -> None:
     assert mod.pin_records(f"        uses: actions/cache/restore@{SHA} # v4\n") == [
         (1, f"actions/cache/restore@{SHA}", "v4", False)

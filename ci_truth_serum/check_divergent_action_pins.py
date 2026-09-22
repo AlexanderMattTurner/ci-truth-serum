@@ -41,6 +41,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import yaml_comment_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import compose  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from check_pin_comment_truth import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ACTIONS_DIR,
@@ -102,7 +103,9 @@ class ActionPinRecord(NamedTuple):
 def pin_records(text: str) -> list[ActionPin]:
     """(1-based line, action, sha, opted_out) for every SHA-pinned `uses:`
     reference composed from TEXT."""
-    raw = text.splitlines()
+    # The COMMENTS of each line, not the lines: a `#` inside a quoted scalar is
+    # content, so `name: "x # divergent-pin-ok: why"` suppresses nothing.
+    raw = yaml_comment_view(text)
     records: list[ActionPin] = []
     for value_node in _iter_uses_nodes(compose(text)):
         m = _SHA_PIN.match(value_node.value)

@@ -489,6 +489,15 @@ def test_check_file_flags_pull_request_target(tmp_path):
     assert "decide gate" in found[1]
 
 
+def test_a_hash_inside_a_quoted_value_does_not_opt_out(tmp_path):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The workflow's
+    author writes its `branches:` list, so honouring one would take the
+    workflow out of required-check classification."""
+    assert car._locate_trigger(
+        f'on:\n  pull_request:\n    branches: ["# {car.OPT_OUT}"]\n', "pull_request"
+    ) == (2, False)
+
+
 def test_check_file_respects_opt_out_on_pull_request_target(tmp_path):
     path = _write(tmp_path, "wf.yaml", PR_TARGET_OPT_OUT)
     assert car.check_file(path) is None

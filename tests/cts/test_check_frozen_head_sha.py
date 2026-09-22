@@ -118,6 +118,31 @@ def test_opt_out_trailing_a_with_value_suppresses(tmp_path):
     assert fh.check_file(_write(tmp_path, body)) == []
 
 
+def test_a_hash_inside_a_string_value_does_not_suppress(tmp_path):
+    """The step's YAML surface is read as COMMENTS, so a `#` inside a quoted
+    scalar is a value and marks nothing. The `run:` body above stays raw, where
+    a `#` is a real shell comment."""
+    body = HEADER + (
+        '      - name: "# frozen-head-ok: fake reason in a value"\n'
+        "        run: git diff ${{ github.event.pull_request.head.sha }}...HEAD\n"
+    )
+    assert len(fh.check_file(_write(tmp_path, body))) == 1
+
+
+def test_opt_out_inside_a_quoted_one_line_run_suppresses(tmp_path):
+    """The marker's surface is the `run:` VALUE, not the `|` that may write it.
+
+    This is the case a second code path used to carry: `_step_opted_out` read
+    the PARSED `run:` string as well as the step's source. That arm is redundant
+    once one view covers every scalar style, and this test is what says so —
+    delete `yaml_script_view`'s handling of a quoted scalar and it fails."""
+    body = HEADER + (
+        "      - run: 'git diff ${{ github.event.pull_request.head.sha }}...HEAD"
+        "  # frozen-head-ok: reads the head it was given'\n"
+    )
+    assert fh.check_file(_write(tmp_path, body)) == []
+
+
 def test_opt_out_without_reason_does_not_suppress(tmp_path):
     """The reason is mandatory — a bare `# frozen-head-ok` still fails."""
     body = HEADER + (

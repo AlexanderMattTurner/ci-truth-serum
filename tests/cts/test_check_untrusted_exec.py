@@ -327,6 +327,69 @@ def test_optout_token_in_a_string_value_does_not_suppress(tmp_path):
     assert len(ue.check_file(path)) == 1
 
 
+def test_a_hash_inside_a_string_value_does_not_suppress(tmp_path):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The job's author
+    writes its `env:` values, so honouring one would switch this check off."""
+    path = _write(
+        tmp_path,
+        _TRUSTED_BASE_OK + "on:\n  pull_request_target:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        '    env:\n      NOTE: "# untrusted-exec-ok: fake reason in a value"\n'
+        "    steps:\n"
+        "      - uses: actions/checkout@v4\n"
+        f"        with:\n          ref: {_PR_HEAD_SHA}\n" + _run_step("pnpm build"),
+    )
+    assert len(ue.check_file(path)) == 1
+
+
+def test_a_marker_in_a_run_script_suppresses(tmp_path):
+    """A `run:` value is a shell script, where a `#` opens a real comment. The
+    author writes the marker beside the command that runs the PR's code."""
+    path = _write(
+        tmp_path,
+        _TRUSTED_BASE_OK + "on:\n  pull_request_target:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@v4\n"
+        f"        with:\n          ref: {_PR_HEAD_SHA}\n"
+        "      - run: |\n"
+        "          # untrusted-exec-ok: the sandbox holds no secret\n"
+        "          pnpm build\n",
+    )
+    assert ue.check_file(path) == []
+
+
+def test_a_marker_in_a_quoted_one_line_run_suppresses(tmp_path):
+    """The surface is the `run:` VALUE, not the `|` that may write it."""
+    path = _write(
+        tmp_path,
+        _TRUSTED_BASE_OK + "on:\n  pull_request_target:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@v4\n"
+        f"        with:\n          ref: {_PR_HEAD_SHA}\n"
+        "      - run: 'pnpm build  # untrusted-exec-ok: the sandbox holds no secret'\n",
+    )
+    assert ue.check_file(path) == []
+
+
+def test_a_marker_in_an_if_expression_does_not_suppress(tmp_path):
+    """An `if:` body is an expression and never reaches a shell, so a `#` in it
+    is content. Block style was the old test, and it read a marker out of this."""
+    path = _write(
+        tmp_path,
+        _TRUSTED_BASE_OK + "on:\n  pull_request_target:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        "    if: >\n"
+        "      github.event_name == 'pull_request_target'\n"
+        "      # untrusted-exec-ok: not a script\n"
+        "    steps:\n"
+        "      - uses: actions/checkout@v4\n"
+        f"        with:\n          ref: {_PR_HEAD_SHA}\n" + _run_step("pnpm build"),
+    )
+    assert len(ue.check_file(path)) == 1
+
+
 def test_optout_in_a_sibling_job_does_not_suppress(tmp_path):
     path = _write(
         tmp_path,

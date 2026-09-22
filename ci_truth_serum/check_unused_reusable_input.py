@@ -54,6 +54,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     LineLoader as _LineLoader,
     is_placeholder_reason,
     workflow_files,
+    yaml_comment_view,
 )
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -149,28 +150,37 @@ def key_line(text: str, child_line: int) -> int | None:
 
 
 def marker_window(text: str, line: int) -> list[str]:
-    """The lines a marker for the key at 1-based LINE may sit on.
+    """The COMMENTS a marker for the key at 1-based LINE may sit in.
 
-    The key's own line plus its DIRECT children — the block's shallowest child
-    indent, which is where a standalone comment beside the key sits. Scoped by
-    the key's parsed line rather than by re-matching its name, because an input
-    may share a name with a job or a step key elsewhere in the file, and a
-    marker read out of that other block would suppress a real finding.
+    Eligible are the key's own line and its DIRECT children — the block's
+    shallowest child indent, which is where a standalone comment beside the key
+    sits. Scoped by the key's parsed line rather than by re-matching its name,
+    because an input may share a name with a job or a step key elsewhere in the
+    file, and a marker read out of that other block would suppress a real
+    finding.
+
+    Indentation picks the lines, and a line scanner reads indentation exactly.
+    What those lines SAY comes from `yaml_comment_view`, so a `#` inside a
+    quoted value is content: `description: "# unused-input-ok: x"` marks
+    nothing. The returned strings keep their column offsets, so the reader's
+    end-of-line anchor still reads the end of the line.
     """
     lines = text.splitlines()
     if not 1 <= line <= len(lines):
         return []
-    head = lines[line - 1]
-    indent = len(head) - len(head.lstrip())
-    block = []
-    for follow in lines[line:]:
+    comments = yaml_comment_view(text)
+    indent = len(lines[line - 1]) - len(lines[line - 1].lstrip())
+    block: list[tuple[int, str]] = []
+    for offset, follow in enumerate(lines[line:], start=line):
         if not follow.strip():
             continue
         if len(follow) - len(follow.lstrip()) <= indent:
             break
-        block.append(follow)
-    child_indent = min((len(b) - len(b.lstrip()) for b in block), default=None)
-    return [head] + [b for b in block if len(b) - len(b.lstrip()) == child_indent]
+        block.append((offset, follow))
+    child_indent = min((len(b) - len(b.lstrip()) for _, b in block), default=None)
+    return [comments[line - 1]] + [
+        comments[i] for i, b in block if len(b) - len(b.lstrip()) == child_indent
+    ]
 
 
 def suppression(window: list[str]) -> tuple[str | None, str | None]:

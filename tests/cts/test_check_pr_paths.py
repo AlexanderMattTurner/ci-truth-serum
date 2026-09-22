@@ -34,6 +34,14 @@ def test_locate_trigger_detects_opt_out_comment():
     assert cpp.locate_trigger(text, "pull_request") == (2, True)
 
 
+def test_locate_trigger_ignores_a_hash_inside_a_quoted_value():
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The workflow's
+    own author writes its `branches:` list, so honouring one would let that
+    author take the workflow out of required-check classification."""
+    text = f'on:\n  pull_request:\n    branches: ["# {cpp.OPT_OUT}"]\n'
+    assert cpp.locate_trigger(text, "pull_request") == (2, False)
+
+
 def test_locate_trigger_missing_trigger_defaults_to_line_one():
     assert cpp.locate_trigger("on:\n  push:\n", "pull_request") == (1, False)
 

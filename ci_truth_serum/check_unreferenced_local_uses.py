@@ -66,7 +66,7 @@ comment goes on the definition's key line — an action's `name:`, a workflow's
 suppressed definition becomes a root of the walk, so everything it calls stays
 live as well.
 
-The marker is read from a real YAML comment, through `strip_yaml_comments`. A
+The marker is read from a real YAML comment, through `yaml_comment_view`. A
 `#` inside a quoted scalar is content, so `name: "# unreferenced-ok: x"`
 suppresses nothing.
 
@@ -89,9 +89,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotation_window,
     is_placeholder_reason,
     is_test_path,
-    strip_yaml_comments,
     workflow_files,
     workflow_triggers,
+    yaml_comment_view,
 )
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -106,10 +106,8 @@ OPT_OUT = "unreferenced-ok"
 # not a boolean opt-out predicate. The lead mirrors `_cts_linecheck.annotation_re`:
 # the token may follow the `#` directly, or after same-line comment text whose
 # last character cannot belong to a token, so a longer slug never satisfies it.
-# Read against `comment_only_lines`, never the raw line: the `#` this pattern
-# anchors on must be a real YAML comment. `check_unused_reusable_input` and
-# `check_reusable_permissions` carry the same pattern against raw lines, so a
-# `#` inside a quoted scalar still opens a marker there.
+# Read against `yaml_comment_view`, never the raw line: the `#` this pattern
+# anchors on must be a real YAML comment.
 _OPT_OUT = re.compile(rf"#(?:[^\r\n]*[^\w\r\n-])?{OPT_OUT}\s*:\s*(?P<reason>[^\r\n]*)$")
 
 # The YAML key LineLoader adds to every mapping. Never a job id or a trigger name.
@@ -284,25 +282,6 @@ def marker_window(lines: list[str], anchors: list[int]) -> list[int]:
     return sorted(
         {n for anchor in anchors or [1] for n in annotation_window(lines, anchor)}
     )
-
-
-def comment_only_lines(text: str) -> list[str]:
-    """TEXT's lines with every character outside a YAML comment blanked.
-
-    `strip_yaml_comments` is this pack's SSOT for where a YAML comment starts,
-    and it keeps the content while it blanks the comments. This check wants the
-    other half, so it takes the difference of the two texts: a character the
-    strip changed sat in a comment, and every other character becomes a space.
-
-    Column offsets survive, so a marker still reads to the end of its line and
-    the line numbers still match the file. A `#` inside a quoted scalar is
-    content, so it blanks out and opens no marker.
-    """
-    blanked = strip_yaml_comments(text)
-    return [
-        "".join(o if o != b else " " for o, b in zip(original, stripped))
-        for original, stripped in zip(text.splitlines(), blanked.splitlines())
-    ]
 
 
 def suppression(
@@ -480,7 +459,7 @@ def check_repo(workflows_dir: Path, actions_dir: Path) -> list[UnreferencedViola
             continue
         edges[entry.identity] = outgoing
         reason, error = suppression(
-            text.splitlines(), comment_only_lines(text), entry.anchors
+            text.splitlines(), yaml_comment_view(text), entry.anchors
         )
         if reason:
             reached.add(entry.identity)

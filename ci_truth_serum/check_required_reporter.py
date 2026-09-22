@@ -116,6 +116,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     unwrap_expression,
     MATRIX_REF,
     workflow_files as _workflow_files,
+    yaml_comment_view,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from check_required_event_closure import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -141,9 +142,13 @@ _REASON = re.compile(r"#\s*\S")
 
 def _locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
     """Return (1-based line number, opted-out) for the first occurrence of trigger."""
-    for num, line in enumerate(text.splitlines(), 1):
+    pairs = zip(text.splitlines(), yaml_comment_view(text))
+    for num, (line, said) in enumerate(pairs, 1):
         if re.match(rf"^\s*{trigger}\s*:", line):
-            return num, annotated(line, OPT_OUT, require_reason=False)
+            # The raw line finds the trigger and anchors the report. SAID is
+            # that line's comment, so a `#` inside a quoted scalar
+            # (`branches: ["# not-required-check"]`) is content and opts nobody out.
+            return num, annotated(said, OPT_OUT, require_reason=False)
     return 1, False
 
 

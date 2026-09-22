@@ -214,6 +214,17 @@ def test_a_bare_marker_does_not_suppress(tmp_path):
     assert len(_check(tmp_path, body)) == 1
 
 
+def test_a_marker_inside_a_quoted_value_does_not_suppress(tmp_path):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The job's own
+    author writes its `env:` values, so honouring one would let that author
+    clear the finding."""
+    body = DECIDE_SKIPS_MERGE_QUEUE.replace(
+        "  decide:",
+        '  env:\n    NOTE: "# event-scoped-ok: pretend"\n  decide:',
+    )
+    assert len(_check(tmp_path, body)) == 1
+
+
 # ── fail-closed inputs ────────────────────────────────────────────────────
 
 

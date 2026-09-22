@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import annotated_near  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import strip_yaml_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import yaml_comment_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -61,12 +62,15 @@ def violations(text: str) -> list[int]:
     """1-based line numbers carrying a secrets-to-secrets fallback in a token
     position, minus opted-out lines.
 
-    The fallback is matched against comment-stripped source (a comment saying
-    the idiom is *not* used is not a use of it), while the opt-out is read from
-    the raw line — the annotation lives in a comment by construction.
+    Three views of the file, and each answers one question. The fallback is
+    matched against comment-stripped source, because a comment saying the idiom
+    is *not* used is not a use of it. The raw lines shape the opt-out's window
+    and tell a `#`-led line apart. The COMMENTS say what each of those lines
+    holds, so a `#` inside a quoted scalar opts nobody out.
     """
     lines = text.splitlines()
     code = strip_yaml_comments(text).splitlines()
+    comments = yaml_comment_view(text)
     hits: list[int] = []
     for idx, (line, bare) in enumerate(zip(lines, code, strict=True)):
         # A `#`-led line is a token position in no dialect: not a YAML key, and
@@ -76,7 +80,7 @@ def violations(text: str) -> list[int]:
             continue
         if not (_TOKEN_KEY.match(bare) and _FALLBACK.search(bare)):
             continue
-        if annotated_near(lines, idx + 1, OPT_OUT):
+        if annotated_near(lines, idx + 1, OPT_OUT, comments=comments):
             continue
         hits.append(idx + 1)
     return hits

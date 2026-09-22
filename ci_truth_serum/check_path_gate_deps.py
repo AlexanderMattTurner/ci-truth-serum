@@ -34,7 +34,11 @@ job the gate references cover them:
     the gated tests execute host scripts). Attachment rule: the comment counts
     when it appears anywhere inside the gated job's OR its decide job's source
     block — the job key line through the last line indented deeper than it
-    (`_job_blocks` scoping, shared with the required-check lint).
+    (`_job_blocks` scoping, shared with the required-check lint). The comment
+    must be a real YAML comment. A `# gate-deps:` ADDS a path this lint then
+    proves is covered, so a line a step merely PRINTS would report a gate as
+    complete that is not. A `# path-gate-ok:` only removes a finding, so it is
+    also read from a `run:` script, beside the step it excuses.
 
 A dependency is covered when every git-tracked file under it matches at least
 one filter glob — partial coverage still fails open for the unmatched files, so
@@ -67,6 +71,8 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     LineLoader as _LineLoader,
     _job_blocks,
     workflow_files,
+    yaml_comment_view,
+    yaml_script_view,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -294,11 +300,42 @@ def job_dependencies(job: dict, read_repo_file) -> tuple[list[str], list[str]]:
     return list(deps), missing
 
 
+def _suppression_markers(block: str) -> str:
+    """BLOCK with every byte blanked that cannot carry a `# path-gate-ok:`.
+
+    Two surfaces survive, because a job holds two languages: a real YAML
+    comment, and a `run:` value, where a `#` opens the script's own comment. A
+    `#` inside any other scalar is a value the job's own author writes, so
+    `name: "# path-gate-ok: x"` marks nothing. Honouring it would let that
+    author switch this check off.
+    """
+    return "\n".join(yaml_script_view(block))
+
+
+def _declaration_markers(block: str) -> str:
+    """BLOCK with every byte blanked that cannot carry a `# gate-deps:`.
+
+    One surface, and it is narrower than `_suppression_markers`, because the
+    two markers do different jobs. A `# path-gate-ok:` REMOVES a finding, and a
+    reader can see the dependency it excuses. A `# gate-deps:` ADDS a path this
+    check then proves is covered, so a made-up path reports a gate as complete
+    that is not.
+
+    A job's script prints and greps paths all day. `echo "# gate-deps: src/"`
+    is a line a step outputs, not a declaration its author wrote, and reading
+    it turns a real gap into a false green. So a declaration is read only from
+    a real YAML comment.
+    """
+    return "\n".join(yaml_comment_view(block))
+
+
 def declared_deps(*blocks: str) -> list[str]:
-    """Paths declared via `# gate-deps:` comments across the given job blocks."""
+    """Paths declared via `# gate-deps:` comments across the given job blocks.
+
+    Each block is read through `_declaration_markers`."""
     deps: dict[str, None] = {}
     for block in blocks:
-        for match in _GATE_DEPS.finditer(block):
+        for match in _GATE_DEPS.finditer(_declaration_markers(block)):
             for path in match.group("paths").split():
                 deps.setdefault(_normalize(path))
     return list(deps)
@@ -306,10 +343,10 @@ def declared_deps(*blocks: str) -> list[str]:
 
 def suppressions(block: str) -> tuple[dict[str, str], list[str]]:
     """(dep → reason, deps suppressed without a reason) from `# path-gate-ok:`
-    comments in a gated job's block."""
+    comments in a gated job's block. Read through `_suppression_markers`."""
     with_reason: dict[str, str] = {}
     reasonless: list[str] = []
-    for match in _PATH_GATE_OK.finditer(block):
+    for match in _PATH_GATE_OK.finditer(_suppression_markers(block)):
         dep = _normalize(match.group("dep"))
         reason = match.group("reason").strip()
         if reason:

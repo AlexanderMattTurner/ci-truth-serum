@@ -464,6 +464,14 @@ def test_reporter_block_missing_falls_back_to_trigger_line(tmp_path):
     assert "unclassified" in message
 
 
+def test_a_hash_inside_a_quoted_value_does_not_opt_out():
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The workflow's
+    author writes its `branches:` list, so honouring one would take the workflow
+    out of reporter classification."""
+    text = f'on:\n  pull_request:\n    branches: ["# {crr.OPT_OUT}"]\n'
+    assert crr._locate_trigger(text, "pull_request") == (2, False)
+
+
 # ── _job_blocks ───────────────────────────────────────────────────────────
 
 

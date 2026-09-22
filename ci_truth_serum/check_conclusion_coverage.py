@@ -106,6 +106,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_python_source,
     is_shell_source,
     unparseable_shell_reason,
+    yaml_comment_text,
 )
 from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     lines as py_lines,
@@ -772,10 +773,14 @@ def violations(
         return []
 
     physical = py_lines(text) if kind == "python" else text.split("\n")
+    # On a workflow the marker must sit in a real YAML comment: a `#` inside a
+    # quoted scalar is a value the step's author writes. `yaml_comment_text` is
+    # split the same way `physical` is, so the two lists index alike.
+    said = yaml_comment_text(text).split("\n") if kind == "workflow" else None
     found = []
     for group in groups:
         missing = missing_from(group, required)
-        if not missing or annotated_near(physical, group.line, OPT_OUT):
+        if not missing or annotated_near(physical, group.line, OPT_OUT, comments=said):
             continue
         found.append((group.line, message(group, missing, remedies[kind])))
     return sorted(found)

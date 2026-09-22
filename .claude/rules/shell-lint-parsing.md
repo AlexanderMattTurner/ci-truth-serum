@@ -157,12 +157,74 @@ narration — `check_drift_guards`, `check_graceful_handwave`,
 `check_historical_comments`, `check_workflow_refs` — now ask `_cts_comments`, which
 picks the parser the PATH names:
 
-| language | the parser      | what the text scan got wrong                                                        |
-| -------- | --------------- | ----------------------------------------------------------------------------------- |
-| Python   | `tokenize`      | a `#` in a string literal — and an opt-out token there SUPPRESSED, failing open     |
-| shell    | `_cts_bash_ast` | a heredoc body read as a run of comments                                            |
-| JS/TS    | `_cts_js_ast`   | a `//` inside a string or template literal; a `/* … */` after code on the same line |
-| YAML     | none            | nothing — its parsers discard comments, so the delimiter scan is the decision       |
+| language | the parser                                                   | what the text scan got wrong                                                                         |
+| -------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| Python   | `tokenize`                                                   | a `#` in a string literal — and an opt-out token there SUPPRESSED, failing open                      |
+| shell    | `_cts_bash_ast`                                              | a heredoc body read as a run of comments                                                             |
+| JS/TS    | `_cts_js_ast`                                                | a `//` inside a string or template literal; a `/* … */` after code on the same line                  |
+| YAML     | PyYAML's scanner, plus `_cts_bash_ast` inside a `run:` value | a `#` inside a quoted scalar read as a comment — and an opt-out token there SUPPRESSED, failing open |
+
+## YAML: the parser discards the answer, so invert the scanner
+
+A YAML parser drops every comment before it hands you a document, so there is no
+comment node to walk. That is why the pack read YAML comments by delimiter for
+so long, and why 26 checks shipped the same fail-open. PyYAML's SCANNER still
+reports where each scalar starts and ends, and the bytes no scalar covers are
+the comments. `_cts_linecheck.yaml_comment_view` is that inversion: it blanks
+every scalar and keeps each comment at its own line and column.
+
+The fail-open it closes is one line of YAML. A workflow's own author writes
+every value in it, including this one:
+
+    name: "deploy  # allow-no-timeout: not really"
+
+Read as text, that line carries a reason-bearing opt-out, so the lint disarms
+itself and the job needs no `timeout-minutes`. Read through the scanner, the
+whole span is one scalar and the marker is part of a job's name. A sweep of the
+pack found 26 checks matching an opt-out against raw lines, and every one of
+them honoured that value.
+
+A workflow holds a SECOND language, and the two views differ only in whether they keep it. A `run:` value is a shell script, where a `#` does open a real comment, and `yaml_comment_view` blanks it with every other value. `yaml_script_view` adds those values back, so it is the surface rule for an opt-out: **a marker sits in a real YAML comment, or in a `run:` value.** Every opt-out in the pack takes `yaml_script_view`. There is no per-check exception, and that is the point — "which view does this check take" was a free variable, and a free variable drifts.
+
+Both views err CLOSED. A file PyYAML cannot scan yields an all-blank view, so every suppression is lost and the finding stands. That is the safe direction for an opt-out, and it is the opposite of what the delimiter scan did.
+
+### Two questions, and only one of them is the view's
+
+Ask which SURFACE may carry a marker, and ask which findings that marker clears. They are independent, and the view answers only the first. The scope is each check's own contract, and a check states it by the slice of text it passes in: `check_job_timeout` passes one job's block, `check_trusted_base` passes the whole file. Never reach for the narrower view to narrow a scope. A file-scoped marker is wide because the check reads the whole file, and a real YAML comment at the top of that file is exactly as wide as a script comment inside it.
+
+### The one carve-out: a marker that DECLARES
+
+`check_path_gate_deps` reads two markers out of the same job block, and only one of them is an opt-out.
+
+- `# path-gate-ok: <dep> <reason>` REMOVES a finding. It takes `yaml_script_view`, like every other opt-out.
+- `# gate-deps: <path>` ADDS a path the check then proves is covered. It takes `yaml_comment_view`.
+
+A job's script prints and greps paths all day. `echo "# gate-deps: src/"` is a line a step outputs, not a declaration its author wrote, and reading it turns a real gap into a false green — the exact failure this lint exists to catch. So the rule sits on the marker's KIND rather than its scope: **a marker that declares a value is read only from real YAML comments.**
+
+### Block STYLE is not "this is a script"
+
+The first spelling of `yaml_script_view` asked whether a scalar was written in block style (`|` or `>`). Style is a proxy for "GitHub hands this to a shell", and it is wrong in both directions. Measured:
+
+| the line                                    | the truth                 | what the style test did |
+| ------------------------------------------- | ------------------------- | ----------------------- |
+| `run: 'git diff  # frozen-head-ok: lease'`  | a script, not block style | lost the marker         |
+| `description: \|` with a marker in the body | block style, not a script | read the marker         |
+| `if: >` with a marker in the body           | block style, not a script | read the marker         |
+
+The second and third are the same fail-open the section above closes, one level down: a `description:` body is prose an author writes, and a marker read out of it suppresses a real finding.
+
+The KEY answers the question the style only approximated. PyYAML's scanner names the key each scalar belongs to (`KeyToken` → `ScalarToken` → `ValueToken` → `ScalarToken`), so `yaml_run_scalars` selects the values of `run:` in any style. A `defaults.run:` holds a MAPPING, so it yields no scalar and needs no special case.
+
+Two smaller traps come with the token span, and both cost a real marker:
+
+- The span covers the whole value TOKEN, so a block scalar's opens at the `|` and a quoted scalar's carries its quotes. Hand that to bash and `run: 'git diff  # why'` parses as ONE STRING with no comment in it. `yaml_run_script` blanks the YAML and keeps every offset.
+- That same block-scalar span reaches back over a real comment written after the indicator, so the inversion blanked the marker in `description: | # unused-input-ok: <reason>`. `yaml_comment_view` re-exposes the header line's comment. The grammar allows only the indicator, then chomping and indentation indicators, then blanks, then a comment — so the first `#` on that line opens one and nothing else can.
+
+### The third reader: what a line SAYS
+
+`_cts_comments.yaml_comments` answers a different question: not "may a marker sit here" but "what does this line say". It unions the comment view with `shell_comments` run over each `run:` value, so the bash grammar judges the script's `#` and PyYAML judges the workflow's. Measured on one 10-line workflow, the delimiter scan it replaced claimed two lines that are not comments: a quoted `name:` value, and `echo "quoted # not a comment"` inside a `run:` body.
+
+It errs the OTHER way from the views, and the difference is not an inconsistency — it follows from what each one is read for. An all-blank view drops a suppression and the finding stands, which is safe. An empty comment map says a malformed workflow cites nothing at all, which is the false green. So `yaml_comments` falls back to `text_comments` when the scan fails, exactly as `comment_lines` does for Python that will not tokenize. The cost is that a `#` inside a quoted scalar reads as a comment again — on a file that does not parse, and only until it does.
 
 Nor is it only about comments. The lints that read PYTHON ask the same shape of
 structural question, and answered it the same wrong way until they were moved onto

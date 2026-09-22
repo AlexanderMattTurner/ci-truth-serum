@@ -24,6 +24,7 @@ from tests._helpers import (
 
 _SRC = HOOKS_DIR / "check_workflow_refs.py"
 mod = load_hook("check_workflow_refs.py", "check_workflow_refs")
+comment_lines = load_hook("_cts_comments.py", "wfr_comments").comment_lines
 
 # The resolution sets a repo with one workflow and a few other tracked files has.
 WORKFLOWS = {"evals.yaml", "deps-release.yaml"}
@@ -190,6 +191,64 @@ def test_allow_marker_two_lines_above_does_not_suppress(monkeypatch) -> None:
         "The CI job runs ci-workflow.yaml.\n"
     )
     assert _hits(body, prose=True) == [(3, "ci-workflow.yaml")]
+
+
+def test_the_marker_in_a_string_literal_does_not_suppress() -> None:
+    """In code mode the opt-out is read from the same COMMENTS the finding is.
+    `hint = "add # allow-workflow-ref: x"` is a string the program builds, and
+    reading it as a suppression cleared the real citation below it."""
+    src = (
+        'hint = "add # allow-workflow-ref: not really"\n'
+        "# dispatched by release-prep.yaml after the bump\n"
+    )
+    found = mod.violations(
+        src, False, WORKFLOWS, TRACKED, False, comment_lines(src, "x.py")
+    )
+    assert found == [(2, "release-prep.yaml")]
+
+
+def test_the_marker_in_a_real_comment_still_suppresses() -> None:
+    """Non-vacuity for the row above: the same marker, one line up, in a real
+    Python comment."""
+    src = (
+        "# allow-workflow-ref: the template repo owns that file\n"
+        "# dispatched by release-prep.yaml after the bump\n"
+    )
+    assert (
+        mod.violations(
+            src, False, WORKFLOWS, TRACKED, False, comment_lines(src, "x.py")
+        )
+        == []
+    )
+
+
+def test_the_marker_in_a_yaml_quoted_scalar_does_not_suppress() -> None:
+    """The same fail-open in the language this hook meets most: a workflow's own
+    author writes every `name:` value, so a marker there must mark nothing."""
+    src = (
+        'name: "add # allow-workflow-ref: not really"\n'
+        "# dispatched by release-prep.yaml after the bump\n"
+    )
+    found = mod.violations(
+        src, False, WORKFLOWS, TRACKED, True, comment_lines(src, "w.yaml")
+    )
+    assert found == [(2, "release-prep.yaml")]
+
+
+def test_a_marker_in_a_yaml_run_body_still_suppresses() -> None:
+    """Non-vacuity for the row above, and the placement that must keep working:
+    a `run: |` body is shell, where a `#` opens a real comment."""
+    src = (
+        "jobs:\n  a:\n    steps:\n      - run: |\n"
+        "          # allow-workflow-ref: the template repo owns that file\n"
+        "          # dispatched by release-prep.yaml after the bump\n"
+    )
+    assert (
+        mod.violations(
+            src, False, WORKFLOWS, TRACKED, True, comment_lines(src, "w.yaml")
+        )
+        == []
+    )
 
 
 # -- main(): CLI contract against a real git repo ---------------------------------

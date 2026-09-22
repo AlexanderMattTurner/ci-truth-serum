@@ -114,6 +114,37 @@ def test_suppressions_refuses_a_marker_with_no_reason():
     assert reasonless == ["some/dep"]
 
 
+def test_suppressions_ignores_a_marker_inside_a_quoted_value():
+    """A `#` inside a quoted scalar is CONTENT, not a comment. One marker
+    excuses a dependency for every checkout in the file, so honouring a step's
+    display name would let its author hide a real hole."""
+    text = '      - name: "deploy # sparse-checkout-ok: some/dep it is fine"\n'
+    assert mod.suppressions(text) == ({}, [])
+
+
+def test_suppressions_reads_a_marker_in_a_run_script():
+    """A `run:` value is a shell script, where a `#` opens a real comment. The
+    author writes the marker beside the command that needs the dependency."""
+    block = (
+        "      - run: |\n"
+        "          # sparse-checkout-ok: some/dep fetched at runtime instead\n"
+        "          deploy\n"
+    )
+    assert mod.suppressions(block) == ({"some/dep": "fetched at runtime instead"}, [])
+    quoted = (
+        "      - run: 'deploy  # sparse-checkout-ok: some/dep fetched at runtime'\n"
+    )
+    with_reason, reasonless = mod.suppressions(quoted)
+    assert set(with_reason) == {"some/dep"} and reasonless == []
+
+
+def test_suppressions_ignores_a_marker_in_a_block_scalar_that_is_not_a_script():
+    """A `description:` body is prose and never reaches a shell, so a `#` in it
+    is content. Block style was the old test, and it read a marker out of this."""
+    text = "description: |\n  # sparse-checkout-ok: some/dep not a script at all\n"
+    assert mod.suppressions(text) == ({}, [])
+
+
 # ── checkouts() / _window ─────────────────────────────────────────────────
 def _workflow_text(sparse: str, run: str, extra_steps: str = "") -> str:
     return (

@@ -205,10 +205,22 @@ def violations(
 
     COMMENTS maps 1-based line -> comment body, from ``comment_lines`` — omitting
     it applies the text delimiter scan to the whole file, which only the caller's
-    path can improve on. It is unused in PROSE mode, where every line counts."""
+    path can improve on. It is unused in PROSE mode, where every line counts.
+
+    In code mode the OPT-OUT is read from COMMENTS too, the same text the finding
+    is read from. Reading it from the raw line instead was a fail-open in every
+    language this hook takes: `hint = "add # allow-workflow-ref: x"` is a string
+    the program builds, and it silently cleared a real dangling citation above
+    it. PROSE mode keeps the raw lines, because there the whole line is narration
+    and the `<!-- … -->` form a Markdown author writes is no comment to
+    ``comment_body``.
+    """
     lines = text.split("\n")
     if comments is None:
         comments = text_comments(text)
+    # LINES still shapes the window — which lines are blank, which hold only a
+    # comment — and SAID is what each of those lines says.
+    said = None if prose else [comments.get(n, "") for n in range(1, len(lines) + 1)]
     hits: list[tuple[int, str]] = []
     in_fence = False
     for lineno, raw in enumerate(lines, 1):
@@ -221,7 +233,7 @@ def violations(
         cited = _dangling(target, workflows, tracked, in_dot_github)
         if cited is None:
             continue
-        if annotated_near(lines, lineno, _ALLOW):
+        if annotated_near(lines, lineno, _ALLOW, comments=said):
             continue
         hits.append((lineno, cited))
     return hits

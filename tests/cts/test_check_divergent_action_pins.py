@@ -44,6 +44,15 @@ def test_pin_records_opt_out_needs_a_reason() -> None:
     ) == [(1, "actions/checkout", SHA_A, False)]
 
 
+def test_pin_records_ignores_a_marker_inside_a_quoted_value() -> None:
+    """A `#` inside a quoted scalar is CONTENT. The step's author writes its
+    `name:`, so honouring one would switch this check off."""
+    assert mod.pin_records(
+        '      - {uses: "actions/checkout@' + SHA_A + '", '
+        'name: "x # divergent-pin-ok: pretend"}\n'
+    ) == [(1, "actions/checkout", SHA_A, False)]
+
+
 def test_pin_records_reads_a_quoted_uses_value() -> None:
     """A quoted `uses:` scalar is still one reference — the YAML parse resolves
     the quotes away, so this must not silently pass."""

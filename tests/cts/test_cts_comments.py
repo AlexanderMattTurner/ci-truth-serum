@@ -104,6 +104,42 @@ def test_text_comments_scans_by_delimiter() -> None:
     assert comments.text_comments(text) == {1: "# trailing", 2: "# full line"}
 
 
+# ── yaml_comments: PyYAML's scanner, plus bash inside a `run:` body ──────
+def test_yaml_comments_reads_a_quoted_scalar_as_a_value() -> None:
+    """The fail-open this closed: an opt-out token inside a `name:` value
+    SUPPRESSED the lint, and the file's own author writes that value."""
+    text = 'name: "see x.yaml  # allow-workflow-ref: fake"\nkey: 1  # real\n'
+    assert comments.yaml_comments(text) == {2: "# real"}
+    # Non-vacuity: the delimiter scan this replaced honoured that value.
+    assert 1 in comments.text_comments(text)
+
+
+def test_yaml_comments_reads_a_run_body_with_the_bash_grammar() -> None:
+    """A `run: |` body is shell, where a `#` does open a comment — but only
+    where bash says it does. Line numbers stay the file's own."""
+    text = 'jobs:\n  a:\n    steps:\n      - run: |\n          echo "# no"\n          echo hi  # yes\n'
+    assert comments.yaml_comments(text) == {6: "# yes"}
+
+
+def test_yaml_comments_reads_a_quoted_one_line_run_as_shell() -> None:
+    """A `run:` written on one line is still a script, and the quotes around it
+    are YAML rather than shell. Leave them in and bash reads the whole value as
+    ONE STRING, so the comment in it disappears."""
+    text = "jobs:\n  a:\n    steps:\n      - run: 'git diff  # yes'\n"
+    assert comments.yaml_comments(text) == {4: "# yes "}
+
+
+def test_yaml_comments_falls_back_on_an_untokenizable_file() -> None:
+    """A file PyYAML cannot scan falls back to the delimiter scan, as the Python
+    branch does for source that will not tokenize. The views err the other way,
+    and both directions are right for what they read: a lost marker leaves a
+    finding standing, but an empty comment map reports a malformed workflow as
+    having no narration at all, which is the false green."""
+    assert comments.yaml_comments('key: "unterminated\n# kept\n') == {2: "# kept"}
+    # Non-vacuity: the scanner, not the fallback, answers a file it can read.
+    assert comments.yaml_comments('key: "# value"\n') == {}
+
+
 # ── comment_lines: the dispatcher ────────────────────────────────────────
 @pytest.mark.parametrize(
     "path, source, expected",
@@ -121,9 +157,9 @@ def test_text_comments_scans_by_delimiter() -> None:
         # JS/TS by suffix.
         ("a.test.mjs", 'const m = "// no";\n// yes\n', {2: "// yes"}),
         ("a.ts", "let x: number = 1; // yes\n", {1: "// yes"}),
-        # No grammar for YAML — the delimiter scan owns it, stated rather than
-        # defaulted.
-        ("a.yaml", "key: 1  # yes\n", {1: "# yes"}),
+        # YAML by suffix: the quoted scalar's `#` is a value, not a comment.
+        ("a.yaml", 'name: "# no"\nkey: 1  # yes\n', {2: "# yes"}),
+        ("a.yml", "key: 1  # yes\n", {1: "# yes"}),
         ("a.md", "# yes\n", {1: "# yes"}),
     ],
 )

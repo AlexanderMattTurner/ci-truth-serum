@@ -166,7 +166,67 @@ def test_path_gate_ok_without_reason_is_an_error(tmp_path, monkeypatch, capsys):
     assert "has no reason" in out
 
 
+def test_a_hash_inside_a_quoted_value_suppresses_nothing(tmp_path, monkeypatch, capsys):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The gated job's
+    own author writes its `env:` values, so honouring one would switch the gate
+    check off for that job."""
+    steps = (
+        '- run: echo\n  env:\n    NOTE: "# path-gate-ok: .github/actions/setup nope"\n'
+        + COMPOSITE_STEPS
+    )
+    _repo(tmp_path, monkeypatch, _workflow(["src/**"], steps), ACTION)
+    assert cpgd.main() == 1
+    assert ".github/actions/setup" in capsys.readouterr().out
+
+
+def test_path_gate_ok_in_a_run_script_suppresses(tmp_path, monkeypatch, capsys):
+    """A `run:` value is a shell script, where a `#` opens a real comment. A
+    suppression only REMOVES a finding, so it is read there too — beside the
+    step it excuses."""
+    steps = (
+        "- run: |\n"
+        "    # path-gate-ok: .github/actions/setup exercised by its own suite\n"
+        "    echo hi\n" + COMPOSITE_STEPS
+    )
+    _repo(tmp_path, monkeypatch, _workflow(["src/**"], steps), ACTION)
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
 # ── (e) gate-deps declared dependency ────────────────────────────────────
+def test_gate_deps_in_a_run_script_declares_nothing(tmp_path, monkeypatch, capsys):
+    """A `# gate-deps:` ADDS a path this check then proves is covered, so it is
+    read only from a real YAML comment. A job's script prints and greps paths
+    all day, and reading a printed one would report a gate as complete that is
+    not. Its sibling `# path-gate-ok:` only removes a finding, so it is read
+    from a script too — the test above pins that difference."""
+    steps = "- run: |\n    # gate-deps: bin/\n    uv run pytest\n"
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _workflow(["src/**"], steps),
+        {"bin/tool.sh": "#!/bin/bash\n"},
+    )
+    assert cpgd.main() == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_gate_deps_in_a_yaml_comment_above_a_run_script_declares(
+    tmp_path, monkeypatch, capsys
+):
+    """Non-vacuity for the test above: the SAME declaration in a real YAML
+    comment is read, and `bin/` is then uncovered by the `src/**` filter."""
+    steps = "# gate-deps: bin/\n- run: |\n    # gate-deps: bin/\n    uv run pytest\n"
+    _repo(
+        tmp_path,
+        monkeypatch,
+        _workflow(["src/**"], steps),
+        {"bin/tool.sh": "#!/bin/bash\n"},
+    )
+    assert cpgd.main() == 1
+    assert "`bin`" in capsys.readouterr().out
+
+
 def test_gate_deps_comment_on_gated_job_unmatched_fails(tmp_path, monkeypatch, capsys):
     steps = "# gate-deps: bin/\n- run: uv run pytest\n"
     _repo(

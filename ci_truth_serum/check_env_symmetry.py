@@ -37,6 +37,12 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    is_yaml_source,
+    yaml_script_view,
+)
+
 REPO_ROOT = Path.cwd()
 
 # A `# env-symmetry-ok: NAME <reason>` opt-out — NAME plus a non-empty reason.
@@ -94,9 +100,24 @@ def find_reads(text: str, prefix: str) -> set[str]:
     return reads
 
 
-def collect_optouts(text: str) -> set[str]:
-    """Var names opted out via a reason-bearing ``# env-symmetry-ok: NAME …``."""
-    return {m.group("name") for m in _OPT_OUT.finditer(text)}
+def collect_optouts(text: str, path: str) -> set[str]:
+    """Var names opted out via a reason-bearing ``# env-symmetry-ok: NAME …``.
+
+    PATH picks the dialect, the same way ``comment_lines(text, path)`` does. It
+    is the PATH and never a flag, because a flag needs a default, and the only
+    default available here is "not YAML" — which reads the file as written and
+    honours a `#` anywhere in it. That is the fail-open direction, so the
+    parameter that decides it must be one a caller cannot forget.
+
+    A shell script or a Python file is read as written: every `#` in it opens a
+    real comment. A workflow is read through ``yaml_script_view``, which keeps a
+    real YAML comment and a `run:` value. A `#` inside any other scalar is a
+    value the workflow's own author writes, and one marker exempts a name across
+    the WHOLE tree, so honouring `name: "# env-symmetry-ok: X"` would let that
+    author hide a half-finished rename anywhere in the repository.
+    """
+    scanned = "\n".join(yaml_script_view(text)) if is_yaml_source(path) else text
+    return {m.group("name") for m in _OPT_OUT.finditer(scanned)}
 
 
 class Imbalance(NamedTuple):
@@ -121,12 +142,12 @@ def analyze(sources: dict[str, str], prefix: str) -> list[Imbalance]:
     reads: dict[str, set[str]] = {}
     optouts: set[str] = set()
     for path, text in sources.items():
-        is_yaml = path.endswith((".yaml", ".yml"))
+        is_yaml = is_yaml_source(path)
         for n in find_writes(text, prefix, is_yaml):
             writes.setdefault(n, set()).add(path)
         for n in find_reads(text, prefix):
             reads.setdefault(n, set()).add(path)
-        optouts |= collect_optouts(text)
+        optouts |= collect_optouts(text, path)
 
     results: list[Imbalance] = []
     for name in sorted(set(writes) | set(reads)):

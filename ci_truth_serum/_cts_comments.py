@@ -14,8 +14,9 @@ of these is a delimiter scan's verdict on a real line from this repo's trees:
 
 ``comment_lines`` is the one entry point: hand it the text and the path, and it
 picks the grammar the path names — ``tokenize`` for Python, tree-sitter-bash for
-shell, tree-sitter-{javascript,typescript} for JS/TS. Judging the PROSE inside
-the comment stays each lint's own regex; English has no grammar here to parse.
+shell, tree-sitter-{javascript,typescript} for JS/TS, and PyYAML's scanner plus
+the bash grammar for YAML. Judging the PROSE inside the comment stays each
+lint's own regex; English has no grammar here to parse.
 
 Line numbers are 1-based physical lines counted by ``\\n`` — the numbering every
 grammar here reports, and what a caller must enumerate with (``str.splitlines``
@@ -46,6 +47,11 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     comment_body,
     is_python_source,
     is_shell_source,
+    is_yaml_source,
+    yaml_comment_text,
+    yaml_run_scalars,
+    yaml_run_script,
+    yaml_scannable,
 )
 
 
@@ -131,13 +137,63 @@ def js_comments(source: str, path: str) -> dict[int, str]:
     )
 
 
+def yaml_comments(text: str) -> dict[int, str]:
+    """1-based line -> comment text, for a YAML document holding shell.
+
+    A YAML parser drops comments before it returns a document, so there is no
+    comment node to walk. PyYAML's SCANNER still reports where every scalar
+    starts and ends, and `yaml_comment_view` inverts that into the bytes no
+    scalar covers. A `#` inside a quoted scalar is a value the file's own author
+    writes, so it is not a comment: `name: "# allow-workflow-ref: x"` says
+    nothing about this tree. Reading it as one SUPPRESSED the lint, which is the
+    fail-open direction.
+
+    A workflow holds a second language. A `run:` value is a shell script, where
+    a `#` does open a comment, and PyYAML reports that value as one scalar. So
+    each `run:` scalar goes to ``shell_comments`` and the bash grammar answers
+    the same question inside it. The KEY picks those scalars, never the block
+    style `|`: a `run: 'git diff  # why'` is a script written on one line, and a
+    `description: |` body is prose. ``yaml_run_script`` blanks the YAML that
+    writes each scalar and keeps every offset, so a line number the bash grammar
+    reports is the file's own.
+
+    A text PyYAML cannot scan falls back to ``text_comments``, as the Python
+    branch of ``comment_lines`` does for source that will not tokenize. The
+    views above err the other way on such a text, and both directions are right
+    for what they read: a lost marker leaves a finding standing, but an
+    all-blank view reports a malformed workflow as having no comments at all,
+    which is the false green. The cost of the fallback is that a `#` inside a
+    quoted scalar reads as a comment again, so an opt-out written there
+    suppresses — on a file that does not parse, and only until it does.
+    """
+    if not yaml_scannable(text):
+        return text_comments(text)
+    fragments = [
+        (lineno, body)
+        for lineno, line in enumerate(yaml_comment_text(text).split("\n"), 1)
+        if (body := comment_body(line)) is not None
+    ]
+    for scalar in yaml_run_scalars(text):
+        offset = text.count("\n", 0, scalar.start)
+        fragments += [
+            (offset + lineno, comment)
+            for lineno, comment in shell_comments(yaml_run_script(text, scalar)).items()
+        ]
+    return _merge(sorted(fragments))
+
+
 def text_comments(text: str) -> dict[int, str]:
     """1-based line -> comment text, scanned out of TEXT by delimiter.
 
-    Correct only where no grammar can answer: YAML, whose parsers discard
-    comments outright, plus whatever else a comment-reading lint is pointed at.
-    Everything above replaces this for the language it owns, so reaching for it
-    is a statement that the language has no parser here — never a default.
+    Correct only where no grammar can answer, which is now Markdown, rst, and
+    whatever else a comment-reading lint is pointed at. Everything above
+    replaces this for the language it owns, so reaching for it is a statement
+    that the language has no parser here — never a default.
+
+    YAML used to land here, and that was the last fail-open of its class: the
+    scan read a `#` inside a quoted scalar as a comment, so an opt-out token
+    written in a `name:` value SUPPRESSED the lint. ``yaml_comments`` owns YAML
+    now.
     """
     return {
         lineno: body
@@ -164,4 +220,6 @@ def comment_lines(text: str, path: str) -> dict[int, str]:
         return shell_comments(text)
     if is_js_source(path):
         return js_comments(text, path)
+    if is_yaml_source(path):
+        return yaml_comments(text)
     return text_comments(text)

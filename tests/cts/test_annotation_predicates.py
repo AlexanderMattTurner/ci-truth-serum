@@ -184,16 +184,22 @@ def test_the_required_reason_may_not_be_borrowed_from_the_next_line() -> None:
 # annotation was then honoured by one check and rejected by its neighbour, and
 # an author could not learn the rule once. `annotation_window` is the one
 # answer; reaching for a neighbouring line by hand is how that drifts back.
-_HANDROLLED_WINDOW = re.compile(
-    r"\bannotated\(\s*[\w.]+\[[^\]]*[-+]\s*\d+\s*\]",
-)
+#
+# `finditer` runs over the WHOLE source, not line by line, because a formatter
+# splits a long call and the per-line scan this started as read the two halves
+# as two clean lines. That is how `annotated(\n    comments[line - 1], OPT_OUT\n)`
+# shipped unseen. `\s` already crosses the break, so no flag is needed — the
+# pattern has no `.` for `re.DOTALL` to widen.
+_HANDROLLED_WINDOW = re.compile(r"\bannotated\(\s*[\w.]+\[[^\]]*[-+]\s*\d+\s*\]")
 
 
 def _handrolled_windows(src: str) -> list[int]:
+    """The 1-based lines of SRC where a hook indexes a line list inside
+    ``annotated(...)``. Reported at the line the CALL opens, which is where the
+    author fixes it."""
     return [
-        lineno
-        for lineno, line in enumerate(src.splitlines(), 1)
-        if _HANDROLLED_WINDOW.search(line)
+        src.count("\n", 0, match.start()) + 1
+        for match in _HANDROLLED_WINDOW.finditer(src)
     ]
 
 
@@ -217,6 +223,11 @@ def test_the_handrolled_window_detector_actually_matches() -> None:
         1
     ]
     assert _handrolled_windows("annotated(physical[lineno - 1], OPT_OUT)") == [1]
+    # A formatter splitting the call hides nothing: the call is still the call,
+    # and it is reported at the line it opens.
+    assert _handrolled_windows(
+        "opted = annotated(\n    comments[line - 1], OPT_OUT\n)"
+    ) == [1]
     # Sanctioned: a bare line, a loop variable, and the shared helper.
     assert _handrolled_windows("if annotated(line, OPT_OUT):") == []
     assert _handrolled_windows("annotated_near(lines, lineno, OPT_OUT)") == []
