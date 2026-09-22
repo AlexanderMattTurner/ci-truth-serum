@@ -27,6 +27,19 @@ against the caller's workspace, which makes it a real edge.
 Each value is read from the PARSED key, never from the file's text. The same
 words inside a `run:` script, or inside a comment, therefore reach nothing.
 
+A reference alone does not make a definition live. Its writer must run too. So
+this check walks the reference graph from the files that run on their own: a
+workflow with any other trigger, and an action outside `.github/actions/`. A
+definition the walk reaches is live. A definition the walk misses is the
+finding. Two dead actions that `uses:` each other therefore both report, and a
+plain count of references reports neither.
+
+The sweep reads every workflow, every action under `.github/actions/`, and
+every other tracked `action.y(a)ml`. That last group holds no definition. A
+repository publishes such an action from its root, and an external consumer
+starts it. Its `runs.steps` still reach into this tree, so the sweep counts
+them and no live action reads as dead.
+
 Two references this check reads generously, because an undercount can only
 miss a dead definition and can never invent one:
 
@@ -45,16 +58,24 @@ The run is still red, so nothing is greened over.
 
 BLIND SPOT, and the direction it errs: a caller in ANOTHER repository is
 invisible to this tree. A published composite action, and a reusable workflow a
-sibling repository calls, both read as unreferenced here. Name that caller in a
-`# unreferenced-ok: <reason>` comment. The reason is mandatory. The comment goes
-on the definition's key line — an action's `name:`, a workflow's
-`workflow_call:` or `on:` — or in the comment block directly above it.
+sibling repository calls, both read as unreferenced here. A reference written
+in a file this sweep does not read is invisible the same way. Name that caller
+in a `# unreferenced-ok: <reason>` comment. The reason is mandatory. The
+comment goes on the definition's key line — an action's `name:`, a workflow's
+`workflow_call:` or `on:` — or in the comment block directly above it. A
+suppressed definition becomes a root of the walk, so everything it calls stays
+live as well.
+
+The marker is read from a real YAML comment, through `strip_yaml_comments`. A
+`#` inside a quoted scalar is content, so `name: "# unreferenced-ok: x"`
+suppresses nothing.
 
 Globs every workflow and action like the other workflow lints; the passed file
 list is ignored.
 """
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -67,6 +88,8 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     LineLoader as _LineLoader,
     annotation_window,
     is_placeholder_reason,
+    is_test_path,
+    strip_yaml_comments,
     workflow_files,
     workflow_triggers,
 )
@@ -83,6 +106,10 @@ OPT_OUT = "unreferenced-ok"
 # not a boolean opt-out predicate. The lead mirrors `_cts_linecheck.annotation_re`:
 # the token may follow the `#` directly, or after same-line comment text whose
 # last character cannot belong to a token, so a longer slug never satisfies it.
+# Read against `comment_only_lines`, never the raw line: the `#` this pattern
+# anchors on must be a real YAML comment. `check_unused_reusable_input` and
+# `check_reusable_permissions` carry the same pattern against raw lines, so a
+# `#` inside a quoted scalar still opens a marker there.
 _OPT_OUT = re.compile(rf"#(?:[^\r\n]*[^\w\r\n-])?{OPT_OUT}\s*:\s*(?P<reason>[^\r\n]*)$")
 
 # The YAML key LineLoader adds to every mapping. Never a job id or a trigger name.
@@ -92,6 +119,9 @@ CALL_TRIGGER = "workflow_call"
 
 ACTION = "composite action"
 REUSABLE = "reusable workflow"
+
+# The two basenames GitHub accepts for a composite action.
+ACTION_FILES = frozenset({"action.yaml", "action.yml"})
 
 
 def _drop_line_key(mapping: object) -> dict:
@@ -256,15 +286,40 @@ def marker_window(lines: list[str], anchors: list[int]) -> list[int]:
     )
 
 
-def suppression(lines: list[str], anchors: list[int]) -> tuple[str | None, str | None]:
+def comment_only_lines(text: str) -> list[str]:
+    """TEXT's lines with every character outside a YAML comment blanked.
+
+    `strip_yaml_comments` is this pack's SSOT for where a YAML comment starts,
+    and it keeps the content while it blanks the comments. This check wants the
+    other half, so it takes the difference of the two texts: a character the
+    strip changed sat in a comment, and every other character becomes a space.
+
+    Column offsets survive, so a marker still reads to the end of its line and
+    the line numbers still match the file. A `#` inside a quoted scalar is
+    content, so it blanks out and opens no marker.
+    """
+    blanked = strip_yaml_comments(text)
+    return [
+        "".join(o if o != b else " " for o, b in zip(original, stripped))
+        for original, stripped in zip(text.splitlines(), blanked.splitlines())
+    ]
+
+
+def suppression(
+    lines: list[str], comments: list[str], anchors: list[int]
+) -> tuple[str | None, str | None]:
     """(reason, error) for the `# unreferenced-ok:` marker on this definition.
 
-    Both are None when no marker is present. A marker stating no real reason
-    yields an error instead of a reason, so it suppresses nothing.
+    LINES is the file as written, and it decides the window: `annotation_window`
+    reads a comment block and a blank line ends one. COMMENTS is the same file
+    with only its comments left, and the marker is read from there.
+
+    Both results are None when no marker is present. A marker stating no real
+    reason yields an error instead of a reason, so it suppresses nothing.
     """
     details = []
     for number in marker_window(lines, anchors):
-        match = _OPT_OUT.search(lines[number - 1])
+        match = _OPT_OUT.search(comments[number - 1])
         if not match:
             continue
         reason = match.group("reason").strip().lstrip("#").strip()
@@ -284,14 +339,15 @@ def message(found: Definition) -> str:
     """Why this definition is a finding, and the three ways to answer it."""
     unreachable = (
         f"this file declares `{CALL_TRIGGER}` as its only trigger. A caller is "
-        "the only thing that can start it. No job in this repository calls "
+        "the only thing that can start it. No job this repository runs calls "
         f"`./{found.identity}`."
         if found.kind == REUSABLE
-        else f"no workflow or action in this repository uses this {found.kind} "
+        else f"no workflow or action this repository runs uses this {found.kind} "
         f"with `uses: ./{found.identity}`."
     )
     return (
-        f"{unreachable} Nothing runs it. An unreferenced definition rots: its "
+        f"{unreachable} A caller that nothing runs itself does not count. An "
+        "unreferenced definition rots: its "
         "assumptions drift from the live code. It also tells the next author "
         "that a code path exists. Delete it, wire the caller that wants it, or "
         f"suppress with `# {OPT_OUT}: <reason>` naming the caller in another "
@@ -308,23 +364,56 @@ class UnreferencedViolation(NamedTuple):
     message: str
 
 
-def check_repo(workflows_dir: Path, actions_dir: Path) -> list[UnreferencedViolation]:
-    """Every unreferenced definition under WORKFLOWS_DIR and ACTIONS_DIR.
+def reference_files(root: Path, actions_dir: Path) -> list[Path]:
+    """Every tracked `action.y(a)ml` under ROOT and outside ACTIONS_DIR.
 
-    Two passes, because a definition's verdict depends on every other file: the
-    first reads each file once, the second judges each definition against the
-    union of what any file uses.
+    A repository that publishes a composite action keeps `action.yml` at its
+    root, and an external consumer starts it. Such a file is never a definition
+    this check judges. Its `runs.steps` can still name a local action, and a
+    sweep that misses that `uses:` reports a live action as dead.
+
+    Read from `git ls-files`, so an untracked copy and a build artifact count
+    for nothing. The index can still name a path a rename race removed, so a
+    path that is not a file now is dropped. A test path is dropped too: a
+    fixture action starts nothing, and this pack's own fixtures include files
+    the parser is meant to refuse.
+
+    The pathspec only narrows the index, and the basename decides. Git reads
+    `*action.yaml` as any path ending in those letters, so it also names
+    `deploy-action.yaml`, which GitHub never loads as an action.
     """
-    root = workflows_dir.parent.parent
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*action.yaml", "*action.yml"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\0")
+    found: list[Path] = []
+    for rel in tracked:
+        if not rel or Path(rel).name not in ACTION_FILES or is_test_path(rel):
+            continue
+        path = root / rel
+        if not path.is_relative_to(actions_dir) and path.is_file():
+            found.append(path)
+    return sorted(found)
+
+
+def _parse_all(
+    paths: list[Path],
+) -> tuple[dict[Path, tuple[object, str]], list[UnreferencedViolation]]:
+    """(each path's document and text, the paths the parser refused)."""
     parsed: dict[Path, tuple[object, str]] = {}
-    found: list[UnreferencedViolation] = []
-    for path in workflow_files(workflows_dir, actions_dir):
+    broken: list[UnreferencedViolation] = []
+    for path in paths:
+        if path in parsed:
+            continue
         text = path.read_text(encoding="utf-8")
         try:
             parsed[path] = (yaml.load(text, Loader=_LineLoader), text)
         except yaml.YAMLError as err:
             first_line = str(err).partition("\n")[0]
-            found.append(
+            broken.append(
                 UnreferencedViolation(
                     path,
                     0,
@@ -335,40 +424,79 @@ def check_repo(workflows_dir: Path, actions_dir: Path) -> list[UnreferencedViola
                     "(or run actionlint) and re-check.",
                 )
             )
+    return parsed, broken
 
-    # A file whose `uses:` values could not be read leaves the reference set
+
+def _reach(reached: set[str], edges: dict[str, frozenset[str]]) -> set[str]:
+    """A new set: REACHED grown along EDGES until it stops growing.
+
+    A plain queue walk, and a cycle ends it: an identity already in the set is
+    never queued twice.
+    """
+    reached = set(reached)
+    queue = list(reached)
+    while queue:
+        for target in edges.get(queue.pop(), frozenset()):
+            if target not in reached:
+                reached.add(target)
+                queue.append(target)
+    return reached
+
+
+def check_repo(workflows_dir: Path, actions_dir: Path) -> list[UnreferencedViolation]:
+    """Every unreachable definition under WORKFLOWS_DIR and ACTIONS_DIR.
+
+    Three passes, because a definition's verdict depends on every other file.
+    The first reads each file once. The second builds the reference graph and
+    names its roots — every file that runs without a caller, plus every
+    definition a suppression excuses. The third reports each definition the
+    walk from those roots does not reach.
+    """
+    root = workflows_dir.parent.parent
+    scanned = workflow_files(workflows_dir, actions_dir)
+    parsed, broken = _parse_all(scanned + reference_files(root, actions_dir))
+
+    # A file whose `uses:` values could not be read leaves the graph
     # incomplete, and every definition it reaches would then read as dead. One
     # syntax error would cascade into a finding per action it uses, so the
-    # unreferenced verdicts are withheld until the sweep is whole. The run is
+    # unreachable verdicts are withheld until the sweep is whole. The run is
     # still red: the parse failures above are the findings.
-    if found:
-        return found
+    if broken:
+        return broken
 
-    referenced = {
-        path
-        for doc, _text in parsed.values()
-        for uses in uses_values(doc)
-        if (path := referenced_path(uses)) is not None
-    }
-
+    edges: dict[str, frozenset[str]] = {}
+    reached: set[str] = set()
+    pending: list[tuple[Definition, str | None]] = []
     for path, (doc, text) in sorted(parsed.items()):
-        entry = definition(path, doc, text, root, actions_dir)
-        if entry is None or entry.identity in referenced:
-            continue
-        lines = text.splitlines()
-        reason, error = suppression(lines, entry.anchors)
-        if reason:
-            continue
-        found.append(
-            UnreferencedViolation(
-                path,
-                entry.anchors[-1] if entry.anchors else 0,
-                f"{entry.kind} `{entry.identity}`: {error}"
-                if error
-                else message(entry),
-            )
+        outgoing = frozenset(
+            target
+            for uses in uses_values(doc)
+            if (target := referenced_path(uses)) is not None
         )
-    return found
+        entry = definition(path, doc, text, root, actions_dir)
+        if entry is None:
+            # Nothing has to call this file, so what it uses is live.
+            reached |= outgoing
+            continue
+        edges[entry.identity] = outgoing
+        reason, error = suppression(
+            text.splitlines(), comment_only_lines(text), entry.anchors
+        )
+        if reason:
+            reached.add(entry.identity)
+            continue
+        pending.append((entry, error))
+
+    reached = _reach(reached, edges)
+    return [
+        UnreferencedViolation(
+            entry.path,
+            entry.anchors[-1] if entry.anchors else 0,
+            f"{entry.kind} `{entry.identity}`: {error}" if error else message(entry),
+        )
+        for entry, error in pending
+        if entry.identity not in reached
+    ]
 
 
 def main() -> int:

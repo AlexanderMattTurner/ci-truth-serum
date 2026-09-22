@@ -1,16 +1,18 @@
 """Tests for ci_truth_serum/check_unreferenced_local_uses.py — the lint reporting
-a local composite action, or a `workflow_call`-only workflow, that no `uses:`
-reaches.
+a local composite action, or a `workflow_call`-only workflow, that the walk from
+the files running without a caller never reaches.
 
 Two layers: unit tests of the readers (`uses_values`, `referenced_path`,
 `calls_only`, `key_lines`) and tree-level tests driving `check_repo` / `main`
 over real trees in tmp dirs, with the module's discovery constants redirected so
-the real repo never leaks in.
+the real repo never leaks in. Each tree is a real git repo, because the sweep
+of action files outside `.github/actions/` reads the index.
 """
 
+import subprocess
 from pathlib import Path
 
-from tests._helpers import load_hook
+from tests._helpers import init_test_repo, load_hook
 
 ulu = load_hook("check_unreferenced_local_uses.py", "check_unreferenced_local_uses")
 
@@ -135,11 +137,15 @@ def _job_caller(uses: str) -> str:
 
 
 def _root(tmp_path: Path, files: dict[str, str]) -> Path:
+    """A REAL git repo holding FILES — `reference_files` reads the index, so a
+    plain directory would make every tracked-file sweep fail."""
     root = tmp_path / "repo"
+    init_test_repo(root)
     for rel, content in files.items():
         dest = root / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
     return root
 
 
@@ -165,7 +171,7 @@ def test_an_action_no_step_uses_is_reported(tmp_path, monkeypatch):
     path, line, message = found[0]
     assert path.name == "action.yaml"
     assert line == 1
-    assert "no workflow or action in this repository uses" in message
+    assert "no workflow or action this repository runs uses" in message
     assert "`uses: ./.github/actions/orphan`" in message
 
 
@@ -254,7 +260,7 @@ def test_a_definition_with_no_key_to_anchor_on_is_reported_at_the_file(
         tmp_path, monkeypatch, {".github/actions/x/action.yaml": "runs: {}\n"}
     )
     assert [(f.path.name, f.line) for f in found] == [("action.yaml", 0)]
-    assert "no workflow or action in this repository uses" in found[0].message
+    assert "no workflow or action this repository runs uses" in found[0].message
 
 
 def test_two_dead_definitions_are_both_reported(tmp_path, monkeypatch):
@@ -267,6 +273,162 @@ def test_two_dead_definitions_are_both_reported(tmp_path, monkeypatch):
         },
     )
     assert sorted(f.path.name for f in found) == ["action.yaml", "callee.yaml"]
+
+
+# ── reachability, not a count of references ──────────────────────────────
+def _using_action(name: str, target: str) -> str:
+    return f"name: {name}\nruns:\n  using: composite\n  steps:\n    - uses: {target}\n"
+
+
+def test_two_dead_actions_that_use_each_other_are_both_reported(tmp_path, monkeypatch):
+    """A count of references calls each one referenced and reports neither.
+    Nothing runs either, so the walk from the roots reaches neither."""
+    found = _check(
+        tmp_path,
+        monkeypatch,
+        {
+            ".github/actions/a/action.yaml": _using_action("a", "./.github/actions/b"),
+            ".github/actions/b/action.yaml": _using_action("b", "./.github/actions/a"),
+            ".github/workflows/w.yaml": _caller("actions/checkout@v4"),
+        },
+    )
+    assert sorted(f.path.parent.name for f in found) == ["a", "b"]
+
+
+def test_an_action_that_uses_itself_is_reported(tmp_path, monkeypatch):
+    found = _check(
+        tmp_path,
+        monkeypatch,
+        {
+            ".github/actions/loop/action.yaml": _using_action(
+                "loop", "./.github/actions/loop"
+            ),
+            ".github/workflows/w.yaml": _caller("actions/checkout@v4"),
+        },
+    )
+    assert [f.path.parent.name for f in found] == ["loop"]
+
+
+def test_an_action_reached_only_from_a_dead_workflow_is_reported(tmp_path, monkeypatch):
+    """The callee workflow declares `workflow_call` and no job calls it, so the
+    step inside it never runs and the action it names stays dead."""
+    found = _check(
+        tmp_path,
+        monkeypatch,
+        {
+            ".github/actions/used/action.yaml": ACTION,
+            ".github/workflows/callee.yaml": "name: c\non:\n  workflow_call:\njobs:\n"
+            "  x:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - uses: ./.github/actions/used\n",
+        },
+    )
+    assert sorted(f.path.name for f in found) == ["action.yaml", "callee.yaml"]
+
+
+def test_a_chain_a_live_workflow_starts_is_clean(tmp_path, monkeypatch):
+    """The same chain, with one caller at its head — every link is live."""
+    assert (
+        _check(
+            tmp_path,
+            monkeypatch,
+            {
+                ".github/actions/used/action.yaml": ACTION,
+                ".github/workflows/callee.yaml": "name: c\non:\n  workflow_call:\n"
+                "jobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n"
+                "      - uses: ./.github/actions/used\n",
+                ".github/workflows/w.yaml": _job_caller(
+                    "./.github/workflows/callee.yaml"
+                ),
+            },
+        )
+        == []
+    )
+
+
+def test_an_action_reached_only_from_a_root_action_file_is_clean(tmp_path, monkeypatch):
+    """A repository publishes `action.yml` from its root, and an external
+    consumer starts it. It defines nothing this check judges, and the sweep
+    still reads the `uses:` it writes — otherwise the target reads as dead."""
+    assert (
+        _check(
+            tmp_path,
+            monkeypatch,
+            {
+                "action.yml": _using_action("published", "./.github/actions/used"),
+                ".github/actions/used/action.yaml": ACTION,
+                ".github/workflows/w.yaml": _caller("actions/checkout@v4"),
+            },
+        )
+        == []
+    )
+
+
+def test_only_the_two_basenames_github_accepts_are_swept(tmp_path, monkeypatch):
+    """GitHub loads a composite action from `action.yaml` or `action.yml` and
+    from nothing else, so a `uses:` written in `deploy-action.yaml` never runs.
+    The git pathspec matches that name, and the basename test drops it."""
+    found = _check(
+        tmp_path,
+        monkeypatch,
+        {
+            "deploy-action.yaml": _using_action("published", "./.github/actions/used"),
+            ".github/actions/used/action.yaml": ACTION,
+            ".github/workflows/w.yaml": _caller("actions/checkout@v4"),
+        },
+    )
+    assert [f.path.parent.name for f in found] == ["used"]
+
+
+def test_a_fixture_action_under_tests_reaches_nothing(tmp_path, monkeypatch):
+    """A test fixture starts no job, so the `uses:` it writes marks nothing
+    live — the same scope rule `check_dead_shell_functions` applies."""
+    found = _check(
+        tmp_path,
+        monkeypatch,
+        {
+            "tests/fixtures/action.yml": _using_action(
+                "fixture", "./.github/actions/used"
+            ),
+            ".github/actions/used/action.yaml": ACTION,
+            ".github/workflows/w.yaml": _caller("actions/checkout@v4"),
+        },
+    )
+    assert [f.path.parent.name for f in found] == ["used"]
+
+
+def test_an_unparseable_root_action_file_withholds_every_verdict(tmp_path, monkeypatch):
+    """It is swept for references, so its `uses:` values are as load-bearing as
+    any other file's, and an unreadable one leaves the graph incomplete."""
+    found = _check(
+        tmp_path,
+        monkeypatch,
+        {
+            "action.yml": "runs:\n  steps: [\n",
+            ".github/actions/used/action.yaml": ACTION,
+            ".github/workflows/w.yaml": _caller("actions/checkout@v4"),
+        },
+    )
+    assert [f.path.name for f in found] == ["action.yml"]
+    assert "reports no unreferenced definition at all" in found[0].message
+
+
+def test_an_untracked_root_action_file_reaches_nothing(tmp_path, monkeypatch):
+    """The sweep reads the git index, so an untracked copy marks nothing live."""
+    root = _root(
+        tmp_path,
+        {
+            ".github/actions/used/action.yaml": ACTION,
+            ".github/workflows/w.yaml": _caller("actions/checkout@v4"),
+        },
+    )
+    (root / "action.yml").write_text(
+        _using_action("published", "./.github/actions/used"), encoding="utf-8"
+    )
+    monkeypatch.setattr(ulu, "REPO_ROOT", root)
+    monkeypatch.setattr(ulu, "WORKFLOWS_DIR", root / ".github" / "workflows")
+    monkeypatch.setattr(ulu, "ACTIONS_DIR", root / ".github" / "actions")
+    found = ulu.check_repo(ulu.WORKFLOWS_DIR, ulu.ACTIONS_DIR)
+    assert [f.path.parent.name for f in found] == ["used"]
 
 
 # ── the clean shapes (false-positive guards) ─────────────────────────────
@@ -437,7 +599,7 @@ def test_a_longer_slug_containing_the_token_suppresses_nothing(tmp_path, monkeyp
     action = f"name: a  # not-{ulu.OPT_OUT}: a different annotation\nruns: {{}}\n"
     found = _check(tmp_path, monkeypatch, {".github/actions/x/action.yaml": action})
     assert len(found) == 1
-    assert "no workflow or action in this repository uses" in found[0].message
+    assert "no workflow or action this repository runs uses" in found[0].message
 
 
 def test_an_opt_out_elsewhere_in_the_file_does_not_reach_the_definition(
@@ -453,6 +615,52 @@ def test_an_opt_out_elsewhere_in_the_file_does_not_reach_the_definition(
     found = _check(tmp_path, monkeypatch, {".github/workflows/c.yaml": callee})
     assert len(found) == 1
     assert "declares `workflow_call` as its only trigger" in found[0].message
+
+
+def test_a_marker_inside_a_quoted_scalar_suppresses_nothing(tmp_path, monkeypatch):
+    """A `#` inside a scalar is content, not a comment. Reading the raw line
+    would let a display label switch the check off."""
+    reason = f"# {ulu.OPT_OUT}: the deploy repo uses this action"
+    found = _check(
+        tmp_path,
+        monkeypatch,
+        {".github/actions/x/action.yaml": f'name: "{reason}"\nruns: {{}}\n'},
+    )
+    assert len(found) == 1
+    assert "no workflow or action this repository runs uses" in found[0].message
+
+
+def test_the_same_words_in_a_real_comment_still_suppress(tmp_path, monkeypatch):
+    """The control for the test above: only the quoting changed."""
+    reason = f"# {ulu.OPT_OUT}: the deploy repo uses this action"
+    assert (
+        _check(
+            tmp_path,
+            monkeypatch,
+            {".github/actions/x/action.yaml": f"name: a  {reason}\nruns: {{}}\n"},
+        )
+        == []
+    )
+
+
+def test_a_suppressed_definition_keeps_what_it_uses_live(tmp_path, monkeypatch):
+    """A valid opt-out says an unseen caller runs this action, so the actions
+    it names run too. Without that, suppressing one finding would create one."""
+    outer = f"# {ulu.OPT_OUT}: the deploy repo uses this action\n" + _using_action(
+        "outer", "./.github/actions/inner"
+    )
+    assert (
+        _check(
+            tmp_path,
+            monkeypatch,
+            {
+                ".github/actions/outer/action.yaml": outer,
+                ".github/actions/inner/action.yaml": ACTION,
+                ".github/workflows/w.yaml": _caller("actions/checkout@v4"),
+            },
+        )
+        == []
+    )
 
 
 # ── parse failures ───────────────────────────────────────────────────────

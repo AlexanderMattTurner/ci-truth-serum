@@ -15,11 +15,15 @@ conjuncts to line up at once, so a file-level strategy alone leaves those layers
 barely touched.
 """
 
+import subprocess
+from pathlib import Path
+
+import pytest
 import yaml
 from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
-from tests._helpers import load_hook
+from tests._helpers import init_test_repo, load_hook
 
 always_reporter = load_hook("check_always_reporter.py", "fuzz_always_reporter")
 required_reporter = load_hook("check_required_reporter.py", "fuzz_required_reporter")
@@ -381,27 +385,58 @@ def test_unused_reusable_input_check_repo_never_crashes(
 # Its entrypoint is check_repo(workflows_dir, actions_dir), for the same reason
 # as the sibling above: whether a definition is reached depends on every OTHER
 # file's `uses:` values. The generated text is written twice, once as a workflow
-# and once as a composite action, so both definition kinds and both reference
-# sites are driven by the same example.
+# and once as a composite action, so both definition kinds are driven by the
+# same example.
+#
+# The fixed workflow names paths NOTHING defines. A reacher that named the two
+# generated files would mark both live, so every example would return the empty
+# list, and the suppression reader, the anchor arithmetic and the message
+# builder would never run. `act/` is unreached on every example for the same
+# reason, and `dead/` pins the finding with a line: see the assertions below.
 _REACHER = (
     "name: reacher\non:\n  pull_request:\njobs:\n  gate:\n"
-    "    uses: ./.github/workflows/wf.yaml\n  work:\n    steps:\n"
-    "      - uses: ./.github/actions/act\n"
+    "    uses: ./.github/workflows/absent.yaml\n  work:\n    steps:\n"
+    "      - uses: ./.github/actions/absent\n"
 )
+
+# A definition nothing reaches, with a `name:` key on line 1 to anchor on.
+_DEAD = "name: dead\nruns:\n  using: composite\n  steps:\n    - run: 'x'\n"
+
+
+@pytest.fixture(scope="module")
+def fuzz_git_repo(tmp_path_factory) -> Path:
+    """A git repo whose file PATHS are fixed, staged once at setup.
+
+    `check_unreferenced_local_uses.reference_files` reads `git ls-files`, so the
+    tree has to be a repo. Only the CONTENTS change between examples, so one
+    `git add` keeps the index right for all of them and no example pays for a
+    `git init`.
+    """
+    root = tmp_path_factory.mktemp("fuzz-repo")
+    init_test_repo(root)
+    wf_dir = root / ".github" / "workflows"
+    act_dir = root / ".github" / "actions" / "act"
+    dead_dir = root / ".github" / "actions" / "dead"
+    wf_dir.mkdir(parents=True)
+    act_dir.mkdir(parents=True)
+    dead_dir.mkdir(parents=True)
+    (wf_dir / "reacher.yaml").write_text(_REACHER, encoding="utf-8")
+    (dead_dir / "action.yaml").write_text(_DEAD, encoding="utf-8")
+    for path in (wf_dir / "wf.yaml", act_dir / "action.yaml"):
+        path.write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    return root
 
 
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(text=workflow_text())
 def test_unreferenced_local_uses_check_repo_never_crashes(
-    text: str, tmp_path_factory, monkeypatch
+    text: str, fuzz_git_repo, monkeypatch
 ) -> None:
-    root = tmp_path_factory.mktemp("repo")
+    root = fuzz_git_repo
     wf_dir = root / ".github" / "workflows"
     act_dir = root / ".github" / "actions" / "act"
-    wf_dir.mkdir(parents=True)
-    act_dir.mkdir(parents=True)
     (wf_dir / "wf.yaml").write_text(text, encoding="utf-8")
-    (wf_dir / "reacher.yaml").write_text(_REACHER, encoding="utf-8")
     (act_dir / "action.yaml").write_text(text, encoding="utf-8")
     monkeypatch.setattr(unreferenced_local_uses, "REPO_ROOT", root)
     monkeypatch.setattr(unreferenced_local_uses, "WORKFLOWS_DIR", wf_dir)
@@ -414,8 +449,19 @@ def test_unreferenced_local_uses_check_repo_never_crashes(
     for path, line, message in found:
         assert isinstance(message, str) and message
         assert isinstance(line, int) and line >= 0
-        if path.name in ("wf.yaml", "action.yaml") and line:
+        # `dead/action.yaml` is fixed text, so only the two files holding the
+        # generated text can be range-checked against its line count.
+        if line and path.parent.name in ("workflows", "act"):
             _assert_lineno_in_range(line, n_lines)
+
+    # Non-vacuity, per example rather than across the run: `dead/` is a
+    # definition no `uses:` reaches, so a run that reports nothing means the
+    # walk marked it live and this property exercised no reporting code.
+    assert found, "check_repo reported nothing, so the dead action read as live"
+    if all("could not parse" not in message for _p, _l, message in found):
+        assert any(
+            path.parent.name == "dead" and line == 1 for path, line, _m in found
+        ), found
 
 
 # --- check_untrusted_exec's own analyzers ------------------------------------
