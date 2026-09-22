@@ -7,6 +7,7 @@ paths:
   - "scripts/**"
   - ".github/scripts/**"
   - ".github/workflows/**"
+  - ".github/actions/**"
 ---
 
 # Shell style
@@ -14,10 +15,10 @@ paths:
 Loaded when you touch shell. The cross-language rules (parsers over regex, fail
 loud, let exceptions propagate) stay in the root `CLAUDE.md`.
 
-- **Never use `|| true` to silence an expected non-zero exit** — it silently swallows unexpected failures too. Branch on the exit code instead: `cmd; rc=$?; [ "${rc:-0}" -le N ] || exit "$rc"`.
+- **Never use `|| true` to silence an expected non-zero exit** — it silently swallows unexpected failures too. Branch on the exit code instead, in a form that survives `errexit`: `if cmd; then rc=0; else rc=$?; fi` and then `[[ "${rc}" -le N ]] || exit "${rc}"`. A bare `cmd; rc=$?` loses the status under `set -e`, because the shell exits on the failure before the assignment runs — and GitHub starts every `shell: bash` block with `-eo pipefail`, so an inline `run:` block always has `errexit` on.
 - **Iterating word-split command output under the shared `shellharden` + `shellcheck` hooks**: don't write `for x in $(cmd)` — `shellharden` auto-quotes `$(cmd)`, killing the split, and `shellcheck` then fails with `SC2066`. Don't reach for `mapfile`/`readarray` if the script must run on macOS bash 3.2 (it's bash 4+). Use a portable `while IFS= read -r line; do arr+=("$line"); done < <(cmd)` array, consumed as `"${arr[@]}"`.
 - **`cmd | grep -q` under `set -o pipefail` is a latent SIGPIPE bug.** `grep -q` exits on first match, closing the pipe; if the upstream has more output buffered, it gets SIGPIPE-killed (exit 141), which `pipefail` reports as failure even though the match succeeded. Timing-dependent: hides on fast machines, bites on slow CI runners. Fix: capture to a variable (`out=$(cmd); [[ "$out" == *pattern* ]]`) or drop `-q` and consume all output.
-- **`exit` inside `$(…)` only kills the subshell — the parent receives an empty string silently.** A fail-loud helper whose `exit` is swallowed by command substitution cannot abort the caller. Call it as a plain command (`helper; rc=$?`) instead of `var=$(helper)`, so its `exit` propagates. Use `printf -v "$target"` to assign by name from inside the helper when needed.
+- **`exit` inside `$(…)` only kills the subshell — the parent receives an empty string silently.** A fail-loud helper whose `exit` is swallowed by command substitution cannot abort the caller. Call it as a plain command instead of `var=$(helper)`, so its `exit` propagates; capture its status with the `if` form above when you need it. Use `printf -v "$target"` to assign by name from inside the helper when needed.
 - **A guard's success means its post-condition holds, not that its command exited 0.** `mkdir -p "$X"` returns 0 on macOS/BSD even when `$X` is a dangling symlink, so trusting exit status lets a later write die cryptically. Verify the state you need (`[[ -d "$X" ]]`) and fail loud.
 - **A value-taking CLI flag arm must prove its value exists before reading it.** Under `set -u`, a `case "$1"` arm that does `X="$2"; shift 2` on the strength of only the loop's `while [[ $# -gt 0 ]]` crashes with a raw `$2: unbound variable` when the flag is the final arg — guard each arm with `[[ $# -ge 2 ]] || die "--x needs a value"` (or `${2:?…}`) before the read.
 - **Scope signal traps inside the helper, not the caller.** A caller-side `trap ... INT` that stays armed across a function call can fire during that function's return-unwind and corrupt bash 5.2's variable-context stack. Scope the trap inside the helper around just the interruptible command, clear it before returning, and surface the interrupt via return status.
