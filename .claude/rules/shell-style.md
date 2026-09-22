@@ -6,6 +6,7 @@ paths:
   - "setup.sh"
   - "scripts/**"
   - ".github/scripts/**"
+  - ".github/workflows/**"
 ---
 
 # Shell style
