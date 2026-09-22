@@ -193,11 +193,24 @@ def jobless_failures(repo: str, runs: list[dict], token: str) -> list[dict]:
 def run_ref(run: dict) -> str:
     """Where RUN ran, as a branch name or as a short commit SHA.
 
-    `head_branch` is null for a run off a ref that carries no branch name, such
-    as a tag. The SHA stands in there, because the point of this value is to
-    name a place the reader can open.
+    A branch name alone is ambiguous across repositories. `head_branch` holds
+    the branch name on its own, and a run from a fork carries a branch that
+    lives in the FORK. A reader sent to `patch-1` opens the scanned repository,
+    where that name is absent or belongs to somebody else's work. A cross-repo
+    head is therefore written the way GitHub writes it, `owner/fork:branch`.
+
+    Two runs name no branch this tool can place, and the short SHA stands in for
+    both. A run off a tag carries a null `head_branch`. A run from a fork that
+    has since been deleted carries a null `head_repository`, so the branch is
+    real but the repository holding it is unknown.
     """
-    return run["head_branch"] or run["head_sha"][:7]
+    branch = run["head_branch"]
+    head_repo = run["head_repository"]
+    if not branch or not head_repo:
+        return run["head_sha"][:7]
+    if head_repo["full_name"] != run["repository"]["full_name"]:
+        return f"{head_repo['full_name']}:{branch}"
+    return branch
 
 
 @dataclass(frozen=True)
@@ -273,6 +286,7 @@ def _truncation_lines(findings: list[StartupFailure]) -> list[str]:
 # and `\` escapes whatever follows it, so a value carrying one can defeat the
 # escape put on the other.
 _CELL_SYNTAX = re.compile(r"[\\|]")
+_BACKTICK_RUN = re.compile(r"`+")
 
 
 def _cell(text: str) -> str:
@@ -288,6 +302,29 @@ def _cell(text: str) -> str:
     live column separator.
     """
     return _CELL_SYNTAX.sub(lambda match: "\\" + match.group(), text)
+
+
+def _code_cell(text: str) -> str:
+    """TEXT as a code span inside one Markdown table cell.
+
+    A code span ends at the first run of backticks as long as the run that
+    opened it. Git allows a backtick in a branch name, so a fixed one-backtick
+    fence lets a ref such as ``wip`odd`` close its own span, and the rest of the
+    ref renders as prose. The fence here is one backtick longer than the longest
+    run inside, which no content can close. A value that opens or closes with a
+    backtick also takes one space of padding, which the reader does not see.
+
+    Only the `|` is escaped, unlike `_cell`. GFM strips a `\\|` while it splits
+    the row, before it reads the span, so the pipe survives. A backslash is
+    literal inside a code span, so escaping one would SHOW the escape. Git
+    forbids a backslash in a ref name, so this is about the format rather than
+    about a value seen here.
+    """
+    body = text.replace("|", "\\|")
+    longest = max((len(run) for run in _BACKTICK_RUN.findall(body)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if not body or body.startswith("`") or body.endswith("`") else ""
+    return f"{fence}{pad}{body}{pad}{fence}"
 
 
 def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> str:
@@ -313,8 +350,8 @@ def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> 
             "| Workflow | File | Ref | Jobless failed runs | Newest |",
             "| --- | --- | --- | --- | --- |",
             *(
-                f"| {_cell(f.name)} | `{_cell(f.path)}` | "
-                f"{', '.join('`' + _cell(ref) + '`' for ref in f.refs)} | "
+                f"| {_cell(f.name)} | {_code_cell(f.path)} | "
+                f"{', '.join(_code_cell(ref) for ref in f.refs)} | "
                 f"{len(f.runs)} | [{f.newest}]({f.newest_run['html_url']}) |"
                 for f in findings
             ),

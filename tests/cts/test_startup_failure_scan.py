@@ -36,6 +36,7 @@ def run(
     created_at: str = "2026-08-01T00:00:00Z",
     head_branch: str | None = "main",
     head_sha: str = "0123456789abcdef",
+    head_repo: str | None = REPO,
 ) -> dict:
     return {
         "id": run_id,
@@ -43,6 +44,8 @@ def run(
         "created_at": created_at,
         "head_branch": head_branch,
         "head_sha": head_sha,
+        "head_repository": {"full_name": head_repo} if head_repo else None,
+        "repository": {"full_name": REPO},
         "html_url": f"https://github.com/{REPO}/actions/runs/{run_id}",
     }
 
@@ -318,6 +321,57 @@ def test_a_run_off_a_nameless_ref_falls_back_to_its_sha():
     place the reader can open."""
     nameless = run(11, "startup_failure", head_branch=None, head_sha="abcdef1234567")
     assert mod.run_ref(nameless) == "abcdef1"
+
+
+def test_a_fork_ref_carries_the_repository_that_holds_it():
+    """`head_branch` holds the branch name alone, and a fork's branch lives in
+    the FORK. A reader sent to `patch-1` opens the scanned repository, where
+    that name is absent or belongs to somebody else's work."""
+    forked = run(11, "startup_failure", head_branch="patch-1", head_repo="mallory/fork")
+    assert mod.run_ref(forked) == "mallory/fork:patch-1"
+    # Non-vacuity: the same branch name in the scanned repo stays bare.
+    assert mod.run_ref(run(12, "startup_failure", head_branch="patch-1")) == "patch-1"
+
+
+def test_a_run_from_a_deleted_fork_falls_back_to_its_sha():
+    """A deleted fork leaves a null `head_repository`. The branch is real, but
+    no repository here holds it, so naming it alone would misdirect the
+    reader."""
+    orphan = run(
+        11,
+        "startup_failure",
+        head_branch="patch-1",
+        head_sha="abcdef1234567",
+        head_repo=None,
+    )
+    assert mod.run_ref(orphan) == "abcdef1"
+
+
+def test_a_backtick_in_a_ref_cannot_close_its_code_span():
+    """Git allows a backtick in a branch name. A one-backtick fence lets the ref
+    close its own span, and the rest of it renders as prose rather than as the
+    exact ref the reader must go and inspect."""
+    finding = mod.StartupFailure(
+        name="Lint",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure", head_branch="wip`odd")],
+        scanned=1,
+        total=1,
+    )
+    assert "| ``wip`odd`` |" in mod.render([finding], 7, markdown=True)
+
+
+def test_a_ref_that_opens_with_a_backtick_is_padded():
+    """A code span whose body opens or closes with a backtick needs one space of
+    padding, which GFM strips back out before the reader sees it."""
+    finding = mod.StartupFailure(
+        name="Lint",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure", head_branch="`odd")],
+        scanned=1,
+        total=1,
+    )
+    assert "| `` `odd `` |" in mod.render([finding], 7, markdown=True)
 
 
 def test_a_pipe_in_a_name_or_a_ref_keeps_the_table_columns():
