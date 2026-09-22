@@ -285,8 +285,14 @@ def test_the_report_names_the_ref_a_jobless_run_used():
         total=1,
     )
     assert finding.refs == ["template-sync"]
-    for markdown in (False, True):
-        assert "template-sync" in mod.render([finding], 7, markdown=markdown)
+    # The whole text line, so a neighbouring mistake in that f-string fails too:
+    # dropping the URL or mangling the join leaves a substring check green.
+    assert (
+        "  .github/workflows/lint.yaml on template-sync: 1 jobless failed run(s), "
+        "newest 2026-08-01T00:00:00Z "
+        "https://github.com/owner/name/actions/runs/11"
+    ) in mod.render([finding], 7, markdown=False)
+    assert "`template-sync`" in mod.render([finding], 7, markdown=True)
 
 
 def test_the_report_names_every_ref_once_and_in_order():
@@ -333,6 +339,28 @@ def test_a_pipe_in_a_name_or_a_ref_keeps_the_table_columns():
     assert "Lint \\| fast" in row
     assert "`wip\\|odd`" in row
     # Five headings, so five cells: each raw `|` above would have made a sixth.
+    assert row.count("|") == row.count("\\|") + 6
+
+
+def test_a_backslash_before_a_pipe_does_not_defeat_the_escape():
+    """A pipe-only escape leaves the hole open. GFM reads the `\\\\` it produces as
+    one literal backslash, and the `|` after it opens a column again. The row
+    below is the one a count of escaped pipes cannot tell from a correct one."""
+    finding = mod.StartupFailure(
+        # A name holding a backslash immediately before a pipe.
+        name="Lint \\| fast",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure")],
+        scanned=1,
+        total=1,
+    )
+    row = next(
+        line
+        for line in mod.render([finding], 7, markdown=True).splitlines()
+        if line.startswith("| Lint ")
+    )
+    # Both characters escaped: `\\` renders as one backslash, `\|` as one pipe.
+    assert "Lint \\\\\\| fast" in row
     assert row.count("|") == row.count("\\|") + 6
 
 

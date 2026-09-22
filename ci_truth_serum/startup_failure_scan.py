@@ -56,6 +56,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -268,14 +269,25 @@ def _truncation_lines(findings: list[StartupFailure]) -> list[str]:
     ]
 
 
+# The two characters a Markdown table cell reads as syntax. `|` closes the cell,
+# and `\` escapes whatever follows it, so a value carrying one can defeat the
+# escape put on the other.
+_CELL_SYNTAX = re.compile(r"[\\|]")
+
+
 def _cell(text: str) -> str:
     """TEXT as the contents of one Markdown table cell.
 
     A raw `|` closes the cell early, so the row grows a column and every heading
     after it names the wrong value. Git allows a `|` in a branch name, and
-    GitHub allows one in a workflow's `name:`, so every value here is escaped.
+    GitHub allows one in a workflow's `name:`.
+
+    Both characters are escaped in ONE pass, so no pass can re-touch what an
+    earlier pass wrote. Escaping only `|` leaves the hole open: a name holding
+    `\\|` becomes `\\\\|`, which GFM reads as one literal backslash and then a
+    live column separator.
     """
-    return text.replace("|", "\\|")
+    return _CELL_SYNTAX.sub(lambda match: "\\" + match.group(), text)
 
 
 def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> str:
