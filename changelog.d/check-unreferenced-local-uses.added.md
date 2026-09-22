@@ -1,0 +1,1 @@
+- `check-unreferenced-local-uses`: reports a local composite action, or a workflow whose only trigger is `workflow_call`, that no `uses:` in this repository reaches. Such a definition never runs, and it still reads to the next author as a live code path. Name an external caller with `# unreferenced-ok: <reason>`.

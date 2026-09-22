@@ -769,6 +769,19 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-unreferenced-local-uses
+  name: "extra: every local composite action and reusable workflow needs a caller"
+  description: A definition no `uses:` reaches never runs. It still reads to the next author as a live code path, so they edit it or copy it. The check reports a composite action nothing uses, and a workflow whose only trigger is `workflow_call` that no job calls.
+  entry: python -m ci_truth_serum.check_unreferenced_local_uses
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  # The `uses:` that reaches a definition lives in ANOTHER file, so a definition
+  # can lose its last caller with no edit to itself. The hook rescans every
+  # workflow and action whenever any one of them is staged.
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 - id: check-multi-cron-gating
   name: "extra: every job in a multi-cron workflow must name its cron"
   description: GitHub starts every schedule-eligible job on EVERY cron fire, so in a file with two or more crons a job gated on the bare `github.event_name == 'schedule'` (or on nothing) runs for all of them — the observed cost was a paid eval on a schedule nobody asked for, billed silently. Single-cron workflows are exempt.

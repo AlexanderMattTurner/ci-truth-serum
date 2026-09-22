@@ -64,6 +64,9 @@ unscoped_tool_grant = load_hook(
 unused_reusable_input = load_hook(
     "check_unused_reusable_input.py", "fuzz_unused_reusable_input"
 )
+unreferenced_local_uses = load_hook(
+    "check_unreferenced_local_uses.py", "fuzz_unreferenced_local_uses"
+)
 
 # Each returns a finding shape; the contract under fuzz is only "no crash, and a
 # well-typed result". `expects_list` distinguishes the list-returning checks from
@@ -370,6 +373,48 @@ def test_unused_reusable_input_check_repo_never_crashes(
         assert isinstance(message, str) and message
         assert isinstance(line, int) and line >= 0
         if path.name == "wf.yaml" and line:
+            _assert_lineno_in_range(line, n_lines)
+
+
+# --- check_unreferenced_local_uses's repo-level surface ----------------------
+#
+# Its entrypoint is check_repo(workflows_dir, actions_dir), for the same reason
+# as the sibling above: whether a definition is reached depends on every OTHER
+# file's `uses:` values. The generated text is written twice, once as a workflow
+# and once as a composite action, so both definition kinds and both reference
+# sites are driven by the same example.
+_REACHER = (
+    "name: reacher\non:\n  pull_request:\njobs:\n  gate:\n"
+    "    uses: ./.github/workflows/wf.yaml\n  work:\n    steps:\n"
+    "      - uses: ./.github/actions/act\n"
+)
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(text=workflow_text())
+def test_unreferenced_local_uses_check_repo_never_crashes(
+    text: str, tmp_path_factory, monkeypatch
+) -> None:
+    root = tmp_path_factory.mktemp("repo")
+    wf_dir = root / ".github" / "workflows"
+    act_dir = root / ".github" / "actions" / "act"
+    wf_dir.mkdir(parents=True)
+    act_dir.mkdir(parents=True)
+    (wf_dir / "wf.yaml").write_text(text, encoding="utf-8")
+    (wf_dir / "reacher.yaml").write_text(_REACHER, encoding="utf-8")
+    (act_dir / "action.yaml").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(unreferenced_local_uses, "REPO_ROOT", root)
+    monkeypatch.setattr(unreferenced_local_uses, "WORKFLOWS_DIR", wf_dir)
+    monkeypatch.setattr(unreferenced_local_uses, "ACTIONS_DIR", act_dir.parent)
+
+    found = unreferenced_local_uses.check_repo(wf_dir, act_dir.parent)
+    # deterministic
+    assert found == unreferenced_local_uses.check_repo(wf_dir, act_dir.parent)
+    n_lines = len(text.splitlines())
+    for path, line, message in found:
+        assert isinstance(message, str) and message
+        assert isinstance(line, int) and line >= 0
+        if path.name in ("wf.yaml", "action.yaml") and line:
             _assert_lineno_in_range(line, n_lines)
 
 
