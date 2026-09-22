@@ -46,8 +46,9 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import is_yaml_source  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_linecheck import yaml_marker_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import yaml_script_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -146,7 +147,7 @@ def _source_opted_out(label: str, text: str) -> bool:
     LABEL's suffix picks the dialect, because the two source kinds spell a
     comment differently. A `.sh` script is read as written: every `#` there
     opens a shell comment. A composite action's manifest is YAML, so the marker
-    must sit in a real YAML comment or in a `run:` block scalar's body — a `#`
+    must sit in a real YAML comment or in a `run:` value, any style — a `#`
     inside a quoted scalar is a value the action's own author writes, and
     honouring `name: "# allow-externalized-marker: x"` would switch this check
     off for that action.
@@ -155,8 +156,8 @@ def _source_opted_out(label: str, text: str) -> bool:
     them whole: a policy marker inside a quoted value is still the thing the
     step runs.
     """
-    if label.endswith((".yml", ".yaml")):
-        return any(_OPTOUT_RE.search(line) for line in yaml_marker_view(text))
+    if is_yaml_source(label):
+        return any(_OPTOUT_RE.search(line) for line in yaml_script_view(text))
     return bool(_OPTOUT_RE.search(text))
 
 

@@ -48,8 +48,10 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_python_source,
     is_shell_source,
     is_yaml_source,
-    yaml_block_scalar_spans,
     yaml_comment_text,
+    yaml_run_scalars,
+    yaml_run_script,
+    yaml_scannable,
 )
 
 
@@ -146,27 +148,36 @@ def yaml_comments(text: str) -> dict[int, str]:
     nothing about this tree. Reading it as one SUPPRESSED the lint, which is the
     fail-open direction.
 
-    A workflow holds a second language. A `run: |` body is a shell script, where
-    a `#` does open a comment, and PyYAML reports that body as one scalar. So
-    each block scalar goes to ``shell_comments`` and the bash grammar answers
-    the same question inside it. The span starts at the `|` indicator, so the
-    fragment's line numbers are the file's; only that indicator is blanked
-    first, because it is not bash.
+    A workflow holds a second language. A `run:` value is a shell script, where
+    a `#` does open a comment, and PyYAML reports that value as one scalar. So
+    each `run:` scalar goes to ``shell_comments`` and the bash grammar answers
+    the same question inside it. The KEY picks those scalars, never the block
+    style `|`: a `run: 'git diff  # why'` is a script written on one line, and a
+    `description: |` body is prose. ``yaml_run_script`` blanks the YAML that
+    writes each scalar and keeps every offset, so a line number the bash grammar
+    reports is the file's own.
+
+    A text PyYAML cannot scan falls back to ``text_comments``, as the Python
+    branch of ``comment_lines`` does for source that will not tokenize. The
+    views above err the other way on such a text, and both directions are right
+    for what they read: a lost marker leaves a finding standing, but an
+    all-blank view reports a malformed workflow as having no comments at all,
+    which is the false green. The cost of the fallback is that a `#` inside a
+    quoted scalar reads as a comment again, so an opt-out written there
+    suppresses — on a file that does not parse, and only until it does.
     """
+    if not yaml_scannable(text):
+        return text_comments(text)
     fragments = [
         (lineno, body)
         for lineno, line in enumerate(yaml_comment_text(text).split("\n"), 1)
         if (body := comment_body(line)) is not None
     ]
-    for start, end in yaml_block_scalar_spans(text):
-        body_start = text.find("\n", start, end)
-        if body_start < 0:
-            continue  # a span with no newline holds the indicator and no body
-        script = " " * (body_start - start) + text[body_start:end]
-        offset = text.count("\n", 0, start)
+    for scalar in yaml_run_scalars(text):
+        offset = text.count("\n", 0, scalar.start)
         fragments += [
             (offset + lineno, comment)
-            for lineno, comment in shell_comments(script).items()
+            for lineno, comment in shell_comments(yaml_run_script(text, scalar)).items()
         ]
     return _merge(sorted(fragments))
 

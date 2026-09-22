@@ -86,7 +86,7 @@ from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
     workflow_files,
-    yaml_marker_view,
+    yaml_script_view,
 )
 from _cts_py_imports import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     interpreter_scripts,
@@ -524,14 +524,14 @@ def suppressions(text: str) -> tuple[dict[str, str], list[str]]:
     """(dep -> reason, deps suppressed without a reason) from
     `# sparse-checkout-ok:` comments anywhere in the workflow's TEXT.
 
-    Read from `yaml_marker_view`, which keeps a real YAML comment and a block
-    scalar's body. The marker anchors on a `#`, and a `#` inside a quoted scalar
+    Read from `yaml_script_view`, which keeps a real YAML comment and a `run:`
+    value in any style. The marker anchors on a `#`, and a `#` inside a quoted scalar
     is a value the workflow's own author writes, so
     `name: "deploy # sparse-checkout-ok: x"` marks nothing.
     """
     with_reason: dict[str, str] = {}
     reasonless: list[str] = []
-    for match in _OPT_OUT_RE.finditer("\n".join(yaml_marker_view(text))):
+    for match in _OPT_OUT_RE.finditer("\n".join(yaml_script_view(text))):
         dep = _normalize(match.group("dep"))
         reason = match.group("reason").strip()
         if reason:

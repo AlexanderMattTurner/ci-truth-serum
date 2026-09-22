@@ -2135,25 +2135,53 @@ def yaml_comment_text(text: str) -> str:
     alike. See ``yaml_comment_view`` for what the view is and why.
     """
     blanked = strip_yaml_comments(text)
-    return "".join(
+    view = [
         original if original != stripped or original in _LINE_BOUNDARY else " "
         for original, stripped in zip(text, blanked)
-    )
+    ]
+    for start, end in _block_header_comments(text):
+        view[start:end] = text[start:end]
+    return "".join(view)
 
 
-# The two scalar styles that hold a whole nested document: `run: |` and `run: >`.
-# Everything else — plain, single-quoted, double-quoted — is one value.
+def _block_header_comments(text: str) -> list[tuple[int, int]]:
+    """(start, end) offsets of every real comment on a BLOCK SCALAR's header.
+
+    PyYAML's scalar token opens at the `|` or `>` indicator, so its span
+    swallows a comment written after it — `description: | # <token>: why`. That
+    comment is a real YAML comment, but ``strip_yaml_comments`` protects the
+    whole token, so the inversion above blanks it. Re-expose it.
+
+    Exact, because the grammar allows only the indicator, then chomping and
+    indentation indicators, then blanks, then a comment to end of line. So the
+    first `#` on the header line opens a comment and nothing else can.
+    """
+    found: list[tuple[int, int]] = []
+    for start, end in yaml_block_scalar_spans(text):
+        header_end = text.find("\n", start, end)
+        if header_end < 0:
+            continue
+        hash_at = text.find("#", start, header_end)
+        if hash_at >= 0:
+            found.append((hash_at, header_end))
+    return found
+
+
+# PyYAML's `ScalarToken.style` for each way of writing a scalar. Membership is
+# tested against a SET, never against the string "|>": a plain scalar's style is
+# the empty string, and `"" in "|>"` is True, so the substring test counts every
+# plain value as a block one.
 _BLOCK_STYLES = frozenset("|>")
+_QUOTE_STYLES = frozenset("'\"")
 
 
 def yaml_block_scalar_spans(text: str) -> list[tuple[int, int]]:
     """(start, end) character offsets of every BLOCK scalar in TEXT.
 
-    A span starts at the `|` or `>` indicator, not at the body's first line, so
-    a caller that slices TEXT keeps the file's own line numbering.
-
-    Returns nothing for a text PyYAML cannot tokenize, which keeps
-    ``yaml_marker_view`` erring closed on one.
+    Only ``_block_header_comments`` wants these: a block scalar is the one
+    style whose token span reaches back over a real comment. Which scalar holds
+    a SCRIPT is a different question, and the key answers that one — see
+    ``yaml_run_scalars``.
     """
     try:
         return [
@@ -2166,27 +2194,122 @@ def yaml_block_scalar_spans(text: str) -> list[tuple[int, int]]:
         return []
 
 
-def yaml_marker_view(text: str) -> list[str]:
+def yaml_scannable(text: str) -> bool:
+    """True when PyYAML's scanner reaches the end of TEXT.
+
+    Every view above errs CLOSED on a text it cannot scan, and that is right for
+    a SUPPRESSION: a lost marker leaves the finding standing. A caller that reads
+    comments to FIND something needs the opposite answer, because an all-blank
+    view reports a clean file. Ask this first and pick the safe direction for
+    what you are reading — ``_cts_comments.yaml_comments`` does.
+    """
+    try:
+        for _ in scan(text):
+            pass
+    except yaml.YAMLError:
+        return False
+    return True
+
+
+# The key whose value GitHub hands to a shell. A `#` inside that value opens the
+# script's own comment; a `#` in any other value is content the author wrote.
+_SCRIPT_KEY = "run"
+
+
+class RunScalar(NamedTuple):
+    """One `run:` value: where it sits in the file, and how it is written."""
+
+    start: int
+    end: int
+    style: str | None
+
+
+def yaml_run_scalars(text: str) -> list[RunScalar]:
+    """Every `run:` VALUE in TEXT, in the order it is written.
+
+    The question is which scalar GitHub hands to a shell, and the KEY answers
+    it. Scalar STYLE does not: it was the first spelling of this function and it
+    was wrong both ways. `run: 'git diff  # <token>: why'` is a script written
+    as a quoted scalar, and a style test lost the marker in it; `description: |`
+    and `if: >` are prose and an expression written as block scalars, and a
+    style test read a marker out of both. A `defaults.run:` holds a MAPPING, so
+    it has no scalar value and needs no special case.
+
+    A span covers the whole value TOKEN, so it holds the YAML that writes the
+    scalar as well as the script: a block scalar opens at the `|` or `>`
+    indicator, and a quoted scalar carries its quotes. A caller that slices TEXT
+    therefore keeps the file's own line and column numbering, and
+    ``yaml_run_script`` hands it the same span with that YAML blanked out.
+
+    Returns nothing for a text PyYAML cannot tokenize, which keeps
+    ``yaml_script_view`` erring closed on one.
+    """
+    found: list[RunScalar] = []
+    key: str | None = None
+    expecting_key = False
+    try:
+        tokens = list(scan(text))
+    except yaml.YAMLError:
+        return []
+    for token in tokens:
+        if isinstance(token, yaml.tokens.KeyToken):
+            expecting_key = True
+        elif isinstance(token, yaml.tokens.ScalarToken):
+            if expecting_key:
+                key = token.value
+            elif key == _SCRIPT_KEY:
+                found.append(
+                    RunScalar(token.start_mark.index, token.end_mark.index, token.style)
+                )
+            expecting_key = False
+    return found
+
+
+def yaml_run_script(text: str, scalar: RunScalar) -> str:
+    """SCALAR's span with the YAML that writes it blanked, so bash may parse it.
+
+    Every byte keeps its offset, so a line number counted in the result is the
+    line number in TEXT. Two kinds of byte are not shell and go to a space:
+
+      * a block scalar's header — the `|` or `>` and the chomping and
+        indentation indicators after it, up to the first newline;
+      * a quoted scalar's opening and closing quote.
+
+    Leave them in and the bash grammar reads the whole script as ONE STRING, so
+    `run: 'git diff  # why'` reports no comment at all. That is the same
+    fail-closed the block-style proxy used to cause, one layer down.
+    """
+    body = text[scalar.start : scalar.end]
+    if scalar.style in _BLOCK_STYLES:
+        header = body.split("\n", 1)[0]
+        return " " * len(header) + body[len(header) :]
+    if scalar.style in _QUOTE_STYLES:
+        return " " + body[1:-1] + " " if len(body) >= 2 else " " * len(body)
+    return body
+
+
+def yaml_script_view(text: str) -> list[str]:
     """TEXT's lines holding every place a workflow may carry an opt-out marker.
 
     Two places, because a workflow holds two languages:
 
-      * a real YAML comment, which ``yaml_comment_view`` finds. A `#` inside a
-        quoted scalar is a value the workflow's author writes, so it is blanked;
-      * a BLOCK scalar's body — `run: |` and `run: >`. That body is a shell
-        script, where a `#` opens the script's own comment. An author writes the
-        marker there, beside the line it is about, and the comment view blanks
-        the whole body.
+      * a real YAML comment, which ``yaml_comment_view`` finds. A `#` inside any
+        other value is content the workflow's author writes, so it is blanked;
+      * a `run:` value, whatever style it is written in. GitHub hands that value
+        to a shell, where a `#` opens the script's own comment, and an author
+        writes the marker there beside the line it is about.
 
-    Column offsets and line numbers survive, like ``yaml_comment_view``'s. Take
-    this only where a marker beside a `run:` line is in contract; take the
-    comment view where the marker classifies the JOB, so a comment printed by
-    one step's script cannot speak for the job.
+    Column offsets and line numbers survive, like ``yaml_comment_view``'s.
+
+    This view says which SURFACES may carry a marker. It says nothing about
+    which findings that marker clears — that scope is each check's own contract,
+    and the check enforces it by the slice of text it passes in. Do not reach
+    for the comment view to narrow a scope: a real YAML comment at the top of a
+    file is exactly as wide as a script comment in it.
     """
-    view = yaml_comment_text(text)
-    out = list(view)
-    for start, end in yaml_block_scalar_spans(text):
-        out[start:end] = text[start:end]
+    out = list(yaml_comment_text(text))
+    for scalar in yaml_run_scalars(text):
+        out[scalar.start : scalar.end] = text[scalar.start : scalar.end]
     return "".join(out).splitlines()
 
 

@@ -185,13 +185,12 @@ def test_the_required_reason_may_not_be_borrowed_from_the_next_line() -> None:
 # an author could not learn the rule once. `annotation_window` is the one
 # answer; reaching for a neighbouring line by hand is how that drifts back.
 #
-# Matched across line breaks, because a formatter splits a long call and the
-# per-line scan this started as read the two halves as two clean lines. That is
-# how `annotated(\n    comments[line - 1], OPT_OUT\n)` shipped unseen.
-_HANDROLLED_WINDOW = re.compile(
-    r"\bannotated\(\s*[\w.]+\[[^\]]*[-+]\s*\d+\s*\]",
-    re.DOTALL,
-)
+# `finditer` runs over the WHOLE source, not line by line, because a formatter
+# splits a long call and the per-line scan this started as read the two halves
+# as two clean lines. That is how `annotated(\n    comments[line - 1], OPT_OUT\n)`
+# shipped unseen. `\s` already crosses the break, so no flag is needed — the
+# pattern has no `.` for `re.DOTALL` to widen.
+_HANDROLLED_WINDOW = re.compile(r"\bannotated\(\s*[\w.]+\[[^\]]*[-+]\s*\d+\s*\]")
 
 
 def _handrolled_windows(src: str) -> list[int]:

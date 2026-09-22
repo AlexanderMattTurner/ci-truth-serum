@@ -74,23 +74,33 @@ def test_unrelated_prefix_ignored():
 # ── collect_optouts ──────────────────────────────────────────────────────────
 def test_collect_optouts_requires_name_and_reason():
     assert es.collect_optouts(
-        "# env-symmetry-ok: GLOVEBOX_EXT supplied by the CI environment"
+        "# env-symmetry-ok: GLOVEBOX_EXT supplied by the CI environment", "a.sh"
     ) == {"GLOVEBOX_EXT"}
     # name but no reason → not an opt-out
-    assert es.collect_optouts("# env-symmetry-ok: GLOVEBOX_EXT") == set()
-    assert es.collect_optouts("# env-symmetry-ok:") == set()
+    assert es.collect_optouts("# env-symmetry-ok: GLOVEBOX_EXT", "a.sh") == set()
+    assert es.collect_optouts("# env-symmetry-ok:", "a.sh") == set()
 
 
 def test_collect_optouts_ignores_a_hash_inside_a_yaml_value():
-    """On a workflow the marker must sit in a real YAML comment. One marker
+    """On a workflow the marker must sit where a `#` opens a comment. One marker
     exempts a name across the WHOLE tree, so honouring a step's display name
     would hide a half-finished rename anywhere in the repository."""
     text = '      - name: "seed # env-symmetry-ok: GLOVEBOX_EXT pretend"\n'
-    assert es.collect_optouts(text, is_yaml=True) == set()
+    assert es.collect_optouts(text, "w.yaml") == set()
     # Non-vacuity: the same marker in a real comment on the same file still counts.
     assert es.collect_optouts(
-        "      # env-symmetry-ok: GLOVEBOX_EXT supplied by the runner\n", is_yaml=True
+        "      # env-symmetry-ok: GLOVEBOX_EXT supplied by the runner\n", "w.yaml"
     ) == {"GLOVEBOX_EXT"}
+
+
+def test_collect_optouts_reads_a_run_script_comment():
+    """A `run:` value is a shell script, where a `#` opens a real comment. The
+    author writes the marker there, beside the assignment it excuses."""
+    text = "      - run: |\n          export GLOVEBOX_EXT=1  # env-symmetry-ok: GLOVEBOX_EXT read by the runner\n"
+    assert es.collect_optouts(text, "w.yaml") == {"GLOVEBOX_EXT"}
+    # The same script written on one line carries the marker just as well.
+    quoted = "      - run: 'export GLOVEBOX_EXT=1  # env-symmetry-ok: GLOVEBOX_EXT read by the runner'\n"
+    assert es.collect_optouts(quoted, "w.yaml") == {"GLOVEBOX_EXT"}
 
 
 # ── analyze ──────────────────────────────────────────────────────────────────

@@ -71,7 +71,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     strip_yaml_comments,
     workflow_files as _workflow_files,
-    yaml_marker_view,
+    yaml_script_view,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -171,7 +171,7 @@ def _opted_out(
     Three views of the file, and each answers one question. SOURCE_LINES is the
     file as written, and it shapes the window: which lines are blank, and which
     hold only a comment. MARKERS is where a marker may be written on each of
-    those lines — a real YAML comment, or a `run:` block scalar's body, where a
+    those lines — a real YAML comment, or a `run:` value in any style, where a
     grant sits beside its own shell comment. A `#` inside a quoted scalar is
     neither, so `name: "# <token>"` marks nothing. The scan text of `findings`
     is the third view, and it finds the grant itself.
@@ -193,7 +193,7 @@ def findings(text: str) -> list[tuple[int, str]]:
     scan_lines = strip_yaml_comments(text).splitlines()
     # Where a marker may be written: a real YAML comment, or a `run:` block
     # scalar's body, where the `#` is the script's own comment.
-    marker_lines = yaml_marker_view(text)
+    marker_lines = yaml_script_view(text)
 
     out: list[tuple[int, str]] = []
     for index, scanned in enumerate(scan_lines):

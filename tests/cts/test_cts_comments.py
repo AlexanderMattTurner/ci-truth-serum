@@ -121,10 +121,23 @@ def test_yaml_comments_reads_a_run_body_with_the_bash_grammar() -> None:
     assert comments.yaml_comments(text) == {6: "# yes"}
 
 
-def test_yaml_comments_err_closed_on_an_untokenizable_file() -> None:
-    """A file PyYAML cannot scan reports no comment, so every suppression is
-    lost and the finding stands. That is the safe direction for an opt-out."""
-    assert comments.yaml_comments('key: "unterminated\n# lost\n') == {}
+def test_yaml_comments_reads_a_quoted_one_line_run_as_shell() -> None:
+    """A `run:` written on one line is still a script, and the quotes around it
+    are YAML rather than shell. Leave them in and bash reads the whole value as
+    ONE STRING, so the comment in it disappears."""
+    text = "jobs:\n  a:\n    steps:\n      - run: 'git diff  # yes'\n"
+    assert comments.yaml_comments(text) == {4: "# yes "}
+
+
+def test_yaml_comments_falls_back_on_an_untokenizable_file() -> None:
+    """A file PyYAML cannot scan falls back to the delimiter scan, as the Python
+    branch does for source that will not tokenize. The views err the other way,
+    and both directions are right for what they read: a lost marker leaves a
+    finding standing, but an empty comment map reports a malformed workflow as
+    having no narration at all, which is the false green."""
+    assert comments.yaml_comments('key: "unterminated\n# kept\n') == {2: "# kept"}
+    # Non-vacuity: the scanner, not the fallback, answers a file it can read.
+    assert comments.yaml_comments('key: "# value"\n') == {}
 
 
 # ── comment_lines: the dispatcher ────────────────────────────────────────

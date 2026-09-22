@@ -320,6 +320,28 @@ def test_an_annotation_inside_a_run_block_scalar_opts_out(tmp_path):
     assert _verdict(tmp_path, body) == []
 
 
+def test_an_annotation_inside_a_quoted_one_line_run_opts_out(tmp_path):
+    """The marker's surface is the `run:` VALUE, not the `|` that may write it.
+    A block-style test blanked this line, losing a marker its author wrote in a
+    real shell comment."""
+    body = (
+        "on:\n  push:\njobs:\n  j:\n    steps:\n"
+        "      - run: 'claude --allowedTools \"Read\"  # allow-unscoped-read-grant: bare Read reads it all'\n"
+    )
+    assert _verdict(tmp_path, body) == []
+
+
+def test_an_annotation_inside_a_quoted_value_does_not_opt_out(tmp_path):
+    """A `#` inside any other scalar is content the workflow's own author
+    writes, so `name: "# allow-unscoped-read-grant: x"` marks nothing."""
+    body = (
+        "on:\n  push:\njobs:\n  j:\n    steps:\n"
+        '      - name: "# allow-unscoped-read-grant: fake reason in a value"\n'
+        '        run: claude --allowedTools "Read"\n'
+    )
+    assert [line for line, _ in _verdict(tmp_path, body)] == [7]
+
+
 @pytest.mark.parametrize(
     "slug",
     ["allow-unscoped-read-grant-legacy", "really-allow-unscoped-write-grant"],

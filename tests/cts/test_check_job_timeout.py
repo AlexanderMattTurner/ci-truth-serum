@@ -118,6 +118,46 @@ def test_a_hash_inside_a_string_value_does_not_suppress(tmp_path):
     assert len(jt.check_file(path)) == 1
 
 
+def test_a_marker_in_a_run_script_suppresses(tmp_path):
+    """A `run:` value is a shell script, where a `#` opens a real comment. The
+    author writes the marker beside the step that must run unbounded."""
+    path = _write(
+        tmp_path,
+        "name: x\non:\n  push:\njobs:\n"
+        "  build:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - run: |\n"
+        "          # allow-no-timeout: watches a queue until it is told to stop\n"
+        "          watch-queue\n",
+    )
+    assert jt.check_file(path) == []
+
+
+def test_a_marker_in_a_quoted_one_line_run_suppresses(tmp_path):
+    """The surface is the `run:` VALUE, not the `|` that may write it."""
+    path = _write(
+        tmp_path,
+        "name: x\non:\n  push:\njobs:\n"
+        "  build:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - run: 'watch-queue  # allow-no-timeout: runs until told to stop'\n",
+    )
+    assert jt.check_file(path) == []
+
+
+def test_a_marker_in_a_block_scalar_that_is_not_a_script_does_not_suppress(tmp_path):
+    """An `if:` body is an expression and never reaches a shell, so a `#` in it
+    is content. Block style was the old test, and it read a marker out of this."""
+    path = _write(
+        tmp_path,
+        "name: x\non:\n  push:\njobs:\n"
+        "  build:\n    runs-on: ubuntu-latest\n"
+        "    if: >\n"
+        "      github.event_name == 'push'\n"
+        "      # allow-no-timeout: not a script\n"
+        "    steps: []\n",
+    )
+    assert len(jt.check_file(path)) == 1
+
+
 def test_optout_token_in_string_value_does_not_suppress(tmp_path):
     """The token must be inside a real `#` comment, not a string value."""
     path = _write(

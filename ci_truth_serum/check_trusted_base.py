@@ -70,7 +70,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotation_re,
     _job_blocks,
     workflow_files as _workflow_files,
-    yaml_marker_view,
+    yaml_script_view,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -112,13 +112,13 @@ def _opted_out(text: str) -> bool:
     """True when a reason-bearing `# trusted-base-ok: <reason>` comment appears
     anywhere in the file.
 
-    Read from `yaml_marker_view`, never the raw text. That view keeps a real
-    YAML comment and a block scalar's body, and blanks everything else. A `#`
+    Read from `yaml_script_view`, never the raw text. That view keeps a real
+    YAML comment and a `run:` value in any style, and blanks everything else. A `#`
     inside a quoted scalar is content the workflow's own author writes, and one
     marker here clears every job in the file, so honouring
     `name: "# trusted-base-ok: x"` would let that author switch the check off.
     """
-    return any(_ALLOW_RE.search(line) for line in yaml_marker_view(text))
+    return any(_ALLOW_RE.search(line) for line in yaml_script_view(text))
 
 
 def _is_pr_triggered(triggers: object) -> bool:
