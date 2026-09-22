@@ -33,6 +33,11 @@ conclusion is not `startup_failure`. The Actions API stops paginating at 1000
 items, which caps a single workflow at 10 listings and is the one gap the report
 names by workflow when it happens.
 
+The report names the REF each run used, and links the newest one. A workflow
+file loads per ref. A file that is healthy on the default branch still breaks on
+a branch that edits it. The old report named the file alone. It sent the reader
+to the default branch, the file loads there, and the finding looked false.
+
 THE OBVIOUS IMPLEMENTATION FAILS OPEN, which is why the listing here asks for
 `status=completed` and classifies the conclusion itself. A run that failed to
 load carries `conclusion: startup_failure`, not `conclusion: failure`. The runs
@@ -184,6 +189,16 @@ def jobless_failures(repo: str, runs: list[dict], token: str) -> list[dict]:
     return [r for r in runs if is_failed(r) and started_no_job(repo, r, token)]
 
 
+def run_ref(run: dict) -> str:
+    """Where RUN ran, as a branch name or as a short commit SHA.
+
+    `head_branch` is null for a run off a ref that carries no branch name, such
+    as a tag. The SHA stands in there, because the point of this value is to
+    name a place the reader can open.
+    """
+    return run["head_branch"] or run["head_sha"][:7]
+
+
 @dataclass(frozen=True)
 class StartupFailure:
     """One workflow's jobless failed runs, and whether the scan read them all."""
@@ -201,10 +216,24 @@ class StartupFailure:
         return self.total > self.scanned
 
     @property
+    def newest_run(self) -> dict:
+        """The most recent jobless failed run. A StartupFailure is built only from
+        a non-empty run list, so there is always one."""
+        return max(self.runs, key=lambda run: run["created_at"])
+
+    @property
     def newest(self) -> str:
-        """When the most recent jobless failure started. A StartupFailure is built only
-        from a non-empty run list, so there is always one."""
-        return max(run["created_at"] for run in self.runs)
+        """When the most recent jobless failure started."""
+        return self.newest_run["created_at"]
+
+    @property
+    def refs(self) -> list[str]:
+        """The distinct refs these runs used, sorted.
+
+        A workflow file loads per ref. Without this the reader opens the file on
+        the default branch. It loads there, so the reader learns nothing.
+        """
+        return sorted({run_ref(run) for run in self.runs})
 
 
 def scan(repo: str, since_iso: str, token: str) -> list[StartupFailure]:
@@ -239,6 +268,16 @@ def _truncation_lines(findings: list[StartupFailure]) -> list[str]:
     ]
 
 
+def _cell(text: str) -> str:
+    """TEXT as the contents of one Markdown table cell.
+
+    A raw `|` closes the cell early, so the row grows a column and every heading
+    after it names the wrong value. Git allows a `|` in a branch name, and
+    GitHub allows one in a workflow's `name:`, so every value here is escaped.
+    """
+    return text.replace("|", "\\|")
+
+
 def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> str:
     """The report a human reads, as plain text or as a Markdown block."""
     heading = "### Workflows that failed to start"
@@ -256,12 +295,15 @@ def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> 
             f"These runs completed with a failure and held zero jobs, in the last "
             f"{window_days} days. A run with no jobs reports to nobody: a "
             "`workflow_run` notifier has no job to name, and an `always()` "
-            "reporter never runs. Check that each file below loads.",
+            "reporter never runs. Open each file on the ref named beside it. "
+            "Check that the file loads there.",
             "",
-            "| Workflow | File | Jobless failed runs | Newest |",
-            "| --- | --- | --- | --- |",
+            "| Workflow | File | Ref | Jobless failed runs | Newest |",
+            "| --- | --- | --- | --- | --- |",
             *(
-                f"| {f.name} | `{f.path}` | {len(f.runs)} | {f.newest} |"
+                f"| {_cell(f.name)} | `{_cell(f.path)}` | "
+                f"{', '.join('`' + _cell(ref) + '`' for ref in f.refs)} | "
+                f"{len(f.runs)} | [{f.newest}]({f.newest_run['html_url']}) |"
                 for f in findings
             ),
         ]
@@ -270,7 +312,8 @@ def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> 
             f"{len(findings)} workflow(s) failed before starting a job in the last "
             f"{window_days} days:",
             *(
-                f"  {f.path}: {len(f.runs)} jobless failed run(s), newest {f.newest}"
+                f"  {f.path} on {', '.join(f.refs)}: {len(f.runs)} jobless failed "
+                f"run(s), newest {f.newest} {f.newest_run['html_url']}"
                 for f in findings
             ),
         ]

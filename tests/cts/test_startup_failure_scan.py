@@ -30,8 +30,21 @@ def workflow(wf_id: int, name: str, path: str, state: str = "active") -> dict:
     return {"id": wf_id, "name": name, "path": path, "state": state}
 
 
-def run(run_id: int, conclusion: str, created_at: str = "2026-08-01T00:00:00Z") -> dict:
-    return {"id": run_id, "conclusion": conclusion, "created_at": created_at}
+def run(
+    run_id: int,
+    conclusion: str,
+    created_at: str = "2026-08-01T00:00:00Z",
+    head_branch: str | None = "main",
+    head_sha: str = "0123456789abcdef",
+) -> dict:
+    return {
+        "id": run_id,
+        "conclusion": conclusion,
+        "created_at": created_at,
+        "head_branch": head_branch,
+        "head_sha": head_sha,
+        "html_url": f"https://github.com/{REPO}/actions/runs/{run_id}",
+    }
 
 
 class FakeApi:
@@ -252,9 +265,75 @@ def test_the_markdown_report_is_a_table_row_per_workflow():
     )
     report = mod.render([finding], 7, markdown=True)
     assert (
-        "| Lint | `.github/workflows/lint.yaml` | 1 | 2026-08-01T09:00:00Z |" in report
-    )
+        "| Lint | `.github/workflows/lint.yaml` | `main` | 1 | "
+        "[2026-08-01T09:00:00Z](https://github.com/owner/name/actions/runs/11) |"
+    ) in report
     assert report.startswith("### Workflows that failed to start")
+
+
+# ── the ref each run used ────────────────────────────────────────────────
+def test_the_report_names_the_ref_a_jobless_run_used():
+    """The finding is about a FILE ON A REF. A reader given only the file name
+    opens it on the default branch, finds that it loads, and learns nothing —
+    which is how three weekly reports of a broken sync branch produced no
+    action."""
+    finding = mod.StartupFailure(
+        name="Lint",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure", head_branch="template-sync")],
+        scanned=1,
+        total=1,
+    )
+    assert finding.refs == ["template-sync"]
+    for markdown in (False, True):
+        assert "template-sync" in mod.render([finding], 7, markdown=markdown)
+
+
+def test_the_report_names_every_ref_once_and_in_order():
+    """One workflow can break on several refs, and the same ref repeats across
+    its runs. The reader needs each place once."""
+    finding = mod.StartupFailure(
+        name="Lint",
+        path=".github/workflows/lint.yaml",
+        runs=[
+            run(11, "startup_failure", head_branch="template-sync"),
+            run(12, "startup_failure", head_branch="main"),
+            run(13, "startup_failure", head_branch="template-sync"),
+        ],
+        scanned=3,
+        total=3,
+    )
+    assert finding.refs == ["main", "template-sync"]
+    assert "| `main`, `template-sync` |" in mod.render([finding], 7, markdown=True)
+
+
+def test_a_run_off_a_nameless_ref_falls_back_to_its_sha():
+    """A run off a tag carries a null `head_branch`. The short SHA still names a
+    place the reader can open."""
+    nameless = run(11, "startup_failure", head_branch=None, head_sha="abcdef1234567")
+    assert mod.run_ref(nameless) == "abcdef1"
+
+
+def test_a_pipe_in_a_name_or_a_ref_keeps_the_table_columns():
+    """A raw `|` closes a cell early, so the row grows a column and every heading
+    after it names the wrong value. GitHub allows one in a workflow's `name:`,
+    and git allows one in a branch name."""
+    finding = mod.StartupFailure(
+        name="Lint | fast",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure", head_branch="wip|odd")],
+        scanned=1,
+        total=1,
+    )
+    row = next(
+        line
+        for line in mod.render([finding], 7, markdown=True).splitlines()
+        if line.startswith("| Lint ")
+    )
+    assert "Lint \\| fast" in row
+    assert "`wip\\|odd`" in row
+    # Five headings, so five cells: each raw `|` above would have made a sixth.
+    assert row.count("|") == row.count("\\|") + 6
 
 
 def test_a_nameless_workflow_falls_back_to_its_path(api):
