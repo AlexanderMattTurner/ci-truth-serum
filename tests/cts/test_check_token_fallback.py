@@ -58,6 +58,13 @@ def test_opt_out_same_line_and_preceding_line() -> None:
     assert mod.violations(above) == []
 
 
+def test_a_hash_inside_a_quoted_value_does_not_opt_out() -> None:
+    """A `#` inside a quoted scalar is CONTENT, not a comment — the step's own
+    author writes that value."""
+    text = f'    name: "step # token-fallback-ok: pretend"\n    token: {FALLBACK}\n'
+    assert mod.violations(text) == [2]
+
+
 def test_multiple_hits_report_each_line() -> None:
     text = f"    token: {FALLBACK}\n    ok: 1\n    GH_TOKEN: {FALLBACK}\n"
     assert mod.violations(text) == [1, 3]

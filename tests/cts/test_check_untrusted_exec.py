@@ -327,6 +327,21 @@ def test_optout_token_in_a_string_value_does_not_suppress(tmp_path):
     assert len(ue.check_file(path)) == 1
 
 
+def test_a_hash_inside_a_string_value_does_not_suppress(tmp_path):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The job's author
+    writes its `env:` values, so honouring one would switch this check off."""
+    path = _write(
+        tmp_path,
+        _TRUSTED_BASE_OK + "on:\n  pull_request_target:\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        '    env:\n      NOTE: "# untrusted-exec-ok: fake reason in a value"\n'
+        "    steps:\n"
+        "      - uses: actions/checkout@v4\n"
+        f"        with:\n          ref: {_PR_HEAD_SHA}\n" + _run_step("pnpm build"),
+    )
+    assert len(ue.check_file(path)) == 1
+
+
 def test_optout_in_a_sibling_job_does_not_suppress(tmp_path):
     path = _write(
         tmp_path,

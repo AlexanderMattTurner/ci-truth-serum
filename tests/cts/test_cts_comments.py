@@ -104,6 +104,29 @@ def test_text_comments_scans_by_delimiter() -> None:
     assert comments.text_comments(text) == {1: "# trailing", 2: "# full line"}
 
 
+# ── yaml_comments: PyYAML's scanner, plus bash inside a `run:` body ──────
+def test_yaml_comments_reads_a_quoted_scalar_as_a_value() -> None:
+    """The fail-open this closed: an opt-out token inside a `name:` value
+    SUPPRESSED the lint, and the file's own author writes that value."""
+    text = 'name: "see x.yaml  # allow-workflow-ref: fake"\nkey: 1  # real\n'
+    assert comments.yaml_comments(text) == {2: "# real"}
+    # Non-vacuity: the delimiter scan this replaced honoured that value.
+    assert 1 in comments.text_comments(text)
+
+
+def test_yaml_comments_reads_a_run_body_with_the_bash_grammar() -> None:
+    """A `run: |` body is shell, where a `#` does open a comment — but only
+    where bash says it does. Line numbers stay the file's own."""
+    text = 'jobs:\n  a:\n    steps:\n      - run: |\n          echo "# no"\n          echo hi  # yes\n'
+    assert comments.yaml_comments(text) == {6: "# yes"}
+
+
+def test_yaml_comments_err_closed_on_an_untokenizable_file() -> None:
+    """A file PyYAML cannot scan reports no comment, so every suppression is
+    lost and the finding stands. That is the safe direction for an opt-out."""
+    assert comments.yaml_comments('key: "unterminated\n# lost\n') == {}
+
+
 # ── comment_lines: the dispatcher ────────────────────────────────────────
 @pytest.mark.parametrize(
     "path, source, expected",
@@ -121,9 +144,9 @@ def test_text_comments_scans_by_delimiter() -> None:
         # JS/TS by suffix.
         ("a.test.mjs", 'const m = "// no";\n// yes\n', {2: "// yes"}),
         ("a.ts", "let x: number = 1; // yes\n", {1: "// yes"}),
-        # No grammar for YAML — the delimiter scan owns it, stated rather than
-        # defaulted.
-        ("a.yaml", "key: 1  # yes\n", {1: "# yes"}),
+        # YAML by suffix: the quoted scalar's `#` is a value, not a comment.
+        ("a.yaml", 'name: "# no"\nkey: 1  # yes\n', {2: "# yes"}),
+        ("a.yml", "key: 1  # yes\n", {1: "# yes"}),
         ("a.md", "# yes\n", {1: "# yes"}),
     ],
 )

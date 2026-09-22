@@ -152,6 +152,18 @@ def test_check_file_respects_opt_out_comment(tmp_path):
     assert ccm.check_file(_write(tmp_path, "wf.yaml", body)) == []
 
 
+def test_check_file_ignores_an_opt_out_inside_a_quoted_value(tmp_path):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. Quoting the
+    `uses:` value defeats USES_LINE, so the step falls back to its `name:` line
+    — which its author writes, and which must therefore opt nobody out."""
+    body = _wf(
+        f"name: 'claude run  # {ccm.OPT_OUT}'\n        "
+        'uses: "anthropics/claude-code-action@abc123"',
+        '        with:\n          claude_args: "--allowedTools Bash"\n',
+    )
+    assert len(ccm.check_file(_write(tmp_path, "wf.yaml", body))) == 1
+
+
 def test_check_file_ignores_folded_claude_args_with_model(tmp_path):
     # A `>-` folded scalar still resolves to a string containing --model.
     body = _wf(

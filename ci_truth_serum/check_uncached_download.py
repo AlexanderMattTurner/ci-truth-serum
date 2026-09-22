@@ -69,6 +69,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     MESSAGE_PREFIX,
     workflow_files,
     _job_blocks,
+    yaml_marker_view,
 )
 from check_versionless_install import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NODE,
@@ -291,7 +292,10 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         flat = flatten(steps, key_line, "", frozenset({path}))
         if any(_caches(step) for step, _, _ in flat):
             continue
-        if any(annotated(line, OPT_OUT) for line in block.splitlines()):
+        # The job-scoped marker is read from the block's COMMENTS, so a `#`
+        # inside a quoted scalar is content. The step-scoped read below keeps
+        # the raw script: a `#` there is a shell comment the author wrote.
+        if any(annotated(line, OPT_OUT) for line in yaml_marker_view(block)):
             continue
         for step, line, origin in flat:
             script = step.get("run")

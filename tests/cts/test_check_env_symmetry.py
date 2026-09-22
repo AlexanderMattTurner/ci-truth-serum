@@ -81,6 +81,18 @@ def test_collect_optouts_requires_name_and_reason():
     assert es.collect_optouts("# env-symmetry-ok:") == set()
 
 
+def test_collect_optouts_ignores_a_hash_inside_a_yaml_value():
+    """On a workflow the marker must sit in a real YAML comment. One marker
+    exempts a name across the WHOLE tree, so honouring a step's display name
+    would hide a half-finished rename anywhere in the repository."""
+    text = '      - name: "seed # env-symmetry-ok: GLOVEBOX_EXT pretend"\n'
+    assert es.collect_optouts(text, is_yaml=True) == set()
+    # Non-vacuity: the same marker in a real comment on the same file still counts.
+    assert es.collect_optouts(
+        "      # env-symmetry-ok: GLOVEBOX_EXT supplied by the runner\n", is_yaml=True
+    ) == {"GLOVEBOX_EXT"}
+
+
 # ── analyze ──────────────────────────────────────────────────────────────────
 def test_write_only_is_flagged():
     result = es.analyze({"a.sh": "export GLOVEBOX_NEW=1\n"}, P)

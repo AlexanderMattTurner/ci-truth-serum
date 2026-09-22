@@ -157,12 +157,55 @@ narration — `check_drift_guards`, `check_graceful_handwave`,
 `check_historical_comments`, `check_workflow_refs` — now ask `_cts_comments`, which
 picks the parser the PATH names:
 
-| language | the parser      | what the text scan got wrong                                                        |
-| -------- | --------------- | ----------------------------------------------------------------------------------- |
-| Python   | `tokenize`      | a `#` in a string literal — and an opt-out token there SUPPRESSED, failing open     |
-| shell    | `_cts_bash_ast` | a heredoc body read as a run of comments                                            |
-| JS/TS    | `_cts_js_ast`   | a `//` inside a string or template literal; a `/* … */` after code on the same line |
-| YAML     | none            | nothing — its parsers discard comments, so the delimiter scan is the decision       |
+| language | the parser                                                  | what the text scan got wrong                                                                         |
+| -------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Python   | `tokenize`                                                  | a `#` in a string literal — and an opt-out token there SUPPRESSED, failing open                      |
+| shell    | `_cts_bash_ast`                                             | a heredoc body read as a run of comments                                                             |
+| JS/TS    | `_cts_js_ast`                                               | a `//` inside a string or template literal; a `/* … */` after code on the same line                  |
+| YAML     | PyYAML's scanner, plus `_cts_bash_ast` inside a `run:` body | a `#` inside a quoted scalar read as a comment — and an opt-out token there SUPPRESSED, failing open |
+
+## YAML: the parser discards the answer, so invert the scanner
+
+A YAML parser drops every comment before it hands you a document, so there is no
+comment node to walk. That is why the pack read YAML comments by delimiter for
+so long, and why 26 checks shipped the same fail-open. PyYAML's SCANNER still
+reports where each scalar starts and ends, and the bytes no scalar covers are
+the comments. `_cts_linecheck.yaml_comment_view` is that inversion: it blanks
+every scalar and keeps each comment at its own line and column.
+
+The fail-open it closes is one line of YAML. A workflow's own author writes
+every value in it, including this one:
+
+    name: "deploy  # allow-no-timeout: not really"
+
+Read as text, that line carries a reason-bearing opt-out, so the lint disarms
+itself and the job needs no `timeout-minutes`. Read through the scanner, the
+whole span is one scalar and the marker is part of a job's name. A sweep of the
+pack found 26 checks matching an opt-out against raw lines, and every one of
+them honoured that value.
+
+A workflow holds a SECOND language, and the two views differ only in whether
+they keep it. A `run: |` body is a shell script, where a `#` does open a real
+comment, and `yaml_comment_view` blanks the body with everything else.
+`yaml_marker_view` adds the block scalars back. Pick between them by where the
+marker's contract puts it:
+
+- a marker that classifies the JOB takes `yaml_comment_view`, so a comment
+  inside one step's script cannot speak for the whole job;
+- a marker that sits beside the `run:` line it is about takes
+  `yaml_marker_view`.
+
+Both views err CLOSED. A file PyYAML cannot scan yields an all-blank view, so
+every suppression is lost and the finding stands. That is the safe direction for
+an opt-out, and it is the opposite of what the delimiter scan did.
+
+`_cts_comments.yaml_comments` is the third reader, and it answers a different
+question: not "may a marker sit here" but "what does this line say". It unions
+the comment view with `shell_comments` run over each block scalar, so the bash
+grammar judges the script's `#` and PyYAML judges the workflow's. Measured on
+one 10-line workflow, the delimiter scan it replaced claimed two lines that are
+not comments: a quoted `name:` value, and `echo "quoted # not a comment"` inside
+a `run:` body.
 
 Nor is it only about comments. The lints that read PYTHON ask the same shape of
 structural question, and answered it the same wrong way until they were moved onto

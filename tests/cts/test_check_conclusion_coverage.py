@@ -392,6 +392,25 @@ def test_an_annotation_with_no_reason_does_not_suppress() -> None:
     assert len(mod.violations(src, "scan.py")) == 1
 
 
+def test_a_workflow_annotation_inside_a_quoted_value_does_not_suppress() -> None:
+    """On a workflow the marker must sit in a real YAML comment. A `#` inside a
+    quoted scalar is a value the job's own author writes."""
+    text = LISTENER.replace(
+        "  notify:\n", '  notify:\n    name: "# allow-conclusion-subset: pretend"\n'
+    )
+    assert len(mod.violations(text, WORKFLOW_PATH)) == 1
+
+
+def test_a_workflow_annotation_in_a_real_comment_suppresses() -> None:
+    """Non-vacuity for the row above: the same marker in a real comment on the
+    line above the gate still suppresses."""
+    text = LISTENER.replace(
+        "    if: contains(",
+        "    # allow-conclusion-subset: these are job records\n    if: contains(",
+    )
+    assert mod.violations(text, WORKFLOW_PATH) == []
+
+
 # ── the repository override ──────────────────────────────────────────────
 def test_no_config_file_leaves_the_default_set(tmp_path: Path) -> None:
     assert mod.required_set(tmp_path / "absent.yml") == mod.TERMINAL_RED

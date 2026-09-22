@@ -219,11 +219,32 @@ def annotated_near(
     token: str,
     require_reason: bool = True,
     span_end: int | None = None,
+    comments: list[str] | None = None,
 ) -> bool:
     """True when TOKEN annotates the construct at 1-based LINENO (see
-    ``annotation_window``, which owns the placement rule)."""
+    ``annotation_window``, which owns the placement rule).
+
+    LINES shapes the window, because that is a question about the source as
+    written: which lines are blank, and which carry only a comment.
+
+    COMMENTS, when given, is the text each of those lines SAYS. Pass
+    ``yaml_comment_view(text)`` for a workflow, so a `#` inside a quoted scalar
+    stays content and marks nothing. It must index the same way LINES does —
+    same length, same 1-based numbering — because the window's line numbers read
+    both. Omit it only for a language whose LINES are already comment-scoped.
+
+    A length mismatch raises. It would otherwise read a neighbouring line's
+    comment, and a marker found one line off still suppresses the finding.
+    """
+    if comments is not None and len(comments) != len(lines):
+        raise ValueError(
+            f"comments has {len(comments)} lines and lines has {len(lines)} — "
+            "the window's line numbers read both, so a shorter or longer list "
+            "reads the wrong line's comment and silently suppresses a finding"
+        )
+    said = lines if comments is None else comments
     return any(
-        annotated(lines[n - 1], token, require_reason)
+        annotated(said[n - 1], token, require_reason)
         for n in annotation_window(lines, lineno, span_end)
     )
 
@@ -528,6 +549,19 @@ _TEST_PATH = re.compile(
 _SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
 _SHELL_SHEBANG = re.compile(r"^#!.*\b(?:bash|sh)\b")
 _PYTHON_SUFFIX = re.compile(r"\.pyi?$")
+_YAML_SUFFIX = re.compile(r"\.ya?ml$")
+
+
+def is_yaml_source(path: str) -> bool:
+    """True when PATH names YAML: a `.yaml` / `.yml` suffix.
+
+    One definition, so every lint that must pick a comment reader classifies a
+    path alike. Getting this wrong is silent in the dangerous direction: a
+    workflow misread as plain text falls back to a delimiter scan, which reads a
+    `#` inside a quoted scalar as a comment and honours an opt-out written
+    there.
+    """
+    return bool(_YAML_SUFFIX.search(path.replace("\\", "/")))
 
 
 def is_shell_source(path: str, first_line: str) -> bool:
@@ -708,17 +742,24 @@ def has_trigger(doc: object, *names: str) -> bool:
 
 
 def key_block_lines(text: str, key: str) -> list[str]:
-    """The source lines a per-key marker comment may live on: every `KEY:` line
-    at any indent, plus that key's DIRECT-child lines (those at the block's
-    shallowest child indent, which is where both a `- item` and a standalone
-    comment beside it sit).
+    """The COMMENTS a per-key marker may live in: those on every `KEY:` line at
+    any indent, plus those on that key's DIRECT-child lines (the block's
+    shallowest child indent, where both a `- item` and a standalone comment
+    beside it sit).
 
     Scoping a marker this way is what stops the token from being read out of an
     unrelated part of the file — the same rule `_classification_text` applies to
-    `# required-check:` on a job. A bespoke line scanner is used rather than the
-    YAML parser for the usual reason: PyYAML discards comments.
+    `# required-check:` on a job.
+
+    Two questions, and each gets the tool that answers it. Indentation decides
+    WHICH lines are eligible, and a line scanner reads indentation exactly. What
+    those lines SAY is read from `yaml_comment_view`, so a `#` inside a quoted
+    value is content: `name: "# <token>"` on an eligible line marks nothing. The
+    returned strings keep their column offsets, so a matcher anchored on the end
+    of a line still reads the end of that line.
     """
     lines = text.splitlines()
+    comments = yaml_comment_view(text)
     key_re = re.compile(rf"^(?P<indent>[ \t]*)(?P<k>{re.escape(key)})\s*:")
     eligible: list[str] = []
     for index, line in enumerate(lines):
@@ -726,18 +767,20 @@ def key_block_lines(text: str, key: str) -> list[str]:
         if not match:
             continue
         indent = len(match.group("indent"))
-        block: list[str] = []
-        for follow in lines[index + 1 :]:
+        block: list[tuple[int, str]] = []
+        for offset, follow in enumerate(lines[index + 1 :], start=index + 1):
             if not follow.strip():
                 continue
             if len(follow) - len(follow.lstrip()) <= indent:
                 break
-            block.append(follow)
+            block.append((offset, follow))
         child_indent = min(
-            (len(b) - len(b.lstrip()) for b in block), default=None
+            (len(b) - len(b.lstrip()) for _, b in block), default=None
         )  # the block's shallowest line — its direct children
-        eligible.append(line)
-        eligible += [b for b in block if len(b) - len(b.lstrip()) == child_indent]
+        eligible.append(comments[index])
+        eligible += [
+            comments[i] for i, b in block if len(b) - len(b.lstrip()) == child_indent
+        ]
     return eligible
 
 
@@ -1961,9 +2004,15 @@ def opted_out(text: str, token: str) -> bool:
     lint's longer slug that happens to contain this one — would suppress. These
     tokens carry no reason by contract, hence ``require_reason=False``; the
     stand-alone-token guarantee is the same one every other annotation gets.
+
+    TEXT is a workflow, and the scan reads ``yaml_comment_view`` rather than
+    the raw lines. ``annotation_re`` anchors on a `#`, and a `#` inside a quoted
+    scalar is content: `name: "# <token>"` opted every caller out until this
+    read the comments instead of the bytes. Every caller passes whole-workflow
+    text, so the YAML view is right for all of them.
     """
     marker = annotation_re(token, require_reason=False)
-    return any(marker.search(line) for line in text.splitlines())
+    return any(marker.search(line) for line in yaml_comment_view(text))
 
 
 def concurrency_line(text: str) -> int:
@@ -1999,8 +2048,10 @@ def _job_blocks(text: str) -> dict[str, tuple[int, str]]:
     when trailing the key line or living inside the indented body.
 
     Shared by the required-check lint and the apply step so both read the marker
-    from byte-identical scoping; the comment-scope semantics are why a bespoke
-    line scanner is used over a YAML parser (PyYAML discards comments).
+    from byte-identical scoping. A line scanner draws the block because the
+    question is indentation, which a line scanner reads exactly. It does not
+    decide what a line SAYS: `_classification_text` reads the block's comments
+    through `yaml_comment_view`, so a `#` inside a quoted value marks nothing.
     """
     lines = text.splitlines()
     jobs_idx = next(
@@ -2051,15 +2102,92 @@ def yaml_comment_view(text: str) -> list[str]:
     line: `name: "# some-check-ok: example"` is a string VALUE, and honouring it
     would let any step turn a check off by naming it. The comment spans come from
     PyYAML's own scanner (`strip_yaml_comments`), so what counts as a comment
-    here is what GitHub parses as one. Line boundaries survive, so a caller's
-    line numbers still index this view.
+    here is what GitHub parses as one. Line boundaries and column offsets
+    survive, so a caller's line numbers still index this view, and a matcher
+    anchored on the end of a line still reads the end of that line.
+
+    This is the text EVERY annotation reader on a workflow must search. The
+    pack's marker matchers — `annotation_re`, and the per-check
+    `# <token>: <reason>` readers — are comment-scoped by TEXT alone: they
+    anchor on a `#`. Reading this view first removes that fail-open as a class,
+    rather than one instance of it.
+
+    Errs CLOSED. A text PyYAML cannot tokenize comes back from the strip
+    unchanged, so every character matches and the view is blank: a suppression
+    is lost, and the finding is reported.
+
+    Takes a whole file or one indented block. PyYAML's scanner reads a
+    fragment, and a `#` inside a `run: |` body stays content either way.
+
+    Splits on every line boundary Python knows, like ``str.splitlines``. A
+    caller that numbers its own lines with ``text.split("\\n")`` must take
+    ``yaml_comment_text`` instead and split it the same way, or a `\\v` in the
+    file slides every later line number apart between the two lists.
+    """
+    return yaml_comment_text(text).splitlines()
+
+
+def yaml_comment_text(text: str) -> str:
+    """``yaml_comment_view``'s result before it is split into lines.
+
+    One string, the same length as TEXT, with every line boundary kept where it
+    was. A caller splits it the way it splits TEXT, so the two lists index
+    alike. See ``yaml_comment_view`` for what the view is and why.
     """
     blanked = strip_yaml_comments(text)
-    view = "".join(
+    return "".join(
         original if original != stripped or original in _LINE_BOUNDARY else " "
         for original, stripped in zip(text, blanked)
     )
-    return view.splitlines()
+
+
+# The two scalar styles that hold a whole nested document: `run: |` and `run: >`.
+# Everything else — plain, single-quoted, double-quoted — is one value.
+_BLOCK_STYLES = frozenset("|>")
+
+
+def yaml_block_scalar_spans(text: str) -> list[tuple[int, int]]:
+    """(start, end) character offsets of every BLOCK scalar in TEXT.
+
+    A span starts at the `|` or `>` indicator, not at the body's first line, so
+    a caller that slices TEXT keeps the file's own line numbering.
+
+    Returns nothing for a text PyYAML cannot tokenize, which keeps
+    ``yaml_marker_view`` erring closed on one.
+    """
+    try:
+        return [
+            (token.start_mark.index, token.end_mark.index)
+            for token in scan(text)
+            if isinstance(token, yaml.tokens.ScalarToken)
+            and token.style in _BLOCK_STYLES
+        ]
+    except yaml.YAMLError:
+        return []
+
+
+def yaml_marker_view(text: str) -> list[str]:
+    """TEXT's lines holding every place a workflow may carry an opt-out marker.
+
+    Two places, because a workflow holds two languages:
+
+      * a real YAML comment, which ``yaml_comment_view`` finds. A `#` inside a
+        quoted scalar is a value the workflow's author writes, so it is blanked;
+      * a BLOCK scalar's body — `run: |` and `run: >`. That body is a shell
+        script, where a `#` opens the script's own comment. An author writes the
+        marker there, beside the line it is about, and the comment view blanks
+        the whole body.
+
+    Column offsets and line numbers survive, like ``yaml_comment_view``'s. Take
+    this only where a marker beside a `run:` line is in contract; take the
+    comment view where the marker classifies the JOB, so a comment printed by
+    one step's script cannot speak for the job.
+    """
+    view = yaml_comment_text(text)
+    out = list(view)
+    for start, end in yaml_block_scalar_spans(text):
+        out[start:end] = text[start:end]
+    return "".join(out).splitlines()
 
 
 def default_run_shell(*scopes: object) -> str | None:
@@ -2132,23 +2260,31 @@ def container_block_end(
 
 
 def _classification_text(block: str) -> str:
-    """The lines of a job block where a classification comment may live: the key
-    line plus the job's direct-child lines (a trailing comment on a child, or a
-    standalone comment at the child indent). Deeper step/run content is excluded
-    so a `# required-check:` string buried in a step can't pass as a classification.
+    """The COMMENTS of a job block where a classification marker may live: those
+    on the key line, and those on the job's direct-child lines (a trailing
+    comment on a child, or a standalone comment at the child indent). Deeper
+    step content is excluded, so a `# required-check:` buried in a step cannot
+    pass as a classification.
+
+    Indentation picks the eligible lines, and a line scanner reads indentation
+    exactly. What those lines SAY comes from `yaml_comment_view`, so a `#`
+    inside a quoted value on an eligible line is content and marks nothing —
+    see that function for the fail-open this closes. Column offsets survive, so
+    a matcher anchored on the end of a line still reads the end of that line.
     """
     lines = block.splitlines()
     if not lines:
         return ""
+    comments = yaml_comment_view(block)
     child_indent = next(
         (len(ln) - len(ln.lstrip()) for ln in lines[1:] if ln.strip()), None
     )
-    eligible = [lines[0]]
+    eligible = [comments[0]]
     if child_indent is not None:
         eligible += [
-            ln
-            for ln in lines[1:]
-            if ln.strip() and len(ln) - len(ln.lstrip()) == child_indent
+            comments[index]
+            for index, ln in enumerate(lines)
+            if index and ln.strip() and len(ln) - len(ln.lstrip()) == child_indent
         ]
     return "\n".join(eligible)
 

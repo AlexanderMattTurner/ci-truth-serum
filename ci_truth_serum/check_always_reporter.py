@@ -42,6 +42,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     has_always_reporter,
     is_fail_closed_twin,
     twin_defects,
+    yaml_comment_view,
 )
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -58,9 +59,13 @@ PR_TRIGGERS = ("pull_request", "pull_request_target")
 
 def _locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
     """Return (1-based line number, opted-out) for the first occurrence of trigger."""
-    for num, line in enumerate(text.splitlines(), 1):
+    pairs = zip(text.splitlines(), yaml_comment_view(text))
+    for num, (line, said) in enumerate(pairs, 1):
         if re.match(rf"^\s*{trigger}\s*:", line):
-            return num, annotated(line, OPT_OUT, require_reason=False)
+            # The raw line finds the trigger and anchors the report. SAID is
+            # that line's comment, so a `#` inside a quoted scalar
+            # (`branches: ["# not-required-check"]`) is content and opts nobody out.
+            return num, annotated(said, OPT_OUT, require_reason=False)
     return 1, False
 
 

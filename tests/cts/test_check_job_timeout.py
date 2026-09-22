@@ -106,6 +106,18 @@ def test_reasonless_optout_does_not_suppress(tmp_path):
     assert len(result) == 1
 
 
+def test_a_hash_inside_a_string_value_does_not_suppress(tmp_path):
+    """A `#` inside a quoted scalar is CONTENT, not a comment — the job's author
+    writes that value, so honouring it would switch this check off."""
+    path = _write(
+        tmp_path,
+        "name: x\non:\n  push:\njobs:\n"
+        "  build:\n    runs-on: ubuntu-latest\n"
+        '    env:\n      NOTE: "# allow-no-timeout: not a comment"\n    steps: []\n',
+    )
+    assert len(jt.check_file(path)) == 1
+
+
 def test_optout_token_in_string_value_does_not_suppress(tmp_path):
     """The token must be inside a real `#` comment, not a string value."""
     path = _write(

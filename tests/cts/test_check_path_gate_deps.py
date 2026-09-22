@@ -166,6 +166,19 @@ def test_path_gate_ok_without_reason_is_an_error(tmp_path, monkeypatch, capsys):
     assert "has no reason" in out
 
 
+def test_a_hash_inside_a_quoted_value_suppresses_nothing(tmp_path, monkeypatch, capsys):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The gated job's
+    own author writes its `env:` values, so honouring one would switch the gate
+    check off for that job."""
+    steps = (
+        '- run: echo\n  env:\n    NOTE: "# path-gate-ok: .github/actions/setup nope"\n'
+        + COMPOSITE_STEPS
+    )
+    _repo(tmp_path, monkeypatch, _workflow(["src/**"], steps), ACTION)
+    assert cpgd.main() == 1
+    assert ".github/actions/setup" in capsys.readouterr().out
+
+
 # ── (e) gate-deps declared dependency ────────────────────────────────────
 def test_gate_deps_comment_on_gated_job_unmatched_fails(tmp_path, monkeypatch, capsys):
     steps = "# gate-deps: bin/\n- run: uv run pytest\n"

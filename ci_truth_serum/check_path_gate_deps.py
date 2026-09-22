@@ -67,6 +67,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     LineLoader as _LineLoader,
     _job_blocks,
     workflow_files,
+    yaml_marker_view,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -294,11 +295,26 @@ def job_dependencies(job: dict, read_repo_file) -> tuple[list[str], list[str]]:
     return list(deps), missing
 
 
+def _markers(block: str) -> str:
+    """BLOCK with every byte blanked that cannot carry a marker.
+
+    Two surfaces survive: a real YAML comment, and a `run:` block scalar's
+    body, where a `#` opens the script's own comment. Both markers here anchor
+    on a `#`, and a `#` inside a quoted scalar is a value the job's own author
+    writes. A `NOTE: "# path-gate-ok: x"` read as a suppression would let that
+    author switch this check off, and the same value read as a `# gate-deps:`
+    would inject a path the gate then claims to cover.
+    """
+    return "\n".join(yaml_marker_view(block))
+
+
 def declared_deps(*blocks: str) -> list[str]:
-    """Paths declared via `# gate-deps:` comments across the given job blocks."""
+    """Paths declared via `# gate-deps:` comments across the given job blocks.
+
+    Each block is read through `_markers`."""
     deps: dict[str, None] = {}
     for block in blocks:
-        for match in _GATE_DEPS.finditer(block):
+        for match in _GATE_DEPS.finditer(_markers(block)):
             for path in match.group("paths").split():
                 deps.setdefault(_normalize(path))
     return list(deps)
@@ -306,10 +322,10 @@ def declared_deps(*blocks: str) -> list[str]:
 
 def suppressions(block: str) -> tuple[dict[str, str], list[str]]:
     """(dep → reason, deps suppressed without a reason) from `# path-gate-ok:`
-    comments in a gated job's block."""
+    comments in a gated job's block. Read through `_markers`."""
     with_reason: dict[str, str] = {}
     reasonless: list[str] = []
-    for match in _PATH_GATE_OK.finditer(block):
+    for match in _PATH_GATE_OK.finditer(_markers(block)):
         dep = _normalize(match.group("dep"))
         reason = match.group("reason").strip()
         if reason:

@@ -114,6 +114,14 @@ def test_suppressions_refuses_a_marker_with_no_reason():
     assert reasonless == ["some/dep"]
 
 
+def test_suppressions_ignores_a_marker_inside_a_quoted_value():
+    """A `#` inside a quoted scalar is CONTENT, not a comment. One marker
+    excuses a dependency for every checkout in the file, so honouring a step's
+    display name would let its author hide a real hole."""
+    text = '      - name: "deploy # sparse-checkout-ok: some/dep it is fine"\n'
+    assert mod.suppressions(text) == ({}, [])
+
+
 # ── checkouts() / _window ─────────────────────────────────────────────────
 def _workflow_text(sparse: str, run: str, extra_steps: str = "") -> str:
     return (

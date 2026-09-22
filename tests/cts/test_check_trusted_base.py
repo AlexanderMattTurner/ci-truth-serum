@@ -192,6 +192,20 @@ def test_reasonless_optout_does_not_suppress(tmp_path):
     assert len(tb.check_file(path)) == 1
 
 
+def test_a_hash_inside_a_string_value_does_not_suppress(tmp_path):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. One marker here
+    clears every job in the file, so honouring a value would let the workflow's
+    own author switch this check off."""
+    path = _write(
+        tmp_path,
+        "on:\n  pull_request:\n"
+        "permissions:\n  contents: write\n"
+        'env:\n  NOTE: "# trusted-base-ok: fake reason in a value"\n'
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n" + _HEAD_CHECKOUT,
+    )
+    assert len(tb.check_file(path)) == 1
+
+
 def test_optout_token_in_string_value_does_not_suppress(tmp_path):
     path = _write(
         tmp_path,

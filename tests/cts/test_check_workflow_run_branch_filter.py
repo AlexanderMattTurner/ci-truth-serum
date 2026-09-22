@@ -228,6 +228,15 @@ def test_a_longer_slug_does_not_satisfy_the_marker():
     assert len(wrf.violations(text)) == 1
 
 
+def test_a_marker_inside_a_quoted_value_does_not_suppress():
+    """A `#` inside a quoted scalar is CONTENT. The listener names the workflows
+    it watches, so honouring one would let the author switch this check off."""
+    text = UNFILTERED.replace(
+        "    workflows: [CI]", '    workflows: ["# unfiltered-listener-ok: pretend"]'
+    )
+    assert len(wrf.violations(text)) == 1
+
+
 def test_a_marker_outside_the_trigger_block_does_not_suppress():
     text = UNFILTERED.replace(
         "  notify:", "  notify:  # unfiltered-listener-ok: wrong block"

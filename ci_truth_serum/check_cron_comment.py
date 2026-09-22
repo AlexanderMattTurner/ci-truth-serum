@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import yaml_comment_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -115,6 +116,10 @@ def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for every cron line whose nearby comment claims
     a cadence the expression contradicts."""
     lines = text.splitlines()
+    # The raw lines shape the window below, because `_CRON_LINE` is a question
+    # about the source. What those lines SAY comes from their comments, so a `#`
+    # inside a quoted scalar neither opts a schedule out nor claims a cadence.
+    said = yaml_comment_view(text)
     found: list[tuple[int, str]] = []
     for idx, line in enumerate(lines):
         m = _CRON_LINE.match(line)
@@ -123,14 +128,15 @@ def violations(text: str) -> list[tuple[int, str]]:
         # The claim window: this line plus up to COMMENT_WINDOW lines above,
         # stopping at a previous `cron:` line so a sibling schedule's comment
         # is never attributed to this one.
-        window = [line]
-        for above in reversed(lines[max(0, idx - COMMENT_WINDOW) : idx]):
-            if _CRON_LINE.match(above):
+        window = [idx]
+        for offset in reversed(range(max(0, idx - COMMENT_WINDOW), idx)):
+            if _CRON_LINE.match(lines[offset]):
                 break
-            window.append(above)
-        if any(annotated(w, OPT_OUT, require_reason=False) for w in window):
+            window.append(offset)
+        shown = [said[n] for n in window]
+        if any(annotated(w, OPT_OUT, require_reason=False) for w in shown):
             continue
-        comments = " ".join(w.split("#", 1)[1] for w in window if "#" in w)
+        comments = " ".join(w.split("#", 1)[1] for w in shown if "#" in w)
         claimed = _claimed(comments)
         if claimed is None:
             continue

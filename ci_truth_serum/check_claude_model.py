@@ -26,6 +26,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated,
     LineLoader,
     workflow_files as _workflow_files,
+    yaml_comment_view,
 )
 
 ACTION = "anthropics/claude-code-action"
@@ -116,14 +117,17 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     # line); the step's own `uses:` line is found by scanning from there, so each
     # violation is anchored to its real step instead of a positional text pairing.
     source_lines = text.splitlines()
+    # The raw lines find the `uses:` line; their COMMENTS say what it holds, so
+    # a `#` inside a quoted scalar (`name: 'run  # allow-default-model'`) is a
+    # value the step's author writes and opts nobody out.
+    comments = yaml_comment_view(text)
     violations: list[tuple[int | None, str]] = []
     for step in action_steps(doc):
         if not uses_action(step):
             continue
         line = _uses_line(source_lines, step.get("__line__", 1))
-        opted_out = 1 <= line <= len(source_lines) and annotated(
-            source_lines[line - 1], OPT_OUT, require_reason=False
-        )
+        said = comments[line - 1] if 1 <= line <= len(comments) else ""
+        opted_out = annotated(said, OPT_OUT, require_reason=False)
         if not has_model(step) and not opted_out:
             violations.append((line, MESSAGE))
     return violations

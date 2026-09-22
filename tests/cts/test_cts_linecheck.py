@@ -602,6 +602,98 @@ def test_yaml_comment_view_blanks_a_marker_inside_a_block_scalar() -> None:
     assert lc.yaml_comment_view(text) == ["      ", " " * 27]
 
 
+def test_yaml_comment_view_line_count_matches_the_source() -> None:
+    """One view line per source line, so a caller may index it by line number."""
+    text = "a: 1  # one\nb: 2\n\nc: 3  # three\n"
+    assert len(lc.yaml_comment_view(text)) == len(text.splitlines())
+
+
+def test_yaml_comment_view_errs_closed_on_untokenizable_text() -> None:
+    """A text PyYAML cannot scan comes back from the strip unchanged, so every
+    character matches and the view is blank. A suppression is lost rather than
+    invented, and the finding is reported."""
+    broken = "a: 'unterminated\n# my-token\n"
+    assert [line.strip() for line in lc.yaml_comment_view(broken)] == ["", ""]
+
+
+def test_annotated_near_rejects_a_misaligned_comment_list() -> None:
+    """The window's line numbers index both lists. A list of the wrong length
+    reads a neighbouring line, and a marker found one line off still
+    suppresses — so the mismatch raises rather than deciding quietly."""
+    lines = ["# tok: why", "a: 1", "b: 2"]
+    with pytest.raises(ValueError, match="reads the wrong line's comment"):
+        lc.annotated_near(lines, 2, "tok", comments=lines[:2])
+    # Non-vacuity: the aligned call decides, so the raise is about the length.
+    assert lc.annotated_near(lines, 2, "tok", comments=lines) is True
+
+
+# ── yaml_marker_view / yaml_block_scalar_spans / is_yaml_source ──────────────
+# The second view a workflow needs: a marker beside the `run:` line it is about
+# sits in a shell comment, which the comment view blanks with the whole body.
+
+
+def test_yaml_marker_view_keeps_a_block_scalar_body() -> None:
+    text = 'a:\n  name: "# tok: fake"\n  run: |\n    echo hi  # tok: real\n'
+    shown = lc.yaml_marker_view(text)
+    assert shown[1].strip() == "", "a quoted scalar is a value, not a marker"
+    assert shown[3].strip() == "echo hi  # tok: real"
+
+
+def test_yaml_marker_view_keeps_every_column_and_line() -> None:
+    """A caller indexes it by line number and slices it by column, so the view
+    must be the source's own shape."""
+    text = 'a:\n  name: "# tok: fake"\n  run: |\n    echo hi  # tok: real\n'
+    assert len(lc.yaml_marker_view(text)) == len(text.splitlines())
+    assert [len(line) for line in lc.yaml_marker_view(text)] == [
+        len(line) for line in text.splitlines()
+    ]
+
+
+def test_yaml_marker_view_reads_an_indented_block_fragment() -> None:
+    """Several checks slice one job's lines out of the file and pass that. A
+    fragment starts indented, and PyYAML scans it."""
+    block = '  build:\n    name: "# tok: fake"\n    steps:\n      - run: |\n          # tok: real\n'
+    shown = lc.yaml_marker_view(block)
+    assert shown[1].strip() == ""
+    assert shown[4].strip() == "# tok: real"
+
+
+def test_yaml_marker_view_errs_closed_on_untokenizable_text() -> None:
+    """No span survives, so every suppression is lost and the finding stands."""
+    broken = "a: 'unterminated\n# tok: real\n"
+    assert [line.strip() for line in lc.yaml_marker_view(broken)] == ["", ""]
+
+
+def test_yaml_block_scalar_spans_start_at_the_indicator() -> None:
+    """The span opens at `|`, not at the body, so a caller slicing the text
+    keeps the file's own line numbering."""
+    text = "a:\n  run: |\n    echo hi\n"
+    (start, end), *rest = lc.yaml_block_scalar_spans(text)
+    assert rest == []
+    assert text[start] == "|"
+    assert text[start:end] == "|\n    echo hi\n"
+
+
+def test_yaml_block_scalar_spans_ignore_a_quoted_scalar() -> None:
+    """Non-vacuity for the rows above: only `|` and `>` hold a nested document."""
+    assert lc.yaml_block_scalar_spans('a: "# tok: fake"\nb: plain\n') == []
+    assert lc.yaml_block_scalar_spans("a: >\n  folded\n")
+
+
+@pytest.mark.parametrize(
+    "path, is_yaml",
+    [
+        (".github/workflows/ci.yaml", True),
+        ("action.yml", True),
+        ("a.py", False),
+        ("a.sh", False),
+        ("notes.yaml.md", False),
+    ],
+)
+def test_is_yaml_source(path: str, is_yaml: bool) -> None:
+    assert lc.is_yaml_source(path) is is_yaml
+
+
 def test_line_boundary_spellings_agree() -> None:
     """The set, the regex class, and Python's own idea of a line boundary agree.
 
@@ -725,7 +817,31 @@ def test_classification_text_empty_block_is_empty() -> None:
 
 
 def test_classification_text_only_key_line_when_no_children() -> None:
-    assert lc._classification_text("  solo:") == "  solo:"
+    """The key line is eligible, and it carries no comment, so it reads blank.
+    What comes back is the COMMENTS on the eligible lines, not the lines."""
+    assert lc._classification_text("  solo:").strip() == ""
+
+
+def test_classification_text_keeps_a_comment_and_its_column() -> None:
+    block = "  gate:  # required-check: true\n    uses: ./x.yaml\n"
+    assert lc._classification_text(block) == (
+        "         # required-check: true\n                  "
+    )
+
+
+def test_classification_text_blanks_a_marker_inside_a_quoted_value() -> None:
+    """A `#` inside a scalar is content an author controls. Reading the raw line
+    let `name: "# required-check: true"` classify the job."""
+    block = '  gate:\n    name: "# required-check: true"\n'
+    assert lc._classification_text(block).strip() == ""
+
+
+def test_classification_text_ignores_a_marker_in_a_run_body() -> None:
+    """A `run: |` body is a block scalar, so every `#` in it is content."""
+    block = (
+        "  gate:\n    steps:\n      - run: |\n          echo '# required-check: true'\n"
+    )
+    assert lc._classification_text(block).strip() == ""
 
 
 # ── matrix_combinations / expand_name ────────────────────────────────────────
@@ -923,6 +1039,58 @@ def test_required_check_contexts_falls_back_to_job_key_when_name_absent() -> Non
 )
 def test_opted_out(text: str, expected: bool) -> None:
     assert lc.opted_out(text, "my-token") is expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'name: "# my-token"\nconcurrency:\n  group: x\n',
+        "name: '# my-token'\nconcurrency:\n  group: x\n",
+        "jobs:\n  a:\n    steps:\n      - run: |\n          echo '# my-token'\n",
+    ],
+)
+def test_a_hash_inside_a_scalar_opts_nobody_out(text: str) -> None:
+    """The `#` is content an author controls, not a comment. Reading the raw
+    line let live workflow data switch the concurrency lints off."""
+    assert lc.opted_out(text, "my-token") is False
+
+
+# ── key_block_lines ──────────────────────────────────────────────────────
+# The per-key marker scope, shared by the workflow_run lint and failure routing.
+
+
+def test_key_block_lines_reads_the_key_line_and_its_direct_children() -> None:
+    text = (
+        "on:\n"
+        "  workflow_run:  # on the key\n"
+        "    branches: [main]  # on a child\n"
+        "    workflows: [ci]\n"
+        "  push:  # a sibling trigger\n"
+    )
+    found = [line.strip() for line in lc.key_block_lines(text, "workflow_run")]
+    assert found == ["# on the key", "# on a child", ""]
+
+
+def test_key_block_lines_blanks_a_marker_inside_a_quoted_value() -> None:
+    text = 'on:\n  workflow_run:\n    workflows: ["# my-token: label"]\n'
+    assert [line.strip() for line in lc.key_block_lines(text, "workflow_run")] == [
+        "",
+        "",
+    ]
+
+
+def test_key_block_lines_skips_a_deeper_descendant() -> None:
+    """Only direct children are eligible, so a marker further in is out of
+    scope whether or not it is a real comment."""
+    text = "on:\n  workflow_run:\n    branches:\n      - main  # too deep\n"
+    assert [line.strip() for line in lc.key_block_lines(text, "workflow_run")] == [
+        "",
+        "",
+    ]
+
+
+def test_key_block_lines_absent_key_yields_nothing() -> None:
+    assert lc.key_block_lines("on:\n  push:\n", "workflow_run") == []
 
 
 # ── annotated: reasoned comment-scoped opt-out ───────────────────────────

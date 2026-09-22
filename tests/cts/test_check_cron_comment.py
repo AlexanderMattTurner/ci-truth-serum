@@ -96,6 +96,19 @@ def test_opt_out_on_cron_line() -> None:
     assert mod.violations(text) == []
 
 
+def test_a_hash_inside_a_quoted_value_neither_opts_out_nor_claims() -> None:
+    """A `#` inside a quoted scalar is CONTENT, not a comment. It must not opt
+    the schedule out, and it must not supply the cadence claim either."""
+    opt_out = (
+        "on:\n  workflow_call:\n    inputs:\n"
+        '      note: {default: "# cron-comment-ok"}\n'
+        '  schedule:\n    # daily cleanup\n    - cron: "0 0 * * 0"\n'
+    )
+    assert len(mod.violations(opt_out)) == 1
+    claim = 'a: "# daily"\n- cron: "0 6 * * 1"\n'
+    assert mod.violations(claim) == []
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 def _wire(tmp_path, monkeypatch, text: str):
     wf = tmp_path / ".github" / "workflows"

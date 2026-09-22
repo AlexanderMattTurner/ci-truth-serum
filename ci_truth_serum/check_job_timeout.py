@@ -32,6 +32,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import _job_blocks, workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import yaml_marker_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 REPO_ROOT = Path.cwd()
@@ -53,8 +54,15 @@ def _block_opted_out(block_text: str) -> bool:
 
     Line by line, because the shared matcher's reason tail deliberately cannot
     cross a newline: run over the whole block at once, a bare `# allow-no-timeout:`
-    ending a line would borrow the next line's first character as its reason."""
-    return any(annotated(line, ALLOW) for line in block_text.splitlines())
+    ending a line would borrow the next line's first character as its reason.
+
+    The lines come from `yaml_marker_view`, which keeps the two places a job may
+    carry a marker: a real YAML comment, and a block scalar's body, where a `#`
+    opens a shell comment. It blanks everything else, so the string value in
+    `name: "# allow-no-timeout: x"` marks nothing — the job's own author writes
+    that name, and honouring it would let them switch the check off.
+    """
+    return any(annotated(line, ALLOW) for line in yaml_marker_view(block_text))
 
 
 def check_file(path: Path) -> list[tuple[int | None, str]]:

@@ -444,7 +444,7 @@ def test_env_symmetry_analyze_never_crashes(a: str, b: str) -> None:
     for text, is_yaml in ((a, False), (b, True)):
         assert isinstance(env_symmetry.find_writes(text, prefix, is_yaml), set)
         assert isinstance(env_symmetry.find_reads(text, prefix), set)
-        assert isinstance(env_symmetry.collect_optouts(text), set)
+        assert isinstance(env_symmetry.collect_optouts(text, is_yaml), set)
     results = env_symmetry.analyze({"f.sh": a, "g.yaml": b}, prefix)
     assert isinstance(results, list)
     seen = set()

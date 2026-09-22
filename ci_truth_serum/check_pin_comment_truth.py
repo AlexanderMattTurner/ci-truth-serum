@@ -32,6 +32,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import yaml_comment_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
 # the hook from the consumer repo root, so cwd is that root; tests override these.
@@ -87,11 +88,16 @@ def pin_records(text: str) -> list[PinComment]:
     `vX[.Y[.Z]]` token; None when the trailing text carries no wellformed one
     (including when there is no comment at all)."""
     records: list[PinComment] = []
+    # The raw line finds the pin; its COMMENT says what trails it. A `#` glued
+    # straight onto the SHA (`@<sha>#v4`) is part of the `uses:` value, so YAML
+    # calls it no comment — and neither a version claim nor an opt-out may be
+    # read out of it. The view keeps every column, so the same offset applies.
+    comments = yaml_comment_view(text)
     for lineno, line in enumerate(text.splitlines(), 1):
         m = _USES_SHA.match(line)
         if not m:
             continue
-        rest = m.group("rest")
+        rest = comments[lineno - 1][m.start("rest") :]
         version = _VERSION_COMMENT.search(rest)
         records.append(
             PinComment(

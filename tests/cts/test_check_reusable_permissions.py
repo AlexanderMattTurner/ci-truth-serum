@@ -346,6 +346,16 @@ def test_the_marker_inside_a_run_body_suppresses_nothing(tmp_path, monkeypatch):
     assert "`pull-requests: read`" in found[0][1]
 
 
+def test_the_marker_inside_a_quoted_value_suppresses_nothing(tmp_path, monkeypatch):
+    """A `#` inside a quoted scalar is CONTENT, not a comment. The job's author
+    writes its `name:`, so honouring one would let that author switch this check
+    off by naming the job after it."""
+    caller = _caller(f'    name: "# {crp.OPT_OUT}: pretend"\n' + JOB_SHORT)
+    found = _check(tmp_path, monkeypatch, caller)
+    assert len(found) == 1
+    assert "`pull-requests: read`" in found[0][1]
+
+
 def test_a_longer_slug_containing_the_token_suppresses_nothing(tmp_path, monkeypatch):
     caller = _caller(f"    # not-{crp.OPT_OUT}: a different annotation\n" + JOB_SHORT)
     found = _check(tmp_path, monkeypatch, caller)

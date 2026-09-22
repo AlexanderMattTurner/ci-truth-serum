@@ -62,6 +62,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotation_re,
     _job_blocks,
     workflow_files as _workflow_files,
+    yaml_marker_view,
 )
 
 REPO_ROOT = Path.cwd()
@@ -349,8 +350,13 @@ def live_secrets(doc: dict, cfg: dict) -> set[str]:
 def _opted_out(block: str) -> bool:
     """True when the job's own source block carries a reason-bearing opt-out.
 
-    Job-scoped, so an annotation on a sibling job can never suppress this one."""
-    return bool(_ALLOW_RE.search(block))
+    Job-scoped, so an annotation on a sibling job can never suppress this one.
+    Read from `yaml_marker_view`, which keeps a real YAML comment and a block
+    scalar's body — the two places a job may carry a marker. A `#` inside a
+    quoted scalar stays content, so `name: "# untrusted-exec-ok: x"` marks
+    nothing.
+    """
+    return any(_ALLOW_RE.search(line) for line in yaml_marker_view(block))
 
 
 def analyze(doc: object, already_reported: frozenset[str] = frozenset()) -> list[tuple]:

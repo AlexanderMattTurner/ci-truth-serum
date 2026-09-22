@@ -83,23 +83,45 @@ def test_a_call_passing_no_with_block_passes_no_input():
 TEXT = "\n".join(
     [
         "inputs:",
-        "  first:",
-        "    type: string",
-        "      deeper: not-a-direct-child",
+        "  first:  # on the key line",
+        "    type: string  # on a direct child",
+        "      deeper: not-a-direct-child  # too deep",
         "",
-        "  second:",
+        "  second:  # on a sibling key",
         "    type: string",
     ]
 )
 
 
-def test_the_window_is_the_key_line_and_its_direct_children():
+def test_the_window_is_the_comments_on_the_key_line_and_its_direct_children():
+    """The window holds COMMENTS, not source lines, so only a real comment can
+    carry a marker."""
     window = uri.marker_window(TEXT, 2)
-    assert window == ["  first:", "    type: string"]
+    assert [line.strip() for line in window] == [
+        "# on the key line",
+        "# on a direct child",
+    ]
 
 
 def test_the_window_stops_at_the_next_sibling_key():
-    assert "  second:" not in uri.marker_window(TEXT, 2)
+    assert not any("sibling" in line for line in uri.marker_window(TEXT, 2))
+
+
+def test_the_window_stops_below_a_direct_child():
+    assert not any("too deep" in line for line in uri.marker_window(TEXT, 2))
+
+
+def test_a_hash_inside_a_quoted_value_carries_no_marker():
+    """`description: "# unused-input-ok: x"` is a string VALUE. Reading it as a
+    comment would let any author switch this check off by naming it."""
+    text = "\n".join(
+        [
+            "inputs:",
+            "  first:",
+            '    description: "# unused-input-ok: pretend"',
+        ]
+    )
+    assert uri.suppression(uri.marker_window(text, 2)) == (None, None)
 
 
 def test_key_line_walks_up_from_the_block_the_loader_tagged():

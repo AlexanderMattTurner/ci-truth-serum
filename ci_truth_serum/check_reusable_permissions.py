@@ -74,6 +74,9 @@ OPT_OUT = "reusable-permissions-ok"
 # not a boolean opt-out predicate. The lead mirrors `_cts_linecheck.annotation_re`:
 # the token may follow the `#` directly, or after same-line comment text whose
 # last character cannot belong to a token, so a longer slug never satisfies it.
+# Read against `_classification_text`, which returns COMMENTS. The `#` this
+# pattern anchors on must be a real YAML comment, so a `#` inside a quoted
+# scalar stays content and suppresses nothing.
 _OPT_OUT = re.compile(rf"#(?:[^\r\n]*[^\w\r\n-])?{OPT_OUT}\s*:\s*(?P<reason>[^\r\n]*)$")
 
 # The three levels a permission scope can hold, ordered by what they allow.
@@ -207,9 +210,9 @@ def suppression(block: str) -> tuple[str | None, str | None]:
 
     Both are None when the job carries no marker. A marker that states no real
     reason yields an error instead of a reason, so it suppresses nothing. The
-    marker is read from the job's key line and its direct-child lines only
-    (`_classification_text`), so the same text inside a `run:` body or a deeper
-    string value is content, not a suppression.
+    marker is read from the COMMENTS on the job's key line and its direct-child
+    lines only (`_classification_text`), so the same text inside a `run:` body,
+    inside a quoted value, or on a deeper line is content, not a suppression.
     """
     details = []
     for line in _classification_text(block).splitlines():

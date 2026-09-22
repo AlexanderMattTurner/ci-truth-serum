@@ -33,6 +33,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import annotated  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import yaml_comment_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "not-required-check"
@@ -47,9 +48,13 @@ TRIGGER_FILTERS = PATH_FILTERS + BRANCH_FILTERS
 
 def locate_trigger(text: str, trigger: str) -> tuple[int, bool]:
     """Return the trigger declaration's 1-based line number and whether it's opted out."""
-    for num, line in enumerate(text.splitlines(), 1):
+    pairs = zip(text.splitlines(), yaml_comment_view(text))
+    for num, (line, said) in enumerate(pairs, 1):
         if re.match(rf"^\s*{trigger}\s*:", line):
-            return num, annotated(line, OPT_OUT, require_reason=False)
+            # The raw line finds the trigger and anchors the report. SAID is
+            # that line's comment, so a `#` inside a quoted scalar
+            # (`branches: ["# not-required-check"]`) is content and opts nobody out.
+            return num, annotated(said, OPT_OUT, require_reason=False)
     return 1, False
 
 

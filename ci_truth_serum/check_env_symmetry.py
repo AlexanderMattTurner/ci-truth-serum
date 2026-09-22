@@ -37,6 +37,12 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    is_yaml_source,
+    yaml_comment_view,
+)
+
 REPO_ROOT = Path.cwd()
 
 # A `# env-symmetry-ok: NAME <reason>` opt-out — NAME plus a non-empty reason.
@@ -94,9 +100,17 @@ def find_reads(text: str, prefix: str) -> set[str]:
     return reads
 
 
-def collect_optouts(text: str) -> set[str]:
-    """Var names opted out via a reason-bearing ``# env-symmetry-ok: NAME …``."""
-    return {m.group("name") for m in _OPT_OUT.finditer(text)}
+def collect_optouts(text: str, is_yaml: bool = False) -> set[str]:
+    """Var names opted out via a reason-bearing ``# env-symmetry-ok: NAME …``.
+
+    IS_YAML says TEXT is a workflow, and then the marker is read from its
+    COMMENTS (``yaml_comment_view``). The marker anchors on a `#`, and a `#`
+    inside a quoted scalar is a value the workflow's own author writes. One
+    marker exempts a name across the WHOLE tree, so honouring a value would let
+    that author hide a half-finished rename anywhere in the repository.
+    """
+    scanned = "\n".join(yaml_comment_view(text)) if is_yaml else text
+    return {m.group("name") for m in _OPT_OUT.finditer(scanned)}
 
 
 class Imbalance(NamedTuple):
@@ -121,12 +135,12 @@ def analyze(sources: dict[str, str], prefix: str) -> list[Imbalance]:
     reads: dict[str, set[str]] = {}
     optouts: set[str] = set()
     for path, text in sources.items():
-        is_yaml = path.endswith((".yaml", ".yml"))
+        is_yaml = is_yaml_source(path)
         for n in find_writes(text, prefix, is_yaml):
             writes.setdefault(n, set()).add(path)
         for n in find_reads(text, prefix):
             reads.setdefault(n, set()).add(path)
-        optouts |= collect_optouts(text)
+        optouts |= collect_optouts(text, is_yaml)
 
     results: list[Imbalance] = []
     for name in sorted(set(writes) | set(reads)):
