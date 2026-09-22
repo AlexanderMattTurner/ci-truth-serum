@@ -30,8 +30,24 @@ def workflow(wf_id: int, name: str, path: str, state: str = "active") -> dict:
     return {"id": wf_id, "name": name, "path": path, "state": state}
 
 
-def run(run_id: int, conclusion: str, created_at: str = "2026-08-01T00:00:00Z") -> dict:
-    return {"id": run_id, "conclusion": conclusion, "created_at": created_at}
+def run(
+    run_id: int,
+    conclusion: str,
+    created_at: str = "2026-08-01T00:00:00Z",
+    head_branch: str | None = "main",
+    head_sha: str = "0123456789abcdef",
+    head_repo: str | None = REPO,
+) -> dict:
+    return {
+        "id": run_id,
+        "conclusion": conclusion,
+        "created_at": created_at,
+        "head_branch": head_branch,
+        "head_sha": head_sha,
+        "head_repository": {"full_name": head_repo} if head_repo else None,
+        "repository": {"full_name": REPO},
+        "html_url": f"https://github.com/{REPO}/actions/runs/{run_id}",
+    }
 
 
 class FakeApi:
@@ -252,9 +268,154 @@ def test_the_markdown_report_is_a_table_row_per_workflow():
     )
     report = mod.render([finding], 7, markdown=True)
     assert (
-        "| Lint | `.github/workflows/lint.yaml` | 1 | 2026-08-01T09:00:00Z |" in report
-    )
+        "| Lint | `.github/workflows/lint.yaml` | `main` | 1 | "
+        "[2026-08-01T09:00:00Z](https://github.com/owner/name/actions/runs/11) |"
+    ) in report
     assert report.startswith("### Workflows that failed to start")
+
+
+# ── the ref each run used ────────────────────────────────────────────────
+def test_the_report_names_the_ref_a_jobless_run_used():
+    """The finding is about a FILE ON A REF. A reader given only the file name
+    opens it on the default branch, finds that it loads, and learns nothing —
+    which is how three weekly reports of a broken sync branch produced no
+    action."""
+    finding = mod.StartupFailure(
+        name="Lint",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure", head_branch="template-sync")],
+        scanned=1,
+        total=1,
+    )
+    assert finding.refs == ["template-sync"]
+    # The whole text line, so a neighbouring mistake in that f-string fails too:
+    # dropping the URL or mangling the join leaves a substring check green.
+    assert (
+        "  .github/workflows/lint.yaml on template-sync: 1 jobless failed run(s), "
+        "newest 2026-08-01T00:00:00Z "
+        "https://github.com/owner/name/actions/runs/11"
+    ) in mod.render([finding], 7, markdown=False)
+    assert "`template-sync`" in mod.render([finding], 7, markdown=True)
+
+
+def test_the_report_names_every_ref_once_and_in_order():
+    """One workflow can break on several refs, and the same ref repeats across
+    its runs. The reader needs each place once."""
+    finding = mod.StartupFailure(
+        name="Lint",
+        path=".github/workflows/lint.yaml",
+        runs=[
+            run(11, "startup_failure", head_branch="template-sync"),
+            run(12, "startup_failure", head_branch="main"),
+            run(13, "startup_failure", head_branch="template-sync"),
+        ],
+        scanned=3,
+        total=3,
+    )
+    assert finding.refs == ["main", "template-sync"]
+    assert "| `main`, `template-sync` |" in mod.render([finding], 7, markdown=True)
+
+
+def test_a_run_off_a_nameless_ref_falls_back_to_its_sha():
+    """A run off a tag carries a null `head_branch`. The short SHA still names a
+    place the reader can open."""
+    nameless = run(11, "startup_failure", head_branch=None, head_sha="abcdef1234567")
+    assert mod.run_ref(nameless) == "abcdef1"
+
+
+def test_a_fork_ref_carries_the_repository_that_holds_it():
+    """`head_branch` holds the branch name alone, and a fork's branch lives in
+    the FORK. A reader sent to `patch-1` opens the scanned repository, where
+    that name is absent or belongs to somebody else's work."""
+    forked = run(11, "startup_failure", head_branch="patch-1", head_repo="mallory/fork")
+    assert mod.run_ref(forked) == "mallory/fork:patch-1"
+    # Non-vacuity: the same branch name in the scanned repo stays bare.
+    assert mod.run_ref(run(12, "startup_failure", head_branch="patch-1")) == "patch-1"
+
+
+def test_a_run_from_a_deleted_fork_falls_back_to_its_sha():
+    """A deleted fork leaves a null `head_repository`. The branch is real, but
+    no repository here holds it, so naming it alone would misdirect the
+    reader."""
+    orphan = run(
+        11,
+        "startup_failure",
+        head_branch="patch-1",
+        head_sha="abcdef1234567",
+        head_repo=None,
+    )
+    assert mod.run_ref(orphan) == "abcdef1"
+
+
+def test_a_backtick_in_a_ref_cannot_close_its_code_span():
+    """Git allows a backtick in a branch name. A one-backtick fence lets the ref
+    close its own span, and the rest of it renders as prose rather than as the
+    exact ref the reader must go and inspect."""
+    finding = mod.StartupFailure(
+        name="Lint",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure", head_branch="wip`odd")],
+        scanned=1,
+        total=1,
+    )
+    assert "| ``wip`odd`` |" in mod.render([finding], 7, markdown=True)
+
+
+def test_a_ref_that_opens_with_a_backtick_is_padded():
+    """A code span whose body opens or closes with a backtick needs one space of
+    padding, which GFM strips back out before the reader sees it."""
+    finding = mod.StartupFailure(
+        name="Lint",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure", head_branch="`odd")],
+        scanned=1,
+        total=1,
+    )
+    assert "| `` `odd `` |" in mod.render([finding], 7, markdown=True)
+
+
+def test_a_pipe_in_a_name_or_a_ref_keeps_the_table_columns():
+    """A raw `|` closes a cell early, so the row grows a column and every heading
+    after it names the wrong value. GitHub allows one in a workflow's `name:`,
+    and git allows one in a branch name."""
+    finding = mod.StartupFailure(
+        name="Lint | fast",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure", head_branch="wip|odd")],
+        scanned=1,
+        total=1,
+    )
+    row = next(
+        line
+        for line in mod.render([finding], 7, markdown=True).splitlines()
+        if line.startswith("| Lint ")
+    )
+    assert "Lint \\| fast" in row
+    assert "`wip\\|odd`" in row
+    # Five headings, so five cells: each raw `|` above would have made a sixth.
+    assert row.count("|") == row.count("\\|") + 6
+
+
+def test_a_backslash_before_a_pipe_does_not_defeat_the_escape():
+    """A pipe-only escape leaves the hole open. GFM reads the `\\\\` it produces as
+    one literal backslash, and the `|` after it opens a column again. The row
+    below is the one a count of escaped pipes cannot tell from a correct one."""
+    finding = mod.StartupFailure(
+        # A name holding a backslash immediately before a pipe.
+        name="Lint \\| fast",
+        path=".github/workflows/lint.yaml",
+        runs=[run(11, "startup_failure")],
+        scanned=1,
+        total=1,
+    )
+    row = next(
+        line
+        for line in mod.render([finding], 7, markdown=True).splitlines()
+        if line.startswith("| Lint ")
+    )
+    # Both characters escaped: `\\` renders as one backslash, `\|` as one pipe.
+    assert "Lint \\\\\\| fast" in row
+    assert row.count("|") == row.count("\\|") + 6
 
 
 def test_a_nameless_workflow_falls_back_to_its_path(api):

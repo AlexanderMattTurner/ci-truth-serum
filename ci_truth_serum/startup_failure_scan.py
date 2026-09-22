@@ -33,6 +33,11 @@ conclusion is not `startup_failure`. The Actions API stops paginating at 1000
 items, which caps a single workflow at 10 listings and is the one gap the report
 names by workflow when it happens.
 
+The report names the REF each run used, and links the newest one. A workflow
+file loads per ref. A file that is healthy on the default branch still breaks on
+a branch that edits it. The old report named the file alone. It sent the reader
+to the default branch, the file loads there, and the finding looked false.
+
 THE OBVIOUS IMPLEMENTATION FAILS OPEN, which is why the listing here asks for
 `status=completed` and classifies the conclusion itself. A run that failed to
 load carries `conclusion: startup_failure`, not `conclusion: failure`. The runs
@@ -51,6 +56,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import sys
 import time
 import urllib.parse
@@ -184,6 +190,29 @@ def jobless_failures(repo: str, runs: list[dict], token: str) -> list[dict]:
     return [r for r in runs if is_failed(r) and started_no_job(repo, r, token)]
 
 
+def run_ref(run: dict) -> str:
+    """Where RUN ran, as a branch name or as a short commit SHA.
+
+    A branch name alone is ambiguous across repositories. `head_branch` holds
+    the branch name on its own, and a run from a fork carries a branch that
+    lives in the FORK. A reader sent to `patch-1` opens the scanned repository,
+    where that name is absent or belongs to somebody else's work. A cross-repo
+    head is therefore written the way GitHub writes it, `owner/fork:branch`.
+
+    Two runs name no branch this tool can place, and the short SHA stands in for
+    both. A run off a tag carries a null `head_branch`. A run from a fork that
+    has since been deleted carries a null `head_repository`, so the branch is
+    real but the repository holding it is unknown.
+    """
+    branch = run["head_branch"]
+    head_repo = run["head_repository"]
+    if not branch or not head_repo:
+        return run["head_sha"][:7]
+    if head_repo["full_name"] != run["repository"]["full_name"]:
+        return f"{head_repo['full_name']}:{branch}"
+    return branch
+
+
 @dataclass(frozen=True)
 class StartupFailure:
     """One workflow's jobless failed runs, and whether the scan read them all."""
@@ -201,10 +230,24 @@ class StartupFailure:
         return self.total > self.scanned
 
     @property
+    def newest_run(self) -> dict:
+        """The most recent jobless failed run. A StartupFailure is built only from
+        a non-empty run list, so there is always one."""
+        return max(self.runs, key=lambda run: run["created_at"])
+
+    @property
     def newest(self) -> str:
-        """When the most recent jobless failure started. A StartupFailure is built only
-        from a non-empty run list, so there is always one."""
-        return max(run["created_at"] for run in self.runs)
+        """When the most recent jobless failure started."""
+        return self.newest_run["created_at"]
+
+    @property
+    def refs(self) -> list[str]:
+        """The distinct refs these runs used, sorted.
+
+        A workflow file loads per ref. Without this the reader opens the file on
+        the default branch. It loads there, so the reader learns nothing.
+        """
+        return sorted({run_ref(run) for run in self.runs})
 
 
 def scan(repo: str, since_iso: str, token: str) -> list[StartupFailure]:
@@ -239,6 +282,51 @@ def _truncation_lines(findings: list[StartupFailure]) -> list[str]:
     ]
 
 
+# The two characters a Markdown table cell reads as syntax. `|` closes the cell,
+# and `\` escapes whatever follows it, so a value carrying one can defeat the
+# escape put on the other.
+_CELL_SYNTAX = re.compile(r"[\\|]")
+_BACKTICK_RUN = re.compile(r"`+")
+
+
+def _cell(text: str) -> str:
+    """TEXT as the contents of one Markdown table cell.
+
+    A raw `|` closes the cell early, so the row grows a column and every heading
+    after it names the wrong value. Git allows a `|` in a branch name, and
+    GitHub allows one in a workflow's `name:`.
+
+    Both characters are escaped in ONE pass, so no pass can re-touch what an
+    earlier pass wrote. Escaping only `|` leaves the hole open: a name holding
+    `\\|` becomes `\\\\|`, which GFM reads as one literal backslash and then a
+    live column separator.
+    """
+    return _CELL_SYNTAX.sub(lambda match: "\\" + match.group(), text)
+
+
+def _code_cell(text: str) -> str:
+    """TEXT as a code span inside one Markdown table cell.
+
+    A code span ends at the first run of backticks as long as the run that
+    opened it. Git allows a backtick in a branch name, so a fixed one-backtick
+    fence lets a ref such as ``wip`odd`` close its own span, and the rest of the
+    ref renders as prose. The fence here is one backtick longer than the longest
+    run inside, which no content can close. A value that opens or closes with a
+    backtick also takes one space of padding, which the reader does not see.
+
+    Only the `|` is escaped, unlike `_cell`. GFM strips a `\\|` while it splits
+    the row, before it reads the span, so the pipe survives. A backslash is
+    literal inside a code span, so escaping one would SHOW the escape. Git
+    forbids a backslash in a ref name, so this is about the format rather than
+    about a value seen here.
+    """
+    body = text.replace("|", "\\|")
+    longest = max((len(run) for run in _BACKTICK_RUN.findall(body)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if not body or body.startswith("`") or body.endswith("`") else ""
+    return f"{fence}{pad}{body}{pad}{fence}"
+
+
 def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> str:
     """The report a human reads, as plain text or as a Markdown block."""
     heading = "### Workflows that failed to start"
@@ -256,12 +344,15 @@ def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> 
             f"These runs completed with a failure and held zero jobs, in the last "
             f"{window_days} days. A run with no jobs reports to nobody: a "
             "`workflow_run` notifier has no job to name, and an `always()` "
-            "reporter never runs. Check that each file below loads.",
+            "reporter never runs. Open each file on the ref named beside it. "
+            "Check that the file loads there.",
             "",
-            "| Workflow | File | Jobless failed runs | Newest |",
-            "| --- | --- | --- | --- |",
+            "| Workflow | File | Ref | Jobless failed runs | Newest |",
+            "| --- | --- | --- | --- | --- |",
             *(
-                f"| {f.name} | `{f.path}` | {len(f.runs)} | {f.newest} |"
+                f"| {_cell(f.name)} | {_code_cell(f.path)} | "
+                f"{', '.join(_code_cell(ref) for ref in f.refs)} | "
+                f"{len(f.runs)} | [{f.newest}]({f.newest_run['html_url']}) |"
                 for f in findings
             ),
         ]
@@ -270,7 +361,8 @@ def render(findings: list[StartupFailure], window_days: int, markdown: bool) -> 
             f"{len(findings)} workflow(s) failed before starting a job in the last "
             f"{window_days} days:",
             *(
-                f"  {f.path}: {len(f.runs)} jobless failed run(s), newest {f.newest}"
+                f"  {f.path} on {', '.join(f.refs)}: {len(f.runs)} jobless failed "
+                f"run(s), newest {f.newest} {f.newest_run['html_url']}"
                 for f in findings
             ),
         ]
