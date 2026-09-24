@@ -10,8 +10,8 @@ reporters the hook polices), expands each one's `name:` over its own
 `strategy.matrix` into concrete check contexts (via the shared
 `_marked_jobs`, so the lint and the apply step can never read a different
 verdict from the same YAML), keeps only workflows that run on a pull request,
-names each reusable-workflow job `<caller> / <callee>` as GitHub does, and rewrites the repository ruleset's
-`required_status_checks` rule to exactly that set — creating that rule if the
+names each reusable-workflow job `<caller> / <callee>` as GitHub does, and
+rewrites the repository ruleset's `required_status_checks` rule to exactly that set — creating that rule if the
 branch ruleset doesn't have one yet.
 
 Modes:

@@ -38,7 +38,7 @@ FUZZ_DIR = REPO_ROOT / "tests" / "cts"
 #   - run_tier, sync_required_checks, sync_merge_queue: orchestrators. run_tier
 #     dispatches argv to other hooks (each fuzzed on its own); the two sync tools
 #     are network/REST plumbing, and the only parser of the first,
-#     required_check_contexts (in _cts_linecheck), IS fuzzed here.
+#     tree_required_contexts (in _cts_linecheck), IS fuzzed in test_fuzz_parsers.
 #   - check_absolute_symlinks.sh: a shell hook, not a Python parser.
 FUZZ_REQUIRED = {
     "_cts_bash_ast": "parse",

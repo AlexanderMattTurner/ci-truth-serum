@@ -180,7 +180,23 @@ def test_desired_contexts_ignores_workflows_without_a_pr_trigger(tmp_path):
                         uses: org/repo/.github/workflows/x.yaml@v1
                     """
             },
-            "cannot be read from this tree",
+            "GitHub posts no context under the caller",
+        ),
+        (
+            {
+                "ci.yaml": """\
+                    on: pull_request
+                    jobs:
+                      a:  # required-check: true
+                        uses: ./.github/workflows/lint.yaml
+                    """,
+                "lint.yaml": """\
+                    on: workflow_call
+                    jobs:
+                      t:  # required-check: true
+                    """,
+            },
+            "GitHub posts no context under the caller",
         ),
     ],
 )
@@ -188,6 +204,30 @@ def test_desired_contexts_fails_loud_on_unreadable_calls(tmp_path, files, messag
     _tree(tmp_path, **files)
     with pytest.raises(ValueError, match=message):
         mod.desired_contexts(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "on: pull_request\njobs: [a]\n",
+        "on: pull_request\njobs:\n  a: 1\n  b:\n    uses: ./.github/workflows/ci.yaml\n",
+    ],
+)
+def test_desired_contexts_tolerates_malformed_shapes(tmp_path, body):
+    # A non-mapping `jobs:` holds nothing. The second case calls a file whose
+    # `jobs:` is itself malformed, so the walk returns before any cycle check.
+    (tmp_path / "ci.yaml").write_text("- not a workflow\n", encoding="utf-8")
+    (tmp_path / "w.yaml").write_text(body, encoding="utf-8")
+    assert mod.desired_contexts(tmp_path) == []
+
+
+def test_desired_contexts_reads_a_malformed_strategy_as_no_matrix(tmp_path):
+    (tmp_path / "ci.yaml").write_text(
+        "on: pull_request\njobs:\n  a:\n    name: A  # required-check: true\n"
+        "    strategy: [x]\n",
+        encoding="utf-8",
+    )
+    assert mod.desired_contexts(tmp_path) == ["A"]
 
 
 def test_desired_contexts_skips_unmarked_remote_calls(tmp_path):

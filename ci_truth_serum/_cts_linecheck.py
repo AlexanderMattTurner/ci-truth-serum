@@ -2516,9 +2516,7 @@ def required_check_contexts(text: str) -> list[str]:
 
     contexts: list[str] = []
     for name in _marked_jobs(_job_blocks(text), jobs):
-        cfg = jobs[name]
-        matrix = (cfg.get("strategy") or {}).get("matrix") or {}
-        contexts += expand_name(str(cfg.get("name", name)), matrix)
+        contexts += _job_names(name, jobs[name])
     return contexts
 
 
@@ -2529,8 +2527,12 @@ LOCAL_CALL = re.compile(r"^\./\.github/workflows/(?P<file>[^/@]+)$")
 
 
 def _job_names(key: str, cfg: dict) -> list[str]:
-    matrix = (cfg.get("strategy") or {}).get("matrix") or {}
-    return expand_name(str(cfg.get("name", key)), matrix)
+    """Every check context one job's `name:` expands to over its matrix."""
+    strategy = cfg.get("strategy")
+    matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+    return expand_name(
+        str(cfg.get("name", key)), matrix if isinstance(matrix, dict) else {}
+    )
 
 
 def _called_contexts(
@@ -2540,8 +2542,8 @@ def _called_contexts(
 
     GitHub names a job that a reusable workflow runs `<caller> / <callee>`, so a
     marked callee job surfaces once per caller name, under that prefix. A job
-    that calls another repository's workflow cannot be read here; it raises when
-    it carries the marker, because its contexts would otherwise vanish silently.
+    that calls another workflow raises when it carries the marker itself: GitHub
+    posts no context under the caller's own name, so the marker would vanish.
     """
     if file not in sources:
         raise ValueError(
@@ -2564,13 +2566,14 @@ def _called_contexts(
             if key in marked:
                 contexts += _job_names(key, cfg)
             continue
+        if key in marked:
+            raise ValueError(
+                f"{file}: job {key!r} is marked required but calls {uses}. "
+                "GitHub posts no context under the caller job's own name; mark "
+                "the called jobs instead"
+            )
         local = LOCAL_CALL.match(str(uses))
         if local is None:
-            if key in marked:
-                raise ValueError(
-                    f"{file}: job {key!r} is marked required but calls {uses}, "
-                    "whose job names cannot be read from this tree"
-                )
             continue
         inner = _called_contexts(local["file"], sources, (*stack, file))
         contexts += [
