@@ -8,9 +8,10 @@ half of that pair: it reads those annotations — the single source of truth —
 across EVERY job (cheap always-run linters carry the marker too, not just the
 reporters the hook polices), expands each one's `name:` over its own
 `strategy.matrix` into concrete check contexts (via the shared
-`required_check_contexts`, so the lint and the apply step can never read a
-different verdict from the same YAML), and rewrites the repository ruleset's
-`required_status_checks` rule to exactly that set — creating that rule if the
+`_marked_jobs`, so the lint and the apply step can never read a different
+verdict from the same YAML), keeps only workflows that run on a pull request,
+names each reusable-workflow job `<caller> / <callee>` as GitHub does, and
+rewrites the repository ruleset's `required_status_checks` rule to exactly that set — creating that rule if the
 branch ruleset doesn't have one yet.
 
 Modes:
@@ -33,8 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    WORKFLOW_GLOBS,
-    required_check_contexts,
+    tree_required_contexts,
 )
 
 API_ROOT = "https://api.github.com"
@@ -43,11 +43,7 @@ WORKFLOWS_DIR = Path(".github/workflows")
 
 def desired_contexts(workflows_dir: Path) -> list[str]:
     """The full, sorted, de-duplicated required-check set across all workflows."""
-    contexts: set[str] = set()
-    for glob in WORKFLOW_GLOBS:
-        for path in sorted(workflows_dir.glob(glob)):
-            contexts.update(required_check_contexts(path.read_text(encoding="utf-8")))
-    return sorted(contexts)
+    return tree_required_contexts(workflows_dir)
 
 
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})

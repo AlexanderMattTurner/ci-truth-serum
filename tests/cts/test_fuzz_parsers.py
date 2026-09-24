@@ -20,6 +20,7 @@ rule semantics. Fuzzing pins the contract that holds for ALL inputs.
 
 import ast
 import string
+from pathlib import Path
 
 from hypothesis import assume, given
 from hypothesis import strategies as st
@@ -370,6 +371,31 @@ def test_required_check_contexts_never_crashes(text: str) -> None:
     except yaml.YAMLError:
         assume(False)
     out = linecheck.required_check_contexts(text)
+    assert isinstance(out, list)
+    assert all(isinstance(c, str) for c in out)
+
+
+@given(caller=yaml_text(), callee=yaml_text())
+def test_tree_required_contexts_never_crashes(caller: str, callee: str) -> None:
+    # Two parseable workflows, one of which the other may call. The walk returns
+    # a list of strings, or raises ValueError for a call it refuses to follow.
+    import tempfile
+
+    import yaml
+
+    for text in (caller, callee):
+        try:
+            yaml.safe_load(text)
+        except yaml.YAMLError:
+            assume(False)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "ci.yaml").write_text(caller, encoding="utf-8")
+        (root / "lint.yaml").write_text(callee, encoding="utf-8")
+        try:
+            out = linecheck.tree_required_contexts(root)
+        except ValueError:
+            return
     assert isinstance(out, list)
     assert all(isinstance(c, str) for c in out)
 

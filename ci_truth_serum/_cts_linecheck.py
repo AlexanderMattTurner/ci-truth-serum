@@ -2516,7 +2516,87 @@ def required_check_contexts(text: str) -> list[str]:
 
     contexts: list[str] = []
     for name in _marked_jobs(_job_blocks(text), jobs):
-        cfg = jobs[name]
-        matrix = (cfg.get("strategy") or {}).get("matrix") or {}
-        contexts += expand_name(str(cfg.get("name", name)), matrix)
+        contexts += _job_names(name, jobs[name])
     return contexts
+
+
+# The events whose check runs a branch ruleset can wait on. A marked job in a
+# workflow that fires on none of them never posts a context to a pull request.
+PR_EVENTS = ("pull_request", "pull_request_target", "merge_group")
+LOCAL_CALL = re.compile(r"^\./\.github/workflows/(?P<file>[^/@]+)$")
+
+
+def _job_names(key: str, cfg: dict) -> list[str]:
+    """Every check context one job's `name:` expands to over its matrix."""
+    strategy = cfg.get("strategy")
+    matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+    return expand_name(
+        str(cfg.get("name", key)), matrix if isinstance(matrix, dict) else {}
+    )
+
+
+def _called_contexts(
+    file: str, sources: dict[str, str], stack: tuple[str, ...]
+) -> list[str]:
+    """The contexts one workflow file posts when it runs, calls expanded.
+
+    GitHub names a job that a reusable workflow runs `<caller> / <callee>`, so a
+    marked callee job surfaces once per caller name, under that prefix. A job
+    that calls another workflow raises when it carries the marker itself: GitHub
+    posts no context under the caller's own name, so the marker would vanish.
+    """
+    if file not in sources:
+        raise ValueError(
+            f"{stack[-1]} calls ./.github/workflows/{file}, which does not exist"
+        )
+    if file in stack:
+        raise ValueError(f"reusable-workflow cycle: {' -> '.join((*stack, file))}")
+    text = sources[file]
+    doc = safe_load(text)
+    jobs = doc.get("jobs", {}) if isinstance(doc, dict) else {}
+    if not isinstance(jobs, dict):
+        return []
+    marked = set(_marked_jobs(_job_blocks(text), jobs))
+    contexts: list[str] = []
+    for key, cfg in jobs.items():
+        if not isinstance(cfg, dict):
+            continue
+        uses = cfg.get("uses")
+        if uses is None:
+            if key in marked:
+                contexts += _job_names(key, cfg)
+            continue
+        if key in marked:
+            raise ValueError(
+                f"{file}: job {key!r} is marked required but calls {uses}. "
+                "GitHub posts no context under the caller job's own name; mark "
+                "the called jobs instead"
+            )
+        local = LOCAL_CALL.match(str(uses))
+        if local is None:
+            continue
+        inner = _called_contexts(local["file"], sources, (*stack, file))
+        contexts += [
+            f"{outer} / {ctx}" for outer in _job_names(key, cfg) for ctx in inner
+        ]
+    return contexts
+
+
+def tree_required_contexts(workflows_dir: Path) -> list[str]:
+    """The sorted required-check contexts GitHub posts on a pull request.
+
+    Unlike `required_check_contexts`, which reads one file, this reads the whole
+    workflows directory. It starts only from workflows that fire on a
+    `PR_EVENTS` event, and it expands each local reusable-workflow call into the
+    `<caller> / <callee>` names GitHub posts.
+    """
+    sources = {
+        path.name: path.read_text(encoding="utf-8")
+        for glob in WORKFLOW_GLOBS
+        for path in sorted(workflows_dir.glob(glob))
+    }
+    contexts: set[str] = set()
+    for file, text in sources.items():
+        if has_trigger(safe_load(text), *PR_EVENTS):
+            contexts.update(_called_contexts(file, sources, ()))
+    return sorted(contexts)
