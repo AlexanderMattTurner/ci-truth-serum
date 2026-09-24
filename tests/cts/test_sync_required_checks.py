@@ -34,6 +34,7 @@ def test_desired_contexts_dedups_and_sorts_across_files(tmp_path):
     (tmp_path / "a.yaml").write_text(
         wf(
             """\
+            on: pull_request
             jobs:
               j:
                 name: Beta  # required-check: true
@@ -44,6 +45,7 @@ def test_desired_contexts_dedups_and_sorts_across_files(tmp_path):
     (tmp_path / "b.yml").write_text(
         wf(
             """\
+            on: [push, merge_group]
             jobs:
               j:
                 name: Alpha  # required-check: true
@@ -54,6 +56,155 @@ def test_desired_contexts_dedups_and_sorts_across_files(tmp_path):
         encoding="utf-8",
     )
     assert mod.desired_contexts(tmp_path) == ["Alpha", "Beta"]
+
+
+def _tree(tmp_path, **files):
+    for name, body in files.items():
+        (tmp_path / name).write_text(wf(body), encoding="utf-8")
+    return tmp_path
+
+
+def test_desired_contexts_prefixes_reusable_jobs_with_the_caller_name(tmp_path):
+    _tree(
+        tmp_path,
+        **{
+            "ci.yaml": """\
+                on: pull_request
+                jobs:
+                  build:
+                    name: Build
+                    uses: ./.github/workflows/lint.yaml
+                  plain:
+                    uses: ./.github/workflows/lint.yaml
+                """,
+            "lint.yaml": """\
+                on: workflow_call
+                jobs:
+                  test:  # required-check: true
+                    runs-on: ubuntu-latest
+                  other:
+                    runs-on: ubuntu-latest
+                """,
+        },
+    )
+    assert mod.desired_contexts(tmp_path) == ["Build / test", "plain / test"]
+
+
+def test_desired_contexts_expands_nested_calls_and_caller_matrix(tmp_path):
+    _tree(
+        tmp_path,
+        **{
+            "ci.yaml": """\
+                on: pull_request_target
+                jobs:
+                  outer:
+                    name: Outer ${{ matrix.os }}
+                    strategy:
+                      matrix:
+                        os: [linux, mac]
+                    uses: ./.github/workflows/mid.yml
+                """,
+            "mid.yml": """\
+                on: workflow_call
+                jobs:
+                  mid:
+                    uses: ./.github/workflows/leaf.yaml
+                """,
+            "leaf.yaml": """\
+                on: workflow_call
+                jobs:
+                  leaf:
+                    name: Leaf  # required-check: true
+                """,
+        },
+    )
+    assert mod.desired_contexts(tmp_path) == [
+        "Outer linux / mid / Leaf",
+        "Outer mac / mid / Leaf",
+    ]
+
+
+def test_desired_contexts_ignores_workflows_without_a_pr_trigger(tmp_path):
+    _tree(
+        tmp_path,
+        **{
+            "nightly.yaml": """\
+                on:
+                  schedule:
+                    - cron: "0 0 * * *"
+                jobs:
+                  j:
+                    name: Nightly  # required-check: true
+                """,
+            "none.yaml": """\
+                jobs:
+                  j:
+                    name: NoTrigger  # required-check: true
+                """,
+        },
+    )
+    assert mod.desired_contexts(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("files", "message"),
+    [
+        (
+            {
+                "ci.yaml": """\
+                    on: pull_request
+                    jobs:
+                      a:
+                        uses: ./.github/workflows/gone.yaml
+                    """
+            },
+            "gone.yaml, which does not exist",
+        ),
+        (
+            {
+                "ci.yaml": """\
+                    on: pull_request
+                    jobs:
+                      a:
+                        uses: ./.github/workflows/ci.yaml
+                    """
+            },
+            "cycle: ci.yaml -> ci.yaml",
+        ),
+        (
+            {
+                "ci.yaml": """\
+                    on: pull_request
+                    jobs:
+                      a:  # required-check: true
+                        uses: org/repo/.github/workflows/x.yaml@v1
+                    """
+            },
+            "cannot be read from this tree",
+        ),
+    ],
+)
+def test_desired_contexts_fails_loud_on_unreadable_calls(tmp_path, files, message):
+    _tree(tmp_path, **files)
+    with pytest.raises(ValueError, match=message):
+        mod.desired_contexts(tmp_path)
+
+
+def test_desired_contexts_skips_unmarked_remote_calls(tmp_path):
+    _tree(
+        tmp_path,
+        **{
+            "ci.yaml": """\
+                on: pull_request
+                jobs:
+                  a:
+                    uses: org/repo/.github/workflows/x.yaml@v1
+                  b:
+                    name: B  # required-check: true
+                """
+        },
+    )
+    assert mod.desired_contexts(tmp_path) == ["B"]
 
 
 # ─── ruleset helpers ─────────────────────────────────────────────────────────
@@ -402,6 +553,7 @@ def _workflows(tmp_path):
     (tmp_path / "w.yaml").write_text(
         wf(
             """\
+            on: pull_request
             jobs:
               j:
                 name: Gate A  # required-check: true
