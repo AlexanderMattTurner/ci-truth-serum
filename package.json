@@ -82,7 +82,7 @@
   "devDependencies": {
     "@commitlint/cli": "^21.0.1",
     "@commitlint/config-conventional": "^21.0.1",
-    "@stryker-mutator/core": "^8.0.0",
+    "@stryker-mutator/core": "^10.0.0",
     "lint-staged": "^17.0.5",
     "markdownlint": "^0.41.1",
     "markdownlint-cli2": "^0.23.1",
