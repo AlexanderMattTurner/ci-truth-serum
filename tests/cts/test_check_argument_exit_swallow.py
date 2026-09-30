@@ -278,6 +278,43 @@ def test_sourced_functions_is_transitive_and_terminates_on_a_cycle(
     assert names == {"from_a", "from_b"}
 
 
+def test_one_run_reads_each_sourced_library_once(tmp_path: Path, monkeypatch) -> None:
+    """Every script in a tree sources the same libraries. Re-reading each
+    script's whole closure made the cost scripts x closure, and a closure larger
+    than the parse cache missed on every script."""
+    (tmp_path / "base.sh").write_text("from_base() { :; }\n", encoding="utf-8")
+    (tmp_path / "lib.sh").write_text(
+        "source base.sh\nfrom_lib() { :; }\n", encoding="utf-8"
+    )
+    reads: list[str] = []
+    real_read = mod._read
+    monkeypatch.setattr(
+        mod, "_read", lambda path: reads.append(path) or real_read(path)
+    )
+    libraries: dict = {}
+    for name in ("one.sh", "two.sh"):
+        script = tmp_path / name
+        script.write_text("source lib.sh\n", encoding="utf-8")
+        names = mod.sourced_functions(
+            "source lib.sh\n", str(script), [], libraries=libraries
+        )
+        assert names == {"from_lib", "from_base"}
+    assert sorted(reads) == [str(tmp_path / "base.sh"), str(tmp_path / "lib.sh")]
+
+
+def test_a_refused_library_is_named_in_source_order(tmp_path: Path) -> None:
+    """Two sourced files the grammar refuses: the error names the one the
+    script sources first, as a reader would find it."""
+    pipes = "true" + " | true" * 2001 + "\n"
+    for name in ("a.sh", "b.sh"):
+        (tmp_path / name).write_text(pipes, encoding="utf-8")
+    script = tmp_path / "x.sh"
+    text = "source a.sh\nsource b.sh\n"
+    script.write_text(text, encoding="utf-8")
+    with pytest.raises(mod.PathologicalInputError, match="sourced file .*a\\.sh"):
+        mod.sourced_functions(text, str(script), [])
+
+
 # ── opt-out annotation (reason REQUIRED) ─────────────────────────────────────
 def test_same_line_annotation_with_reason_suppresses() -> None:
     line = 'my_helper "$(risky)"  # allow-argument-exit: empty input is the no-op'

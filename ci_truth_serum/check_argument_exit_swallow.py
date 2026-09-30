@@ -65,7 +65,9 @@ Invoked by pre-commit with the staged shell files as arguments.
 
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 from tree_sitter import Node
 
@@ -226,33 +228,68 @@ def _parse_sourced(text: str, resolved: str) -> Node:
         raise PathologicalInputError(f"sourced file {resolved}: {err}") from err
 
 
+class _Library(NamedTuple):
+    """What one sourced file contributes: the functions it defines, and the
+    tracked files it sources in turn, already resolved against its own path."""
+
+    functions: frozenset[str]
+    sources: tuple[str, ...]
+
+
+def _library(resolved: str, tracked: list[str]) -> _Library | None:
+    """RESOLVED's contribution, or None when it cannot be read."""
+    text = _read(resolved)
+    if text is None:
+        return None
+    root = _parse_sourced(text, resolved)
+    sources = (resolve_source(t, resolved, tracked) for t in source_targets(text, root))
+    return _Library(
+        frozenset(defined_functions(text, root)),
+        tuple(source for source in sources if source is not None),
+    )
+
+
 def sourced_functions(
-    text: str, path: str, tracked: list[str], root: Node | None = None
+    text: str,
+    path: str,
+    tracked: list[str],
+    root: Node | None = None,
+    libraries: dict[str, _Library | None] | None = None,
 ) -> set[str]:
     """Every function name reachable from PATH through `source`, transitively.
 
     A library that sources a second library contributes both sets, so a call to a
-    function two files away is still recognised. Each file is read and parsed
-    once, so a source cycle terminates.
+    function two files away is still recognised. Each file is visited once, so a
+    source cycle terminates.
+
+    LIBRARIES carries each sourced file's contribution from one call to the next.
+    `main` passes one dict for the whole run, because every script in a tree
+    sources the same libraries: without it each script re-read and re-parsed its
+    whole closure, and a closure larger than `parse`'s cache missed on every file.
     """
+    libraries = {} if libraries is None else libraries
+    root = parse(text) if root is None else root
     names: set[str] = set()
     seen = {path}
-    pending = [(text, path, parse(text) if root is None else root)]
-    while pending:
-        current_text, current_path, current_root = pending.pop()
-        if current_path != path:
-            names |= defined_functions(current_text, current_root)
-        for target in source_targets(current_text, current_root):
-            resolved = resolve_source(target, current_path, tracked)
+    pending: list[_Library] = []
+
+    def reach(sources: Iterable[str | None]) -> None:
+        # Each new file is parsed as it is found, in source order, so a file
+        # the grammar refuses is named in the same order a reader finds it.
+        for resolved in sources:
             if resolved is None or resolved in seen:
                 continue
             seen.add(resolved)
-            sourced_text = _read(resolved)
-            if sourced_text is None:
-                continue
-            pending.append(
-                (sourced_text, resolved, _parse_sourced(sourced_text, resolved))
-            )
+            if resolved not in libraries:
+                libraries[resolved] = _library(resolved, tracked)
+            if libraries[resolved] is not None:
+                pending.append(libraries[resolved])
+
+    reach(resolve_source(t, path, tracked) for t in source_targets(text, root))
+    while pending:
+        library = pending.pop()
+        names |= library.functions
+        reach(library.sources)
     return names
 
 
@@ -331,6 +368,7 @@ def main(argv: list[str]) -> int:
     checked.
     """
     tracked = tracked_shell_files()
+    libraries: dict[str, _Library | None] = {}
     status = 0
     for path in argv:
         text = _read(path)
@@ -338,7 +376,8 @@ def main(argv: list[str]) -> int:
             continue
         try:
             root = parse(text)
-            found = violations(text, sourced_functions(text, path, tracked, root), root)
+            reachable = sourced_functions(text, path, tracked, root, libraries)
+            found = violations(text, reachable, root)
         except PathologicalInputError as err:
             print(f"{path}: {err}", file=sys.stderr)
             status = 1
