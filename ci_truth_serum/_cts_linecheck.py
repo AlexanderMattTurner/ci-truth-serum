@@ -30,6 +30,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -123,6 +124,9 @@ _LINE_BOUNDARY = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 _TOKEN_EDGE = r"[\w-]"
 
 
+# Memoized: a check asks for its token's matcher once per line it judges, and
+# building the pattern string each time cost more than the search it served.
+@lru_cache(maxsize=None)
 def annotation_re(token: str, require_reason: bool = True) -> "re.Pattern[str]":
     """The compiled matcher for an opt-out/annotation TOKEN on one line.
 
