@@ -340,12 +340,28 @@ def condition_commands(
 ) -> list[Node]:
     """Every `command` under ROOT that runs inside the condition of a statement
     whose type is in STATEMENTS, at any depth: under `!`, in a list or a
-    pipeline, or in a `$(…)`."""
+    pipeline, or in a `$(…)`. A function the condition defines does not run
+    its body, so no command inside that body counts."""
     commands: list[Node] = []
     for statement in iter_nodes(root, *statements):
         for part in condition_parts(statement):
-            commands.extend(iter_nodes(part, "command"))
+            commands.extend(
+                command
+                for command in iter_nodes(part, "command")
+                if not _inside_definition(command, part)
+            )
     return commands
+
+
+def _inside_definition(node: Node, top: Node) -> bool:
+    """Whether a `function_definition` sits between NODE and TOP, TOP included.
+    NODE lies at or under TOP."""
+    current: Node | None = node
+    while current is not None and current.id != top.id:
+        current = current.parent
+        if current is not None and current.type == "function_definition":
+            return True
+    return False
 
 
 # Every character `str.splitlines()` treats as a line boundary. A comment blanked

@@ -179,6 +179,10 @@ def test_remote_subcommand_flag_extends_the_built_in_set() -> None:
         "until docker-compose exec db pg_isready; do sleep 1; done",
         # a tool named by its path
         "until /usr/bin/docker exec c true; do sleep 1; done",
+        # `command` without -v runs the tool
+        "until command docker exec c true; do sleep 1; done",
+        # a function the condition defines does not hide a later call
+        "while probe() { :; }; docker exec c true; do :; done",
     ],
 )
 def test_fires_on_unbounded_exec_in_loop_condition(text: str) -> None:
@@ -206,6 +210,11 @@ def test_fires_on_unbounded_exec_in_loop_condition(text: str) -> None:
         "if docker exec c true; then :; fi",
         # a message command in the condition only prints its unquoted words
         "while echo docker exec c true; do break; done",
+        # a function the condition defines does not run its body
+        "while probe() { docker exec c true; }; false; do :; done",
+        # a lookup names the tool without running it
+        "until command -v docker exec >/dev/null; do sleep 1; done",
+        "until type docker exec; do sleep 1; done",
     ],
 )
 def test_clean_exec_cases_do_not_fire(text: str) -> None:

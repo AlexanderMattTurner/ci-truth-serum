@@ -195,6 +195,24 @@ def _runs_exec(words: tuple[str, ...]) -> bool:
     return False
 
 
+# Programs that name a command without running it (`command -v docker`).
+_LOOKUPS = frozenset({"type", "which", "hash", "whereis"})
+
+
+def _looked_up(words: tuple[str, ...], index: int) -> bool:
+    """Whether a lookup before WORDS[INDEX] only names that word: a `_LOOKUPS`
+    program, or `command` given `-v` or `-V`."""
+    for position, word in enumerate(words[:index]):
+        name = _name(word)
+        if name in _LOOKUPS:
+            return True
+        if name == "command" and any(
+            unquote(flag) in ("-v", "-V") for flag in words[position + 1 : index]
+        ):
+            return True
+    return False
+
+
 def _unbounded_exec(
     words: tuple[str, ...],
     bounding_wrappers: frozenset[str],
@@ -205,7 +223,7 @@ def _unbounded_exec(
     for index, word in enumerate(words):
         if _name(word) not in exec_tools:
             continue
-        if _bounded_before(words, index, bounding_wrappers):
+        if _bounded_before(words, index, bounding_wrappers) or _looked_up(words, index):
             continue
         if _runs_exec(words[index + 1 :]):
             return True
