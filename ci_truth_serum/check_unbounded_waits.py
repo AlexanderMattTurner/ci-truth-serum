@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ban a bare remote `git` call — one with no wall-clock bound — in shell.
+"""Ban a bare remote `git` call, or a bare container `exec` in a loop condition.
 
 A `git` call to a remote (`ls-remote`, `fetch`, `clone`, `push`, `pull`) carries
 no time bound of its own: a wedged or unresponsive endpoint hangs the call
@@ -22,8 +22,16 @@ separate `git`/`fetch` tokens — and an UNQUOTED word list under a
 print-only command (`echo`, `printf`, `die`, …) is skipped outright, since the
 grammar cannot rule out that its words are prose rather than a call.
 
-BLIND SPOT: `sbx exec`/`docker exec` and similar are out of scope — whether one
-needs a bound depends on runtime context (a poll loop, a teardown) this
+EXEC RULE: a `<tool> exec` call (`docker`, `podman`, `nerdctl`, `kubectl`,
+`sbx`, `lxc`, `incus`; extend with `--exec-tool NAME`, repeatable) fires when
+it sits in the CONDITION of a `while` or `until` loop. That covers a `!`
+negation, an `&&`/`||` list, a pipeline and a `$(…)` in the condition. A wedged
+runtime makes such a readiness poll spin forever, and nothing bounds the loop.
+Global options before the verb are skipped (`kubectl -n ns exec`). The same
+bounding-wrapper and annotation rules apply.
+
+BLIND SPOT: an `exec` call OUTSIDE a loop condition is out of scope, the loop
+BODY included. Whether that call needs a bound depends on runtime context this
 line-lint cannot see. A registered wrapper's OWN bound is trusted, never
 verified: `--bounding-wrapper NAME` is a claim the consumer makes, not a fact
 this check proves.
@@ -44,6 +52,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from tree_sitter import Node
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     command_words,
@@ -61,10 +71,11 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 OPT_OUT = "allow-unbounded"
 
 MESSAGE = (
-    "remote `git` runs with no timeout — a wedged or unresponsive endpoint would "
-    "hang the tool forever (worst in a teardown window or poll loop). Put a bound "
-    "in front (`timeout … git <cmd>`, or a bounded helper), or annotate "
-    f"`# {OPT_OUT}: <reason>`."
+    "remote `git`, or a `<tool> exec` in a `while`/`until` condition, runs with no "
+    "timeout — a wedged endpoint or runtime would hang the tool forever (worst in "
+    "a teardown window or poll loop). Put a bound in front (`timeout … git <cmd>`, "
+    f"`timeout … docker exec …`, or a bounded helper), or annotate `# {OPT_OUT}: "
+    "<reason>`."
 )
 
 # Command words that, appearing anywhere before a `git` token in the same
@@ -82,6 +93,13 @@ _REMOTE_SUBCOMMANDS = frozenset({"ls-remote", "fetch", "clone", "push", "pull"})
 # (`git -C dir fetch`, `git -c k=v push`).
 _VALUE_OPTS = frozenset(
     {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+)
+
+
+# Container and VM runtimes whose `exec` verb runs a command inside a guest. A
+# wedged runtime or guest never answers, so the call never returns.
+_EXEC_TOOLS = frozenset(
+    {"docker", "podman", "nerdctl", "kubectl", "sbx", "lxc", "incus"}
 )
 
 
@@ -121,21 +139,81 @@ def _unbounded_git_indices(
     return hits
 
 
+def _runs_exec(words: tuple[str, ...]) -> bool:
+    """Whether WORDS (the words after a runtime tool) run its `exec` verb.
+
+    Leading options are skipped, and so is one value after an option with no
+    `=`, so `kubectl -n ns exec` still counts. A word that is neither ends the
+    search, so `docker run img exec` does not count."""
+    after_option = False
+    for word in map(unquote, words):
+        if word == "exec":
+            return True
+        if word.startswith("-"):
+            after_option = "=" not in word
+            continue
+        if not after_option:
+            return False
+        after_option = False
+    return False
+
+
+def _unbounded_exec(
+    words: tuple[str, ...],
+    bounding_wrappers: frozenset[str],
+    exec_tools: frozenset[str],
+) -> bool:
+    """Whether WORDS hold an EXEC_TOOLS word that runs `exec`, with no
+    BOUNDING_WRAPPERS word anywhere before it in the same command."""
+    for index, word in enumerate(words):
+        if unquote(word) not in exec_tools:
+            continue
+        if any(w in bounding_wrappers for w in words[:index]):
+            continue
+        if _runs_exec(words[index + 1 :]):
+            return True
+    return False
+
+
+def _loop_condition_commands(root: Node) -> set[int]:
+    """The node ids of every `command` inside the condition of a `while` or
+    `until` loop. The grammar parses both as `while_statement`, and marks the
+    condition part (every child before the `do_group`) with the `condition`
+    field."""
+    ids: set[int] = set()
+    for loop in iter_nodes(root, "while_statement"):
+        for index, child in enumerate(loop.children):
+            if loop.field_name_for_child(index) != "condition":
+                continue
+            ids.update(node.id for node in iter_nodes(child, "command"))
+    return ids
+
+
 def violations(
     text: str,
     *,
     bounding_wrappers: frozenset[str] = _BOUNDING_WRAPPERS,
     remote_subcommands: frozenset[str] = _REMOTE_SUBCOMMANDS,
+    exec_tools: frozenset[str] = _EXEC_TOOLS,
 ) -> list[int]:
-    """1-based line numbers where `git` runs a literal remote subcommand with
-    no bound in front, absent an `# allow-unbounded:` annotation."""
+    """1-based line numbers where `git` runs a literal remote subcommand, or a
+    loop condition runs `<tool> exec`, with no bound in front, absent an
+    `# allow-unbounded:` annotation."""
     physical = text.splitlines()
     hits: list[int] = []
-    for command in iter_nodes(parse(text), "command"):
+    root = parse(text)
+    in_condition = _loop_condition_commands(root)
+    for command in iter_nodes(root, "command"):
         words = tuple(command_words(command))
         if not words or MESSAGE_PREFIX.match(words[0]):
             continue  # empty, or a command that only prints its arguments
-        if not _unbounded_git_indices(words, bounding_wrappers, remote_subcommands):
+        git_hit = bool(
+            _unbounded_git_indices(words, bounding_wrappers, remote_subcommands)
+        )
+        exec_hit = command.id in in_condition and _unbounded_exec(
+            words, bounding_wrappers, exec_tools
+        )
+        if not (git_hit or exec_hit):
             continue
         lineno = command.start_point[0] + 1
         end_line = command.end_point[0] + 1
@@ -162,6 +240,14 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         dest="remote_subcommands",
         help="an extra `git` subcommand that talks to a remote (repeatable)",
     )
+    parser.add_argument(
+        "--exec-tool",
+        action="append",
+        default=[],
+        dest="exec_tools",
+        help="an extra runtime whose `exec` verb, in a `while`/`until` "
+        "condition, needs a bound (repeatable)",
+    )
     parser.add_argument("files", nargs="*")
     return parser.parse_args(argv)
 
@@ -170,12 +256,14 @@ def main(argv: list[str]) -> int:
     args = _parse_args(argv)
     bounding_wrappers = _BOUNDING_WRAPPERS | set(args.bounding_wrappers)
     remote_subcommands = _REMOTE_SUBCOMMANDS | set(args.remote_subcommands)
+    exec_tools = _EXEC_TOOLS | set(args.exec_tools)
 
     def find(text: str) -> list[int]:
         return violations(
             text,
             bounding_wrappers=bounding_wrappers,
             remote_subcommands=remote_subcommands,
+            exec_tools=exec_tools,
         )
 
     return run_line_checks(args.files, find, MESSAGE)

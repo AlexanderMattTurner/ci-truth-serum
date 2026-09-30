@@ -1,5 +1,6 @@
 """Tests for ci_truth_serum/check_unbounded_waits.py — the lint that bans a bare
-remote `git` call (ls-remote/fetch/clone/push/pull) with no wall-clock bound.
+remote `git` call (ls-remote/fetch/clone/push/pull), or a bare `<tool> exec` in
+a `while`/`until` condition, with no wall-clock bound.
 
 Drives ``violations()`` for the parsing rules and ``main()`` for the argv/exit-
 code contract.
@@ -150,6 +151,70 @@ def test_remote_subcommand_flag_extends_the_built_in_set() -> None:
     ) == [1]
 
 
+# ── runtime exec in a loop condition ───────────────────────────────────────
+@pytest.mark.parametrize(
+    "text",
+    [
+        "until docker exec c true; do sleep 1; done",
+        "while ! sbx exec vm -- test -f x; do sleep 1; done",
+        "while ready && kubectl exec pod -- ls /ok; do sleep 1; done",
+        "until probe || podman exec c true; do sleep 1; done",
+        "until nerdctl exec c true | grep -q ok; do sleep 1; done",
+        'until [[ "$(lxc exec vm -- cat /ok)" == 1 ]]; do sleep 1; done',
+        "while ! incus exec vm -- true\ndo sleep 1\ndone",
+        # a global option and its value sit before the verb
+        "until kubectl -n ns exec pod -- true; do sleep 1; done",
+        "until docker --context=remote exec c true; do sleep 1; done",
+        # an unregistered wrapper does not bound it
+        "until sudo docker exec c true; do sleep 1; done",
+    ],
+)
+def test_fires_on_unbounded_exec_in_loop_condition(text: str) -> None:
+    assert mod.violations(text) == [1]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "until timeout 5 docker exec c true; do sleep 1; done",
+        "while ! sudo timeout 5 sbx exec vm -- test -f x; do sleep 1; done",
+        "until docker exec c true  # allow-unbounded: the caller bounds the job\n"
+        "do sleep 1; done",
+        # the loop BODY is out of scope
+        "while true; do docker exec c true; sleep 1; done",
+        # outside any loop is out of scope
+        "docker exec c true",
+        # not the exec verb
+        "until docker inspect c; do sleep 1; done",
+        "until docker run img exec; do sleep 1; done",
+        # a message command in the condition only prints
+        'while echo "docker exec c true"; do break; done',
+    ],
+)
+def test_clean_exec_cases_do_not_fire(text: str) -> None:
+    assert mod.violations(text) == []
+
+
+def test_exec_hit_reports_the_command_line_in_a_multiline_loop() -> None:
+    text = "wait_ready() {\n  until\n    docker exec c true\n  do sleep 1; done\n}\n"
+    assert mod.violations(text) == [3]
+
+
+def test_bounding_wrapper_flag_bounds_an_exec_in_a_condition() -> None:
+    text = "until retry_bounded 30 docker exec c true; do sleep 1; done\n"
+    assert mod.violations(text) == [1]
+    assert (
+        mod.violations(text, bounding_wrappers=frozenset({"timeout", "retry_bounded"}))
+        == []
+    )
+
+
+def test_exec_tool_flag_extends_the_built_in_set() -> None:
+    text = "until limactl exec vm true; do sleep 1; done\n"
+    assert mod.violations(text) == []
+    assert mod.violations(text, exec_tools=frozenset({"limactl"})) == [1]
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 def test_main_reports_and_exits_nonzero(tmp_path, capsys) -> None:
     p = tmp_path / "s.sh"
@@ -176,3 +241,10 @@ def test_main_remote_subcommand_flag_adds_a_hit(tmp_path, capsys) -> None:
     p.write_text("git bundle-fetch origin\n", encoding="utf-8")
     assert mod.main([str(p)]) == 0
     assert mod.main(["--remote-subcommand", "bundle-fetch", str(p)]) == 1
+
+
+def test_main_exec_tool_flag_adds_a_hit(tmp_path) -> None:
+    p = tmp_path / "s.sh"
+    p.write_text("until limactl exec vm true; do sleep 1; done\n", encoding="utf-8")
+    assert mod.main([str(p)]) == 0
+    assert mod.main(["--exec-tool", "limactl", str(p)]) == 1
