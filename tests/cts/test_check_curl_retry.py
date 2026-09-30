@@ -86,6 +86,8 @@ def test_fires_on_single_shot_output_curl(line: str) -> None:
         'raw="$(curl -s --output=- "$u")"',
         # the inert body of a quoted-delimiter heredoc is text the script PRINTS
         "cat <<'EOF' >/tmp/help\ncurl -fsSLo /tmp/x https://e/x\nEOF",
+        # a lookup names curl without running it
+        "command -v curl >/dev/null && which curl && type curl",
         # same-line annotation
         'curl -fsSL "$url" -o "$file"  # curl-retry-ok: one-shot by design',
     ],
@@ -555,3 +557,8 @@ def test_the_module_parses_the_grammar_rather_than_the_text() -> None:
     source = _SRC.read_text(encoding="utf-8")
     assert "from _cts_bash_ast import" in source
     assert "shlex" not in source
+
+
+def test_command_p_runs_the_download_it_names() -> None:
+    # `command -p` only picks the default PATH, so the curl after it still runs.
+    assert mod.findings('command -p curl -fsSL "$u" -o "$f"') == [(1, mod.ARM_MISSING)]

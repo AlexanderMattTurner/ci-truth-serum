@@ -22,6 +22,7 @@ swallowed. The bindings are pinned as a hook runtime dependency
 pre-commit and CI always have them.
 """
 
+from collections.abc import Sequence
 from functools import lru_cache
 
 import tree_sitter_bash
@@ -255,6 +256,30 @@ def unquote(raw: str) -> str:
     return raw
 
 
+def program_name(word: str) -> str:
+    """WORD as a program name: quotes removed, directories stripped, so
+    `/usr/bin/timeout` reads as `timeout`."""
+    return unquote(word).rsplit("/", 1)[-1]
+
+
+# Programs that only name the command after them (`which docker`), and the flags
+# that make `command` a query too. `command -p docker` still RUNS docker.
+_LOOKUP_PROGRAMS = frozenset({"type", "which", "hash", "whereis"})
+_COMMAND_QUERY_FLAGS = frozenset({"-v", "-V"})
+
+
+def is_lookup(words: Sequence[str]) -> bool:
+    """Whether WORDS[0] names the words after it without running them."""
+    if not words:
+        return False
+    name = program_name(words[0])
+    if name in _LOOKUP_PROGRAMS:
+        return True
+    return name == "command" and any(
+        unquote(word) in _COMMAND_QUERY_FLAGS for word in words[1:]
+    )
+
+
 def command_name(node: Node) -> str | None:
     """The command word of NODE, or None when NODE is not a `command` at all.
 
@@ -335,9 +360,7 @@ def in_condition(node: Node) -> bool:
     )
 
 
-def condition_commands(
-    root: Node, statements: frozenset[str] = CONDITION_STATEMENTS
-) -> list[Node]:
+def condition_commands(root: Node, statements: frozenset[str]) -> list[Node]:
     """Every `command` under ROOT that runs inside the condition of a statement
     whose type is in STATEMENTS, at any depth: under `!`, in a list or a
     pipeline, or in a `$(…)`. A function the condition defines does not run

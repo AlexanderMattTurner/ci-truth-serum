@@ -57,14 +57,16 @@ a `files:` regex in the consumer's `.pre-commit-config.yaml`.
 
 import argparse
 import sys
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     command_words,
     condition_commands,
+    is_lookup,
     iter_nodes,
     parse,
+    program_name,
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -122,17 +124,11 @@ _EXEC_TOOLS = frozenset(
 _EXEC_GROUPS = frozenset({"compose", "container"})
 
 
-def _name(word: str) -> str:
-    """WORD's program name: unquoted, with any directory part removed, so
-    `/usr/bin/timeout` reads as `timeout`."""
-    return PurePosixPath(unquote(word)).name
-
-
 def _bounded_before(
     words: tuple[str, ...], index: int, bounding_wrappers: frozenset[str]
 ) -> bool:
     """Whether a BOUNDING_WRAPPERS word sits anywhere before WORDS[INDEX]."""
-    return any(_name(word) in bounding_wrappers for word in words[:index])
+    return any(program_name(word) in bounding_wrappers for word in words[:index])
 
 
 def _subcommand(words: tuple[str, ...]) -> str | None:
@@ -162,7 +158,7 @@ def _unbounded_git_indices(
     command."""
     hits = []
     for index, word in enumerate(words):
-        if _name(word) != "git":
+        if program_name(word) != "git":
             continue
         if _bounded_before(words, index, bounding_wrappers):
             continue
@@ -195,22 +191,9 @@ def _runs_exec(words: tuple[str, ...]) -> bool:
     return False
 
 
-# Programs that name a command without running it (`command -v docker`).
-_LOOKUPS = frozenset({"type", "which", "hash", "whereis"})
-
-
 def _looked_up(words: tuple[str, ...], index: int) -> bool:
-    """Whether a lookup before WORDS[INDEX] only names that word: a `_LOOKUPS`
-    program, or `command` given `-v` or `-V`."""
-    for position, word in enumerate(words[:index]):
-        name = _name(word)
-        if name in _LOOKUPS:
-            return True
-        if name == "command" and any(
-            unquote(flag) in ("-v", "-V") for flag in words[position + 1 : index]
-        ):
-            return True
-    return False
+    """Whether a lookup before WORDS[INDEX] only names that word."""
+    return any(is_lookup(words[position:index]) for position in range(index))
 
 
 def _unbounded_exec(
@@ -221,7 +204,7 @@ def _unbounded_exec(
     """Whether WORDS hold an EXEC_TOOLS word that runs `exec`, with no
     BOUNDING_WRAPPERS word anywhere before it in the same command."""
     for index, word in enumerate(words):
-        if _name(word) not in exec_tools:
+        if program_name(word) not in exec_tools:
             continue
         if _bounded_before(words, index, bounding_wrappers) or _looked_up(words, index):
             continue
