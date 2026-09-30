@@ -22,6 +22,7 @@ swallowed. The bindings are pinned as a hook runtime dependency
 pre-commit and CI always have them.
 """
 
+from collections.abc import Sequence
 from functools import lru_cache
 
 import tree_sitter_bash
@@ -255,6 +256,30 @@ def unquote(raw: str) -> str:
     return raw
 
 
+def program_name(word: str) -> str:
+    """WORD as a program name: quotes removed, directories stripped, so
+    `/usr/bin/timeout` reads as `timeout`."""
+    return unquote(word).rsplit("/", 1)[-1]
+
+
+# Programs that only name the command after them (`which docker`), and the flags
+# that make `command` a query too. `command -p docker` still RUNS docker.
+_LOOKUP_PROGRAMS = frozenset({"type", "which", "hash", "whereis"})
+_COMMAND_QUERY_FLAGS = frozenset({"-v", "-V"})
+
+
+def is_lookup(words: Sequence[str]) -> bool:
+    """Whether WORDS[0] names the words after it without running them."""
+    if not words:
+        return False
+    name = program_name(words[0])
+    if name in _LOOKUP_PROGRAMS:
+        return True
+    return name == "command" and any(
+        unquote(word) in _COMMAND_QUERY_FLAGS for word in words[1:]
+    )
+
+
 def command_name(node: Node) -> str | None:
     """The command word of NODE, or None when NODE is not a `command` at all.
 
@@ -300,6 +325,66 @@ def command_words(command: Node) -> list[str]:
         for child in command.children
         if child.type == "command_name" or child.type in ARGUMENT_TYPES
     ]
+
+
+# Statements that run a condition and branch on its exit status. The grammar
+# parses `until` as a `while_statement` too, so there is no `until_statement`.
+CONDITION_STATEMENTS = frozenset({"if_statement", "elif_clause", "while_statement"})
+# The children that end a statement's condition. An `if` or `elif` holds its
+# body after a bare `then` token, and a loop holds it in a `do_group` node.
+_CONDITION_END_TYPES = frozenset({"then", "do_group"})
+
+
+def condition_parts(statement: Node) -> list[Node]:
+    """The statements that form STATEMENT's condition, or [] when STATEMENT is
+    not in `CONDITION_STATEMENTS`.
+
+    Read by position, not by the `condition` field: the grammar sets that field
+    on `if` and `while` but not on `elif_clause`."""
+    if statement.type not in CONDITION_STATEMENTS:
+        return []
+    parts: list[Node] = []
+    for child in statement.children:
+        if child.type in _CONDITION_END_TYPES:
+            break
+        if child.is_named:
+            parts.append(child)
+    return parts
+
+
+def in_condition(node: Node) -> bool:
+    """Whether NODE is one of the statements that form its parent's condition."""
+    parent = node.parent
+    return parent is not None and any(
+        part.id == node.id for part in condition_parts(parent)
+    )
+
+
+def condition_commands(root: Node, statements: frozenset[str]) -> list[Node]:
+    """Every `command` under ROOT that runs inside the condition of a statement
+    whose type is in STATEMENTS, at any depth: under `!`, in a list or a
+    pipeline, or in a `$(…)`. A function the condition defines does not run
+    its body, so no command inside that body counts."""
+    commands: list[Node] = []
+    for statement in iter_nodes(root, *statements):
+        for part in condition_parts(statement):
+            commands.extend(
+                command
+                for command in iter_nodes(part, "command")
+                if not _inside_definition(command, part)
+            )
+    return commands
+
+
+def _inside_definition(node: Node, top: Node) -> bool:
+    """Whether a `function_definition` sits between NODE and TOP, TOP included.
+    NODE lies at or under TOP."""
+    current: Node | None = node
+    while current is not None and current.id != top.id:
+        current = current.parent
+        if current is not None and current.type == "function_definition":
+            return True
+    return False
 
 
 # Every character `str.splitlines()` treats as a line boundary. A comment blanked

@@ -252,3 +252,63 @@ def test_command_words_of_a_prefix_only_command() -> None:
     # The zero-width name surfaces as an empty word rather than an empty list, so a
     # caller reading the program off `words[0]` gets a name matching nothing.
     assert bash_ast.command_words(_command("FOO=1 >out")) == [""]
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        ("timeout", "timeout"),
+        ("/usr/bin/timeout", "timeout"),
+        ('"/bin/docker"', "docker"),
+    ],
+)
+def test_program_name_strips_quotes_and_directories(word: str, expected: str) -> None:
+    assert bash_ast.program_name(word) == expected
+
+
+@pytest.mark.parametrize(
+    ("words", "expected"),
+    [
+        (["which", "docker"], True),
+        (["type", "docker"], True),
+        (["/usr/bin/whereis", "docker"], True),
+        (["command", "-v", "docker"], True),
+        (["command", "-V", "docker"], True),
+        # `command -p` searches the default PATH and still runs the program.
+        (["command", "-p", "docker"], False),
+        (["command", "docker"], False),
+        (["docker", "exec"], False),
+        ([], False),
+    ],
+)
+def test_is_lookup_answers_only_for_a_query(words: list[str], expected: bool) -> None:
+    assert bash_ast.is_lookup(words) is expected
+
+
+def _condition_texts(script: str, *statements: str) -> list[str]:
+    root = bash_ast.parse(script)
+    found = bash_ast.condition_commands(root, frozenset(statements))
+    return [bash_ast.node_text(node) for node in found]
+
+
+def test_condition_commands_reads_if_and_elif_conditions() -> None:
+    script = "if a; then b; elif c; then d; else e; fi\n"
+    assert _condition_texts(script, "if_statement", "elif_clause") == ["a", "c"]
+
+
+def test_condition_commands_reads_only_the_statements_it_is_given() -> None:
+    script = "if a; then b; fi\nwhile c; do d; done\n"
+    assert _condition_texts(script, "while_statement") == ["c"]
+    assert _condition_texts(script, "if_statement") == ["a"]
+
+
+def test_condition_commands_skips_a_function_body_the_condition_defines() -> None:
+    script = "while f() { inner; }; outer; do body; done\n"
+    assert _condition_texts(script, "while_statement") == ["outer"]
+
+
+def test_in_condition_is_true_for_the_condition_not_the_body() -> None:
+    root = bash_ast.parse("if a; then b; fi\n")
+    commands = {bash_ast.node_text(c): c for c in bash_ast.iter_nodes(root, "command")}
+    assert bash_ast.in_condition(commands["a"]) is True
+    assert bash_ast.in_condition(commands["b"]) is False

@@ -57,6 +57,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     iter_nodes,
     node_text,
     parse,
+    program_name,
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -186,11 +187,6 @@ def _word_nodes(node: Node) -> list[Node]:
     return words
 
 
-def _program_name(word: str) -> str:
-    """WORD as a program name: quotes removed, directories stripped."""
-    return unquote(word).rsplit("/", 1)[-1]
-
-
 def _soft_bounds(node: Node, needs_command: bool) -> list[Node]:
     """The `timeout` words in NODE whose call schedules no SIGKILL.
 
@@ -204,7 +200,7 @@ def _soft_bounds(node: Node, needs_command: bool) -> list[Node]:
     texts = [node_text(word) for word in words]
     hits = []
     for index, text in enumerate(texts):
-        if _program_name(text) not in _TIMEOUT_NAMES:
+        if program_name(text) not in _TIMEOUT_NAMES:
             continue
         rest = texts[index + 1 :]
         bound = _read_bound(rest)
@@ -232,7 +228,7 @@ def violations(text: str, root: Node | None = None) -> list[int]:
         # naming a duration is not a bound. Skipping the whole command is safe:
         # its own name is what MESSAGE_PREFIX matched, and no printer is named
         # `timeout`, so no real call is dropped with it.
-        if names and MESSAGE_PREFIX.match(_program_name(names[0])):
+        if names and MESSAGE_PREFIX.match(program_name(names[0])):
             continue
         hits.update(word.start_point[0] + 1 for word in _soft_bounds(command, True))
     for array in iter_nodes(root, "array"):

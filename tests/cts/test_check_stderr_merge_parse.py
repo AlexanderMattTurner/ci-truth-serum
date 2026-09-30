@@ -89,6 +89,8 @@ def test_reassignment_without_merge_clears_tracking() -> None:
         'err=$(bash -n "$f" 2>&1)\nprintf "%s\\n" "$err" >&2\n',
         # capture then branch on exit code, not content
         'if ! out=$(curl -sf url 2>&1); then\n  echo "$out" >&2\n  exit 1\nfi\n',
+        # an `elif` condition branches on the exit code the same way
+        'if a; then\n  :\nelif out=$(curl -sf url 2>&1); then\n  printf "%s" "$out" | tail -1\nfi\n',
         # emptiness test is diagnostics, not comparison
         'out=$(cmd 2>&1)\nif [[ -n "$out" ]]; then\n  echo "$out"\nfi\n',
         # merged stream piped to tee (not a parser)

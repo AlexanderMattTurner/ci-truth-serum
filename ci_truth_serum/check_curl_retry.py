@@ -69,6 +69,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
     PathologicalInputError,
+    is_lookup,
     iter_nodes,
     node_text,
     parse,
@@ -90,11 +91,6 @@ ARM_NARROW = "narrow"
 # shell variable) and the null device (a discard, so the transfer is a
 # measurement of latency or throughput rather than a download).
 _NO_FILE_DESTINATIONS = frozenset({"-", "/dev/null"})
-
-# The lookup builtins, and the flags that make one a query rather than a run:
-# `command -v curl` and `type -P curl` ask WHERE curl is, they do not run it.
-_LOOKUP_BUILTINS = frozenset({"command", "type", "hash", "which"})
-_LOOKUP_FLAGS = frozenset({"-v", "-V", "-p", "-P", "-t"})
 
 # Command words whose whole job is to PRINT their arguments — a word list
 # carries no quotes, so a policed word among them is prose, not a download.
@@ -123,10 +119,6 @@ _COMPUTED_VALUE_TYPES = frozenset(
 
 def _is_message(name: str) -> bool:
     return name in _MESSAGE_COMMANDS
-
-
-def _is_lookup(name: str, rest: list[str]) -> bool:
-    return name in _LOOKUP_BUILTINS and any(word in _LOOKUP_FLAGS for word in rest)
 
 
 def _output_flag(word: str) -> bool:
@@ -384,7 +376,7 @@ def _download_arm(command: Node, carriers: list[Carrier]) -> str | None:
     words = [node_text(node) for node in nodes]
     if not words:
         return None
-    if _is_lookup(words[0], words[1:]) or _is_message(words[0]):
+    if is_lookup(words) or _is_message(words[0]):
         return None
     if "curl" not in words:
         return None

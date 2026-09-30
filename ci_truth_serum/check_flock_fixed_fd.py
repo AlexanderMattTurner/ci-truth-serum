@@ -74,6 +74,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     iter_nodes,
     node_text,
     parse,
+    program_name,
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -126,11 +127,6 @@ def _word_nodes(command: Node) -> list[Node]:
     return words
 
 
-def _program_name(word: str) -> str:
-    """WORD as a program name: quotes removed, directories stripped."""
-    return unquote(word).rsplit("/", 1)[-1]
-
-
 def _operand(words: list[str]) -> str | None:
     """The first non-option word in WORDS, WORDS being the tokens after `flock`.
 
@@ -179,7 +175,7 @@ def _exec_descriptors(root: Node) -> set[str]:
         if command is None or command.type != "command":
             continue
         words = _word_nodes(command)
-        if not words or _program_name(node_text(words[0])) != "exec":
+        if not words or program_name(node_text(words[0])) != "exec":
             continue
         for redirect in iter_nodes(statement, "file_redirect"):
             descriptor = redirect.child_by_field_name("descriptor")
@@ -201,7 +197,7 @@ def violations(text: str, root: Node | None = None) -> list[int]:
     hits = set()
     for command in iter_nodes(root, "command"):
         words = _word_nodes(command)
-        if not words or _program_name(node_text(words[0])) not in _FLOCK_NAMES:
+        if not words or program_name(node_text(words[0])) not in _FLOCK_NAMES:
             continue
         operand = _operand([node_text(word) for word in words[1:]])
         if operand is None:
