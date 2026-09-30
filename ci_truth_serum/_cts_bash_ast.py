@@ -302,6 +302,52 @@ def command_words(command: Node) -> list[str]:
     ]
 
 
+# Statements that run a condition and branch on its exit status. The grammar
+# parses `until` as a `while_statement` too, so there is no `until_statement`.
+CONDITION_STATEMENTS = frozenset({"if_statement", "elif_clause", "while_statement"})
+# The children that end a statement's condition. An `if` or `elif` holds its
+# body after a bare `then` token, and a loop holds it in a `do_group` node.
+_CONDITION_END_TYPES = frozenset({"then", "do_group"})
+
+
+def condition_parts(statement: Node) -> list[Node]:
+    """The statements that form STATEMENT's condition, or [] when STATEMENT is
+    not in `CONDITION_STATEMENTS`.
+
+    Read by position, not by the `condition` field: the grammar sets that field
+    on `if` and `while` but not on `elif_clause`."""
+    if statement.type not in CONDITION_STATEMENTS:
+        return []
+    parts: list[Node] = []
+    for child in statement.children:
+        if child.type in _CONDITION_END_TYPES:
+            break
+        if child.is_named:
+            parts.append(child)
+    return parts
+
+
+def in_condition(node: Node) -> bool:
+    """Whether NODE is one of the statements that form its parent's condition."""
+    parent = node.parent
+    return parent is not None and any(
+        part.id == node.id for part in condition_parts(parent)
+    )
+
+
+def condition_commands(
+    root: Node, statements: frozenset[str] = CONDITION_STATEMENTS
+) -> list[Node]:
+    """Every `command` under ROOT that runs inside the condition of a statement
+    whose type is in STATEMENTS, at any depth: under `!`, in a list or a
+    pipeline, or in a `$(…)`."""
+    commands: list[Node] = []
+    for statement in iter_nodes(root, *statements):
+        for part in condition_parts(statement):
+            commands.extend(iter_nodes(part, "command"))
+    return commands
+
+
 # Every character `str.splitlines()` treats as a line boundary. A comment blanked
 # for a line-oriented lint must keep these intact, or `strip_comments(text)` would
 # have a different line count than `text` and desync a caller's line indexing (a

@@ -22,19 +22,26 @@ separate `git`/`fetch` tokens — and an UNQUOTED word list under a
 print-only command (`echo`, `printf`, `die`, …) is skipped outright, since the
 grammar cannot rule out that its words are prose rather than a call.
 
-EXEC RULE: a `<tool> exec` call (`docker`, `podman`, `nerdctl`, `kubectl`,
-`sbx`, `lxc`, `incus`; extend with `--exec-tool NAME`, repeatable) fires when
-it sits in the CONDITION of a `while` or `until` loop. That covers a `!`
-negation, an `&&`/`||` list, a pipeline and a `$(…)` in the condition. A wedged
-runtime makes such a readiness poll spin forever, and nothing bounds the loop.
-Global options before the verb are skipped (`kubectl -n ns exec`). The same
-bounding-wrapper and annotation rules apply.
+EXEC RULE: a `<tool> exec` call (`docker`, `docker-compose`, `podman`,
+`nerdctl`, `kubectl`, `sbx`, `lxc`, `incus`; extend with `--exec-tool NAME`,
+repeatable) fires when it sits in the CONDITION of a `while` or `until` loop.
+That covers a `!` negation, an `&&`/`||` list, a pipeline, a `$(…)` and a
+redirect in the condition. One probe against a wedged runtime never returns, so
+the loop never tests its condition again. Global options and one `compose` or
+`container` group word before the verb are skipped (`kubectl -n ns exec`,
+`docker compose exec`). The same bounding-wrapper and annotation rules apply. A
+bound bounds each probe, not the loop: `until timeout 5 docker exec …` can
+still poll forever against a runtime that answers "no" every time.
+
+Every tool and wrapper word is compared by its basename, so `/usr/bin/timeout`
+bounds a call and `/usr/bin/docker exec` fires.
 
 BLIND SPOT: an `exec` call OUTSIDE a loop condition is out of scope, the loop
-BODY included. Whether that call needs a bound depends on runtime context this
-line-lint cannot see. A registered wrapper's OWN bound is trusted, never
-verified: `--bounding-wrapper NAME` is a claim the consumer makes, not a fact
-this check proves.
+BODY included. So is an `exec` call hidden in a function the condition calls
+(`until is_ready; do`). Whether such a call needs a bound depends on runtime
+context this line-lint cannot see. A registered wrapper's OWN bound is trusted,
+never verified: `--bounding-wrapper NAME` is a claim the consumer makes, not a
+fact this check proves.
 
 The remote-verb set is built in (`ls-remote`, `fetch`, `clone`, `push`, `pull`);
 extend it with `--remote-subcommand NAME`, repeatable, for a project verb this
@@ -50,13 +57,12 @@ a `files:` regex in the consumer's `.pre-commit-config.yaml`.
 
 import argparse
 import sys
-from pathlib import Path
-
-from tree_sitter import Node
+from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     command_words,
+    condition_commands,
     iter_nodes,
     parse,
     unquote,
@@ -99,8 +105,34 @@ _VALUE_OPTS = frozenset(
 # Container and VM runtimes whose `exec` verb runs a command inside a guest. A
 # wedged runtime or guest never answers, so the call never returns.
 _EXEC_TOOLS = frozenset(
-    {"docker", "podman", "nerdctl", "kubectl", "sbx", "lxc", "incus"}
+    {
+        "docker",
+        "docker-compose",
+        "podman",
+        "nerdctl",
+        "kubectl",
+        "sbx",
+        "lxc",
+        "incus",
+    }
 )
+
+# Command groups that sit between a runtime tool and its `exec` verb
+# (`docker compose exec`, `podman container exec`).
+_EXEC_GROUPS = frozenset({"compose", "container"})
+
+
+def _name(word: str) -> str:
+    """WORD's program name: unquoted, with any directory part removed, so
+    `/usr/bin/timeout` reads as `timeout`."""
+    return PurePosixPath(unquote(word)).name
+
+
+def _bounded_before(
+    words: tuple[str, ...], index: int, bounding_wrappers: frozenset[str]
+) -> bool:
+    """Whether a BOUNDING_WRAPPERS word sits anywhere before WORDS[INDEX]."""
+    return any(_name(word) in bounding_wrappers for word in words[:index])
 
 
 def _subcommand(words: tuple[str, ...]) -> str | None:
@@ -130,9 +162,9 @@ def _unbounded_git_indices(
     command."""
     hits = []
     for index, word in enumerate(words):
-        if word != "git":
+        if _name(word) != "git":
             continue
-        if any(w in bounding_wrappers for w in words[:index]):
+        if _bounded_before(words, index, bounding_wrappers):
             continue
         if _subcommand(words[index + 1 :]) in remote_subcommands:
             hits.append(index)
@@ -143,18 +175,23 @@ def _runs_exec(words: tuple[str, ...]) -> bool:
     """Whether WORDS (the words after a runtime tool) run its `exec` verb.
 
     Leading options are skipped, and so is one value after an option with no
-    `=`, so `kubectl -n ns exec` still counts. A word that is neither ends the
-    search, so `docker run img exec` does not count."""
+    `=`, so `kubectl -n ns exec` still counts. So is one `_EXEC_GROUPS` word,
+    so `docker compose exec` counts. Any other word ends the search, so
+    `docker run img exec` does not count."""
     after_option = False
+    group_seen = False
     for word in map(unquote, words):
         if word == "exec":
             return True
         if word.startswith("-"):
             after_option = "=" not in word
             continue
-        if not after_option:
+        if after_option:
+            after_option = False
+            continue
+        if group_seen or word not in _EXEC_GROUPS:
             return False
-        after_option = False
+        group_seen = True
     return False
 
 
@@ -166,27 +203,17 @@ def _unbounded_exec(
     """Whether WORDS hold an EXEC_TOOLS word that runs `exec`, with no
     BOUNDING_WRAPPERS word anywhere before it in the same command."""
     for index, word in enumerate(words):
-        if unquote(word) not in exec_tools:
+        if _name(word) not in exec_tools:
             continue
-        if any(w in bounding_wrappers for w in words[:index]):
+        if _bounded_before(words, index, bounding_wrappers):
             continue
         if _runs_exec(words[index + 1 :]):
             return True
     return False
 
 
-def _loop_condition_commands(root: Node) -> set[int]:
-    """The node ids of every `command` inside the condition of a `while` or
-    `until` loop. The grammar parses both as `while_statement`, and marks the
-    condition part (every child before the `do_group`) with the `condition`
-    field."""
-    ids: set[int] = set()
-    for loop in iter_nodes(root, "while_statement"):
-        for index, child in enumerate(loop.children):
-            if loop.field_name_for_child(index) != "condition":
-                continue
-            ids.update(node.id for node in iter_nodes(child, "command"))
-    return ids
+# The grammar parses both `while` and `until` as a `while_statement`.
+_LOOPS = frozenset({"while_statement"})
 
 
 def violations(
@@ -202,7 +229,7 @@ def violations(
     physical = text.splitlines()
     hits: list[int] = []
     root = parse(text)
-    in_condition = _loop_condition_commands(root)
+    in_loop_condition = {node.id for node in condition_commands(root, _LOOPS)}
     for command in iter_nodes(root, "command"):
         words = tuple(command_words(command))
         if not words or MESSAGE_PREFIX.match(words[0]):
@@ -210,7 +237,7 @@ def violations(
         git_hit = bool(
             _unbounded_git_indices(words, bounding_wrappers, remote_subcommands)
         )
-        exec_hit = command.id in in_condition and _unbounded_exec(
+        exec_hit = command.id in in_loop_condition and _unbounded_exec(
             words, bounding_wrappers, exec_tools
         )
         if not (git_hit or exec_hit):

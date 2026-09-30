@@ -167,6 +167,18 @@ def test_remote_subcommand_flag_extends_the_built_in_set() -> None:
         "until docker --context=remote exec c true; do sleep 1; done",
         # an unregistered wrapper does not bound it
         "until sudo docker exec c true; do sleep 1; done",
+        # a redirect wraps the command in a `redirected_statement`
+        "until docker exec c pg_isready >/dev/null 2>&1; do sleep 1; done",
+        # the condition is a statement list, not only its last statement
+        "while sleep 1; docker exec c true; do :; done",
+        # a group word sits between the tool and the verb
+        "until docker compose exec db pg_isready; do sleep 1; done",
+        "until docker container exec c true; do sleep 1; done",
+        "until podman container exec c true; do sleep 1; done",
+        "until nerdctl compose -f x.yml exec db true; do sleep 1; done",
+        "until docker-compose exec db pg_isready; do sleep 1; done",
+        # a tool named by its path
+        "until /usr/bin/docker exec c true; do sleep 1; done",
     ],
 )
 def test_fires_on_unbounded_exec_in_loop_condition(text: str) -> None:
@@ -178,6 +190,7 @@ def test_fires_on_unbounded_exec_in_loop_condition(text: str) -> None:
     [
         "until timeout 5 docker exec c true; do sleep 1; done",
         "while ! sudo timeout 5 sbx exec vm -- test -f x; do sleep 1; done",
+        "until /usr/bin/timeout 5 docker exec c true; do sleep 1; done",
         "until docker exec c true  # allow-unbounded: the caller bounds the job\n"
         "do sleep 1; done",
         # the loop BODY is out of scope
@@ -187,12 +200,26 @@ def test_fires_on_unbounded_exec_in_loop_condition(text: str) -> None:
         # not the exec verb
         "until docker inspect c; do sleep 1; done",
         "until docker run img exec; do sleep 1; done",
-        # a message command in the condition only prints
-        'while echo "docker exec c true"; do break; done',
+        # only one group word is skipped
+        "until docker compose run exec; do sleep 1; done",
+        # an `if` condition runs once, so it is not a poll
+        "if docker exec c true; then :; fi",
+        # a message command in the condition only prints its unquoted words
+        "while echo docker exec c true; do break; done",
     ],
 )
 def test_clean_exec_cases_do_not_fire(text: str) -> None:
     assert mod.violations(text) == []
+
+
+def test_non_vacuity_the_print_only_exec_case_fires_as_a_real_command() -> None:
+    assert mod.violations("while echo docker exec c true; do break; done") == []
+    assert mod.violations("while docker exec c true; do break; done") == [1]
+
+
+def test_bounding_wrapper_is_compared_by_basename_for_git() -> None:
+    assert mod.violations("/usr/bin/timeout 30 git fetch origin\n") == []
+    assert mod.violations("/usr/bin/git fetch origin\n") == [1]
 
 
 def test_exec_hit_reports_the_command_line_in_a_multiline_loop() -> None:

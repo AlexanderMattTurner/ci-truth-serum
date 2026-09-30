@@ -490,7 +490,7 @@
 
 - id: check-unbounded-waits
   name: "opinionated: bound a git remote call, or a container exec in a loop condition, with a timeout"
-  description: "A `git fetch`/`clone`/`push`/`pull`/`ls-remote` against a wedged endpoint hangs forever. A `docker exec` or `sbx exec` in a `while`/`until` condition against a wedged runtime hangs the poll loop forever. Put the bound first: `timeout 60 git fetch`, `until timeout 5 docker exec c true`. Add a runtime with `--exec-tool`. Scope the check with `files:`."
+  description: "A `git fetch`/`clone`/`push`/`pull`/`ls-remote` against a wedged endpoint hangs forever. A `docker exec` or `sbx exec` in a `while`/`until` condition hangs the poll loop on its first probe to a wedged runtime. Put the bound first: `timeout 60 git fetch`. In a loop, `until timeout 5 docker exec c true` bounds each probe. Add a runtime with `--exec-tool`. Scope the check with `files:`."
   entry: python -m ci_truth_serum.check_unbounded_waits
   language: python
   additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]

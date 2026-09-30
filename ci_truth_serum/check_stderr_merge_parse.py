@@ -52,6 +52,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
+    in_condition,
     iter_nodes,
     node_text,
     parse,
@@ -110,7 +111,6 @@ _BLOCKS = frozenset(
         "elif_clause",
         "else_clause",
         "while_statement",
-        "until_statement",
         "for_statement",
         "c_style_for_statement",
         "case_statement",
@@ -260,7 +260,7 @@ def _captured_substitution(assign):
 
 def _exit_status_tested(assign) -> bool:
     """True when the script branches on the CAPTURE's exit status — the
-    assignment is an `if`/`while` condition, is negated with `!`, or is an
+    assignment is an `if`/`elif`/`while` condition, is negated with `!`, or is an
     `&&`/`||` operand.
 
     There the merge exists to keep the command's error text for the failure path
@@ -270,10 +270,7 @@ def _exit_status_tested(assign) -> bool:
     node = assign
     while node.parent is not None:
         parent = node.parent
-        index = next(i for i, c in enumerate(parent.children) if c.id == node.id)
-        if parent.type in ("negated_command", "list"):
-            return True
-        if parent.field_name_for_child(index) == "condition":
+        if parent.type in ("negated_command", "list") or in_condition(node):
             return True
         if parent.type in _BLOCKS:
             return False

@@ -83,6 +83,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
     command_words,
+    in_condition,
     iter_nodes,
     node_text,
     parse,
@@ -125,15 +126,6 @@ _ALLOW = "pipefail-grep-ok"
 
 # The tokens separating pipeline stages in the grammar.
 _PIPE_TOKENS = frozenset({"|", "|&"})
-
-# Statements that read a pipeline's exit status as a boolean, and the children that end
-# their CONDITION part. A `while` holds its body in a `do_group` node while an `if`
-# holds its own after a bare `then` token, so both spellings are listed — a pipeline
-# after either is the body, not the condition.
-_CONDITION_PARENTS = frozenset(
-    {"if_statement", "while_statement", "until_statement", "elif_clause"}
-)
-_CONDITION_END_TYPES = frozenset({"then", "do_group", "elif_clause", "else_clause"})
 
 # The `||` right-hand sides that DISCARD the left side's status. Both always succeed
 # and do nothing, so `cmd || true` runs the same thing next whatever `cmd` returned.
@@ -303,19 +295,6 @@ def _producer_is_bounded(node) -> bool:
     )
 
 
-def _in_condition(node) -> bool:
-    """True when NODE sits in the CONDITION part of its enclosing `if`/`while`."""
-    parent = node.parent
-    if parent is None or parent.type not in _CONDITION_PARENTS:
-        return False
-    for child in parent.children:
-        if child.id == node.id:
-            return True
-        if child.type in _CONDITION_END_TYPES:
-            return False
-    return False
-
-
 def _status_discarded(node) -> bool:
     """True when NODE is the left operand of a `|| true` / `|| :` — the shell's way of
     saying the status does not matter, so nothing can misread it."""
@@ -342,7 +321,7 @@ def _status_read(pipeline, negated: bool) -> bool:
     parent = pipeline.parent
     return (
         negated
-        or _in_condition(pipeline)
+        or in_condition(pipeline)
         or (parent is not None and parent.type == "list")
     )
 
