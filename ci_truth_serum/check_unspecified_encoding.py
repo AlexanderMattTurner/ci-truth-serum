@@ -44,7 +44,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_line_checks,
 )
 from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_ast import trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-unspecified-encoding"
 
@@ -170,7 +170,7 @@ def violations(text: str) -> list[int]:
     return sorted(
         node.func.end_lineno or node.lineno
         for tree in trees(text)
-        for node in ast.walk(tree)
+        for node in walk(tree)
         if isinstance(node, ast.Call) and _offends(node) and not exempt(node)
     )
 

@@ -39,6 +39,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_py_ast import parse_whole, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "cwd-git-ok"
 
@@ -186,12 +187,12 @@ def _suppressed(node: ast.Call, physical: list[str]) -> bool:
 def violations(text: str, read_only: frozenset[str] = READ_ONLY) -> list[int]:
     """1-based line numbers of git calls in TEXT that name no repository."""
     try:
-        tree = ast.parse(text)
+        tree = parse_whole(text)
     except SyntaxError:
         return []
     physical = text.splitlines()
     hits = []
-    for node in ast.walk(tree):
+    for node in walk(tree):
         if not isinstance(node, ast.Call):
             continue
         argv = _git_argv(node)

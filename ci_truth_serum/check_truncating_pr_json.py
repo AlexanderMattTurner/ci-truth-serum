@@ -61,6 +61,7 @@ from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     lines as py_lines,
     name_of,
     trees,
+    walk,
 )
 
 OPT_OUT = "truncating-pr-json-ok"
@@ -214,7 +215,7 @@ def _python_hits(
     """1-based line numbers of a `subprocess.run(["gh", "pr", …])` call in TREE
     reading a truncating field, absent a `# truncating-pr-json-ok:` annotation."""
     hits = []
-    for node in ast.walk(tree):
+    for node in walk(tree):
         if not (isinstance(node, ast.Call) and _is_subprocess_run(node.func)):
             continue
         words = _argv_words(node)

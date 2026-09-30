@@ -181,3 +181,12 @@ def test_comment_lines_falls_back_when_python_does_not_tokenize(tail: str) -> No
     to catch, so an unfinished edit keeps the lint running on the text scan;
     other tooling owns the syntax error itself."""
     assert comments.comment_lines("# narration\n" + tail, "a.py") == {1: "# narration"}
+
+
+def test_python_comments_hands_each_caller_its_own_map() -> None:
+    """The tokenize pass is shared across callers, so a caller that edits the
+    map it got must not change what the next caller reads."""
+    source = "x = 1  # one\n# two\n"
+    first = comments.python_comments(source)
+    first[99] = "added"
+    assert comments.python_comments(source) == {1: "# one", 2: "# two"}

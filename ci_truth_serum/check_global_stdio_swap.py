@@ -37,7 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import annotated_near, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_ast import lines, name_of, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, name_of, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-stdio-swap"
 
@@ -109,7 +109,7 @@ def _is_setattr_swap(node: ast.AST) -> bool:
 def _swap_lines(tree: ast.Module) -> list[int]:
     """Every line in TREE that swaps a global stream."""
     hits: list[int] = []
-    for node in ast.walk(tree):
+    for node in walk(tree):
         hits += [t.lineno for t in _targets(node) if _is_stream(t)]
         if _is_setattr_swap(node):
             hits.append(node.lineno)

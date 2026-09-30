@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_ast import re_bindings, re_call_target  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import parse_whole, re_bindings, re_call_target, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 _RE_FUNCS = frozenset(
     {
@@ -55,13 +55,13 @@ def check_file(path: Path) -> list[tuple[int, str]]:
         print(f"{path}: cannot read file — {e}", file=sys.stderr)
         return []
     try:
-        tree = ast.parse(source, filename=str(path))
+        tree = parse_whole(source)
     except SyntaxError:
         return []
 
     module_names, func_names = re_bindings(tree)
     errors: list[tuple[int, str]] = []
-    for node in ast.walk(tree):
+    for node in walk(tree):
         if not isinstance(node, ast.Call):
             continue
         if re_call_target(node.func, module_names, func_names, _RE_FUNCS) is None:

@@ -160,6 +160,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_test_path,
     run_file_cli,
 )
+from _cts_py_ast import parse_whole, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # Phrases that express guard INTENT — the author is asserting two sources can't
 # diverge — rather than merely mentioning the word "drift" (which a test of
@@ -877,7 +878,7 @@ def _module_declaration(tree: ast.Module) -> int | None:
     if not any(
         isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
         and node.name.startswith("test_")
-        for node in ast.walk(tree)
+        for node in walk(tree)
     ):
         return None
     return tree.body[0].lineno
@@ -900,7 +901,7 @@ def violations(source: str) -> list[DriftFinding]:
     `<module>` and placed on the docstring, which a module-level `pytestmark`
     justifies."""
     try:
-        tree = ast.parse(source)
+        tree = parse_whole(source)
         comments = python_comments(source)
     except (SyntaxError, ValueError, tokenize.TokenError):
         return []
@@ -915,7 +916,7 @@ def violations(source: str) -> list[DriftFinding]:
     declared = _module_declaration(tree)
     if declared is not None and not justified_file:
         hits.append(DriftFinding(declared, _MODULE, _MODULE_ROUTE))
-    for node in ast.walk(tree):
+    for node in walk(tree):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
         if not node.name.startswith("test_"):

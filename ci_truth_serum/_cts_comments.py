@@ -28,6 +28,7 @@ import io
 import sys
 import tokenize
 from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 
 from tree_sitter import Node
@@ -92,11 +93,22 @@ def python_comments(source: str) -> dict[int, str]:
     Raises ``tokenize.TokenError`` / ``SyntaxError`` on source that does not
     tokenize; ``comment_lines`` decides what a caller does about that.
     """
-    return {
-        token.start[0]: token.string
-        for token in tokenize.generate_tokens(io.StringIO(source).readline)
-        if token.type == tokenize.COMMENT
-    }
+    return dict(_python_comment_items(source))
+
+
+@lru_cache(maxsize=1)
+def _python_comment_items(source: str) -> tuple[tuple[int, str], ...]:
+    """``python_comments``, memoized on SOURCE and frozen so the cache can be
+    shared. ``run_tier`` hands one file to every member of a tier in turn, and
+    three of the comment readers each tokenized it again; ``tokenize`` is pure
+    Python, so each pass cost as much as the lint's own work."""
+    return tuple(
+        {
+            token.start[0]: token.string
+            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            if token.type == tokenize.COMMENT
+        }.items()
+    )
 
 
 def shell_comments(script: str) -> dict[int, str]:

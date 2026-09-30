@@ -567,8 +567,10 @@ def _own_nodes(scope: ast.AST):
             stack.extend(ast.iter_child_nodes(node))
 
 
-def _constant_bindings(scope: ast.AST) -> dict[str, set[str]]:
-    """The names SCOPE itself binds to a fixed collection of strings.
+def _constant_bindings(own_nodes: list[ast.AST]) -> dict[str, set[str]]:
+    """The names a scope itself binds to a fixed collection of strings, read off
+    OWN_NODES — the scope's `_own_nodes`, which its caller walks once for both
+    this and the comparisons it judges.
 
     Without this, `conclusion in FAILING_CONCLUSIONS` shows the checker a bare
     name and no conclusions at all. That is the exact shape of the defective
@@ -582,7 +584,7 @@ def _constant_bindings(scope: ast.AST) -> dict[str, set[str]]:
     rejects.
     """
     constants: dict[str, set[str]] = {}
-    for node in _own_nodes(scope):
+    for node in own_nodes:
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target, value = node.targets[0], node.value
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
@@ -658,9 +660,8 @@ def _scope_groups(
     A nested scope inherits the names above it and may shadow any of them, which
     is what `{**inherited, **own}` says.
     """
-    own = _constant_bindings(scope)
-    constants = {**inherited, **own}
     nodes = list(_own_nodes(scope))
+    constants = {**inherited, **_constant_bindings(nodes)}
     continuations = {
         id(node.orelse[0])
         for node in nodes
