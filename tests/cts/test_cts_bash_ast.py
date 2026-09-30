@@ -256,7 +256,11 @@ def test_command_words_of_a_prefix_only_command() -> None:
 
 @pytest.mark.parametrize(
     ("word", "expected"),
-    [("timeout", "timeout"), ("/usr/bin/timeout", "timeout"), ('"/bin/docker"', "docker")],
+    [
+        ("timeout", "timeout"),
+        ("/usr/bin/timeout", "timeout"),
+        ('"/bin/docker"', "docker"),
+    ],
 )
 def test_program_name_strips_quotes_and_directories(word: str, expected: str) -> None:
     assert bash_ast.program_name(word) == expected
