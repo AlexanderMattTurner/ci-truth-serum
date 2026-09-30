@@ -12,13 +12,15 @@ Two layers:
     tmp repo.
 """
 
+import sys
 import threading
-import time
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import pytest
 import yaml
 
+import ci_truth_serum.run_tier as package_rt
 from tests._helpers import REPO_ROOT, load_hook, unscanned_note
 
 
@@ -668,25 +670,43 @@ def test_one_broken_member_does_not_stop_the_per_file_pass(monkeypatch, capsys):
 # ── run_whole_list ────────────────────────────────────────────────────────────
 
 
-def test_whole_list_output_is_written_before_the_pool_drains(monkeypatch, capfd):
+def test_whole_list_output_is_written_before_the_pool_drains(monkeypatch):
     """A member's findings reach the log when IT finishes, not when the last one does.
 
     Actions cancels the capped job this runner exists for, and the members run
     with their output captured rather than inherited. Holding every member's
     output until the pool drains therefore loses every finding already in hand —
     the inherited streams this replaced showed them as they were produced.
+
+    The stream is a stub that notes the write as it happens. Polling a capture
+    with `readouterr` would not do: it reads, then truncates, so a write landing
+    between the two is lost and the test fails with the runner correct.
     """
     released = threading.Event()
-    first_seen = threading.Event()
+    fast_written = threading.Event()
+
+    class _Stream:
+        def __init__(self) -> None:
+            self.buffer = self
+
+        def write(self, data: bytes) -> int:
+            if b"fast finding" in data:
+                fast_written.set()
+            return len(data)
+
+        def flush(self) -> None:
+            pass
 
     def _fake_run(module, argv):
         if module == "slow":
-            # Finishes only once the test has read the fast member's output.
+            # Finishes only once the test has seen the fast member's output.
             released.wait(timeout=10)
             return rt.CheckRun(0, b"", b"slow finding\n")
         return rt.CheckRun(0, b"", b"fast finding\n")
 
     monkeypatch.setattr(rt, "run_check", _fake_run)
+    monkeypatch.setattr(sys, "stdout", _Stream())
+    monkeypatch.setattr(sys, "stderr", _Stream())
 
     seconds: dict[str, float] = {}
     members = [("fast", ["a.sh"]), ("slow", ["b.sh"])]
@@ -696,18 +716,167 @@ def test_whole_list_output_is_written_before_the_pool_drains(monkeypatch, capfd)
     )
     worker.start()
     try:
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            if "fast finding" in capfd.readouterr().err:
-                first_seen.set()
-                break
-            time.sleep(0.01)
+        seen_first = fast_written.wait(timeout=10)
     finally:
         released.set()
         worker.join(timeout=10)
 
-    assert first_seen.is_set(), (
+    assert seen_first, (
         "the fast member's finding did not reach stderr until the slow member "
         "finished, so a job cancelled at its cap would print neither"
     )
     assert done == [0]
+
+
+# ── the per-file pass across worker processes ─────────────────────────────────
+# `run_per_file` cuts the files into slices and runs each slice in a spawned
+# worker. The worker re-imports this module by name, so these tests drive the
+# package module, not the `load_hook` copy the rest of this file uses: a function
+# `pickle` cannot find by its module name cannot reach a worker at all.
+
+
+def _parallel_tree(tmp_path: Path) -> list[str]:
+    """Enough shell files to cross `PARALLEL_MIN_FILES`, every third one with a
+    finding for each member, and a clean file between them."""
+    files = []
+    for index in range(40):
+        path = tmp_path / f"s{index:02}.sh"
+        body = 'mkdir -p "$d"\nv=$(cmd || echo x)\n' if index % 3 == 0 else "true\n"
+        path.write_text(body, encoding="utf-8")
+        files.append(str(path))
+    return files
+
+
+def test_the_parallel_pass_prints_what_the_serial_pass_prints(
+    tmp_path, monkeypatch, capsys
+):
+    files = _parallel_tree(tmp_path)
+    members = [("check_bare_mkdir", files), ("check_echo_fallback", files)]
+
+    serial: dict[str, float] = {}
+    serial_rc = package_rt._run_files(members, files, {}, serial)
+    expected = capsys.readouterr()
+
+    monkeypatch.setattr(package_rt, "PARALLEL_MIN_FILES", 2)
+    monkeypatch.setattr(package_rt, "workers", lambda: 2)
+    parallel: dict[str, float] = {}
+    parallel_rc = package_rt.run_per_file(members, files, {}, parallel)
+    got = capsys.readouterr()
+
+    assert len(expected.err.splitlines()) == 28, "the fixture must produce findings"
+    assert (parallel_rc, got.out, got.err) == (serial_rc, expected.out, expected.err)
+    assert set(parallel) == set(serial) == {"check_bare_mkdir", "check_echo_fallback"}
+
+
+def test_a_worker_that_dies_ends_the_tier(tmp_path, monkeypatch):
+    """A worker killed mid-slice (a segfault in a C parser) must not read as a
+    pass. The pool reports it by raising, and nothing here may catch that."""
+
+    class _DyingPool:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def map(self, *_args, **_kwargs):
+            raise BrokenProcessPool("a worker died")
+
+    monkeypatch.setattr(package_rt, "ProcessPoolExecutor", _DyingPool)
+    monkeypatch.setattr(package_rt, "PARALLEL_MIN_FILES", 2)
+    monkeypatch.setattr(package_rt, "workers", lambda: 2)
+    files = _parallel_tree(tmp_path)
+    with pytest.raises(BrokenProcessPool):
+        package_rt.run_per_file([("check_bare_mkdir", files)], files, {}, {})
+
+
+def test_chunks_are_contiguous_and_cover_every_file():
+    files = [f"f{i}" for i in range(10)]
+    chunks = rt._chunks(files, 4)
+    assert chunks == [
+        ["f0", "f1", "f2"],
+        ["f3", "f4", "f5"],
+        ["f6", "f7"],
+        ["f8", "f9"],
+    ]
+    assert rt._chunks(["a"], 4) == [["a"]]
+
+
+class _Merged:
+    """One of two streams writing into a single shared log, the way pre-commit
+    reads a hook: stderr merged into stdout's pipe."""
+
+    def __init__(self, log: list[tuple[str, str]], name: str) -> None:
+        self._log, self._name = log, name
+        self.encoding, self.errors = "utf-8", "strict"
+
+    def write(self, text: str) -> int:
+        self._log.append((self._name, text))
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+def test_the_parallel_pass_interleaves_the_streams_as_the_serial_pass(
+    tmp_path, monkeypatch
+):
+    """One member reports on stdout and one on stderr, so a merged reader sees
+    their lines interleave file by file. Replaying a slice's stdout and then its
+    stderr would regroup them."""
+    files = []
+    for index in range(20):
+        path = tmp_path / f"m{index:02}.py"
+        path.write_text('import re\nre.compile("(a)")\nopen("f")\n', encoding="utf-8")
+        files.append(str(path))
+    members = [
+        ("check_unnamed_regex_groups", files),
+        ("check_unspecified_encoding", files),
+    ]
+
+    serial: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "stdout", _Merged(serial, "out"))
+    monkeypatch.setattr(sys, "stderr", _Merged(serial, "err"))
+    serial_rc = package_rt._run_files(members, files, {}, {})
+
+    parallel: list[tuple[str, str]] = []
+    monkeypatch.setattr(sys, "stdout", _Merged(parallel, "out"))
+    monkeypatch.setattr(sys, "stderr", _Merged(parallel, "err"))
+    monkeypatch.setattr(package_rt, "PARALLEL_MIN_FILES", 2)
+    monkeypatch.setattr(package_rt, "workers", lambda: 2)
+    parallel_rc = package_rt.run_per_file(members, files, {}, {})
+
+    assert {name for name, _ in serial} == {"out", "err"}
+    assert (parallel_rc, parallel) == (serial_rc, serial)
+
+
+def test_a_write_the_real_stream_cannot_encode_fails_inside_the_member():
+    """The real stream refuses such text inside the member's own `print`, where
+    `run_in_process` marks that one member failed. The recorder must refuse it
+    there too, not leave it for the parent's replay to raise over the tier."""
+    real = _Merged([], "out")
+    real.encoding = "ascii"
+    recorder = rt._Recorder([], "stdout", real)
+    with pytest.raises(UnicodeEncodeError):
+        recorder.write("café\n")
+
+
+def test_a_host_that_cannot_start_a_pool_runs_the_pass_serially(
+    tmp_path, monkeypatch, capsys
+):
+    def _no_semaphores(**_kwargs):
+        raise NotImplementedError("sem_open is not available")
+
+    files = _parallel_tree(tmp_path)
+    members = [("check_bare_mkdir", files)]
+    serial_rc = package_rt._run_files(members, files, {}, {})
+    expected = capsys.readouterr()
+
+    monkeypatch.setattr(package_rt, "ProcessPoolExecutor", _no_semaphores)
+    monkeypatch.setattr(package_rt, "PARALLEL_MIN_FILES", 2)
+    monkeypatch.setattr(package_rt, "workers", lambda: 2)
+    assert package_rt.run_per_file(members, files, {}, {}) == serial_rc == 1
+    assert capsys.readouterr() == expected
