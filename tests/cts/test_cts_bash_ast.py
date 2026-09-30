@@ -124,6 +124,16 @@ def test_strip_comments_stays_aligned_with_astral_char() -> None:
     assert out.splitlines() == ["run \U0001f600" + " " * 8, "x"]
 
 
+def test_strip_comments_maps_every_comment_past_multibyte_text() -> None:
+    # Two- and three-byte characters sit in code and inside comments, before
+    # and between several comments. Each one shifts the byte offsets tree-sitter
+    # reports away from character indices, and the shift accumulates, so a map
+    # that is off for one comment is off for every comment after it. A comment
+    # holding a line boundary Python splits on (U+2028) keeps it.
+    src = "é=1 # née—x\nb='—' # ü\u2028v\n# à\nc\n"
+    assert bash_ast.strip_comments(src) == ("é=1        \nb='—'    \u2028 \n   \nc\n")
+
+
 def test_strip_comments_blanks_comment_keeps_layout() -> None:
     # A trailing comment is blanked to spaces; the code before it, the newline, and
     # every column offset are preserved so line-oriented lints stay aligned.

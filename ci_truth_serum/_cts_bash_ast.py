@@ -22,6 +22,7 @@ swallowed. The bindings are pinned as a hook runtime dependency
 pre-commit and CI always have them.
 """
 
+import re
 from collections.abc import Sequence
 from functools import lru_cache
 
@@ -85,16 +86,20 @@ _MAX_PIPE_BYTES = 2_000
 # supplementary-plane char is a plain word byte to bash (never a metacharacter),
 # so collapsing it to another word byte cannot change any lint's verdict.
 _REPLACEMENT = "\ufffd"
+_SUPPLEMENTARY = re.compile("[\U00010000-\U0010ffff]")
 
 
 def _neutralize_supplementary(script: str) -> str:
     """SCRIPT with every supplementary-plane (non-BMP) codepoint replaced by
     U+FFFD, so tree-sitter-bash's scanner never lexes the 4-byte sequence that
     corrupts its heap. One-to-one on characters (line count and character indices
-    preserved); idempotent (U+FFFD is BMP, so a second pass is a no-op)."""
-    if all(ord(char) <= 0xFFFF for char in script):
+    preserved); idempotent (U+FFFD is BMP, so a second pass is a no-op).
+
+    A regex, not a per-character Python loop: every cache miss in `parse` runs
+    this over the whole script, and the loop was most of a shell lint's time."""
+    if _SUPPLEMENTARY.search(script) is None:
         return script
-    return "".join(_REPLACEMENT if ord(char) > 0xFFFF else char for char in script)
+    return _SUPPLEMENTARY.sub(lambda _: _REPLACEMENT, script)
 
 
 # Building the Language once is cheap; reuse it across every parse in a run.
@@ -393,6 +398,9 @@ def _inside_definition(node: Node, top: Node) -> bool:
 # bash comment ends only at `\n`, so it can legitimately contain a bare `\r`, `\v`,
 # or a Unicode LS/PS that Python still splits on).
 _LINE_BOUNDARIES = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+_NOT_LINE_BOUNDARY = re.compile(
+    "[^" + re.escape("".join(sorted(_LINE_BOUNDARIES))) + "]"
+)
 
 
 def strip_comments(script: str) -> str:
@@ -410,21 +418,22 @@ def strip_comments(script: str) -> str:
     # index i in it is character index i in `script` and blanking `script[i]` below
     # stays correct.
     safe = _neutralize_supplementary(script)
-    spans = [(n.start_byte, n.end_byte) for n in iter_nodes(parse(safe), "comment")]
+    spans = sorted(
+        (n.start_byte, n.end_byte) for n in iter_nodes(parse(safe), "comment")
+    )
     if not spans:
         return script
     # tree-sitter reports byte offsets; map them to character indices so blanking
-    # respects multibyte Unicode boundaries.
-    char_at_byte: dict[int, int] = {}
-    byte = 0
-    for index, char in enumerate(safe):
-        char_at_byte[byte] = index
-        byte += len(char.encode("utf-8"))
-    char_at_byte[byte] = len(safe)
-
-    out = list(script)
+    # respects multibyte Unicode boundaries. Comments never nest, so with the spans
+    # sorted one forward pass decodes each byte gap exactly once.
+    encoded = safe.encode("utf-8")
+    pieces: list[str] = []
+    byte = char = 0
     for start_byte, end_byte in spans:
-        for index in range(char_at_byte[start_byte], char_at_byte[end_byte]):
-            if out[index] not in _LINE_BOUNDARIES:
-                out[index] = " "
-    return "".join(out)
+        start = char + len(encoded[byte:start_byte].decode("utf-8"))
+        end = start + len(encoded[start_byte:end_byte].decode("utf-8"))
+        pieces.append(script[char:start])
+        pieces.append(_NOT_LINE_BOUNDARY.sub(" ", script[start:end]))
+        byte, char = end_byte, end
+    pieces.append(script[char:])
+    return "".join(pieces)
