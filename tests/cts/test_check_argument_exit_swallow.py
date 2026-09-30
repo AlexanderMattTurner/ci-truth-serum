@@ -302,6 +302,32 @@ def test_one_run_reads_each_sourced_library_once(tmp_path: Path, monkeypatch) ->
     assert sorted(reads) == [str(tmp_path / "base.sh"), str(tmp_path / "lib.sh")]
 
 
+def test_main_shares_one_library_cache_across_its_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`main` threads one cache through its whole file loop. Without that, the
+    cache above exists and no real run reaches it."""
+    (tmp_path / "base.sh").write_text("from_base() { :; }\n", encoding="utf-8")
+    (tmp_path / "lib.sh").write_text(
+        "source base.sh\nfrom_lib() { :; }\n", encoding="utf-8"
+    )
+    scripts = []
+    for name in ("one.sh", "two.sh"):
+        script = tmp_path / name
+        script.write_text("source lib.sh\n", encoding="utf-8")
+        scripts.append(str(script))
+    reads: list[str] = []
+    real_read = mod._read
+    monkeypatch.setattr(
+        mod, "_read", lambda path: reads.append(path) or real_read(path)
+    )
+    monkeypatch.setattr(mod, "tracked_shell_files", lambda: [])
+    assert mod.main(scripts) == 0
+    assert sorted(reads) == sorted(
+        [*scripts, str(tmp_path / "base.sh"), str(tmp_path / "lib.sh")]
+    )
+
+
 def test_a_refused_library_is_named_in_source_order(tmp_path: Path) -> None:
     """Two sourced files the grammar refuses: the error names the one the
     script sources first, as a reader would find it."""

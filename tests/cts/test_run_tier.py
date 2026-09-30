@@ -735,6 +735,25 @@ def test_whole_list_output_is_written_before_the_pool_drains(monkeypatch):
 # `pickle` cannot find by its module name cannot reach a worker at all.
 
 
+def _real_pool_spy(monkeypatch) -> list[int]:
+    """Force the parallel path and record each real pool it builds.
+
+    The serial fallback prints the same bytes, so a test that only compares
+    output would stay green if the pool never started. The caller asserts the
+    list is not empty."""
+    monkeypatch.setattr(package_rt, "PARALLEL_MIN_FILES", 2)
+    monkeypatch.setattr(package_rt, "workers", lambda: 2)
+    real_pool = package_rt.ProcessPoolExecutor
+    built: list[int] = []
+
+    def _spy(**kwargs):
+        built.append(kwargs["max_workers"])
+        return real_pool(**kwargs)
+
+    monkeypatch.setattr(package_rt, "ProcessPoolExecutor", _spy)
+    return built
+
+
 def _parallel_tree(tmp_path: Path) -> list[str]:
     """Enough shell files to cross `PARALLEL_MIN_FILES`, every third one with a
     finding for each member, and a clean file between them."""
@@ -757,12 +776,12 @@ def test_the_parallel_pass_prints_what_the_serial_pass_prints(
     serial_rc = package_rt._run_files(members, files, {}, serial)
     expected = capsys.readouterr()
 
-    monkeypatch.setattr(package_rt, "PARALLEL_MIN_FILES", 2)
-    monkeypatch.setattr(package_rt, "workers", lambda: 2)
+    pools = _real_pool_spy(monkeypatch)
     parallel: dict[str, float] = {}
     parallel_rc = package_rt.run_per_file(members, files, {}, parallel)
     got = capsys.readouterr()
 
+    assert pools == [2], "the pass fell back to the serial loop"
     assert len(expected.err.splitlines()) == 28, "the fixture must produce findings"
     assert (parallel_rc, got.out, got.err) == (serial_rc, expected.out, expected.err)
     assert set(parallel) == set(serial) == {"check_bare_mkdir", "check_echo_fallback"}
@@ -845,10 +864,10 @@ def test_the_parallel_pass_interleaves_the_streams_as_the_serial_pass(
     parallel: list[tuple[str, str]] = []
     monkeypatch.setattr(sys, "stdout", _Merged(parallel, "out"))
     monkeypatch.setattr(sys, "stderr", _Merged(parallel, "err"))
-    monkeypatch.setattr(package_rt, "PARALLEL_MIN_FILES", 2)
-    monkeypatch.setattr(package_rt, "workers", lambda: 2)
+    pools = _real_pool_spy(monkeypatch)
     parallel_rc = package_rt.run_per_file(members, files, {}, {})
 
+    assert pools == [2], "the pass fell back to the serial loop"
     assert {name for name, _ in serial} == {"out", "err"}
     assert (parallel_rc, parallel) == (serial_rc, serial)
 
