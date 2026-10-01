@@ -495,9 +495,9 @@ def live_secrets(doc: dict, cfg: dict) -> set[str]:
 
     Workflow-level ``env`` is inherited; the job's own ``env`` and every step's
     ``env``/``with`` are in reach; ``secrets: inherit`` on a called workflow hands
-    over the lot. The default ``GITHUB_TOKEN`` counts only when the job can write
-    with it — a read-scoped one is not a credential worth stealing, and counting
-    it would report every ordinary CI job.
+    over the lot. The default ``GITHUB_TOKEN`` counts when the job can write with
+    it, named or not: the runner receives it for every job. A read-scoped one is
+    not worth stealing. A job's own ``permissions:`` replaces the workflow's.
     """
     names = _secret_names(doc.get("env"))
     names |= _secret_names(cfg.get("env"))
@@ -507,10 +507,10 @@ def live_secrets(doc: dict, cfg: dict) -> set[str]:
     if str(cfg.get("secrets")) == "inherit":
         names.add("inherit (all repository secrets)")
     names |= _secret_names(cfg.get("secrets"))
-    writes = _trusted_base._grants_write(doc.get("permissions")) or (
-        _trusted_base._grants_write(cfg.get("permissions"))
-    )
-    if not writes:
+    perms = cfg["permissions"] if "permissions" in cfg else doc.get("permissions")
+    if _trusted_base._grants_write(perms):
+        names.add(_DEFAULT_TOKEN)
+    else:
         names.discard(_DEFAULT_TOKEN)
     return names
 

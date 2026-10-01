@@ -628,3 +628,27 @@ def test_each_merge_commit_rule_contributes(tmp_path, mutation, body):
     base = _write(tmp_path, _MERGE_VIOLATING, name="base.yaml")
     assert len(ue.check_file(base)) == 1, mutation
     assert ue.check_file(_write(tmp_path, body, name="mutant.yaml")) == [], mutation
+
+
+@pytest.mark.parametrize(
+    "token_step",
+    ["", "        env:\n          GH_TOKEN: ${{ github.token }}\n"],
+)
+def test_a_write_scoped_token_counts_whether_or_not_it_is_named(tmp_path, token_step):
+    """The runner receives the job's token for every job, so a write scope is in
+    reach of the PR's code even when no step names the token."""
+    body = _merge_wf(secret_env=token_step).replace(
+        "jobs:\n", "permissions:\n  pull-requests: write\njobs:\n", 1
+    )
+    ((_line, message),) = ue.check_file(_write(tmp_path, body))
+    assert "these secrets are live in the job: GITHUB_TOKEN" in message
+
+
+def test_a_job_permissions_block_replaces_the_workflows(tmp_path):
+    body = _merge_wf(secret_env="").replace(
+        "jobs:\n  delta:\n",
+        "permissions: write-all\njobs:\n  delta:\n"
+        "    permissions:\n      contents: read\n",
+        1,
+    )
+    assert ue.check_file(_write(tmp_path, body)) == []
