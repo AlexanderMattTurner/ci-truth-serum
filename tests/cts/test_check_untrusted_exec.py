@@ -108,6 +108,47 @@ def test_execution_forms_are_flagged_with_their_label(tmp_path, command, label):
     assert label in result[0][1]
 
 
+@pytest.mark.parametrize(
+    ("command", "label"),
+    [
+        ("python -m tools.render", "`python -m tools.render`"),
+        ("python3 -u -m tools", "`python3 -m tools`"),
+        ("/usr/bin/python3 scripts/x.py", "`python3 scripts/x.py`"),
+        ("pytest -q tests", "`pytest`"),
+        ("python -m pytest", "`python -m pytest`"),
+        ("env -u UV_NO_SYNC FOO=1 bash ./scripts/x.sh", "`bash ./scripts/x.sh`"),
+        ("uv run --python '>=3.13' --no-project bin/x", "`uv run bin/x`"),
+        ("uv run --extra dev pytest -q", "`uv run pytest`"),
+        ("uv run -m tools.render", "`uv run -m tools.render`"),
+        ("uv run python -m tools", "`uv run python -m tools`"),
+    ],
+)
+def test_module_and_wrapper_forms_are_flagged(tmp_path, monkeypatch, command, label):
+    """`python -m` imports from the working directory first, so a module the
+    checkout holds runs the checkout's code; `env` and `uv run` only start it."""
+    (tmp_path / "tools").mkdir()
+    monkeypatch.setattr(ue, "REPO_ROOT", tmp_path)
+    result = ue.check_file(_write(tmp_path, _wf(_PR_HEAD_SHA, _run_step(command))))
+    assert len(result) == 1
+    assert label in result[0][1]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pip install x",
+        "uv run --with ruff ruff check",
+        "uvx ruff check",
+        "python script_name_without_suffix -m tools",
+    ],
+)
+def test_installed_modules_and_tools_are_not_counted(tmp_path, monkeypatch, command):
+    (tmp_path / "tools").mkdir()
+    monkeypatch.setattr(ue, "REPO_ROOT", tmp_path)
+    path = _write(tmp_path, _wf(_PR_HEAD_SHA, _run_step(command)))
+    assert ue.check_file(path) == []
+
+
 def test_workflow_run_head_without_pinning_if_is_flagged(tmp_path):
     """A privileged follow-up workflow reaching the same head. Nothing pins WHICH
     upstream run may reach the job, so the checkout is attacker-controlled."""

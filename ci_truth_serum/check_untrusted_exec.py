@@ -22,7 +22,9 @@ the checked-out pull-request head, which the PR author rewrites at will:
      ``npx <bin>`` / ``make <target>``. The body comes from the checked-out
      ``package.json`` / ``Makefile``.
   3. a ``run:`` executing a workspace-relative path — ``bash ./scripts/x.sh``,
-     ``node scripts/x.mjs``, ``./bin/x``, ``python scripts/x.py``.
+     ``node scripts/x.mjs``, ``./bin/x``, ``python scripts/x.py`` — or a module
+     the checkout holds (``python -m pkg``), or ``pytest``, which imports the
+     checkout's tests. ``env`` and ``uv run`` prefixes are read through.
 
 THE UNIT OF ANALYSIS IS THE JOB, NOT THE STEP. One attacker-controlled step
 compromises every later step in the same job: it can append to ``$GITHUB_ENV``
@@ -180,6 +182,42 @@ _INTERPRETERS = frozenset(
         "tsx",
     }
 )
+# Options of `env` that consume the next word.
+_ENV_VALUE_OPTIONS = frozenset(
+    {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}
+)
+# Options of `uv run` that consume the next word, so it is not read as the command.
+_UV_RUN_VALUE_OPTIONS = frozenset(
+    {
+        "-p",
+        "--python",
+        "--with",
+        "--with-editable",
+        "--with-requirements",
+        "--extra",
+        "--group",
+        "--no-group",
+        "--only-group",
+        "--package",
+        "--directory",
+        "--project",
+        "--env-file",
+        "--index",
+        "--default-index",
+        "--index-url",
+        "--extra-index-url",
+        "-f",
+        "--find-links",
+        "--config-file",
+        "--cache-dir",
+        "--python-preference",
+        "--resolution",
+        "--prerelease",
+        "--exclude-newer",
+        "-C",
+        "--config-setting",
+    }
+)
 # A filename that is executable content even without a directory component, so
 # `bash build.sh` counts as a workspace path the same way `bash ci/build.sh` does.
 _SCRIPT_SUFFIX = re.compile(r"\.(?:sh|bash|zsh|mjs|cjs|js|ts|py|rb|pl)$")
@@ -231,6 +269,15 @@ def _script_execution(words: list[str]) -> str:
     if not words:
         return ""
     name = unquote(words[0])
+    if name == "env":
+        return _script_execution(_after_env(words))
+    if name == "uv" and len(words) > 1 and unquote(words[1]) == "run":
+        return _uv_run_execution(words[2:])
+    if name == "pytest":
+        return "`pytest`"
+    # `/usr/bin/python3 x.py` runs x.py exactly as `python3 x.py` does.
+    if name.startswith("/") and name.rsplit("/", 1)[-1] in _INTERPRETERS:
+        name = name.rsplit("/", 1)[-1]
     if name == "make":
         target = _first_operand(words)
         return f"`make {target}`" if target else "`make`"
@@ -252,9 +299,62 @@ def _script_execution(words: list[str]) -> str:
         spelled = f"{verb} {operand}" if verb != operand else operand
         return f"`{name} {spelled}`"
     if name in _INTERPRETERS:
+        module = _module_operand(words[1:])
+        if module:
+            if module == "pytest" or _is_workspace_module(module):
+                return f"`{name} -m {module}`"
+            return ""
         operand = _first_operand(words)
         return f"`{name} {operand}`" if _is_workspace_path(operand) else ""
     return f"`{name}`" if _is_workspace_path(name) else ""
+
+
+def _after_env(words: list[str]) -> list[str]:
+    """The command `env` runs: WORDS without `env`, its options and its NAME=VALUE pairs."""
+    rest = [unquote(w) for w in words[1:]]
+    while rest and (rest[0].startswith("-") or "=" in rest[0]):
+        rest = rest[2:] if rest[0] in _ENV_VALUE_OPTIONS else rest[1:]
+    return rest
+
+
+def _module_operand(args: list[str]) -> str:
+    """The module after `-m` in ARGS, or `""` when ARGS run no module."""
+    for at, word in enumerate(unquote(w) for w in args):
+        if word == "-m":
+            return unquote(args[at + 1]) if at + 1 < len(args) else ""
+        if not word.startswith("-"):
+            return ""
+    return ""
+
+
+def _is_workspace_module(module: str) -> bool:
+    """True when `python -m MODULE` imports a package or module from the checkout.
+
+    Python puts the working directory first on the import path, so a top-level
+    name that exists in the checkout shadows any installed one."""
+    top = module.split(".", 1)[0]
+    return (REPO_ROOT / top).is_dir() or (REPO_ROOT / f"{top}.py").is_file()
+
+
+def _uv_run_execution(args: list[str]) -> str:
+    """The execution form of `uv run ARGS`, judged as the command uv starts.
+
+    `uv run` syncs and installs the checkout's own project first. This lint does
+    not count that, for the reason it does not count `pnpm install`."""
+    args = [unquote(w) for w in args]
+    while args and args[0].startswith("-"):
+        flag = args.pop(0)
+        if flag in ("-m", "--module") and args:
+            module = args[0]
+            if module == "pytest" or _is_workspace_module(module):
+                return f"`uv run -m {module}`"
+            return ""
+        if flag == "--":
+            break
+        if flag in _UV_RUN_VALUE_OPTIONS and args:
+            args.pop(0)
+    label = _script_execution(args)
+    return f"`uv run {label.strip('`')}`" if label else ""
 
 
 def run_executions(script: str) -> list[str]:
