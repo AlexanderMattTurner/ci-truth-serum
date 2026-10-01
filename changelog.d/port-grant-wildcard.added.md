@@ -1,0 +1,1 @@
+- `check-grant-wildcard`: a new check that rejects a Claude Code `permissions.allow` rule such as `Bash(git diff*)`, where the `*` comes right after a letter or digit. That rule also approves `git difftool`. Write `Bash(git diff *)` instead, which still matches the bare `git diff`.

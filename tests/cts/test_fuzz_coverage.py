@@ -145,6 +145,7 @@ FUZZ_REQUIRED = {
     "check_wall_clock_assertions": "violations",
     "_cts_claude_settings": "decode",
     "check_pretooluse_timeout": "findings",
+    "check_grant_wildcard": "findings",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the
