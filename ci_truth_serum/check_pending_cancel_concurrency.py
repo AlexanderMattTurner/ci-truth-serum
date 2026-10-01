@@ -26,6 +26,16 @@ truthy half as a non-empty string: `cond && '' || …` is always inert, because
 GitHub reads the empty string as false. Opt out per job with
 "# inert-group-ok: <reason>".
 
+Two more arms of shape 1 read inside one trigger, and both use the same opt-out:
+
+- A FIXED group behind an `if:` that reads the event payload. On a `labeled`
+  run, `if: github.event.label.name == 'go'` can hold or fail. So two runs of
+  one trigger can split into one that serves and one that skips, and they share
+  the one slot.
+- A run-id escape that picks the run id on EVERY trigger the job serves. The
+  condition is inverted, or the shared operand is `''`. The group then never
+  holds two runs, so the job is never serialized.
+
 The sibling `check_collapsing_job_group` owns the neighbouring question: a group
 whose per-ref key is EMPTY on some event, so every run of that event shares one
 slot. There the runs sharing the slot are all runs of one event, so the job's
@@ -93,8 +103,12 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     concurrency_line,
     declared_triggers,
     decide_gate_names,
+    group_has_run_id_escape,
+    group_is_event_constant,
+    group_is_per_run_on,
     group_separates_triggers,
     job_concurrency_line,
+    job_delivery_split_triggers,
     job_skipped_triggers,
     opted_out,
     required_check_shape,
@@ -212,15 +226,75 @@ _INERT_MESSAGE = (
 )
 
 
+_DELIVERY_MESSAGE = (
+    "job '{name}' holds the fixed concurrency group '{group}', and its `if:` "
+    "reads the event payload. So on a {trigger} run the job can run or skip, by "
+    "what that one delivery carries. GitHub claims a job's group slot when it "
+    "CREATES the job, BEFORE it reads the `if:`. A run that skips this job "
+    "therefore evicts the run queued in that slot to do the work. Read the same "
+    "condition in the group: end it '-shared' when the `if:` holds and "
+    "'-inert-${{{{ github.run_id }}}}' when it does not. Or add "
+    "'# " + INERT_OPT_OUT + ": <reason>'."
+)
+
+_MISFIRE_MESSAGE = (
+    "job '{name}' chooses its concurrency group between a shared value and the "
+    "run id, but it picks the run id on every trigger the job runs on. So the "
+    "group '{group}' never holds two runs, and the job is never serialized. "
+    "Either the condition is inverted, or the shared operand is ''. GitHub "
+    "reads '' as false, so `cond && '' || <run id>` picks the run id even when "
+    "cond holds. Make the condition true where the job runs, and give the "
+    "shared operand a non-empty value such as 'shared'. Or add "
+    "'# " + INERT_OPT_OUT + ": <reason>'."
+)
+
+
+def _shape_one_message(name: str, group: str, if_value: object, triggers) -> str | None:
+    """The shape-1 finding for one job, or None.
+
+    Three arms, in order. A trigger the job skips shares a group value with a
+    trigger it serves. A fixed group sits behind an `if:` that the payload
+    decides. A run-id escape picks the run id on every trigger the job serves.
+    Each arm answers only from definite readings, so it under-reports.
+    """
+    skipped = job_skipped_triggers(if_value, triggers)
+    served = [trigger for trigger in triggers if trigger not in skipped]
+    if not served:
+        return None  # the job runs on no trigger
+    pair = next(
+        (
+            (skip, serve)
+            for skip in skipped
+            for serve in served
+            if not group_separates_triggers(group, skip, serve)
+        ),
+        None,
+    )
+    if pair is not None:
+        return _INERT_MESSAGE.format(
+            name=name,
+            skipped=_trigger_name(pair[0]),
+            served=_trigger_name(pair[1]),
+            group=group,
+        )
+    if group_is_event_constant(group):
+        split = job_delivery_split_triggers(if_value, served)
+        if split:
+            return _DELIVERY_MESSAGE.format(
+                name=name, group=group, trigger=_trigger_name(split[0])
+            )
+    if group_has_run_id_escape(group) and all(
+        group_is_per_run_on(group, trigger) for trigger in served
+    ):
+        return _MISFIRE_MESSAGE.format(name=name, group=group)
+    return None
+
+
 def _inert_slot_violations(
     doc: dict, jobs: dict, blocks: dict, comment_lines: list[str]
 ) -> list[tuple[int | None, str]]:
-    """Every job that claims a shared group slot on a trigger where it SKIPS.
-
-    The pair reported is the first (skipped, served) trigger pair whose group
-    values can coincide. `job_skipped_triggers` answers only with definite
-    skips, so a job whose real gate this reader cannot see raises nothing.
-    """
+    """Every job whose group lets a skipping run take a working run's slot, or
+    whose run-id escape never shares a slot at all."""
     triggers = declared_triggers(doc)
     violations: list[tuple[int | None, str]] = []
     for name, cfg in jobs.items():
@@ -229,34 +303,14 @@ def _inert_slot_violations(
         group = _group_of(cfg.get("concurrency"))
         if not isinstance(group, str) or not group:
             continue
-        skipped = job_skipped_triggers(cfg.get("if"), triggers)
-        served = [trigger for trigger in triggers if trigger not in skipped]
-        if not skipped or not served:
-            continue  # the job runs on every trigger, or on none
-        pair = next(
-            (
-                (skip, serve)
-                for skip in skipped
-                for serve in served
-                if not group_separates_triggers(group, skip, serve)
-            ),
-            None,
-        )
-        if pair is None:
+        message = _shape_one_message(str(name), group, cfg.get("if"), triggers)
+        if message is None:
             continue
         block = blocks.get(str(name))
         if block and _block_opted_out(comment_lines, block):
             continue
         violations.append(
-            (
-                job_concurrency_line(block, block[0] if block else 1),
-                _INERT_MESSAGE.format(
-                    name=name,
-                    skipped=_trigger_name(pair[0]),
-                    served=_trigger_name(pair[1]),
-                    group=group,
-                ),
-            )
+            (job_concurrency_line(block, block[0] if block else 1), message)
         )
     return violations
 

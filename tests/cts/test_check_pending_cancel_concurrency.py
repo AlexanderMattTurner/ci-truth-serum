@@ -636,3 +636,156 @@ def test_an_annotation_inside_a_quoted_scalar_does_not_suppress_shape_one(tmp_pa
         1,
     )
     assert len(pc.check_file(_write(tmp_path, body))) == 1
+
+
+# ── shape 1, inside one trigger: the payload decides the `if:` ───────────────
+
+
+def _fixed_group_job(trigger: str, condition: str, group: str = "w-const") -> str:
+    return (
+        f"name: x\non:\n{trigger}"
+        "jobs:\n"
+        "  work:\n"
+        f"    if: {condition}\n"
+        "    runs-on: ubuntu-latest\n"
+        "    concurrency:\n"
+        f"      group: {group}\n"
+        "    steps: []\n"
+    )
+
+
+LABELED = "  pull_request:\n    types: [opened, synchronize, labeled]\n"
+
+
+@pytest.mark.parametrize(
+    ("trigger", "condition", "named"),
+    [
+        (LABELED, "github.event.label.name == 'go'", "'opened'"),
+        (
+            "  issue_comment:\n    types: [created]\n",
+            "contains(github.event.comment.body, '/go')",
+            "'issue_comment'",
+        ),
+        ("  pull_request:\n", "github.event.pull_request.draft == false", "'opened'"),
+        ("  pull_request:\n", "github.actor != 'dependabot[bot]'", "'opened'"),
+    ],
+)
+def test_a_fixed_group_behind_a_payload_condition_is_an_error(
+    tmp_path, trigger, condition, named
+):
+    """Two runs of one trigger can disagree on the payload. The run that skips
+    the job still claims the one fixed slot and evicts the run that serves."""
+    message = _only(
+        pc.check_file(_write(tmp_path, _fixed_group_job(trigger, condition)))
+    )
+    assert "reads the event payload" in message and named in message
+
+
+def test_a_group_of_workflow_and_event_name_is_still_fixed(tmp_path):
+    body = _fixed_group_job(
+        LABELED,
+        "github.event.label.name == 'go'",
+        "${{ github.workflow }}-${{ github.event_name }}",
+    )
+    assert len(pc.check_file(_write(tmp_path, body))) == 1
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "github.repository == 'owner/repo'",
+        "github.event.action == 'labeled' || github.event.action != 'labeled'",
+        "needs.decide.outputs.run == 'true'",
+    ],
+)
+def test_a_fixed_group_behind_a_condition_the_payload_does_not_decide_is_clean(
+    tmp_path, condition
+):
+    """A repository guard holds one value for every run, and the action is
+    already a separate trigger. Neither can split two runs of one trigger."""
+    assert pc.check_file(_write(tmp_path, _fixed_group_job(LABELED, condition))) == []
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        "w-${{ github.head_ref }}",
+        "w-${{ github.event.label.name }}",
+        "w-${{ github.event.label.name == 'go' && 'shared' "
+        "|| format('inert-{0}', github.run_id) }}",
+    ],
+)
+def test_a_group_that_reads_more_than_the_event_is_not_this_arm(tmp_path, group):
+    """This arm judges only a group that is one value per event. A group that
+    reads the ref or the payload is left alone, so the arm under-reports."""
+    body = _fixed_group_job(LABELED, "github.event.label.name == 'go'", group)
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_reasoned_annotation_suppresses_the_payload_arm(tmp_path):
+    body = _fixed_group_job(LABELED, "github.event.label.name == 'go'")
+    assert len(pc.check_file(_write(tmp_path, body))) == 1
+    body = body.replace(
+        "  work:\n", "  work: # inert-group-ok: every run of this job is cheap\n"
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+# ── shape 1: a run-id escape that never shares ───────────────────────────────
+
+PUSH_AND_PR = "  push:\n  pull_request:\n"
+
+
+def _escape(condition: str, shared: str) -> str:
+    return (
+        "w-${{ "
+        + condition
+        + " && "
+        + shared
+        + " || format('inert-{0}', github.run_id) }}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("job_if", "group"),
+    [
+        # Inverted: the job runs on pull_request, the group shares on push.
+        (
+            "github.event_name == 'pull_request'",
+            _escape("github.event_name == 'push'", "'shared'"),
+        ),
+        # `''` is falsy, so `||` hands back the run id even when cond holds.
+        ("github.event_name == 'push'", _escape("github.event_name == 'push'", "''")),
+    ],
+)
+def test_a_run_id_escape_that_never_shares_on_a_served_trigger_is_an_error(
+    tmp_path, job_if, group
+):
+    message = _only(
+        pc.check_file(_write(tmp_path, _fixed_group_job(PUSH_AND_PR, job_if, group)))
+    )
+    assert "never serialized" in message
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        _escape("github.event_name == 'push'", "'shared'"),
+        # An inert arm with no run id is one slot for skipping runs only.
+        "w-${{ github.event_name == 'push' && 'shared' || 'inert' }}",
+        # A condition this reader cannot decide is left alone.
+        _escape("vars.SERIAL == 'on'", "'shared'"),
+    ],
+)
+def test_a_run_id_escape_that_shares_where_the_job_runs_is_clean(tmp_path, group):
+    body = _fixed_group_job(PUSH_AND_PR, "github.event_name == 'push'", group)
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_run_id_escape_without_an_if_still_needs_a_shared_arm(tmp_path):
+    """With no `if:` the job serves every trigger, so a group that is the run
+    id on each of them serializes nothing."""
+    body = _fixed_group_job(
+        PUSH_AND_PR, "true", _escape("github.event_name == 'push'", "''")
+    ).replace("    if: true\n", "")
+    assert "never serialized" in _only(pc.check_file(_write(tmp_path, body)))
