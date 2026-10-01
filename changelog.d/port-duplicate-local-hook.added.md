@@ -1,0 +1,1 @@
+- `check-duplicate-local-hook`: reports a `repo: local` pre-commit hook whose id or command is defined twice. pre-commit accepts the duplicate, `pre-commit run <id>` runs every copy, and `SKIP=<id>` skips every copy. A second run of one command that is on purpose takes `# duplicate-hook-ok: <reason>`.
