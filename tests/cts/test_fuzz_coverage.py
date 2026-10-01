@@ -143,6 +143,8 @@ FUZZ_REQUIRED = {
     "check_unreset_module_state": "violations",
     "check_unspecified_encoding": "violations",
     "check_wall_clock_assertions": "violations",
+    "_cts_claude_settings": "decode",
+    "check_pretooluse_timeout": "findings",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the
