@@ -9,7 +9,8 @@ wholesale when a newer one arrives — that cancelled run starts **zero** jobs, 
 an `always()` reporter never executes and the required status check it backs
 hangs at "Expected — Waiting for status to be reported" forever. The existing
 always()-reporter guard cannot catch this: the cancellation happens at the
-concurrency-queue stage, before any job initializes.
+concurrency-queue stage, before any job initializes. GitHub reads the scalar
+shorthand `concurrency: <expr>` as that group, so the lint judges it the same way.
 
 A key in the group is not the same as a key with a value in it, so the lint asks
 whether the key holds a distinct value on each event the workflow declares.
@@ -77,13 +78,17 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
         )
     if not isinstance(doc, dict):
         return None
+    # GitHub reads `concurrency: <expr>` as `{group: <expr>}`.
     conc = doc.get("concurrency")
-    if not isinstance(conc, dict) or "group" not in conc:
+    if isinstance(conc, dict) and "group" in conc:
+        group = str(conc["group"])
+    elif isinstance(conc, str) and conc:
+        group = conc
+    else:
         return None
     if opted_out(text, OPT_OUT):
         return None
 
-    group = str(conc.get("group", ""))
     events = declared_events(doc)
     if group_is_per_ref(group, events):
         return None  # per-ref / per-PR group — only superseded by its own ref
