@@ -588,15 +588,73 @@ def test_inline_reads_before_the_recheckout_are_clean(tmp_path):
     assert ue.check_file(_write(tmp_path, _merge_wf(early=early))) == []
 
 
-def test_a_subdirectory_checkout_is_neither_untrusted_root_nor_rescue(tmp_path):
-    in_subdir = "        with:\n          path: pr\n"
-    first = "      - uses: actions/checkout@v4\n" + in_subdir
-    assert ue.check_file(_write(tmp_path, _merge_wf(first=first))) == []
+_PR_IN_SUBDIR = "      - uses: actions/checkout@v4\n        with:\n          path: pr\n"
+
+
+def test_a_subdirectory_merge_checkout_governs_only_its_directory(tmp_path):
+    """`path: pr` stages the merge commit under pr/, so a root script is not its code."""
+    assert ue.check_file(_write(tmp_path, _merge_wf(first=_PR_IN_SUBDIR))) == []
+
+
+@pytest.mark.parametrize(
+    "early",
+    [
+        "      - run: bash pr/scripts/x.sh\n",
+        "      - run: make build\n        working-directory: pr\n",
+        "      - run: bash scripts/x.sh\n        working-directory: ./pr\n",
+    ],
+)
+def test_code_run_from_a_subdirectory_merge_checkout_is_flagged(tmp_path, early):
+    body = _merge_wf(first=_PR_IN_SUBDIR, early=early)
+    assert len(ue.check_file(_write(tmp_path, body))) == 1
+
+
+def test_a_fixed_checkout_into_a_subdirectory_is_also_the_recheckout(tmp_path):
     body = _merge_wf().replace(
         f"          ref: {_DEFAULT_BRANCH}\n",
         f"          ref: {_DEFAULT_BRANCH}\n          path: trusted\n",
     )
-    assert ue.check_file(_write(tmp_path, body, name="sub.yaml")) == []
+    assert len(ue.check_file(_write(tmp_path, body))) == 1
+
+
+@pytest.mark.parametrize(
+    "early",
+    [
+        "      - run: bash x.sh\n        working-directory: ${{ runner.temp }}\n",
+        "      - run: bash x.sh\n        working-directory: /opt/tools\n",
+    ],
+)
+def test_a_step_outside_the_workspace_runs_no_checkout_code(tmp_path, early):
+    assert ue.check_file(_write(tmp_path, _merge_wf(early=early))) == []
+
+
+def test_a_checkout_of_another_repository_is_not_the_merge_commit(tmp_path):
+    first = (
+        "      - uses: actions/checkout@v4\n"
+        "        with:\n          repository: org/tools\n"
+    )
+    assert ue.check_file(_write(tmp_path, _merge_wf(first=first))) == []
+    recheckout = _merge_wf().replace(
+        f"          ref: {_DEFAULT_BRANCH}\n",
+        "          repository: org/tools\n          ref: main\n",
+    )
+    assert ue.check_file(_write(tmp_path, recheckout, name="other.yaml")) == []
+
+
+def test_the_merge_commit_sha_context_stages_the_merge_commit(tmp_path):
+    first = (
+        "      - uses: actions/checkout@v4\n        with:\n"
+        "          ref: ${{ github.event.pull_request.merge_commit_sha }}\n"
+    )
+    assert len(ue.check_file(_write(tmp_path, _merge_wf(first=first)))) == 1
+
+
+def test_a_job_that_never_runs_on_pull_request_is_clean(tmp_path):
+    body = _merge_wf(trigger="pull_request:\n  workflow_dispatch").replace(
+        "    runs-on: ubuntu-latest\n",
+        "    if: github.event_name == 'workflow_dispatch'\n    runs-on: ubuntu-latest\n",
+    )
+    assert ue.check_file(_write(tmp_path, body)) == []
 
 
 def test_an_opaque_recheckout_ref_is_not_guessed_at(tmp_path):

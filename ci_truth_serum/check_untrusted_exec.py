@@ -51,6 +51,7 @@ JOB's block; the reason is REQUIRED (a bare marker states nothing and does not
 suppress). ``# trusted-base-ok`` deliberately does NOT suppress this lint.
 """
 
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -68,6 +69,9 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader as _LineLoader,
     annotation_re,
+    declared_events,
+    has_trigger,
+    job_admitted_events,
     _job_blocks,
     workflow_files as _workflow_files,
     yaml_script_view,
@@ -99,7 +103,9 @@ WORKFLOW_RUN_REF = re.compile(r"github\.event\.workflow_run\.head_(?:sha|branch)
 # untrusted no matter what gates the job.
 _TRIGGER_PINNED = re.compile(r"workflow_run\.(?:head_branch|event)\s*==\s*['\"]")
 # The spellings of a `pull_request` run's own merge commit, which the PR author writes.
-_MERGE_REF = re.compile(r"github\.(?:sha|ref)\b|^refs/pull/")
+_MERGE_REF = re.compile(
+    r"github\.(?:sha|ref)\b|github\.event\.pull_request\.merge_commit_sha|^refs/pull/"
+)
 _SECRET_REF = re.compile(r"secrets\.(?P<name>\w+)")
 # The default GITHUB_TOKEN is only worth stealing when the job can write with it;
 # a read-scoped one in a job env is noise, not a finding.
@@ -260,30 +266,32 @@ def _first_operand(words: list[str]) -> str:
     return next((w for w in words[1:] if not w.startswith("-")), "")
 
 
-def _script_execution(words: list[str]) -> str:
-    """The execution form WORDS is, as a short human label, or ``""`` for none.
+def _script_execution(words: list[str]) -> tuple[str, str | None]:
+    """The execution form WORDS is, as ``(label, path)``, or ``("", None)`` for none.
 
+    PATH is the workspace-relative file the command runs, or None when the command
+    resolves its code from the working directory (`make`, `pnpm build`, `pytest`).
     Covers forms 2 and 3 of the module docstring; form 1 (`uses: ./…`) is a YAML
     key, not a shell command, and is detected by the caller.
     """
     if not words:
-        return ""
+        return "", None
     name = unquote(words[0])
     if name == "env":
         return _script_execution(_after_env(words))
     if name == "uv" and len(words) > 1 and unquote(words[1]) == "run":
         return _uv_run_execution(words[2:])
     if name == "pytest":
-        return "`pytest`"
+        return "`pytest`", None
     # `/usr/bin/python3 x.py` runs x.py exactly as `python3 x.py` does.
     if name.startswith("/") and name.rsplit("/", 1)[-1] in _INTERPRETERS:
         name = name.rsplit("/", 1)[-1]
     if name == "make":
         target = _first_operand(words)
-        return f"`make {target}`" if target else "`make`"
+        return (f"`make {target}`" if target else "`make`"), None
     if name in _BIN_RUNNERS:
         binary = _first_operand(words)
-        return f"`{name} {binary}`" if binary else ""
+        return (f"`{name} {binary}`" if binary else ""), None
     if name in _SCRIPT_RUNNERS:
         verb = _first_operand(words)
         operand = verb
@@ -295,18 +303,22 @@ def _script_execution(words: list[str]) -> str:
                 "",
             )
         if not operand or operand in _NON_SCRIPT_SUBCOMMANDS:
-            return ""
+            return "", None
         spelled = f"{verb} {operand}" if verb != operand else operand
-        return f"`{name} {spelled}`"
+        return f"`{name} {spelled}`", None
     if name in _INTERPRETERS:
         module = _module_operand(words[1:])
         if module:
-            if module == "pytest" or _is_workspace_module(module):
-                return f"`{name} -m {module}`"
-            return ""
+            if module == "pytest":
+                return f"`{name} -m pytest`", None
+            if _is_workspace_module(module):
+                return f"`{name} -m {module}`", module.split(".", 1)[0]
+            return "", None
         operand = _first_operand(words)
-        return f"`{name} {operand}`" if _is_workspace_path(operand) else ""
-    return f"`{name}`" if _is_workspace_path(name) else ""
+        if _is_workspace_path(operand):
+            return f"`{name} {operand}`", unquote(operand)
+        return "", None
+    return (f"`{name}`", name) if _is_workspace_path(name) else ("", None)
 
 
 def _after_env(words: list[str]) -> list[str]:
@@ -336,7 +348,7 @@ def _is_workspace_module(module: str) -> bool:
     return (REPO_ROOT / top).is_dir() or (REPO_ROOT / f"{top}.py").is_file()
 
 
-def _uv_run_execution(args: list[str]) -> str:
+def _uv_run_execution(args: list[str]) -> tuple[str, str | None]:
     """The execution form of `uv run ARGS`, judged as the command uv starts.
 
     `uv run` syncs and installs the checkout's own project first. This lint does
@@ -346,19 +358,21 @@ def _uv_run_execution(args: list[str]) -> str:
         flag = args.pop(0)
         if flag in ("-m", "--module") and args:
             module = args[0]
-            if module == "pytest" or _is_workspace_module(module):
-                return f"`uv run -m {module}`"
-            return ""
+            if module == "pytest":
+                return "`uv run -m pytest`", None
+            if _is_workspace_module(module):
+                return f"`uv run -m {module}`", module.split(".", 1)[0]
+            return "", None
         if flag == "--":
             break
         if flag in _UV_RUN_VALUE_OPTIONS and args:
             args.pop(0)
-    label = _script_execution(args)
-    return f"`uv run {label.strip('`')}`" if label else ""
+    label, path = _script_execution(args)
+    return (f"`uv run {label.strip('`')}`" if label else ""), path
 
 
-def run_executions(script: str) -> list[str]:
-    """Every attacker-controlled execution in one ``run:`` body, as labels.
+def run_execution_paths(script: str) -> list[tuple[str, str | None]]:
+    """Every attacker-controlled execution in one ``run:`` body, as ``(label, path)``.
 
     tree-sitter never raises on malformed shell (errors become ERROR nodes), so a
     ``run:`` this cannot parse simply yields nothing. The one loud case is
@@ -367,10 +381,15 @@ def run_executions(script: str) -> list[str]:
         return []
     found = []
     for command in iter_nodes(_parse_bash(script), "command"):
-        label = _script_execution(_words(command))
-        if label and label not in found:
-            found.append(label)
+        label, path = _script_execution(_words(command))
+        if label and (label, path) not in found:
+            found.append((label, path))
     return found
+
+
+def run_executions(script: str) -> list[str]:
+    """Every attacker-controlled execution in one ``run:`` body, as labels."""
+    return list(dict.fromkeys(label for label, _ in run_execution_paths(script)))
 
 
 def step_executions(step: dict) -> list[str]:
@@ -381,6 +400,36 @@ def step_executions(step: dict) -> list[str]:
     if uses.startswith("./") or uses == ".":
         return [f"local composite action `uses: {uses}`"]
     return run_executions(step.get("run"))
+
+
+def _workspace_dir(value: object) -> str | None:
+    """VALUE as a normalised directory inside the workspace, or None when it is not.
+
+    An expression, a variable, an absolute path or one that climbs out names a
+    place this lint cannot resolve, so it declines rather than guesses."""
+    text = str(value or ".").strip()
+    if not text or text.startswith(("/", "~", "$")) or "${{" in text:
+        return None
+    norm = posixpath.normpath(text)
+    return None if norm == ".." or norm.startswith("../") else norm
+
+
+def step_execution_dirs(step: dict) -> list[tuple[str, str]]:
+    """Every execution in one step as ``(label, workspace path it runs from)``.
+
+    A relative path resolves against the step's `working-directory`, and a step
+    whose directory lies outside the workspace runs nothing from a checkout."""
+    uses = str(step.get("uses", "")).strip()
+    if uses.startswith("./") or uses == ".":
+        return [(f"local composite action `uses: {uses}`", posixpath.normpath(uses))]
+    base = _workspace_dir(step.get("working-directory"))
+    if base is None:
+        return []
+    out = []
+    for label, path in run_execution_paths(step.get("run")):
+        where = posixpath.normpath(posixpath.join(base, path)) if path else base
+        out.append((label, where))
+    return out
 
 
 def _steps(cfg: dict) -> list[dict]:
@@ -410,26 +459,27 @@ def job_checks_out_untrusted(cfg: dict) -> bool:
     return False
 
 
-def _triggers_on_pull_request(doc: dict) -> bool:
-    """True when the workflow's `on:` names `pull_request` itself, in any spelling."""
-    triggers = doc.get("on", doc.get(True))
-    if isinstance(triggers, str):
-        return triggers == "pull_request"
-    return isinstance(triggers, (list, dict)) and "pull_request" in triggers
+def _own_checkout(step: dict) -> tuple[str, str] | None:
+    """``(directory, ref)`` for an `actions/checkout` of THIS repository, else None.
 
-
-def _root_checkout_ref(step: dict) -> str | None:
-    """The `ref:` of an `actions/checkout` that fills the workspace root, else None.
-
-    A checkout with `path:` fills a subdirectory, so it changes neither which tree
-    a workspace-relative script resolves from nor whether that tree is trusted."""
+    A checkout of another repository stages that repository's tree, not the pull
+    request's. A `path:` this lint cannot resolve makes the step unknown, so it
+    declines rather than guesses."""
     uses = step.get("uses")
     if not isinstance(uses, str) or not _CHECKOUT_ACTION.match(uses.strip()):
         return None
     with_block = step.get("with") if isinstance(step.get("with"), dict) else {}
-    if with_block.get("path"):
+    repository = str(with_block.get("repository") or "")
+    if repository and "github.repository" not in repository:
         return None
-    return str(with_block.get("ref") or "")
+    where = _workspace_dir(with_block.get("path"))
+    return None if where is None else (where, str(with_block.get("ref") or ""))
+
+
+def _tree_holding(path: str, trees: dict[str, bool]) -> bool:
+    """True when the deepest checkout that holds PATH is untrusted."""
+    holders = [d for d in trees if d == "." or path == d or path.startswith(d + "/")]
+    return trees[max(holders, key=len)] if holders else False
 
 
 def _names_a_fixed_branch(ref: str) -> bool:
@@ -450,21 +500,29 @@ def merge_ref_executions(doc: dict, cfg: dict) -> tuple[int | None, list[str]]:
     must not run with what follows. But code that already ran from that tree could
     write $GITHUB_ENV or $GITHUB_PATH, and the re-checkout undoes neither.
     """
-    if not _triggers_on_pull_request(doc):
+    if not has_trigger(doc, "pull_request"):
         return None, []
-    line, forms, pending, untrusted = None, [], [], False
+    if "pull_request" not in job_admitted_events(cfg.get("if"), declared_events(doc)):
+        return None, []
+    line, forms, pending = None, [], []
+    trees: dict[str, bool] = {}
     for step in _steps(cfg):
-        ref = _root_checkout_ref(step)
-        if ref is None:
-            if untrusted:
-                pending += [(step.get("__line__"), lb) for lb in step_executions(step)]
+        checkout = _own_checkout(step)
+        if checkout is None:
+            pending += [
+                (step.get("__line__"), label)
+                for label, where in step_execution_dirs(step)
+                if _tree_holding(where, trees)
+            ]
             continue
+        where, ref = checkout
         if _names_a_fixed_branch(ref):
             for at, label in pending:
                 line = at if line is None else line
                 if label not in forms:
                     forms.append(label)
         untrusted = not ref or bool(_MERGE_REF.search(ref))
+        trees[where] = untrusted
         if not untrusted:
             pending = []
     return line, forms
