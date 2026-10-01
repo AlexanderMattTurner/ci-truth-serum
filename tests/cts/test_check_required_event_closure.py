@@ -368,6 +368,146 @@ def test_needs_closure_walks_transitively_and_accepts_string_needs():
     assert crec.needs_closure(jobs, "c") == {"a", "b", "c"}
 
 
+# ── string functions and the merge queue's absent pull request ───────────
+
+DECIDE_IF = """\
+name: x
+on:
+  pull_request:
+  merge_group:
+jobs:
+  decide:
+    if: {cond}
+    runs-on: ubuntu-latest
+  report: # required-check: true
+    needs: decide
+    if: always()
+    runs-on: ubuntu-latest
+"""
+
+
+@pytest.mark.parametrize(
+    "cond",
+    [
+        "startsWith(github.event_name, 'pull_request')",
+        "endsWith(github.event_name, '_request')",
+        "github.event.pull_request.number != ''",
+        "github.event.pull_request",
+        "contains(github.event.pull_request.labels.*.name, 'ci')",
+    ],
+)
+def test_a_decide_job_the_merge_queue_skips_fires(tmp_path, cond):
+    findings = _check(tmp_path, DECIDE_IF.format(cond=cond))
+    assert [(line, "merge_group" in message) for line, message in findings] == [
+        (6, True)
+    ]
+
+
+@pytest.mark.parametrize(
+    "cond",
+    [
+        # GitHub casts null to 0 and false to 0, so the merge queue runs these.
+        "github.event.pull_request.draft == false",
+        "${{ !github.event.pull_request.draft }}",
+        "github.event.pull_request.user.login != 'dependabot[bot]'",
+        "github.event.action != 'closed'",
+        "startsWith(github.event_name, 'PULL_') || github.event_name == 'merge_group'",
+    ],
+)
+def test_a_decide_job_the_merge_queue_runs_passes(tmp_path, cond):
+    assert _check(tmp_path, DECIDE_IF.format(cond=cond)) == []
+
+
+@pytest.mark.parametrize(
+    ("cond", "event", "verdict"),
+    [
+        ("startsWith(github.event_name, 'PULL')", "pull_request", True),
+        ("endsWith(github.event_name, 'group')", "merge_group", True),
+        ("startsWith(github.event_name, vars.PREFIX)", "merge_group", "unknown"),
+        ("github.event_name == 'unknown'", "merge_group", False),
+        ("github.event.pull_request.number == 0", "merge_group", True),
+        ("github.event.pull_request.number == 0", "pull_request", "unknown"),
+        ("github.event.action == 'checks_requested'", "merge_group", True),
+        ("github.event_name == 'MERGE_GROUP'", "merge_group", True),
+        ("1 == '1.0'", "merge_group", True),
+        ("null == 'x'", "merge_group", False),
+    ],
+)
+def test_truth_of_under_event_env(cond, event, verdict):
+    tree = crec._Parser(cond).parse()
+    assert crec.truth_of(tree, crec.event_env(event)) is (
+        crec._UNKNOWN if verdict == "unknown" else verdict
+    )
+
+
+# ── a required check the merge queue never runs ───────────────────────────
+
+PR_ONLY_GATE = """\
+name: gate
+on:
+  pull_request:
+jobs:
+  gate: # required-check: true
+    runs-on: ubuntu-latest
+"""
+
+QUEUE_WORKFLOW = """\
+name: other
+on:
+  pull_request:
+  merge_group:
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+"""
+
+
+def test_a_pr_only_required_check_fires_when_a_sibling_answers_the_queue(tmp_path):
+    (tmp_path / "other.yaml").write_text(QUEUE_WORKFLOW, encoding="utf-8")
+    findings = _check(tmp_path, PR_ONLY_GATE)
+    assert [(line, "merge_group" in message) for line, message in findings] == [
+        (5, True)
+    ]
+
+
+def test_a_pr_only_required_check_passes_without_a_merge_queue(tmp_path):
+    assert _check(tmp_path, PR_ONLY_GATE) == []
+
+
+def test_the_caller_can_state_the_merge_queue(tmp_path):
+    path = tmp_path / "wf.yaml"
+    path.write_text(PR_ONLY_GATE, encoding="utf-8")
+    assert len(crec.check_file(path, merge_queue=True)) == 1
+    (tmp_path / "other.yaml").write_text(QUEUE_WORKFLOW, encoding="utf-8")
+    assert crec.check_file(path, merge_queue=False) == []
+
+
+def test_a_pr_only_unmarked_workflow_passes_beside_a_queue(tmp_path):
+    (tmp_path / "other.yaml").write_text(QUEUE_WORKFLOW, encoding="utf-8")
+    body = PR_ONLY_GATE.replace(" # required-check: true", "")
+    assert _check(tmp_path, body) == []
+
+
+def test_the_marker_suppresses_the_missing_queue_trigger(tmp_path):
+    (tmp_path / "other.yaml").write_text(QUEUE_WORKFLOW, encoding="utf-8")
+    body = PR_ONLY_GATE.replace(
+        "    runs-on:", "    # event-scoped-ok: this branch has no queue\n    runs-on:"
+    )
+    assert _check(tmp_path, body) == []
+
+
+def test_a_queue_only_sibling_is_no_evidence_of_a_queue(tmp_path):
+    body = QUEUE_WORKFLOW.replace("  pull_request:\n", "")
+    (tmp_path / "leg.yaml").write_text(body, encoding="utf-8")
+    assert _check(tmp_path, PR_ONLY_GATE) == []
+
+
+def test_an_unparseable_sibling_is_no_evidence_of_a_queue(tmp_path):
+    broken = "on: [pull_request, merge_group\njobs: {"
+    (tmp_path / "broken.yaml").write_text(broken, encoding="utf-8")
+    assert _check(tmp_path, PR_ONLY_GATE) == []
+
+
 # ── main() ────────────────────────────────────────────────────────────────
 
 
@@ -390,3 +530,18 @@ def test_main_exit_codes(tmp_path, monkeypatch, capsys):
         encoding="utf-8",
     )
     assert crec.main() == 0
+
+
+def test_main_reads_the_merge_queue_from_the_whole_tree(tmp_path, monkeypatch, capsys):
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "gate.yaml").write_text(PR_ONLY_GATE, encoding="utf-8")
+    monkeypatch.setattr(crec, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(crec, "WORKFLOWS_DIR", wf)
+    monkeypatch.setattr(crec, "ACTIONS_DIR", tmp_path / ".github" / "actions")
+    assert crec.main() == 0
+    (wf / "other.yaml").write_text(QUEUE_WORKFLOW, encoding="utf-8")
+    assert crec.main() == 1
+    assert (
+        "::error file=.github/workflows/gate.yaml,line=5::" in capsys.readouterr().out
+    )
