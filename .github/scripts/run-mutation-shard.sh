@@ -55,7 +55,7 @@ else
   # mutants disjointly and completely (init is deterministic, so every runner sees
   # the same rowid order). total=1 keeps everything.
   if [[ "${shard_total}" -gt 1 ]]; then
-    python -c 'import sqlite3, sys; db, total, index = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]); conn = sqlite3.connect(db); conn.execute("DELETE FROM work_items WHERE rowid % ? != ?", (total, index)); conn.commit(); conn.close()' \
+    python "${here}/prune-mutation-session.py" \
       "${session}" "${shard_total}" "${shard_index}"
   fi
   echo "::endgroup::"

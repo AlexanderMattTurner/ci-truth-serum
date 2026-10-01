@@ -23,6 +23,7 @@ from tests._helpers import REPO_ROOT
 
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "run-mutation-shard.sh"
 PLANNER = REPO_ROOT / ".github" / "scripts" / "mutation_shards.py"
+PRUNER = REPO_ROOT / ".github" / "scripts" / "prune-mutation-session.py"
 
 # Records its argv, one command per line, and creates the session file on
 # `init` — the one side effect the script's control flow turns on.
@@ -63,7 +64,8 @@ def _write_repo(root: Path) -> None:
     )
     scripts = root / ".github" / "scripts"
     scripts.mkdir(parents=True)
-    for source in (SCRIPT, PLANNER):
+    (root / "pyproject.toml").write_text("", encoding="utf-8")  # the root marker
+    for source in (SCRIPT, PLANNER, PRUNER):
         (scripts / source.name).write_bytes(source.read_bytes())
     (scripts / SCRIPT.name).chmod(0o755)
 
