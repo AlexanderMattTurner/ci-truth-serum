@@ -146,6 +146,7 @@ FUZZ_REQUIRED = {
     "_cts_claude_settings": "decode",
     "check_pretooluse_timeout": "findings",
     "check_grant_wildcard": "findings",
+    "check_bash32_portability": "violations",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the
