@@ -98,6 +98,7 @@ FUZZ_REQUIRED = {
     "check_echo_fallback": "violations",
     "check_case_default": "violations",
     "check_soft_timeout": "violations",
+    "check_embedded_program_length": "violations",
     "check_flock_fixed_fd": "violations",
     "check_bare_return_status": "violations",
     "check_lockstep_pins": "check_pair",
