@@ -1,0 +1,1 @@
+- `check-container-job-shell`: a `run:` step in a `container:` job must name its shell. GitHub runs such a step with `sh -e {0}`, but actionlint and shellcheck read it as bash, so bash syntax passes every lint and then fails on the runner. Opt a job out with `# shell-default-ok: <reason>`.
