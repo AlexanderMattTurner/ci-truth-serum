@@ -150,6 +150,10 @@ FUZZ_REQUIRED = {
     "check_pretooluse_timeout": "findings",
     "check_grant_wildcard": "findings",
     "check_bash32_portability": "violations",
+    "check_counted_repo_root": "violations",
+    "check_container_job_shell": "violations",
+    "check_artifact_pattern_overlap": "violations",
+    "check_rename_onto_symlink": "violations",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the

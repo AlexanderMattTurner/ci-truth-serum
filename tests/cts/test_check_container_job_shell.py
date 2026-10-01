@@ -8,6 +8,8 @@ alone. The `main()` tests run discovery over a scratch repository.
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from tests._helpers import load_hook
 
@@ -267,3 +269,14 @@ def test_main_passes_a_clean_tree(
         encoding="utf-8",
     )
     assert cjs.main() is None
+
+
+@given(st.text(max_size=300))
+def test_fuzz_violations_returns_line_findings_or_a_known_error(text) -> None:
+    """Fuzz: any text yields findings on real lines, or one of the declared errors."""
+    try:
+        found = cjs.violations(text)
+    except Exception as err:
+        raise AssertionError(f"unexpected {type(err).__name__}: {err}") from err
+    lines = [item[0] if isinstance(item, tuple) else item for item in found]
+    assert all(1 <= line <= text.count("\n") + 1 for line in lines)

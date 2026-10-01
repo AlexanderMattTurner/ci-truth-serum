@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from tests._helpers import HOOKS_DIR, load_hook
 
@@ -149,3 +151,14 @@ def test_a_file_the_grammar_refuses_fails_loudly(tmp_path: Path) -> None:
     result = _run(script)
     assert result.returncode == 1
     assert "pipe bytes" in result.stderr
+
+
+@given(st.text(max_size=300))
+def test_fuzz_violations_returns_line_findings_or_a_known_error(text) -> None:
+    """Fuzz: any text yields findings on real lines, or one of the declared errors."""
+    try:
+        found = mod.violations(text)
+    except (mod.PathologicalInputError,):
+        return
+    lines = [item[0] if isinstance(item, tuple) else item for item in found]
+    assert all(1 <= line <= text.count("\n") + 1 for line in lines)

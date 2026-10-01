@@ -7,9 +7,12 @@ shared `pytest-durations-map`, and `pattern: pytest-durations-*` merged all of
 them into one directory, where the map read as a sixth shard's output.
 """
 
+import tempfile
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from tests._helpers import load_hook
 
@@ -319,3 +322,15 @@ def test_main_returns_quietly_when_clean(tmp_path, capsys):
     root = _repo(tmp_path, _jobs(SHARDS, GATE))
     mod.main(["--repo-root", str(root), "ignored.yaml"])
     assert "ERROR" not in capsys.readouterr().out
+
+
+@given(st.text(max_size=300))
+def test_fuzz_violations_returns_line_findings_or_a_known_error(text) -> None:
+    """Fuzz: any text yields findings on real lines, or one of the declared errors."""
+    tmp_root = Path(tempfile.mkdtemp())
+    try:
+        found = mod.violations(text, tmp_root)
+    except Exception as err:
+        raise AssertionError(f"unexpected {type(err).__name__}: {err}") from err
+    lines = [item[0] if isinstance(item, tuple) else item for item in found]
+    assert all(1 <= line <= text.count("\n") + 1 for line in lines)

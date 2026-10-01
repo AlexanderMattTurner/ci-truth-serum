@@ -170,6 +170,9 @@ CHECKS: tuple[Check, ...] = (
     _check("check_trusted_base", "1", WORKFLOW, SECURITY),
     _check("check_untrusted_exec", "1", WORKFLOW, SECURITY),
     _check("check_unscoped_tool_grant", "1", WORKFLOW, SECURITY, AGENTS),
+    _check("check_container_job_shell", "1", WORKFLOW, HONESTY, CORRECTNESS),
+    _check("check_pretooluse_timeout", "1", WORKFLOW, SECURITY, AGENTS),
+    _check("check_grant_wildcard", "1", WORKFLOW, SECURITY, AGENTS),
     # ── Tier 2 · opinionated ──
     _check("check_job_timeout", "2", WORKFLOW, COST),
     _check("check_uncached_download", "2", WORKFLOW, COST),
@@ -177,6 +180,18 @@ CHECKS: tuple[Check, ...] = (
     _check("check_required_reporter", "2", WORKFLOW, REQUIRED_CHECKS),
     _check("check_required_event_closure", "2", WORKFLOW, REQUIRED_CHECKS),
     _check("check_inline_run_length", "2", WORKFLOW, MAINTAINABILITY),
+    _check("check_artifact_pattern_overlap", "2", WORKFLOW, CORRECTNESS),
+    _check(
+        "check_embedded_program_length",
+        "2",
+        SHELL_OR_WORKFLOW_YAML,
+        MAINTAINABILITY,
+        per_file=True,
+    ),
+    _check(
+        "check_main_push", "2", SHELL_OR_WORKFLOW_YAML, REQUIRED_CHECKS, per_file=True
+    ),
+    _check("check_rename_onto_symlink", "2", SHELL, CORRECTNESS, per_file=True),
     _check("check_concurrency", "2", WORKFLOW, CONCURRENCY),
     _check("check_static_concurrency", "2", WORKFLOW, CONCURRENCY, REQUIRED_CHECKS),
     _check("check_pending_cancel_concurrency", "2", WORKFLOW, CONCURRENCY, COST),
@@ -243,6 +258,17 @@ CHECKS: tuple[Check, ...] = (
         per_file=True,
     ),
     _check("check_historical_comments", "extras", COMMENTED_CODE, DOCS, per_file=True),
+    _check(
+        "check_counted_repo_root",
+        "extras",
+        PYTHON,
+        HONESTY,
+        MAINTAINABILITY,
+        per_file=True,
+    ),
+    _check(
+        "check_duplicate_local_hook", "extras", WORKFLOW, MAINTAINABILITY, CORRECTNESS
+    ),
     _check("check_doc_line_refs", "extras", MARKDOWN, DOCS, per_file=True),
     _check("check_workflow_refs", "extras", REFERENCING_TEXT, DOCS),
     _check("check_flag_arity", "extras", SHELL, CORRECTNESS),
