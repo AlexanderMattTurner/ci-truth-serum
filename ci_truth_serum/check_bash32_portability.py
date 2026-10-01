@@ -64,6 +64,14 @@ class _Hit(NamedTuple):
     message: str
 
 
+class _Invocation(NamedTuple):
+    """One `command` node, the program it runs, and that program's operands."""
+
+    command: Node
+    run: str
+    operands: list[str]
+
+
 def _short_flag(word: str, letter: str) -> bool:
     """True when WORD is a short-flag cluster carrying LETTER: `-z`, `-zn`, `-rV`."""
     return word.startswith("-") and not word.startswith("--") and letter in word[1:]
@@ -195,7 +203,7 @@ def _span(node: Node) -> tuple[int, int]:
     return node.start_point[0] + 1, node.end_point[0] + 1
 
 
-def _invocations(root: Node) -> list[tuple[Node, str, list[str]]]:
+def _invocations(root: Node) -> list[_Invocation]:
     """Every `command` under ROOT, with the program it runs and that program's
     operands. Quotes are removed, so `'grep' '-P'` reads as `grep -P`."""
     found = []
@@ -206,7 +214,7 @@ def _invocations(root: Node) -> list[tuple[Node, str, list[str]]]:
         run, operands = _unwrapped(
             program_name(words[0]), [unquote(word) for word in words[1:]]
         )
-        found.append((command, run, operands))
+        found.append(_Invocation(command, run, operands))
     return found
 
 

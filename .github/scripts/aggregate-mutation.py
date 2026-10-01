@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from mutation_shards import expand_shards  # noqa: E402
+from mutation_shards import expand_shards, find_repo_root  # noqa: E402
 
 
 def _load_reports(reports_dir: Path) -> list[dict]:
@@ -61,7 +61,7 @@ def aggregate(repo_root: Path, reports: list[dict]) -> list[str]:
 def main(argv: list[str]) -> None:
     if len(argv) != 1:
         raise SystemExit("usage: aggregate-mutation.py <reports-dir>")
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = find_repo_root(Path(__file__).resolve().parent)
     reports_dir = Path(argv[0])
     if not reports_dir.is_dir():
         raise SystemExit(f"reports dir {reports_dir} does not exist")

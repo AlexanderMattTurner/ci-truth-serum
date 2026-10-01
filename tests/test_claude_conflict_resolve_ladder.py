@@ -30,7 +30,8 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from tests._helpers import REPO_ROOT
+
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "claude-conflict-resolve.sh"
 REFUSAL = "no Claude credential is configured"
 LADDER_VARS = [

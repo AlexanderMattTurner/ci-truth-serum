@@ -49,6 +49,17 @@ SHARD_CONFIG = "cosmic-ray.shard.toml"
 # shard narrows it to one file (see _scoped_test_command).
 TEST_DIR = "tests/cts"
 
+
+def find_repo_root(start: Path) -> Path:
+    """The first directory at or above ``start`` that holds ``.git`` or
+    ``pyproject.toml``. Raises when none does, so a moved file cannot point at a
+    directory that does not exist."""
+    for directory in (start, *start.parents):
+        if (directory / ".git").exists() or (directory / "pyproject.toml").is_file():
+            return directory
+    raise FileNotFoundError(f"no .git or pyproject.toml at or above {start}")
+
+
 # A module larger than this many source lines is split into ceil(lines / this)
 # sub-shards that each mutate the whole module but run only a disjoint slice of
 # its mutants (see run-mutation-shard.sh's work_items partition). cosmic-ray
@@ -313,7 +324,7 @@ def _write_config(repo_root: Path, shard_id: str) -> Path:
 
 
 def main(argv: list[str]) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = find_repo_root(Path(__file__).resolve().parent)
     if argv[:1] == ["--write-config"]:
         if len(argv) != 2:
             raise SystemExit("usage: mutation_shards.py --write-config <id>")
