@@ -34,6 +34,12 @@ earlier attacker step owns both. A ``$RUNNER_TEMP``-anchored ``run:`` is
 therefore not *itself* counted as an execution form, but it is not a rescue
 either: the job is still reported for whichever of the three forms it does have.
 
+THE MERGE COMMIT. Under ``pull_request``, a checkout with no ``ref:`` stages the
+PR's merge commit. Most repos accept that, because a branch pusher can also edit
+the workflow. A later checkout of the default branch in the same job says the
+author does not trust that tree with what follows. So a workspace execution
+BEFORE that re-checkout is reported. A re-checkout undoes neither file above.
+
 The only real fix is to move the credential out of the job that touches the
 untrusted tree (a two-job split, as in a repair/land pair), or to stop executing
 workspace-resolved code there at all.
@@ -90,6 +96,8 @@ WORKFLOW_RUN_REF = re.compile(r"github\.event\.workflow_run\.head_(?:sha|branch)
 # the workflow_run form can be rescued this way; a `pull_request.head` ref is
 # untrusted no matter what gates the job.
 _TRIGGER_PINNED = re.compile(r"workflow_run\.(?:head_branch|event)\s*==\s*['\"]")
+# The spellings of a `pull_request` run's own merge commit, which the PR author writes.
+_MERGE_REF = re.compile(r"github\.(?:sha|ref)\b|^refs/pull/")
 _SECRET_REF = re.compile(r"secrets\.(?P<name>\w+)")
 # The default GITHUB_TOKEN is only worth stealing when the job can write with it;
 # a read-scoped one in a job env is noise, not a finding.
@@ -302,6 +310,66 @@ def job_checks_out_untrusted(cfg: dict) -> bool:
     return False
 
 
+def _triggers_on_pull_request(doc: dict) -> bool:
+    """True when the workflow's `on:` names `pull_request` itself, in any spelling."""
+    triggers = doc.get("on", doc.get(True))
+    if isinstance(triggers, str):
+        return triggers == "pull_request"
+    return isinstance(triggers, (list, dict)) and "pull_request" in triggers
+
+
+def _root_checkout_ref(step: dict) -> str | None:
+    """The `ref:` of an `actions/checkout` that fills the workspace root, else None.
+
+    A checkout with `path:` fills a subdirectory, so it changes neither which tree
+    a workspace-relative script resolves from nor whether that tree is trusted."""
+    uses = step.get("uses")
+    if not isinstance(uses, str) or not _CHECKOUT_ACTION.match(uses.strip()):
+        return None
+    with_block = step.get("with") if isinstance(step.get("with"), dict) else {}
+    if with_block.get("path"):
+        return None
+    return str(with_block.get("ref") or "")
+
+
+def _names_a_fixed_branch(ref: str) -> bool:
+    """True when REF is the default branch's context or a literal the PR cannot move."""
+    if "${{" not in ref:
+        return bool(ref) and not _MERGE_REF.search(ref)
+    return "github.event.repository.default_branch" in ref
+
+
+def merge_ref_executions(doc: dict, cfg: dict) -> tuple[int | None, list[str]]:
+    """The executions a `pull_request` job runs from the PR's merge commit before
+    it re-checks out a fixed branch, with the first one's line.
+
+    Under `pull_request`, a checkout with no `ref:` stages the merge commit, which
+    the PR author writes. A same-repository PR gets the secrets. On most repos that
+    is accepted, because whoever pushes a branch can also edit the workflow. A later
+    checkout of the default branch is the job's own statement that the earlier tree
+    must not run with what follows. But code that already ran from that tree could
+    write $GITHUB_ENV or $GITHUB_PATH, and the re-checkout undoes neither.
+    """
+    if not _triggers_on_pull_request(doc):
+        return None, []
+    line, forms, pending, untrusted = None, [], [], False
+    for step in _steps(cfg):
+        ref = _root_checkout_ref(step)
+        if ref is None:
+            if untrusted:
+                pending += [(step.get("__line__"), lb) for lb in step_executions(step)]
+            continue
+        if _names_a_fixed_branch(ref):
+            for at, label in pending:
+                line = at if line is None else line
+                if label not in forms:
+                    forms.append(label)
+        untrusted = not ref or bool(_MERGE_REF.search(ref))
+        if not untrusted:
+            pending = []
+    return line, forms
+
+
 def _secret_names(value: object) -> set[str]:
     """Every ``secrets.NAME`` referenced anywhere inside VALUE (recursively).
 
@@ -359,8 +427,14 @@ def _opted_out(block: str) -> bool:
     return any(_ALLOW_RE.search(line) for line in yaml_script_view(block))
 
 
+HEAD_SOURCE = "checks out untrusted (pull-request head) content"
+MERGE_SOURCE = (
+    "stages the pull request's merge commit, re-checks out a fixed branch only later,"
+)
+
+
 def analyze(doc: object, already_reported: frozenset[str] = frozenset()) -> list[tuple]:
-    """Every violating job as ``(job_name, first_step_line, forms, secrets)``.
+    """Every violating job as ``(job_name, first_step_line, forms, secrets, source)``.
 
     ALREADY_REPORTED names the jobs ``check_trusted_base`` reports for this file;
     they are skipped so one job never yields two findings for one hole."""
@@ -373,26 +447,29 @@ def analyze(doc: object, already_reported: frozenset[str] = frozenset()) -> list
     for name, cfg in jobs.items():
         if not isinstance(cfg, dict) or str(name) in already_reported:
             continue
-        if not job_checks_out_untrusted(cfg):
-            continue
         secrets = live_secrets(doc, cfg)
         if not secrets:
             continue
         forms: list[str] = []
         line = None
-        for step in _steps(cfg):
-            labels = [lb for lb in step_executions(step) if lb not in forms]
-            if labels and line is None:
-                line = step.get("__line__")
-            forms += labels
+        source = HEAD_SOURCE
+        if job_checks_out_untrusted(cfg):
+            for step in _steps(cfg):
+                labels = [lb for lb in step_executions(step) if lb not in forms]
+                if labels and line is None:
+                    line = step.get("__line__")
+                forms += labels
+        else:
+            line, forms = merge_ref_executions(doc, cfg)
+            source = MERGE_SOURCE
         if forms:
-            violations.append((str(name), line, forms, sorted(secrets)))
+            violations.append((str(name), line, forms, sorted(secrets), source))
     return violations
 
 
-def _message(name: str, forms: list[str], secrets: list[str]) -> str:
+def _message(name: str, forms: list[str], secrets: list[str], source: str) -> str:
     return (
-        f"job '{name}' checks out untrusted (pull-request head) content AND "
+        f"job '{name}' {source} AND "
         f"executes code resolved from that checkout — {', '.join(forms)} — while "
         f"these secrets are live in the job: {', '.join(secrets)}. The PR author "
         "rewrites those bytes, so they run with the credentials above; and because "
@@ -427,11 +504,13 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     already = frozenset(_trusted_base.reported_job_names(doc, text))
     blocks = _job_blocks(text)
     out: list[tuple[int | None, str]] = []
-    for name, line, forms, secrets in analyze(doc, already):
+    for name, line, forms, secrets, source in analyze(doc, already):
         block = blocks.get(name)
         if block and _opted_out(block[1]):
             continue
-        out.append((line or (block[0] if block else 1), _message(name, forms, secrets)))
+        out.append(
+            (line or (block[0] if block else 1), _message(name, forms, secrets, source))
+        )
     return out
 
 

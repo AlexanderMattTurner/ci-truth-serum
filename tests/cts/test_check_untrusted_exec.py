@@ -476,3 +476,114 @@ def test_each_rule_contributes(tmp_path, mutation, body):
         f"base fixture must be flagged for the {mutation} mutant to mean anything"
     )
     assert ue.check_file(_write(tmp_path, body, name="mutant.yaml")) == [], mutation
+
+
+# ── the merge commit: run before the job re-checks out a fixed branch ────────
+#
+# Under `pull_request`, a checkout with no `ref:` stages the PR's merge commit. A
+# later checkout of the default branch says the job does not trust that tree, but
+# a step that already ran from it could write $GITHUB_ENV, so the re-checkout is
+# too late.
+
+_DEFAULT_BRANCH = "${{ github.event.repository.default_branch }}"
+
+
+def _merge_wf(
+    first: str = "      - uses: actions/checkout@v4\n",
+    early: str = "      - run: bash .github/scripts/comment.sh\n",
+    recheckout_ref: str | None = _DEFAULT_BRANCH,
+    trigger: str = "pull_request",
+    secret_env: str = _SECRET_ENV,
+) -> str:
+    """A job that checks out FIRST, runs EARLY, re-checks out RECHECKOUT_REF, then
+    runs a script with SECRET_ENV live."""
+    recheckout = (
+        "      - uses: actions/checkout@v4\n"
+        f"        with:\n          ref: {recheckout_ref}\n"
+        if recheckout_ref is not None
+        else ""
+    )
+    return (
+        f"on:\n  {trigger}:\n"
+        "jobs:\n  delta:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        + first
+        + early
+        + recheckout
+        + "      - run: bash .github/scripts/analyze.sh\n"
+        + secret_env
+    )
+
+
+@pytest.mark.parametrize("recheckout_ref", [_DEFAULT_BRANCH, "main"])
+def test_execution_before_a_default_branch_recheckout_is_flagged(
+    tmp_path, recheckout_ref
+):
+    result = ue.check_file(_write(tmp_path, _merge_wf(recheckout_ref=recheckout_ref)))
+    assert len(result) == 1
+    line, message = result[0]
+    assert line == 8  # the step that runs comment.sh
+    assert "job 'delta' stages the pull request's merge commit" in message
+    assert "`bash .github/scripts/comment.sh`" in message
+    assert "analyze.sh" not in message
+    assert "these secrets are live in the job: NPM_TOKEN" in message
+
+
+@pytest.mark.parametrize("ref", ["${{ github.sha }}", "${{ github.ref }}"])
+def test_merge_ref_spellings_stage_the_merge_commit(tmp_path, ref):
+    first = f"      - uses: actions/checkout@v4\n        with:\n          ref: {ref}\n"
+    assert len(ue.check_file(_write(tmp_path, _merge_wf(first=first)))) == 1
+
+
+def test_a_local_action_before_the_recheckout_is_flagged(tmp_path):
+    early = "      - uses: ./.github/actions/setup\n"
+    ((_line, message),) = ue.check_file(_write(tmp_path, _merge_wf(early=early)))
+    assert "local composite action `uses: ./.github/actions/setup`" in message
+
+
+def test_inline_reads_before_the_recheckout_are_clean(tmp_path):
+    """The fixed shape: only inline commands touch the merge commit."""
+    early = '      - run: git diff --name-only "$BASE"...HEAD\n'
+    assert ue.check_file(_write(tmp_path, _merge_wf(early=early))) == []
+
+
+def test_a_subdirectory_checkout_is_neither_untrusted_root_nor_rescue(tmp_path):
+    in_subdir = "        with:\n          path: pr\n"
+    first = "      - uses: actions/checkout@v4\n" + in_subdir
+    assert ue.check_file(_write(tmp_path, _merge_wf(first=first))) == []
+    body = _merge_wf().replace(
+        f"          ref: {_DEFAULT_BRANCH}\n",
+        f"          ref: {_DEFAULT_BRANCH}\n          path: trusted\n",
+    )
+    assert ue.check_file(_write(tmp_path, body, name="sub.yaml")) == []
+
+
+def test_an_opaque_recheckout_ref_is_not_guessed_at(tmp_path):
+    body = _merge_wf(recheckout_ref="${{ needs.pick.outputs.ref }}")
+    assert ue.check_file(_write(tmp_path, body)) == []
+
+
+_MERGE_VIOLATING = _merge_wf()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "body"),
+    [
+        ("pull-request-trigger-removed", _merge_wf(trigger="pull_request_target")),
+        ("live-secrets-removed", _merge_wf(secret_env="")),
+        ("recheckout-removed", _merge_wf(recheckout_ref=None)),
+        ("early-execution-removed", _merge_wf(early="      - run: echo hi\n")),
+        (
+            "first-checkout-pinned",
+            _merge_wf(
+                first="      - uses: actions/checkout@v4\n"
+                "        with:\n          ref: main\n"
+            ),
+        ),
+    ],
+    ids=lambda value: value if "\n" not in value else "",
+)
+def test_each_merge_commit_rule_contributes(tmp_path, mutation, body):
+    base = _write(tmp_path, _MERGE_VIOLATING, name="base.yaml")
+    assert len(ue.check_file(base)) == 1, mutation
+    assert ue.check_file(_write(tmp_path, body, name="mutant.yaml")) == [], mutation
