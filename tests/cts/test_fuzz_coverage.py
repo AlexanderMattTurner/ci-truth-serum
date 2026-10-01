@@ -53,6 +53,7 @@ FUZZ_REQUIRED = {
     "check_pipefail_grep_pipe": "violations",
     "check_folded_scalar_comment": "violations",
     "check_gh_slurp_jq": "violations",
+    "check_main_push": "violations",
     "check_duplicate_local_hook": "findings",
     "check_substitution_exit_swallow": "violations",
     "check_argument_exit_swallow": "violations",
