@@ -44,6 +44,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_line_checks,
 )
 from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import parse_whole, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-sleep"
 
@@ -136,12 +137,12 @@ def _sleep_hits_in_block(
 
 def violations(text: str) -> list[int]:
     """1-based lines of every unexempted sleep-before-assertion in one module."""
-    tree = ast.parse(text)
+    tree = parse_whole(text)
     physical = py_lines(text)
     constants = _numeric_constants(tree)
     hits: dict[int, int] = {}
 
-    for node in ast.walk(tree):
+    for node in walk(tree):
         # A loop body is the bounded poll, so its sleep is the mechanism
         # rather than the defect. Skipping the node's own blocks (not its
         # whole subtree) keeps a sleep in a nested non-loop block reportable.

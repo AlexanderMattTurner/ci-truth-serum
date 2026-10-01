@@ -97,3 +97,12 @@ def test_name_of_reads_a_dotted_spelling_or_nothing(
 ) -> None:
     expression = ast.parse(source, mode="eval").body
     assert py_ast.name_of(expression) == expected
+
+
+def test_walk_is_ast_walk_order_and_paid_once_per_tree() -> None:
+    tree = py_ast.parse_whole("def f(x):\n    return [x for x in range(3)]\n")
+    assert list(py_ast.walk(tree)) == list(ast.walk(tree))
+    # The second member to ask reads the same walk, not a new one.
+    assert py_ast.walk(tree) is py_ast.walk(tree)
+    other = py_ast.parse_whole("y = 1\n")
+    assert list(py_ast.walk(other)) == list(ast.walk(other))

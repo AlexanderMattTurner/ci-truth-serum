@@ -56,7 +56,7 @@ from _cts_linecheck import (
     run_file_cli,
     run_source_checks,
 )  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_ast import lines, name_of, re_bindings, re_call_target, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, name_of, re_bindings, re_call_target, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-replacement-expansion"
 
@@ -200,7 +200,7 @@ def _py_assembled_names(tree: ast.Module) -> set[str]:
     """Every plain name this module binds to an assembled string (see
     ``_js_assembled_names`` for why the walk stops at one hop)."""
     names = set()
-    for node in ast.walk(tree):
+    for node in walk(tree):
         if isinstance(node, ast.Assign):
             targets, value = node.targets, node.value
         elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
@@ -216,7 +216,7 @@ def _compiled_names(tree: ast.Module) -> set[str]:
     """Every name this module binds to a compiled pattern, so `NAME.sub(…)` can be
     told from any other object's `.sub`."""
     names = set()
-    for node in ast.walk(tree):
+    for node in walk(tree):
         if isinstance(node, ast.Assign):
             targets, value = node.targets, node.value
         elif isinstance(node, ast.AnnAssign):  # `SPLIT: Pattern[str] = re.compile(…)`
@@ -266,7 +266,7 @@ def _py_violations(source: str) -> list[int]:
         assembled = _py_assembled_names(tree)
         compiled = _compiled_names(tree)
         modules, functions = re_bindings(tree)
-        for node in ast.walk(tree):
+        for node in walk(tree):
             if not isinstance(node, ast.Call):
                 continue
             replacement = _repl_argument(node, modules, functions, compiled)

@@ -41,6 +41,7 @@ from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     lines,
     name_of,
     trees,
+    walk,
 )
 
 OPT_OUT = "toolchain-skip-ok"
@@ -122,7 +123,7 @@ def violations(text: str) -> list[int]:
     _ends = {
         node.lineno: (node.end_lineno or node.lineno)
         for tree in trees(text)
-        for node in ast.walk(tree)
+        for node in walk(tree)
         if _is_skip_call(node) and _is_unguarded(node)
     }
     hits = set(_ends)

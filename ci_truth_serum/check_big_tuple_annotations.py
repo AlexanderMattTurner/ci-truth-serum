@@ -35,7 +35,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
 )
 from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_ast import trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "big-tuple-ok"
 DEFAULT_MIN_ELEMENTS = 3
@@ -114,10 +114,10 @@ def violations(
     for tree in trees(text):
         parents = {
             id(child): parent
-            for parent in ast.walk(tree)
+            for parent in walk(tree)
             for child in ast.iter_child_nodes(parent)
         }
-        for node in ast.walk(tree):
+        for node in walk(tree):
             if not isinstance(node, ast.Subscript) or not _is_tuple_subscript(node):
                 continue
             count = _fixed_element_count(node)

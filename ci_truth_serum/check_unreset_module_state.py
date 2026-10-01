@@ -42,6 +42,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_source_checks,
 )
 from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import parse_whole  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-unreset-state"
 
@@ -227,7 +228,7 @@ def declares_reset(tree: ast.Module, reset_name: str = DEFAULT_RESET_NAME) -> bo
 def violations(text: str, reset_name: str = DEFAULT_RESET_NAME) -> list[int]:
     """1-based lines of every unexempted module-level binding written at
     runtime by a module that declares no RESET_NAME."""
-    tree = ast.parse(text)
+    tree = parse_whole(text)
     if declares_reset(tree, reset_name):
         return []
     physical = py_lines(text)

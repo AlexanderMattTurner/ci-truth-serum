@@ -79,6 +79,21 @@ def parse_whole(source: str) -> ast.Module:
     return _parse(source)
 
 
+@lru_cache(maxsize=1)
+def walk(tree: ast.AST) -> tuple[ast.AST, ...]:
+    """Every node of TREE, in ``ast.walk``'s order, computed once per tree.
+
+    For a whole-module tree only — the one ``parse_whole`` shares. ``run_tier``
+    hands one file to every member of a tier in turn, and after the parse was
+    shared each member still walked the whole tree again: measured over one
+    consumer's per-file pass, ``ast.walk`` was over half of all the time. Keyed
+    on the tree object itself, so a member that reaches the tree ``parse_whole``
+    cached reads the walk the first member paid for. A tuple, so no caller can
+    reorder what the next one reads.
+    """
+    return tuple(ast.walk(tree))
+
+
 def _fragment(line: str) -> "ast.Module | None":
     """LINE parsed on its own — as a statement, or as a block header completed
     with a ``pass`` body — or None when it is not Python at all."""
@@ -164,7 +179,7 @@ def re_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
     """
     module_names = {"re"}
     func_names: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "re":

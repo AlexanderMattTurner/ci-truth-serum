@@ -36,16 +36,19 @@ The registry itself is ``ci_truth_serum/_cts_registry.py``, which also carries e
 check's tags. ``run_selection`` runs a selection over those tags.
 """
 
+import contextlib
 import importlib
+import io
+import multiprocessing
 import os
 import re
 import subprocess
 import sys
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, TextIO
 
 from identify import identify
 
@@ -258,23 +261,55 @@ def run_in_process(module: str, argv: list[str]) -> int:
         return 1
 
 
-def run_per_file(
+# Below this many files the per-file pass stays in this process. A worker is a
+# fresh interpreter that imports the members before its first file, so on a
+# commit that touches a handful of files the start-up costs more than it saves.
+PARALLEL_MIN_FILES = 64
+
+
+class _Recorder(io.TextIOBase):
+    """A stand-in for `sys.stdout` or `sys.stderr` that logs every write, tagged
+    with the stream it was meant for, into one list shared by both streams.
+
+    One list, not two buffers: a member that writes to both streams wrote them in
+    an order, and a caller that merges the streams (pre-commit does) would see
+    that order change if the two were replayed one after the other."""
+
+    def __init__(self, log: list[tuple[str, str]], stream: str, real: TextIO) -> None:
+        super().__init__()
+        self._log = log
+        self._stream = stream
+        self._real = real
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        # The real stream would refuse text its encoding cannot carry, inside
+        # the member's own `print`, where `run_in_process` marks that member
+        # failed. Refusing here keeps that; the parent's replay must not be the
+        # first to find out, because there it would end the whole tier.
+        text.encode(self._real.encoding, self._real.errors or "strict")
+        self._log.append((self._stream, text))
+        return len(text)
+
+
+class ChunkRun(NamedTuple):
+    """What one worker's share of the per-file pass left behind."""
+
+    status: int
+    writes: list[tuple[str, str]]
+    seconds: dict[str, float]
+
+
+def _run_files(
     members: list[tuple[str, list[str]]],
     files: list[str],
     extra: dict[str, list[str]],
     seconds: dict[str, float],
 ) -> int:
-    """Run each per-file MEMBER over FILES, one FILE at a time; return the status.
-
-    The loop is file-outer on purpose. Member-outer, a member finishes the whole
-    tree before the next one starts, so a cache would have to hold every file's
-    tree at once — 1292 MB of them on a consumer with 2516 Python files. File-
-    outer, every member sees one file while it is the current one, so a cache of
-    a single entry is enough and the memory stays flat.
-
-    Only a member the registry marks `per_file` may come through here. See
-    `Check.per_file`.
-    """
+    """The per-file loop itself, in this process: every member of each file in
+    turn. See `run_per_file` for why it is file-outer."""
     # Each member's files were classified once already, in `run_members`. This
     # tests membership against that answer rather than asking `matches` again
     # per (file, member) — a second classification sweep is the duplicate work
@@ -289,6 +324,93 @@ def run_per_file(
             failed = run_in_process(module, [*extra.get(module, []), path])
             seconds[module] = seconds.get(module, 0.0) + time.monotonic() - started
             if failed:
+                rc = 1
+    return rc
+
+
+def _run_chunk(
+    members: list[tuple[str, list[str]]],
+    files: list[str],
+    extra: dict[str, list[str]],
+) -> ChunkRun:
+    """`_run_files` over one contiguous slice of the files, in a worker process,
+    with everything it prints recorded for the parent to replay."""
+    writes: list[tuple[str, str]] = []
+    seconds: dict[str, float] = {}
+    with contextlib.redirect_stdout(_Recorder(writes, "stdout", sys.stdout)):
+        with contextlib.redirect_stderr(_Recorder(writes, "stderr", sys.stderr)):
+            status = _run_files(members, files, extra, seconds)
+    return ChunkRun(status, writes, seconds)
+
+
+def _chunks(files: list[str], count: int) -> list[list[str]]:
+    """FILES cut into COUNT contiguous slices whose sizes differ by at most one."""
+    size, rest = divmod(len(files), count)
+    out, start = [], 0
+    for index in range(count):
+        end = start + size + (1 if index < rest else 0)
+        out.append(files[start:end])
+        start = end
+    return [chunk for chunk in out if chunk]
+
+
+def run_per_file(
+    members: list[tuple[str, list[str]]],
+    files: list[str],
+    extra: dict[str, list[str]],
+    seconds: dict[str, float],
+) -> int:
+    """Run each per-file MEMBER over FILES, one FILE at a time; return the status.
+
+    The loop is file-outer on purpose. Member-outer, a member finishes the whole
+    tree before the next one starts, so a cache would have to hold every file's
+    tree at once — 1292 MB of them on a consumer with 2516 Python files. File-
+    outer, every member sees one file while it is the current one, so a cache of
+    a single entry is enough and the memory stays flat.
+
+    The files are cut into contiguous slices and each slice runs in a worker
+    process, `workers()` at a time. This loop is pure Python, so threads would
+    share one core; a process each is what uses the others. A slice keeps the
+    file-outer order inside it, and the parent replays each slice's output in
+    slice order, so both streams read exactly as one serial pass wrote them. A
+    worker that dies (a segfault in a parser) breaks the pool, and the exception
+    ends the tier: a member that did not finish never reads as a pass.
+
+    Only a member the registry marks `per_file` may come through here. See
+    `Check.per_file`.
+    """
+    wanted = {path for _module, argv in members for path in argv}
+    files = [path for path in files if path in wanted]
+    if len(files) < PARALLEL_MIN_FILES or workers() == 1:
+        return _run_files(members, files, extra, seconds)
+    # More slices than workers, so a slice of large files does not leave the
+    # other workers idle at the end of the pass. Each slice carries only its own
+    # files in each member's list, so what a worker is sent stays slice-sized.
+    chunks = _chunks(files, workers() * 4)
+    shares = []
+    for chunk in chunks:
+        inside = set(chunk)
+        shares.append([(m, [p for p in argv if p in inside]) for m, argv in members])
+    rc = 0
+    context = multiprocessing.get_context("spawn")
+    try:
+        pool = ProcessPoolExecutor(max_workers=workers(), mp_context=context)
+    except (NotImplementedError, OSError):
+        # A host with no working semaphores (no `/dev/shm`) cannot start a pool.
+        # The serial loop reaches the same answer, only on one core.
+        return _run_files(members, files, extra, seconds)
+    with pool:
+        runs = pool.map(_run_chunk, shares, chunks, [extra] * len(chunks), chunksize=1)
+        # `map` yields in submission order, so each slice prints as it lands and
+        # the slices print in file order. Each write replays as the same call on
+        # the same stream, and nothing here flushes, so a caller that merges the
+        # two streams sees them interleave as one serial pass left them.
+        for run in runs:
+            for stream, text in run.writes:
+                (sys.stdout if stream == "stdout" else sys.stderr).write(text)
+            for module, took in run.seconds.items():
+                seconds[module] = seconds.get(module, 0.0) + took
+            if run.status:
                 rc = 1
     return rc
 
@@ -365,7 +487,11 @@ def run_members(
 
 
 def report_seconds(seconds: dict[str, float], subject: str) -> None:
-    """Name each member's wall clock, slowest first, on stderr.
+    """Name each member's seconds, slowest first, on stderr.
+
+    A whole-list member's figure is its own wall clock. A per-file member's is
+    the sum of its calls, over every worker the pass ran in, so it measures the
+    cores that member used and can exceed the tier's own wall clock.
 
     Only under Actions, where the job log is where this is read. A hand run
     reads its own wall clock.

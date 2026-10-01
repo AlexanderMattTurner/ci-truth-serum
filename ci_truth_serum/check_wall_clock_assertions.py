@@ -44,7 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import annotated_near, is_python_source, is_test_path, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_ast import lines, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-wall-clock"
 
@@ -167,7 +167,7 @@ def _duration_returns(tree: ast.Module) -> _ReturnMap:
     read: only what this module defines is visible."""
     inherited = _module_level_names(tree, {})
     candidates = []
-    for node in ast.walk(tree):
+    for node in walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         values = [r.value for r in _own_returns(node) if r.value is not None]
@@ -270,7 +270,7 @@ def _scopes(
         type_ignores=[],
     )
     scopes: list[tuple[ast.AST, frozenset[str]]] = [(outside, inherited)]
-    for node in ast.walk(tree):
+    for node in walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             scopes.append((node, inherited))
     return scopes

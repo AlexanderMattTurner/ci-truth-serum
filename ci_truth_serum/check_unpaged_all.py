@@ -62,7 +62,7 @@ from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong
 from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import annotated_near, is_python_source  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import run_file_cli, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_ast import lines, name_of, trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, name_of, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-unpaged-all"
 
@@ -197,10 +197,10 @@ def _py_words(tree: ast.Module) -> PyWords:
     has_loop = False
     docstrings = {
         id(node.value)
-        for node in ast.walk(tree)
+        for node in walk(tree)
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
     }
-    for node in ast.walk(tree):
+    for node in walk(tree):
         has_loop = has_loop or isinstance(node, _PY_LOOPS)
         if isinstance(node, ast.Name):
             code.add(node.id.lower())
@@ -217,7 +217,7 @@ def _py_violations(source: str) -> list[int]:
     """1-based lines in SOURCE that reduce an unpaged listing."""
     hits = []
     for tree in trees(source):
-        nodes = list(ast.walk(tree))
+        nodes = list(walk(tree))
         if not any(_py_reads_envelope(node) for node in nodes):
             continue
         code, prose, has_loop = _py_words(tree)
