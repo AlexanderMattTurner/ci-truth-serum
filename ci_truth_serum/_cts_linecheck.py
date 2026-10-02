@@ -1978,13 +1978,23 @@ def _operand_truth(operand: str) -> bool | None:
     operand = _strip_parens(operand.strip())
     if _LITERAL_ATOM.match(operand):
         return operand != "''"
-    template = re.match(r"^format\s*\(\s*'((?:[^']|'')*)'", operand, re.IGNORECASE)
-    if template and re.sub(r"\{\d+\}", "", template.group(1)):
+    template = re.match(
+        r"^format\s*\(\s*'(?P<template>(?:[^']|'')*)'", operand, re.IGNORECASE
+    )
+    if template and re.sub(r"\{\d+\}", "", template.group("template")):
         return True
     return None
 
 
-def _run_id_escape(expr: str) -> tuple[str, str, str] | None:
+class RunIdEscape(NamedTuple):
+    """`condition && first || second`, split at its top-level operators."""
+
+    condition: str
+    first: str
+    second: str
+
+
+def _run_id_escape(expr: str) -> RunIdEscape | None:
     """The (condition, first, second) parts of `cond && first || second`, when
     exactly one of FIRST and SECOND reads the run id. Any other shape is None."""
     arms = _split_top_level(_strip_parens(expr.strip()), "||")
@@ -2000,7 +2010,7 @@ def _run_id_escape(expr: str) -> tuple[str, str, str] | None:
     ]
     if reads[0] == reads[1]:
         return None
-    return " && ".join(parts[:-1]), first, second
+    return RunIdEscape(" && ".join(parts[:-1]), first, second)
 
 
 def group_has_run_id_escape(group: str) -> bool:
@@ -2024,16 +2034,15 @@ def group_is_per_run_on(group: str, trigger: Trigger) -> bool:
         escape = _run_id_escape(span.group("expr"))
         if escape is None:
             continue
-        condition, first, second = escape
-        truth = _expression_truth(condition, trigger)
+        truth = _expression_truth(escape.condition, trigger)
         if truth is None:
             continue
-        chosen = second
+        chosen = escape.second
         if truth:
-            first_truth = _operand_truth(first)
+            first_truth = _operand_truth(escape.first)
             if first_truth is None:
                 continue
-            chosen = first if first_truth else second
+            chosen = escape.first if first_truth else escape.second
         if _RUN_ID_READ.search(_LITERAL_SPAN.sub(" ", chosen)):
             return True
     return False
