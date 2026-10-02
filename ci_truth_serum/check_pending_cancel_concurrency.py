@@ -106,6 +106,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     group_has_run_id_escape,
     group_is_event_constant,
     group_is_per_run_on,
+    group_of,
     group_separates_triggers,
     job_concurrency_line,
     job_delivery_split_triggers,
@@ -171,15 +172,6 @@ def _storm_types(doc: dict) -> set[str]:
             continue
         extra |= {str(t) for t in types} - DEFAULT_PR_TYPES
     return extra
-
-
-def _group_of(conc: object) -> object:
-    """The group expression of a `concurrency:` value: the mapping's `group`
-    key, or the scalar shorthand itself — GitHub treats `concurrency: <expr>`
-    as `concurrency: {group: <expr>, cancel-in-progress: false}`."""
-    if isinstance(conc, dict):
-        return conc.get("group")
-    return conc
 
 
 def _ref_keyed(group: object) -> bool:
@@ -300,7 +292,7 @@ def _inert_slot_violations(
     for name, cfg in jobs.items():
         if not isinstance(cfg, dict):
             continue
-        group = _group_of(cfg.get("concurrency"))
+        group = group_of(cfg.get("concurrency"))
         if not isinstance(group, str) or not group:
             continue
         message = _shape_one_message(str(name), group, cfg.get("if"), triggers)
@@ -377,7 +369,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
         )
     basis = heuristic or "the '# required-check: true' marker"
 
-    if _ref_keyed(_group_of(doc.get("concurrency"))):
+    if _ref_keyed(group_of(doc.get("concurrency"))):
         violations.append(
             (concurrency_line(text), f"workflow-level {_message(storm, basis)}")
         )
@@ -397,7 +389,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     for name, cfg in judged.items():
         if not isinstance(cfg, dict):
             continue
-        if _ref_keyed(_group_of(cfg.get("concurrency"))):
+        if _ref_keyed(group_of(cfg.get("concurrency"))):
             block = blocks.get(str(name))
             fallback = block[0] if block else concurrency_line(text)
             line = job_concurrency_line(block, fallback)

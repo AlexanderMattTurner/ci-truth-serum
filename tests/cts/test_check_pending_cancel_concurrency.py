@@ -707,6 +707,32 @@ def test_a_fixed_group_behind_a_condition_the_payload_does_not_decide_is_clean(
 
 
 @pytest.mark.parametrize(
+    "condition",
+    [
+        "github.event.pull_request",
+        "${{ !github.event.pull_request }}",
+        "github.event.pull_request != null",
+        "github.event.repository.fork == false",
+        "github.event.organization.login == 'acme'",
+        "github.event.pull_request && github.repository == 'owner/repo'",
+    ],
+)
+def test_a_fixed_group_behind_a_presence_check_is_clean(tmp_path, condition):
+    """The trigger fixes which payload objects exist, and the repository and
+    organization hold one value for every run, so no two runs can disagree."""
+    body = _fixed_group_job("  pull_request:\n", condition)
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_presence_check_does_not_hide_a_varying_read(tmp_path):
+    body = _fixed_group_job(
+        "  pull_request:\n",
+        "github.event.pull_request && github.event.pull_request.draft == false",
+    )
+    assert "reads the event payload" in _only(pc.check_file(_write(tmp_path, body)))
+
+
+@pytest.mark.parametrize(
     "group",
     [
         "w-${{ github.head_ref }}",
@@ -765,6 +791,15 @@ def test_a_run_id_escape_that_never_shares_on_a_served_trigger_is_an_error(
         pc.check_file(_write(tmp_path, _fixed_group_job(PUSH_AND_PR, job_if, group)))
     )
     assert "never serialized" in message
+
+
+@pytest.mark.parametrize("key", ["github.run_id", "github.run_number"])
+def test_a_run_id_as_the_first_arm_never_shares(tmp_path, key):
+    """`cond && github.run_id || 'shared'` picks the run id whenever `cond`
+    holds, and a run id is never an empty string."""
+    group = f"w-${{{{ github.event_name == 'push' && {key} || 'shared' }}}}"
+    body = _fixed_group_job("  push:\n", "github.event_name == 'push'", group)
+    assert "never serialized" in _only(pc.check_file(_write(tmp_path, body)))
 
 
 @pytest.mark.parametrize(

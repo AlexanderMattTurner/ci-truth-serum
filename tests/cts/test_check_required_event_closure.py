@@ -393,6 +393,8 @@ jobs:
         "endsWith(github.event_name, '_request')",
         "github.event.pull_request.number != ''",
         "github.event.pull_request",
+        "github['event']['pull_request']",
+        "github.event['pull_request'].number != ''",
         "contains(github.event.pull_request.labels.*.name, 'ci')",
     ],
 )
@@ -431,6 +433,12 @@ def test_a_decide_job_the_merge_queue_runs_passes(tmp_path, cond):
         ("github.event_name == 'MERGE_GROUP'", "merge_group", True),
         ("1 == '1.0'", "merge_group", True),
         ("null == 'x'", "merge_group", False),
+        ("'false'", "merge_group", True),
+        ("'0'", "merge_group", True),
+        ("0", "merge_group", False),
+        ("''", "merge_group", False),
+        ("github['event']['pull_request']", "merge_group", False),
+        ("github['event']['pull_request']", "pull_request", "unknown"),
     ],
 )
 def test_truth_of_under_event_env(cond, event, verdict):

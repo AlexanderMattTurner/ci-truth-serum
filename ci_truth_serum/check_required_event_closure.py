@@ -237,9 +237,17 @@ def event_env(event: str, action: str | None = None) -> dict:
     return env
 
 
+# A property read written as an index step: `['pull_request']`.
+_INDEX_STEP = re.compile(r"\[\s*'(?P<name>[^']*)'\s*\]")
+
+
 def _lookup(path: str, env: dict) -> object:
-    """PATH's value under ENV. A path below a null object is itself null."""
-    key = path.lower()
+    """PATH's value under ENV. A path below a null object is itself null.
+
+    `github['event'].pull_request` is the same read as
+    `github.event.pull_request`, so index steps are written as dotted ones first.
+    """
+    key = _INDEX_STEP.sub(lambda step: "." + step.group("name"), path.lower())
     if key in env:
         return env[key]
     for bound, value in env.items():

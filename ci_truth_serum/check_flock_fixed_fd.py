@@ -102,7 +102,8 @@ OPT_OUT = "allow-fixed-fd"
 
 MESSAGE = (
     "this `flock` locks a hardcoded file descriptor, and nothing in this file "
-    "makes that number safe to lock. "
+    "makes that number safe to lock. Behind `sudo` or `doas`, an `exec 9>FILE` "
+    "here cannot make it safe, because both close the descriptor first. "
     "When nothing opened it, `flock` exits non-zero at a line that reads like a "
     "lock acquisition; when something else holds that number, the lock guards a "
     "different file and both runs still report success. Open it here — "
@@ -155,7 +156,7 @@ _PREFIXES: dict[str, frozenset[str]] = {
 # The prefixes that close every descriptor above 2 before they run the program.
 _CLOSING_PREFIXES = frozenset({"sudo", "doas"})
 
-# An `env` operand that sets a variable rather than naming the program.
+# An `env` or `sudo` operand that sets a variable rather than naming the program.
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # A file descriptor operand: a bare non-negative integer, quoted or not.
@@ -193,21 +194,20 @@ def _operand(words: list[str]) -> str | None:
     None when the call carries no operand at all. Option reading stops at `--`,
     which is where flock's own arguments end.
     """
-    index = 0
-    while index < len(words):
-        word = words[index]
+    resume = 0
+    for index, word in enumerate(words):
+        if index < resume:
+            continue
         if word == "--":
-            index += 1
-            break
+            return words[index + 1] if index + 1 < len(words) else None
         if word.startswith("--"):
             name, joined, _ = word.partition("=")
-            index += 1 if joined or name not in _VALUE_LONG_OPTIONS else 2
-            continue
-        if word.startswith("-") and len(word) > 1:
-            index += _short_cluster_width(word)
-            continue
-        break
-    return words[index] if index < len(words) else None
+            resume = index + (1 if joined or name not in _VALUE_LONG_OPTIONS else 2)
+        elif word.startswith("-") and len(word) > 1:
+            resume = index + _short_cluster_width(word)
+        else:
+            return word
+    return None
 
 
 def _short_cluster_width(word: str) -> int:
@@ -222,24 +222,41 @@ def _short_cluster_width(word: str) -> int:
     return 1
 
 
+# The `sudo` options that run no program: the words after them are the subject of a
+# listing, a validation or an edit, never a command `sudo` starts.
+_NON_RUNNING_SUDO_OPTIONS = frozenset(
+    {"-e", "--edit", "-K", "--remove-timestamp", "-l", "--list", "-v", "--validate"}
+)
+
+# The prefixes whose `NAME=VALUE` operands set a variable for the program.
+_ASSIGNING_PREFIXES = frozenset({"env", "sudo"})
+
+
 def _skip_prefix_options(words: list[str], index: int, prefix: str) -> int:
     """The index of the first word at or after INDEX that is not an option of PREFIX.
 
-    An option in `_PREFIXES[PREFIX]` takes the next word too. An `env` operand
-    `NAME=VALUE` sets a variable, so it is skipped as well. `--` ends the options.
+    An option in `_PREFIXES[PREFIX]` takes the next word too. A `NAME=VALUE`
+    operand of `env` or `sudo` sets a variable, so it is skipped as well. `--`
+    ends the options. A `sudo` option that runs no program returns `len(words)`,
+    so nothing after it counts as the program.
     """
     value_options = _PREFIXES[prefix]
-    while index < len(words):
-        word = unquote(words[index])
-        if word == "--":
-            return index + 1
-        if prefix == "env" and _ASSIGNMENT.match(word):
-            index += 1
+    skip_next = False
+    for position in range(index, len(words)):
+        word = unquote(words[position])
+        if skip_next:
+            skip_next = False
+        elif word == "--":
+            return position + 1
+        elif prefix == "sudo" and word in _NON_RUNNING_SUDO_OPTIONS:
+            return len(words)
+        elif prefix in _ASSIGNING_PREFIXES and _ASSIGNMENT.match(word):
+            continue
         elif word.startswith("-") and len(word) > 1:
-            index += 2 if word in value_options else 1
+            skip_next = word in value_options
         else:
-            return index
-    return index
+            return position
+    return len(words)
 
 
 def _flock_position(words: list[str], wrappers: frozenset[str]) -> tuple[int, bool]:
@@ -249,19 +266,20 @@ def _flock_position(words: list[str], wrappers: frozenset[str]) -> tuple[int, bo
     The index is -1 when WORDS run some other program. A lookup such as
     `command -v flock` names the program but does not run it.
     """
-    index = 0
     closed = False
-    while index < len(words):
-        name = program_name(words[index])
+    resume = 0
+    for index, word in enumerate(words):
+        if index < resume:
+            continue
+        name = program_name(word)
         if name in _FLOCK_NAMES:
             return index, closed
         if name in wrappers:
-            index += 1
-        elif name in _PREFIXES and not is_lookup(words[index:]):
-            closed = closed or name in _CLOSING_PREFIXES
-            index = _skip_prefix_options(words, index + 1, name)
-        else:
+            continue
+        if name not in _PREFIXES or is_lookup(words[index:]):
             break
+        closed = closed or name in _CLOSING_PREFIXES
+        resume = _skip_prefix_options(words, index + 1, name)
     return -1, closed
 
 

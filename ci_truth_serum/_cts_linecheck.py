@@ -1907,27 +1907,30 @@ def group_separates_triggers(group: str, first: Trigger, second: Trigger) -> boo
 
 # Contexts that hold one value for every run of one event in one workflow. A
 # group read only from these, and from literals, is one slot per event.
-_EVENT_CONSTANT_CONTEXTS = frozenset(
-    {
-        "github.workflow",
-        "github.workflow_ref",
-        "github.repository",
-        "github.repository_owner",
-        "github.repository_id",
-        "github.job",
-        "github.event_name",
-    }
-)
+# `github.actor` and `github.action` are the whole delta from
+# `_CONSTANT_CONTEXTS`: the actor differs between two deliveries of one event,
+# and the action id belongs to a step.
+_EVENT_CONSTANT_CONTEXTS = _CONSTANT_CONTEXTS - {"github.actor", "github.action"}
 
 # A read of the delivery itself: a payload path or the user that caused the run.
 # Two runs of one trigger can disagree on each of these. `github.event.action`
 # is left out, because `Trigger` already splits a pull-request event by action.
+# So are `repository` and `organization`: they hold one value for every run.
 _DELIVERY_READ = re.compile(
-    r"\bgithub\.(?:event\.(?!action\b)[A-Za-z_]|actor\b|triggering_actor\b)",
+    r"\bgithub\.(?:event\.(?!action\b|repository\b|organization\b)[A-Za-z_]"
+    r"|actor\b|triggering_actor\b)",
     re.IGNORECASE,
 )
 
+# A whole term that only asks whether one top-level payload object exists, as in
+# `github.event.pull_request` or `github.event.pull_request != null`. The
+# trigger fixes which objects the payload carries, so two runs agree on it.
+_PRESENCE_TERM = re.compile(
+    r"^!?\s*github\.event\.[A-Za-z_]\w*(?:\s*[!=]=\s*null)?$", re.IGNORECASE
+)
+
 _RUN_ID_READ = re.compile(r"\bgithub\.run_(?:id|number)\b", re.IGNORECASE)
+_RUN_ID_ATOM = re.compile(r"^github\.run_(?:id|number)$", re.IGNORECASE)
 
 
 def group_is_event_constant(group: str) -> bool:
@@ -1949,6 +1952,19 @@ def group_is_event_constant(group: str) -> bool:
     return True
 
 
+def _reads_varying_delivery(expr: str) -> bool:
+    """Whether EXPR reads delivery data that can differ between two runs of one
+    trigger. A term that only tests the presence of a payload object does not."""
+    expr = _strip_parens(expr.strip())
+    for operator in ("||", "&&"):
+        arms = _split_top_level(expr, operator)
+        if len(arms) > 1:
+            return any(_reads_varying_delivery(arm) for arm in arms)
+    if _PRESENCE_TERM.match(expr):
+        return False
+    return bool(_DELIVERY_READ.search(expr))
+
+
 def job_delivery_split_triggers(
     if_value: object, triggers: Iterable[Trigger]
 ) -> list[Trigger]:
@@ -1960,7 +1976,7 @@ def job_delivery_split_triggers(
     skips it.
     """
     expression = unwrap_expression(str(if_value or "")).strip()
-    if not _DELIVERY_READ.search(_LITERAL_SPAN.sub(" ", expression)):
+    if not _reads_varying_delivery(_LITERAL_SPAN.sub(" ", expression)):
         return []
     return [
         trigger
@@ -1978,6 +1994,8 @@ def _operand_truth(operand: str) -> bool | None:
     operand = _strip_parens(operand.strip())
     if _LITERAL_ATOM.match(operand):
         return operand != "''"
+    if _RUN_ID_ATOM.match(operand):
+        return True
     template = re.match(
         r"^format\s*\(\s*'(?P<template>(?:[^']|'')*)'", operand, re.IGNORECASE
     )
@@ -2160,6 +2178,15 @@ def opted_out(text: str, token: str) -> bool:
     """
     marker = annotation_re(token, require_reason=False)
     return any(marker.search(line) for line in yaml_comment_view(text))
+
+
+def group_of(conc: object) -> object:
+    """The group expression of a `concurrency:` value: the mapping's `group`
+    key, or the scalar shorthand itself. GitHub treats `concurrency: <expr>` as
+    `concurrency: {group: <expr>, cancel-in-progress: false}`."""
+    if isinstance(conc, dict):
+        return conc.get("group")
+    return conc
 
 
 def concurrency_line(text: str) -> int:

@@ -45,6 +45,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     concurrency_line,
     declared_events,
     group_is_per_ref,
+    group_of,
     opted_out,
     required_check_shape,
     static_group_reason,
@@ -78,14 +79,10 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
         )
     if not isinstance(doc, dict):
         return None
-    # GitHub reads `concurrency: <expr>` as `{group: <expr>}`.
-    conc = doc.get("concurrency")
-    if isinstance(conc, dict) and "group" in conc:
-        group = str(conc["group"])
-    elif isinstance(conc, str) and conc:
-        group = conc
-    else:
+    group = group_of(doc.get("concurrency"))
+    if group is None or group == "":
         return None
+    group = str(group)
     if opted_out(text, OPT_OUT):
         return None
 

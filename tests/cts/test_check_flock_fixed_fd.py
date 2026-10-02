@@ -60,6 +60,9 @@ def test_two_calls_on_one_line_report_that_line_once() -> None:
         ("sudo with a valued option", "sudo -u root flock 9\n"),
         ("sudo with a joined option", "sudo --user=root flock 9\n"),
         ("sudo after its terminator", "sudo -- flock 9\n"),
+        ("sudo with a flag option", "sudo -E flock 9\n"),
+        ("sudo with an assignment", "sudo LC_ALL=C flock 9\n"),
+        ("sudo with an option then an assignment", "sudo -u root LC_ALL=C flock 9\n"),
         ("doas", "doas -u root flock 9\n"),
         ("command", "command flock 9\n"),
         ("command with the default path", "command -p flock 9\n"),
@@ -92,6 +95,20 @@ def test_a_prefixed_call_is_reported_at_the_flock_word() -> None:
 )
 def test_a_prefix_that_does_not_lock_a_literal_passes(name: str, src: str) -> None:
     assert mod.violations(src) == [], name
+
+
+@pytest.mark.parametrize(
+    "option",
+    ["-e", "--edit", "-K", "--remove-timestamp", "-l", "--list", "-v", "--validate"],
+)
+def test_a_sudo_mode_that_runs_no_program_is_not_a_flock_call(option: str) -> None:
+    """`sudo -l flock 9` asks what `flock 9` may do. It starts no process."""
+    assert mod.violations(f"sudo {option} flock 9\n") == []
+
+
+def test_a_doas_assignment_is_not_skipped() -> None:
+    """Only `env` and `sudo` take `NAME=VALUE`; to `doas` it names the program."""
+    assert mod.violations("doas LC_ALL=C flock 9\n") == []
 
 
 # ── a repo's own wrapper function ────────────────────────────────────────
