@@ -99,10 +99,12 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALWAYS_REPORTER_SHAPE,
+    CALLED_EVENT,
     TWIN_SHAPE,
     _job_blocks,
     _marked_jobs,
     annotated,
+    annotated_near,
     concurrency_line,
     declared_triggers,
     decide_gate_names,
@@ -224,7 +226,8 @@ _INERT_MESSAGE = (
 _DELIVERY_MESSAGE = (
     "job '{name}' holds the fixed concurrency group '{group}', and its `if:` "
     "reads the event payload, the ref or an input. So on a {trigger} run the "
-    "job can run or skip, by what that one delivery carries. GitHub claims a job's group slot when it "
+    "job can run or skip, by what that one delivery carries. GitHub claims a "
+    "job's group slot when it "
     "CREATES the job, BEFORE it reads the `if:`. A run that skips this job "
     "therefore evicts the run queued in that slot to do the work. Read the same "
     "condition in the group: end it '-shared' when the `if:` holds and "
@@ -272,12 +275,15 @@ def _shape_one_message(name: str, group: str, if_value: object, triggers) -> str
             served=_trigger_name(pair[1]),
             group=group,
         )
-    if group_is_event_constant(group):
-        split = job_delivery_split_triggers(if_value, served)
-        if split:
-            return _DELIVERY_MESSAGE.format(
-                name=name, group=group, trigger=_trigger_name(split[0])
-            )
+    split = [
+        trigger
+        for trigger in job_delivery_split_triggers(if_value, served)
+        if group_is_event_constant(group, trigger.event == CALLED_EVENT)
+    ]
+    if split:
+        return _DELIVERY_MESSAGE.format(
+            name=name, group=group, trigger=_trigger_name(split[0])
+        )
     if group_has_run_id_escape(group) and all(
         group_is_per_run_on(group, trigger) for trigger in served
     ):
@@ -328,8 +334,11 @@ def _workflow_misfire_violations(
     if not triggers or not all(group_is_per_run_on(group, t) for t in triggers):
         return []
     line = concurrency_line(text)
-    window = _top_level_block(text.splitlines(), line)
-    if any(annotated(comment_lines[num], INERT_OPT_OUT) for num in window):
+    lines = text.splitlines()
+    window = _top_level_block(lines, line)
+    if annotated_near(
+        lines, line, INERT_OPT_OUT, span_end=window.stop, comments=comment_lines
+    ):
         return []
     message = _MISFIRE_MESSAGE.format(
         subject="the workflow", scope="the workflow", group=group
