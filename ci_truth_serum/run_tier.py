@@ -130,11 +130,12 @@ def matches(path: str, kind: str) -> bool:
 def selected_files(kind: str, files: list[str]) -> list[str] | None:
     """The file arguments a KIND member receives, or None when it cannot run.
 
-    A workflow lint self-discovers `.github/*` and ignores FILES, so it always
-    runs and takes no arguments. A content lint reads only what it is given, so
-    with no committed file of its kind it has nothing to scan. The caller must be
-    able to tell that case from a pass — they are the same exit code, and a run
-    that reports one as the other is the false green this pack exists to refuse.
+    A workflow lint finds its own input (`.github/*`, a settings file, or the
+    pre-commit config) and ignores FILES, so it always runs and takes no
+    arguments. A content lint reads only what it is given, so with no committed
+    file of its kind it has nothing to scan. The caller must be able to tell that
+    case from a pass — they are the same exit code, and a run that reports one
+    as the other is the false green this pack exists to refuse.
     """
     if kind == WORKFLOW:
         return []

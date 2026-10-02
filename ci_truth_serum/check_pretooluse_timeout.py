@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Require an explicit numeric `timeout` on every Claude Code PreToolUse hook entry.
+Require an explicit positive numeric `timeout` on every Claude Code PreToolUse hook entry.
 
 A PreToolUse hook is the only hook that can block a tool call before it runs.
 Claude Code cancels a hook that reaches its timeout and discards its output. The
@@ -46,13 +46,18 @@ def _label(entry: dict) -> str:
 
 
 def _has_timeout(entry: dict) -> bool:
-    """True when ENTRY states a numeric `timeout`. A JSON boolean is not a number."""
+    """True when ENTRY states a POSITIVE numeric `timeout`.
+
+    A JSON boolean is not a number, and a non-positive bound is no bound.
+    """
     timeout = entry.get("timeout")
-    return isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return False
+    return timeout > 0
 
 
 def findings(doc: dict, text: str) -> list[Finding]:
-    """Every PreToolUse hook entry in settings DOC with no numeric `timeout`.
+    """Every PreToolUse hook entry in settings DOC with no positive numeric `timeout`.
 
     DOC comes from `_cts_claude_settings.decode(TEXT)`, so each entry carries the
     offset that gives its line. A shape that is not a list or an object holds no
@@ -74,8 +79,8 @@ def findings(doc: dict, text: str) -> list[Finding]:
             if _has_timeout(entry):
                 continue
             message = (
-                f"hooks.{EVENT}[{i}].hooks[{j}] ({_label(entry)}) has no numeric "
-                '"timeout". A PreToolUse hook that reaches its timeout does not '
+                f"hooks.{EVENT}[{i}].hooks[{j}] ({_label(entry)}) has no positive "
+                'numeric "timeout". A PreToolUse hook that reaches its timeout does not '
                 "block the tool call, so the gate fails open at a bound nobody "
                 'chose. Add "timeout": <seconds>, sized to the slowest honest run '
                 "of the hook."

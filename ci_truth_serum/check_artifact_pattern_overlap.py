@@ -12,9 +12,13 @@ matrix of shards therefore counts as ONE family. An expression the pattern does
 not cover is unknown, and the check stays silent on it. A name that is only an
 expression says nothing, so it never counts as a family.
 
+Only a download with `merge-multiple: true` merges. Without it each artifact
+gets its own directory, so the check stays silent.
+
 The check expands a local composite action at the call site. Each
 `${{ inputs.X }}` takes the caller's `with: X` or the input's default. Known
-blind spots, all false negatives: a pattern that holds an expression, a download
+blind spots, all false negatives: a pattern or a `merge-multiple:` that holds an
+expression, a download
 from another run (`run-id:`), a remote wrapper action, uploads in a called
 reusable workflow, and `{a,b}` braces.
 Opt out with `# artifact-pattern-ok: <reason>` in the download step.
@@ -158,9 +162,15 @@ def _upload_glob(transfer: Transfer) -> str | None:
 
 
 def _pattern(transfer: Transfer) -> str | None:
-    """The literal pattern a download in THIS run collects, or None."""
+    """The literal pattern a download in THIS run collects, or None.
+
+    Only a download that sets `merge-multiple: true` hands the next step one
+    merged directory. Without it each artifact gets its own directory.
+    """
     pattern = transfer.inputs.get("pattern", "")
     run_id = transfer.inputs.get("run-id", "").strip()
+    if transfer.inputs.get("merge-multiple", "").strip().lower() != "true":
+        return None
     if not pattern or _EXPRESSION.search(pattern):
         return None
     if run_id and not _THIS_RUN.match(run_id):

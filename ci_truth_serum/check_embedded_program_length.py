@@ -81,6 +81,20 @@ TRANSPARENT_PREFIXES = frozenset(
     {"env", "sudo", "exec", "command", "time", "nohup", "builtin"}
 )
 
+# The options of a wrapper that take their value as the NEXT word, so the scan
+# steps over both (`env -u NAME`, `sudo -u root`). A wrapper not listed here
+# has none, and an attached value (`-uroot`, `--user=root`) is one word anyway.
+WRAPPER_VALUE_OPTIONS = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "sudo": frozenset(
+        {"-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt"}
+        | {"-C", "--close-from", "-r", "--role", "-t", "--type", "-D", "--chdir"}
+        | {"-T", "--command-timeout", "-U", "--other-user"}
+    ),
+    "exec": frozenset({"-a"}),
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
+}
+
 # The `NAME=value` shape of an `env` binding, which the grammar reads as a word.
 _ENV_BINDING = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -123,7 +137,7 @@ def _arguments(command: Node, limits: Limits) -> list[Node] | None:
     """COMMAND's argument nodes when it runs an interpreter, else None.
 
     A transparent wrapper (`env -i PATH=… python3`) is stepped over with its own
-    options and `NAME=value` words. Leading options are stripped only after a
+    options, their separate values (`env -u NAME`) and `NAME=value` words. Leading options are stripped only after a
     wrapper, so a real command keeps its arguments.
     """
     words = [
@@ -135,10 +149,12 @@ def _arguments(command: Node, limits: Limits) -> list[Node] | None:
         text = unquote(node_text(words[0]))
         if _ENV_BINDING.match(text):
             words = words[1:]
-        elif program_name(text) in limits.wrappers:
+        elif (wrapper := program_name(text)) in limits.wrappers:
             words = words[1:]
+            takes_value = WRAPPER_VALUE_OPTIONS.get(wrapper, frozenset())
             while words and node_text(words[0]).startswith("-"):
-                words = words[1:]
+                skip = 2 if unquote(node_text(words[0])) in takes_value else 1
+                words = words[skip:]
         else:
             break
     if not words or program_name(node_text(words[0])) not in INTERPRETERS:

@@ -17,7 +17,8 @@ row in the README table, which the tests pin.
 
 from typing import NamedTuple
 
-# Selector kinds: WORKFLOW ignores the file list and self-discovers .github/*;
+# Selector kinds: WORKFLOW takes no file arguments and finds its own input
+# (`.github/*`, a settings file, or `.pre-commit-config.yaml`);
 # the rest name the committed-file class a content lint should receive.
 WORKFLOW = "workflow"
 SHELL = "shell"

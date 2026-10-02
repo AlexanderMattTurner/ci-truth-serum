@@ -42,22 +42,15 @@ from pathlib import Path
 
 import tomllib
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _repo_root import find_repo_root  # noqa: E402
+
 CONFIG = "cosmic-ray.toml"
 SHARD_CONFIG = "cosmic-ray.shard.toml"
 # Every shard's per-mutant oracle is the module's own example suite under this
 # dir; the base test-command in cosmic-ray.toml targets the whole tree, and a
 # shard narrows it to one file (see _scoped_test_command).
 TEST_DIR = "tests/cts"
-
-
-def find_repo_root(start: Path) -> Path:
-    """The first directory at or above ``start`` that holds ``.git`` or
-    ``pyproject.toml``. Raises when none does, so a moved file cannot point at a
-    directory that does not exist."""
-    for directory in (start, *start.parents):
-        if (directory / ".git").exists() or (directory / "pyproject.toml").is_file():
-            return directory
-    raise FileNotFoundError(f"no .git or pyproject.toml at or above {start}")
 
 
 # A module larger than this many source lines is split into ceil(lines / this)
@@ -102,6 +95,7 @@ HARNESS_INPUTS = (
     "uv.lock",
     ".python-version",
     ".github/scripts/mutation_shards.py",
+    ".github/scripts/_repo_root.py",
     ".github/scripts/run-mutation-shard.sh",
 )
 

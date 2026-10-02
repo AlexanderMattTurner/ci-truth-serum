@@ -22,16 +22,10 @@ import json
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _repo_root import find_repo_root  # noqa: E402
+
 DEFAULT_FILES = (".claude/settings.json",)
-
-
-def find_repo_root(start: Path) -> Path:
-    """The first directory at or above ``start`` that holds ``.git`` or
-    ``pyproject.toml``. Raises when none does."""
-    for directory in (start, *start.parents):
-        if (directory / ".git").exists() or (directory / "pyproject.toml").is_file():
-            return directory
-    raise FileNotFoundError(f"no .git or pyproject.toml at or above {start}")
 
 
 def missing_timeouts(settings: dict) -> list[str]:

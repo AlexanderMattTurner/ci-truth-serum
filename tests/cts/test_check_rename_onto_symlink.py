@@ -44,6 +44,8 @@ _BAD = 'mv "$cfg.tmp" "$cfg"\n'
         # options do not move which operands are the source and the destination
         'mv -f "$f.tmp" "$f"',
         'mv -- "$f.partial" "$f"',
+        # a flag cluster with no `t` still names a destination
+        'mv -vf "$f.tmp" "$f"',
         # a wrapper does not change what is renamed onto what
         'sudo mv "$f.tmp" "$f"',
         'as_root mv "$managed.tmp" "$managed"',
@@ -70,6 +72,10 @@ def test_a_rename_onto_its_own_stem_is_flagged(line: str) -> None:
         ("double quotes stop the tilde", 'mv "~/.npmrc.tmp" "~/.npmrc"\n'),
         ("a source in another directory", 'mv "$staging/f.tmp" "$f"\n'),
         ("one operand", 'mv "$f.tmp"\n'),
+        ("a target directory option", 'mv "$f.tmp" -t "$f"\n'),
+        ("the long target directory option", 'mv --target-directory="$f" "$f.tmp"\n'),
+        ("a target directory in a cluster", 'mv -vt "$f" "$f.tmp"\n'),
+        ("a target directory with an attached value", 'mv -t"$f" "$f.tmp"\n'),
         ("a different command", 'cp "$f.tmp" "$f"\n'),
         ("a lookup", "command -v mv\n"),
         ("an unquoted word list a command prints", 'echo mv "$f.tmp" "$f"\n'),

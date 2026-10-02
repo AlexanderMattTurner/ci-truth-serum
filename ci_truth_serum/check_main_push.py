@@ -32,13 +32,16 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     parse,
     program_name,
 )
+from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    shell_comments,
+    yaml_comments,
+)
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
     annotated_near,
     run_source_checks,
     yaml_run_scalars,
     yaml_run_script,
-    yaml_script_view,
 )
 
 OPT_OUT = "main-push-ok"
@@ -200,9 +203,14 @@ def _pushes(
 
 
 def _unexcused(
-    spans: dict[int, int], lines: list[str], said: list[str] | None
+    spans: dict[int, int], lines: list[str], comments: dict[int, str]
 ) -> list[int]:
-    """The start lines in SPANS that no reason-bearing opt-out covers."""
+    """The start lines in SPANS that no reason-bearing opt-out covers.
+
+    COMMENTS is what each line says as a real comment (1-based line to text), so
+    a marker quoted inside a string or a heredoc excuses nothing.
+    """
+    said = [comments.get(line, "") for line in range(1, len(lines) + 1)]
     return sorted(
         start
         for start, end in spans.items()
@@ -216,7 +224,9 @@ def violations(
     gits: frozenset[str] = frozenset(),
 ) -> list[int]:
     """1-based start lines of the pushes in shell TEXT that land on BRANCHES."""
-    return _unexcused(_pushes(text, branches, gits), text.splitlines(), None)
+    return _unexcused(
+        _pushes(text, branches, gits), text.splitlines(), shell_comments(text)
+    )
 
 
 def workflow_violations(
@@ -227,7 +237,7 @@ def workflow_violations(
     """1-based lines of the pushes to BRANCHES inside the ``run:`` values of TEXT.
 
     Each value is read in place, so a line number is the workflow file's own. An
-    opt-out is read from ``yaml_script_view``: a YAML comment or a script comment.
+    opt-out is read from a real YAML comment or a real script comment.
     """
     spans: dict[int, int] = {}
     for scalar in yaml_run_scalars(text):
@@ -236,7 +246,7 @@ def workflow_violations(
         )
         for start, end in _pushes(script, branches, gits).items():
             spans[start] = max(spans.get(start, end), end)
-    return _unexcused(spans, text.splitlines(), yaml_script_view(text))
+    return _unexcused(spans, text.splitlines(), yaml_comments(text))
 
 
 def main(argv: list[str]) -> int:

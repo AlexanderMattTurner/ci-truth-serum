@@ -46,14 +46,16 @@ def test_flags_command_without_timeout() -> None:
     assert "gate.mjs" in hits[0][1]
 
 
-@pytest.mark.parametrize("timeout", [1800, 12.5, 0])
+@pytest.mark.parametrize("timeout", [1800, 12.5, 0.5])
 def test_accepts_a_numeric_timeout(timeout: float) -> None:
     entry = {"type": "command", "command": "node gate.mjs", "timeout": timeout}
     assert _lines(_text(entry)) == []
 
 
-@pytest.mark.parametrize("timeout", [True, False, "600", None, [600], {"s": 600}])
-def test_a_non_number_is_not_a_timeout(timeout: object) -> None:
+@pytest.mark.parametrize(
+    "timeout", [True, False, "600", None, [600], {"s": 600}, 0, -5, -0.5]
+)
+def test_a_non_positive_or_non_number_is_not_a_timeout(timeout: object) -> None:
     # A JSON boolean decodes to a Python bool, which is an int subclass.
     entry = {"type": "command", "command": "x", "timeout": timeout}
     assert _lines(_text(entry)) == [_FIRST]

@@ -41,6 +41,10 @@ mod = load_hook("check_main_push.py", "check_main_push")
         "git push $(remote_name) main",
         # A push option's value is skipped, and the refspec after it still reads.
         "git push -o ci.skip origin main",
+        # git consumes the word after `--recurse-submodules`, so `origin` is its
+        # value and `HEAD:main` the first positional word, read as the remote.
+        # The refspec after the remote still reads.
+        "git push --recurse-submodules on-demand origin HEAD:main",
         # Inside a substitution, a condition, or a pipeline it still runs.
         'out="$(git push origin HEAD:main 2>&1)"',
         "if ! git push origin main; then exit 1; fi",
@@ -71,6 +75,9 @@ def test_fires_on_a_push_to_a_protected_branch(text: str) -> None:
         "git push origin '^main'",
         # A push option's VALUE is not a refspec.
         "git push origin -o main topic",
+        # With `--repo`, git still reads the first positional word as the remote
+        # (`git push --repo origin HEAD:main` fails: `HEAD:main` is no remote).
+        "git push --repo origin HEAD:main",
         # Other git verbs reach main without writing it.
         "git fetch origin main",
         "git rebase origin/main",
@@ -120,6 +127,10 @@ def test_a_heredoc_body_naming_the_push_is_text() -> None:
         ("# main-push-ok: the release\ndo_a\ndo_b\ngit push origin main\n", [4]),
         # A longer token that merely contains the marker is another annotation.
         ("git push origin main  # not-main-push-ok: x", [1]),
+        # A marker inside a string is data, not an opt-out.
+        ("echo '# main-push-ok: see documentation'\ngit push origin main\n", [2]),
+        # A marker inside a heredoc body is data too.
+        ("cat <<'EOF'\n# main-push-ok: a reason\nEOF\ngit push origin main\n", [4]),
     ],
 )
 def test_the_opt_out_needs_a_reason_beside_the_push(text: str, expected) -> None:

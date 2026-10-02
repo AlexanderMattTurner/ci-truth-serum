@@ -59,17 +59,30 @@ def test_a_repeated_id_and_command_report_both() -> None:
 @pytest.mark.parametrize(
     ("args", "expected"),
     [
-        (None, "x.py"),
-        ([], "x.py"),
-        (["--check"], "x.py --check"),
-        (["--fix", "-v"], "x.py --fix -v"),
+        (None, ("x.py",)),
+        ([], ("x.py",)),
+        (["--check"], ("x.py", "--check")),
+        (["--fix", "-v"], ("x.py", "--fix", "-v")),
+        (["a b"], ("x.py", "a b")),
     ],
 )
-def test_command_is_the_entry_plus_its_args(args, expected: str) -> None:
+def test_command_is_the_entry_plus_its_args(args, expected: tuple) -> None:
     hook: dict[str, object] = {"id": "h", "entry": "x.py"}
     if args is not None:
         hook["args"] = args
     assert mod.command_of(hook) == expected
+
+
+def test_an_argument_with_a_space_is_not_two_arguments() -> None:
+    one = _hook("a", "tool", "") + '        args: ["a b"]\n'
+    two = _hook("b", "tool a", "") + "        args: [b]\n"
+    assert mod.findings(_config(one, two)) == []
+
+
+def test_a_quoted_entry_word_is_one_argument() -> None:
+    one = _hook("a", "tool 'a b'", "")
+    two = _hook("b", "tool", "") + '        args: ["a b"]\n'
+    assert len(mod.findings(_config(one, two))) == 1
 
 
 def test_different_args_make_different_commands() -> None:
@@ -194,10 +207,17 @@ def test_main_takes_a_config_path(tmp_path) -> None:
     assert mod.main(["--config", str(clean)]) == 0
 
 
-def test_main_fails_loud_without_a_config(tmp_path, monkeypatch) -> None:
+def test_main_says_it_scanned_nothing_without_a_default_config(
+    tmp_path, monkeypatch, capsys
+) -> None:
     monkeypatch.chdir(tmp_path)
+    assert mod.main([]) == 0
+    assert "this check scanned nothing" in capsys.readouterr().err
+
+
+def test_main_fails_loud_on_a_named_config_that_is_missing(tmp_path) -> None:
     with pytest.raises(FileNotFoundError):
-        mod.main([])
+        mod.main(["--config", str(tmp_path / "absent.yaml")])
 
 
 _HOOK_IDS = st.sampled_from(["a", "b", '"a"', "c"])

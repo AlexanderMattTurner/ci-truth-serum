@@ -62,12 +62,15 @@ DOWNLOAD_WRAPPER = (
     "inputs:\n"
     "  pattern:\n"
     "    default: ''\n"
+    "  merge-multiple:\n"
+    "    default: 'true'\n"
     "runs:\n"
     "  using: composite\n"
     "  steps:\n"
     "    - uses: actions/download-artifact@v4\n"
     "      with:\n"
     "        pattern: ${{ inputs.pattern }}\n"
+    "        merge-multiple: ${{ inputs.merge-multiple }}\n"
 )
 
 
@@ -153,6 +156,21 @@ def test_uploads_in_another_workflow_file_do_not_count(tmp_path):
 def test_a_pattern_holding_an_expression_is_skipped(tmp_path):
     computed = GATE.replace("pytest-durations-*", "${{ inputs.pattern }}")
     assert _found(tmp_path, _jobs(SHARDS, MAP, computed)) == []
+
+
+@pytest.mark.parametrize(
+    ("merge", "flagged"),
+    [
+        ("merge-multiple: true", True),
+        ("merge-multiple: True", True),
+        ("merge-multiple: false", False),
+        ("merge-multiple: ${{ inputs.merge }}", False),
+        ("", False),
+    ],
+)
+def test_only_a_merging_download_is_flagged(tmp_path, merge, flagged):
+    gate = GATE.replace("merge-multiple: true", merge)
+    assert bool(_found(tmp_path, _jobs(SHARDS, MAP, gate))) is flagged
 
 
 @pytest.mark.parametrize(

@@ -110,6 +110,31 @@ def test_every_declared_interpreter_is_detected(interpreter: str) -> None:
     assert mod.violations(source) == [2]
 
 
+@pytest.mark.parametrize(
+    ("wrapper", "option"),
+    sorted(
+        (wrapper, option)
+        for wrapper, options in mod.WRAPPER_VALUE_OPTIONS.items()
+        for option in options
+    ),
+)
+def test_a_wrapper_option_value_is_not_the_interpreter(
+    wrapper: str, option: str
+) -> None:
+    source = f"#!/bin/bash\n{wrapper} {option} VALUE python3 -c '{LONG_BODY}'\n"
+    assert mod.violations(source) == [2]
+
+
+def test_a_wrapper_option_with_an_attached_value_is_one_word() -> None:
+    source = f"#!/bin/bash\nsudo --user=root python3 -c '{LONG_BODY}'\n"
+    assert mod.violations(source) == [2]
+
+
+def test_a_flag_that_takes_no_value_keeps_the_next_word() -> None:
+    source = f"#!/bin/bash\nsudo -E python3 -c '{LONG_BODY}'\n"
+    assert mod.violations(source) == [2]
+
+
 def test_a_wrapper_with_no_command_behind_it_is_not_an_interpreter() -> None:
     assert mod.violations("#!/bin/bash\nenv -i\n") == []
 

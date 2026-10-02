@@ -86,10 +86,30 @@ def test_a_gnu_only_flag_is_flagged(label: str, src: str) -> None:
         'printf "%s  %s" "$w" "$f" | sha256sum -c -',  # `-` names stdin
         "docker exec box tail -zn +2 f",  # runs in the container, not on the host
         "gdate -d @0",  # GNU coreutils under its macOS name
+        "grep -- -P file",  # after `--` the word is the pattern
+        "grep -e -P file",  # the value of -e is the pattern
+        "grep -ie -P file",
+        "grep -f -P file",
+        "grep --regexp -P file",
+        "date -- -d",
     ],
 )
 def test_a_portable_command_passes(src: str) -> None:
     assert mod.violations(f"{src}\n", (mod.BSD,)) == []
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "grep -P -- pattern file",  # the flag sits before `--`
+        "grep -e a -P file",  # the value skip ends after one word
+        "grep -f pats -P file",
+        "grep -Pe a file",
+        "grep --regexp a --perl-regexp file",
+    ],
+)
+def test_a_flag_beside_data_words_is_still_found(src: str) -> None:
+    assert len(mod.violations(f"{src}\n", (mod.BSD,))) == 1
 
 
 # ── bash32: each bash-4+ construct ───────────────────────────────────────

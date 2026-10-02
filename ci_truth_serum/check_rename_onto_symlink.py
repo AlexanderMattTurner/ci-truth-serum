@@ -114,6 +114,23 @@ def _operands(words: list[Node]) -> list[Node]:
     return operands
 
 
+def _names_target_directory(words: list[Node]) -> bool:
+    """True when an option before `--` makes the last operand a DIRECTORY.
+
+    `mv -t DIR SRC…` moves each source INTO DIR, so no source replaces DIR. The
+    short option may sit in a cluster (`-vt`) or carry its value (`-tDIR`).
+    """
+    for word in words:
+        text = node_text(word)
+        if text == "--":
+            return False
+        if text.startswith("--target-directory"):
+            return True
+        if text.startswith("-") and not text.startswith("--") and "t" in text:
+            return True
+    return False
+
+
 def _renames_onto_its_stem(command: Node) -> bool:
     """True when COMMAND runs `mv <dest><suffix> <dest>` and `<dest>` expands.
 
@@ -127,7 +144,10 @@ def _renames_onto_its_stem(command: Node) -> bool:
     names = [program_name(text) for text in texts]
     if "mv" not in names:
         return False
-    operands = _operands(words[names.index("mv") + 1 :])
+    after_mv = words[names.index("mv") + 1 :]
+    if _names_target_directory(after_mv):
+        return False
+    operands = _operands(after_mv)
     if len(operands) < 2 or not _expands(operands[-1]):
         return False
     source, destination = _spelling(operands[-2]), _spelling(operands[-1])

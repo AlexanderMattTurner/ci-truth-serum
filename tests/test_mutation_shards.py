@@ -10,6 +10,7 @@ scopes the suite to that module.
 import importlib.util
 import json
 import math
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -267,6 +268,7 @@ def _write_hashable_repo(root: Path) -> None:
         "uv.lock": "version = 1\n",
         ".python-version": "3.12\n",
         ".github/scripts/mutation_shards.py": "# planner\n",
+        ".github/scripts/_repo_root.py": "# root finder\n",
         ".github/scripts/run-mutation-shard.sh": "# runner\n",
     }.items():
         (root / path).write_text(text, encoding="utf-8")
@@ -321,6 +323,7 @@ def test_an_edit_invalidates_exactly_the_shards_that_read_it(
         "pyproject.toml",
         ".python-version",
         ".github/scripts/mutation_shards.py",
+        ".github/scripts/_repo_root.py",
         ".github/scripts/run-mutation-shard.sh",
     ],
 )
@@ -419,6 +422,7 @@ def test_cli_write_config_writes_parseable_toml(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")  # the root marker
     dest = tmp_path / ".github" / "scripts" / "mutation_shards.py"
     dest.write_text(_SRC.read_text(encoding="utf-8"), encoding="utf-8")
+    shutil.copy(_SRC.with_name("_repo_root.py"), dest.with_name("_repo_root.py"))
     result = subprocess.run(
         [sys.executable, str(dest), "--write-config", "check_a"],
         capture_output=True,

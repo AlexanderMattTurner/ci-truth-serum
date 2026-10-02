@@ -19,6 +19,7 @@ Reads `.pre-commit-config.yaml` in the working directory, or `--config PATH`.
 """
 
 import argparse
+import shlex
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -41,7 +42,7 @@ class Hook(NamedTuple):
     """One `repo: local` hook: its id, its command, and the lines it spans."""
 
     hook_id: str
-    command: str
+    command: tuple[str, ...]
     start: int
     end: int
 
@@ -78,16 +79,18 @@ def _end_line(node: yaml.MappingNode) -> int:
     return mark.line if mark.column == 0 else mark.line + 1
 
 
-def command_of(hook: dict) -> str:
-    """The hook's invocation: its `entry` and then its `args`.
+def command_of(hook: dict) -> tuple[str, ...]:
+    """The hook's argv: its `entry` split as a shell splits it, then its `args`.
 
     Two hooks that run one script under different args are a legitimate pair, so
-    the args are part of the command, not just the script name.
+    the args are part of the command, not just the script name. A tuple keeps
+    each word whole: `entry: tool` with `args: ["a b"]` is one argument, and
+    `entry: tool a` with `args: [b]` is two.
     """
     args = hook.get("args") or []
     if not isinstance(args, list):
         raise ValueError(f"hook {hook.get('id')!r}: `args:` is not a list")
-    return " ".join([str(hook.get("entry", "")), *(str(arg) for arg in args)])
+    return (*shlex.split(str(hook.get("entry", ""))), *(str(arg) for arg in args))
 
 
 def local_hooks(text: str) -> list[Hook]:
@@ -127,7 +130,7 @@ def duplicates(hooks: list[Hook], excused: set[int]) -> list[tuple[int, str]]:
         for hook_id, count in counts.items()
         if count > 1
     ]
-    by_command: dict[str, list[int]] = defaultdict(list)
+    by_command: dict[tuple[str, ...], list[int]] = defaultdict(list)
     for position, hook in enumerate(hooks):
         by_command[hook.command].append(position)
     for command, positions in by_command.items():
@@ -160,10 +163,11 @@ def _id_message(hook_id: str, count: int) -> str:
     )
 
 
-def _command_message(command: str, ids: list[str]) -> str:
+def _command_message(command: tuple[str, ...], ids: list[str]) -> str:
     """The finding for a command that the hooks IDS all run."""
     return (
-        f"local hooks {', '.join(f'`{i}`' for i in ids)} all run `{command}`. "
+        f"local hooks {', '.join(f'`{i}`' for i in ids)} all run "
+        f"`{shlex.join(command)}`. "
         "Delete one copy. If the second run is on purpose, annotate that hook "
         f"`# {OPT_OUT}: <reason>`."
     )
@@ -171,9 +175,18 @@ def _command_message(command: str, ids: list[str]) -> str:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default=DEFAULT_CONFIG, metavar="PATH")
+    parser.add_argument("--config", default=None, metavar="PATH")
     args = parser.parse_args(argv)
-    path = Path(args.config)
+    path = Path(args.config or DEFAULT_CONFIG)
+    if args.config is None and not path.is_file():
+        # A tree with no pre-commit config has no hook to duplicate. The note
+        # tells this honest empty scan from a real pass; a PATH the caller
+        # named and got wrong still raises on the read below.
+        print(
+            f"note: no {DEFAULT_CONFIG} in this directory — this check scanned nothing.",
+            file=sys.stderr,
+        )
+        return 0
     hits = findings(path.read_text(encoding="utf-8"))
     for line, message in hits:
         print(f"{path}:{line}: {message}", file=sys.stderr)

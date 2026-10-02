@@ -77,10 +77,44 @@ def _short_flag(word: str, letter: str) -> bool:
     return word.startswith("-") and not word.startswith("--") and letter in word[1:]
 
 
-def _flag(letter: str, long_form: str) -> Callable[[Sequence[str]], bool]:
-    """A predicate: an operand is a short cluster with LETTER, or is LONG_FORM."""
+def _options(words: Sequence[str], value_letters: str = "") -> list[str]:
+    """The words of WORDS that are options: none after `--`, and none that are
+    the separate VALUE of an option whose letter is in VALUE_LETTERS.
+
+    `grep -- -P f` and `grep -e -P f` search for the text `-P`, so `-P` is data.
+    """
+    options: list[str] = []
+    skip = False
+    for word in words:
+        if skip:
+            skip = False
+        elif word == "--":
+            break
+        else:
+            options.append(word)
+            skip = bool(value_letters) and (
+                word.startswith("-")
+                and not word.startswith("--")
+                and word[-1] in value_letters
+                or word in _LONG_VALUE_OPTIONS
+            )
+    return options
+
+
+# Long options that take their value as the next word, for the rows that read it.
+_LONG_VALUE_OPTIONS = frozenset({"--regexp", "--file"})
+
+
+def _flag(
+    letter: str, long_form: str, value_letters: str = ""
+) -> Callable[[Sequence[str]], bool]:
+    """A predicate: an option is a short cluster with LETTER, or is LONG_FORM.
+
+    An option after `--`, or the value of one in VALUE_LETTERS, is data.
+    """
     return lambda words: any(
-        _short_flag(word, letter) or word == long_form for word in words
+        _short_flag(word, letter) or word == long_form
+        for word in _options(words, value_letters)
     )
 
 
@@ -99,7 +133,9 @@ def _operand(*wanted: str) -> Callable[[Sequence[str]], bool]:
             if flag.startswith("--") or len(flag) == 2
         )
 
-    return lambda words: any(word in wanted or attached(word) for word in words)
+    return lambda words: any(
+        word in wanted or attached(word) for word in _options(words)
+    )
 
 
 def _checks_stdin(words: Sequence[str]) -> bool:
@@ -134,7 +170,7 @@ GNU_ROWS = (
     _GnuRow(
         "`grep -P` (--perl-regexp)",
         frozenset({"grep"}),
-        _flag("P", "--perl-regexp"),
+        _flag("P", "--perl-regexp", "ef"),
         "BSD grep has no PCRE. Rewrite the pattern as a POSIX ERE for `grep -E`.",
     ),
     _GnuRow(

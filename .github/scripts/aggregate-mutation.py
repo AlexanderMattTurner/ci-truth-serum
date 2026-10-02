@@ -22,7 +22,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from mutation_shards import expand_shards, find_repo_root  # noqa: E402
+from _repo_root import find_repo_root  # noqa: E402
+from mutation_shards import expand_shards  # noqa: E402
 
 
 def _load_reports(reports_dir: Path) -> list[dict]:
