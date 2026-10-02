@@ -1,1 +1,0 @@
-- `check-untrusted-exec`: now counts `python -m <module the checkout holds>`, `pytest`, an interpreter named by its absolute path, and commands started through `env` or `uv run`. Before, a job that ran checkout code only in those forms was clean.

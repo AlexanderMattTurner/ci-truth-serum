@@ -1,1 +1,0 @@
-- `check-main-push`: reports a shell `git push` whose destination is a protected branch, in a shell script or a workflow `run:` value. The commit skips review and the required checks, and a merge queue restarts every queued group. Name the branches with `--branch` (default `main` and `master`). Opt out with `# main-push-ok: <reason>`.

@@ -1,4 +1,0 @@
-- **`check-required-event-closure`** finds three more ways a merge-queue batch passes, or waits forever, with no work done.
-  - It evaluates `startsWith` and `endsWith`. A `decide` job gated on `startsWith(github.event_name, 'pull_request')` skips in the merge queue, and the check now reports it.
-  - It reads `github.event.pull_request` as null on a `merge_group` run, and it compares values with GitHub's type casts. A `decide` job gated on `github.event.pull_request.number != ''` skips in the queue, and the check now reports it. A job gated on `github.event.pull_request.draft == false` still runs there, so the check stays silent.
-  - It reports a required job whose workflow fires on a pull request but not on `merge_group`, when another pull request gate in the repo fires on both. GitHub requires the same checks of a queue batch, so that context never arrives and the queue waits until it times out.

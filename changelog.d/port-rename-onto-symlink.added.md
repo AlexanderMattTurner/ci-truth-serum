@@ -1,1 +1,0 @@
-- **`check-rename-onto-symlink`** flags `mv "$f.tmp" "$f"` when `$f` expands at run time. A rename replaces a destination symlink instead of following it, so a config file kept as a link is silently detached. Opt out with `# allow-rename-onto-symlink: <reason>`.

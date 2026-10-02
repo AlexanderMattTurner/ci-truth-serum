@@ -1,1 +1,0 @@
-- `check-untrusted-exec`: a `pull_request` job that runs a workspace script from its default checkout (the PR's merge commit) and only later checks out the default branch is now reported. The re-checkout comes too late, because the earlier script could already write `$GITHUB_ENV` or `$GITHUB_PATH`, and every later step loads those files.

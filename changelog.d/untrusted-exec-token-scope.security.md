@@ -1,1 +1,0 @@
-- `check-untrusted-exec`: a write-scoped job token now counts even when no step names it, because the runner receives it for every job. A job's own `permissions:` now replaces the workflow's when the check decides whether the token can write.
