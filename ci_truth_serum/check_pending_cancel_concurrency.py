@@ -28,13 +28,16 @@ GitHub reads the empty string as false. Opt out per job with
 
 Two more arms of shape 1 read inside one trigger, and both use the same opt-out:
 
-- A FIXED group behind an `if:` that reads the event payload. On a `labeled`
-  run, `if: github.event.label.name == 'go'` can hold or fail. So two runs of
-  one trigger can split into one that serves and one that skips, and they share
-  the one slot.
+- A FIXED group behind an `if:` that reads the delivery. On a `labeled` run,
+  `if: github.event.label.name == 'go'` can hold or fail. A push can read
+  `github.ref`, and a `workflow_dispatch` run can read `inputs.deploy`. So two
+  runs of one trigger can split into one that serves and one that skips, and
+  they share the one slot.
 - A run-id escape that picks the run id on EVERY trigger the job serves. The
   condition is inverted, or the shared operand is `''`. The group then never
-  holds two runs, so the job is never serialized.
+  holds two runs, so the job is never serialized. A workflow-level group gets
+  the same reading over every trigger the workflow declares. Its opt-out sits
+  in the top-level `concurrency:` block.
 
 The sibling `check_collapsing_job_group` owns the neighbouring question: a group
 whose per-ref key is EMPTY on some event, so every run of that event shares one
@@ -220,8 +223,8 @@ _INERT_MESSAGE = (
 
 _DELIVERY_MESSAGE = (
     "job '{name}' holds the fixed concurrency group '{group}', and its `if:` "
-    "reads the event payload. So on a {trigger} run the job can run or skip, by "
-    "what that one delivery carries. GitHub claims a job's group slot when it "
+    "reads the event payload, the ref or an input. So on a {trigger} run the "
+    "job can run or skip, by what that one delivery carries. GitHub claims a job's group slot when it "
     "CREATES the job, BEFORE it reads the `if:`. A run that skips this job "
     "therefore evicts the run queued in that slot to do the work. Read the same "
     "condition in the group: end it '-shared' when the `if:` holds and "
@@ -230,12 +233,12 @@ _DELIVERY_MESSAGE = (
 )
 
 _MISFIRE_MESSAGE = (
-    "job '{name}' chooses its concurrency group between a shared value and the "
-    "run id, but it picks the run id on every trigger the job runs on. So the "
-    "group '{group}' never holds two runs, and the job is never serialized. "
+    "{subject} chooses its concurrency group between a shared value and the "
+    "run id, but it picks the run id on every trigger {scope} runs on. So the "
+    "group '{group}' never holds two runs, and {scope} is never serialized. "
     "Either the condition is inverted, or the shared operand is ''. GitHub "
     "reads '' as false, so `cond && '' || <run id>` picks the run id even when "
-    "cond holds. Make the condition true where the job runs, and give the "
+    "cond holds. Make the condition true where {scope} runs, and give the "
     "shared operand a non-empty value such as 'shared'. Or add "
     "'# " + INERT_OPT_OUT + ": <reason>'."
 )
@@ -278,7 +281,9 @@ def _shape_one_message(name: str, group: str, if_value: object, triggers) -> str
     if group_has_run_id_escape(group) and all(
         group_is_per_run_on(group, trigger) for trigger in served
     ):
-        return _MISFIRE_MESSAGE.format(name=name, group=group)
+        return _MISFIRE_MESSAGE.format(
+            subject=f"job '{name}'", scope="the job", group=group
+        )
     return None
 
 
@@ -305,6 +310,40 @@ def _inert_slot_violations(
             (job_concurrency_line(block, block[0] if block else 1), message)
         )
     return violations
+
+
+def _workflow_misfire_violations(
+    text: str, doc: dict, comment_lines: list[str]
+) -> list[tuple[int | None, str]]:
+    """The finding for a workflow-level group whose run-id escape picks the run
+    id on every trigger the workflow declares, or an empty list.
+
+    The group claims its slot for every run, so no job `if:` narrows the
+    triggers it serves. A declared opt-out in the `concurrency:` block clears it.
+    """
+    group = group_of(doc.get("concurrency"))
+    if not isinstance(group, str) or not group_has_run_id_escape(group):
+        return []
+    triggers = declared_triggers(doc)
+    if not triggers or not all(group_is_per_run_on(group, t) for t in triggers):
+        return []
+    line = concurrency_line(text)
+    window = _top_level_block(text.splitlines(), line)
+    if any(annotated(comment_lines[num], INERT_OPT_OUT) for num in window):
+        return []
+    message = _MISFIRE_MESSAGE.format(
+        subject="the workflow", scope="the workflow", group=group
+    )
+    return [(line, message)]
+
+
+def _top_level_block(lines: list[str], start: int) -> range:
+    """The 0-based line indexes of the top-level key on 1-based line START and
+    its body: every following line that is blank or indented."""
+    end = start
+    while end < len(lines) and (not lines[end].strip() or lines[end][0] in " \t"):
+        end += 1
+    return range(start - 1, end)
 
 
 def _trigger_name(trigger) -> str:
@@ -353,7 +392,9 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     if not isinstance(jobs, dict):
         return []
     blocks = _job_blocks(text)
-    violations = _inert_slot_violations(doc, jobs, blocks, yaml_comment_view(text))
+    comment_lines = yaml_comment_view(text)
+    violations = _inert_slot_violations(doc, jobs, blocks, comment_lines)
+    violations += _workflow_misfire_violations(text, doc, comment_lines)
 
     storm = _storm_types(doc)
     if not storm:

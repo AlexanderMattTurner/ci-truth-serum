@@ -1600,6 +1600,11 @@ _ACTIONLESS_EVENTS = frozenset(
     }
 )
 
+# The event of a reusable workflow that another workflow calls. Its `github`
+# context is the caller's, so a read of the event name or payload says nothing
+# about which event ran it.
+_CALLED_EVENT = "workflow_call"
+
 # A payload path, and the events whose payload carries its first segment. A
 # condition that demands a value from one of these paths is false on every other
 # event, which is how a job's `if:` excludes an event without naming it.
@@ -1713,6 +1718,8 @@ def _term_truth(term: str, trigger: "Trigger") -> bool | None:
     """
     match = _EVENT_NAME_CMP.match(term)
     if match:
+        if trigger.event == _CALLED_EVENT:
+            return None  # a called workflow reads its CALLER's event name
         literal = match.group("lit1") or match.group("lit2") or ""
         equal = _named_match([literal], trigger.event)
         return (
@@ -1743,6 +1750,8 @@ def _term_truth(term: str, trigger: "Trigger") -> bool | None:
             return None
         inner = match.group("term").strip().casefold()
         if inner == "github.event_name":
+            if trigger.event == _CALLED_EVENT:
+                return None
             return _named_match(members, trigger.event)
         if inner == "github.event.action":
             if trigger.event.casefold() in _ACTIONLESS_EVENTS:
@@ -1762,6 +1771,8 @@ def _payload_truth(path: str, trigger: "Trigger") -> bool | None:
     Never True: the path being present says nothing about the value a demand
     compares it against, so this reader proves absence and nothing else.
     """
+    if trigger.event == _CALLED_EVENT:
+        return None  # a called workflow reads its CALLER's payload
     for prefix, events in _PAYLOAD_EVENTS:
         if path == prefix or path.startswith(prefix):
             return None if trigger.event in events else False
@@ -1912,13 +1923,16 @@ def group_separates_triggers(group: str, first: Trigger, second: Trigger) -> boo
 # and the action id belongs to a step.
 _EVENT_CONSTANT_CONTEXTS = _CONSTANT_CONTEXTS - {"github.actor", "github.action"}
 
-# A read of the delivery itself: a payload path or the user that caused the run.
-# Two runs of one trigger can disagree on each of these. `github.event.action`
-# is left out, because `Trigger` already splits a pull-request event by action.
-# So are `repository` and `organization`: they hold one value for every run.
+# A read of the delivery itself: a payload path, the user that caused the run,
+# the ref or commit it ran on, or a dispatch or call input. Two runs of one
+# trigger can disagree on each of these. `github.event.action` is left out,
+# because `Trigger` already splits a pull-request event by action. So are
+# `repository` and `organization`: they hold one value for every run.
 _DELIVERY_READ = re.compile(
     r"\bgithub\.(?:event\.(?!action\b|repository\b|organization\b)[A-Za-z_]"
-    r"|actor\b|triggering_actor\b)",
+    r"|(?:actor|triggering_actor|ref|ref_name|ref_type|ref_protected|head_ref"
+    r"|base_ref|sha)\b)"
+    r"|(?<![\w.])inputs(?:\.|\[)",
     re.IGNORECASE,
 )
 
@@ -1952,17 +1966,26 @@ def group_is_event_constant(group: str) -> bool:
     return True
 
 
-def _reads_varying_delivery(expr: str) -> bool:
+# What a called workflow reads from its CALLER's context. The event name and
+# the action differ between two callers, though `Trigger` cannot split them.
+_CALLER_READ = re.compile(r"\bgithub\.event(?:_name\b|\.action\b)", re.IGNORECASE)
+
+
+def _reads_varying_delivery(expr: str, called: bool = False) -> bool:
     """Whether EXPR reads delivery data that can differ between two runs of one
-    trigger. A term that only tests the presence of a payload object does not."""
+    trigger. A term that only tests the presence of a payload object does not.
+    CALLED adds the event name and action, which a called workflow takes from
+    its caller."""
     expr = _strip_parens(expr.strip())
     for operator in ("||", "&&"):
         arms = _split_top_level(expr, operator)
         if len(arms) > 1:
-            return any(_reads_varying_delivery(arm) for arm in arms)
+            return any(_reads_varying_delivery(arm, called) for arm in arms)
     if _PRESENCE_TERM.match(expr):
         return False
-    return bool(_DELIVERY_READ.search(expr))
+    return bool(_DELIVERY_READ.search(expr)) or (
+        called and bool(_CALLER_READ.search(expr))
+    )
 
 
 def job_delivery_split_triggers(
@@ -1973,15 +1996,16 @@ def job_delivery_split_triggers(
     On such a trigger one run can serve the job and the next run can skip it.
     Take `if: github.event.label.name == 'go'` on `pull_request` / `labeled`.
     A run for the label `go` serves the job, and a run for the label `wip`
-    skips it.
+    skips it. A `push` can read `github.ref`, and a `workflow_dispatch` run can
+    read `inputs.deploy`. A called workflow can read its caller's event name.
     """
     expression = unwrap_expression(str(if_value or "")).strip()
-    if not _reads_varying_delivery(_LITERAL_SPAN.sub(" ", expression)):
-        return []
+    text = _LITERAL_SPAN.sub(" ", expression)
     return [
         trigger
         for trigger in triggers
-        if _expression_truth(expression, trigger) is None
+        if _reads_varying_delivery(text, trigger.event == _CALLED_EVENT)
+        and _expression_truth(expression, trigger) is None
     ]
 
 

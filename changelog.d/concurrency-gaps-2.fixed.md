@@ -1,0 +1,1 @@
+- `check-pending-cancel-concurrency` now catches a fixed group behind an `if:` that reads `github.ref`, a dispatch or call `inputs.*` value, or a called workflow's caller event, and a workflow-level run-id escape that never shares a slot.
