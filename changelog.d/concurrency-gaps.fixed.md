@@ -1,0 +1,1 @@
+- `check-static-concurrency` now judges the scalar shorthand `concurrency: ${{ github.workflow }}`, and `check-pending-cancel-concurrency` catches a fixed group behind a payload condition and a run-id escape that never applies on the events the job runs on.

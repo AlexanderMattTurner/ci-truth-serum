@@ -22,11 +22,22 @@ required check, so a skip there cannot fail open.
 
 Evaluation is three-valued. The ``if:`` expression is parsed with a
 recursive-descent parser over GitHub's documented expression grammar (no
-published Python parser exists for it) and evaluated with ``github.event_name``
-and ``github.event.action`` bound and every other context unknown. Only a
-DEFINITELY-false verdict fires: a fork guard, a ``needs.decide.outputs.*``
-gate, or a title-keyword condition evaluates to unknown and passes, which is
-what keeps the false-positive rate at zero on real trees.
+published Python parser exists for it). Only the event facts are bound:
+``github.event_name``, ``github.event.action``, and the ABSENT
+``github.event.pull_request`` of a merge-queue run, which GitHub reads as null.
+Every other context is unknown. Only a DEFINITELY-false verdict fires: a fork
+guard, a ``needs.decide.outputs.*`` gate, or a title-keyword condition
+evaluates to unknown and passes, which is what keeps the false-positive rate at
+zero on real trees.
+
+A second rule covers a check that never runs in the merge queue at all. GitHub
+requires the same checks of a queue batch as of a pull request. So a marked job
+in a workflow that fires on a pull request but not on ``merge_group`` leaves the
+queue waiting for a context that never arrives. A lint cannot read the ruleset,
+so it reads the queue from the tree. The repo uses one when another workflow
+fires on both a pull request event and ``merge_group``. A workflow that fires on
+``merge_group`` alone can be a leg written before the queue is turned on, so it
+proves nothing.
 
 Opt out per job with ``# event-scoped-ok: <reason>`` on or above the job when
 the skip is deliberate and the reporter below it is honest about it.
@@ -44,10 +55,12 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _job_blocks,
     _marked_jobs,
     annotated_near,
+    declared_events,
     unwrap_expression,
     workflow_triggers,
     yaml_comment_view,
 )
+from _cts_linecheck import WORKFLOW_GLOBS  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -61,6 +74,7 @@ ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 # not a defect. workflow_call is unanalyzable per-file besides: its event_name
 # is the calling workflow's.
 GATING_EVENTS = ("pull_request", "pull_request_target", "merge_group")
+PR_EVENTS = frozenset({"pull_request", "pull_request_target"})
 
 # Activity types GitHub fires when a pull_request-family trigger declares none.
 DEFAULT_TYPES = {
@@ -79,7 +93,25 @@ _TOKEN = re.compile(
     r"|(?P<path>[A-Za-z_][\w-]*(?:\.[\w*-]+|\[[^\]]*\])*))"
 )
 
-_UNKNOWN = "unknown"
+# A sentinel no expression value can equal, so the string literal 'unknown'
+# stays an ordinary string.
+_UNKNOWN = object()
+
+# GitHub's literal keywords. The tokenizer reads them as context paths.
+_KEYWORDS = {"true": True, "false": False, "null": None}
+
+# A legal JSON number, the only string form GitHub casts to a number.
+_JSON_NUMBER = re.compile(r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?")
+
+# The events whose payload carries no pull request object. GitHub reads every
+# path under the absent object as null.
+_NO_PULL_REQUEST = frozenset({"merge_group"})
+
+# The activity type GitHub sends with every merge_group event.
+_MERGE_GROUP_ACTION = "checks_requested"
+
+# The functions truth_of reads, each over two string casts.
+_STRING_CALLS = ("contains", "startswith", "endswith")
 
 
 class ExpressionError(ValueError):
@@ -169,9 +201,11 @@ class _Parser:
             return ("lit", tok[1:-1].replace("''", "'"))
         if kind == "num":
             self._take()
-            return ("lit", tok)
+            return ("lit", float(tok))
         if kind == "path":
             self._take()
+            if self._peek() != "(" and tok.lower() in _KEYWORDS:
+                return ("lit", _KEYWORDS[tok.lower()])
             if self._peek() == "(":
                 self._take()
                 args = []
@@ -186,20 +220,125 @@ class _Parser:
         raise ExpressionError(f"unexpected token {tok!r}")
 
 
+def event_env(event: str, action: str | None = None) -> dict:
+    """The context values one gating event fixes, for ``truth_of``.
+
+    A merge-queue run carries no pull request, so every path under
+    ``github.event.pull_request`` reads as null there. Its activity type is
+    always ``checks_requested``.
+    """
+    env: dict = {"github.event_name": event}
+    if event == "merge_group" and action is None:
+        action = _MERGE_GROUP_ACTION
+    if action is not None:
+        env["github.event.action"] = action
+    if event in _NO_PULL_REQUEST:
+        env["github.event.pull_request"] = None
+    return env
+
+
+# A property read written as an index step: `['pull_request']`.
+_INDEX_STEP = re.compile(r"\[\s*'(?P<name>[^']*)'\s*\]")
+
+
+def _lookup(path: str, env: dict) -> object:
+    """PATH's value under ENV. A path below a null object is itself null.
+
+    `github['event'].pull_request` is the same read as
+    `github.event.pull_request`, so index steps are written as dotted ones first.
+    """
+    key = _INDEX_STEP.sub(lambda step: "." + step.group("name"), path.lower())
+    if key in env:
+        return env[key]
+    for bound, value in env.items():
+        if value is None and key.startswith((f"{bound}.", f"{bound}[")):
+            return None
+    return _UNKNOWN
+
+
 def _value_of(node: tuple, env: dict) -> object:
     """NODE's value where ENV determines it, else the _UNKNOWN sentinel."""
     if node[0] == "lit":
         return node[1]
     if node[0] == "path":
-        return env.get(node[1].lower(), _UNKNOWN)
+        return _lookup(node[1], env)
     if node[0] == "call" and node[1] == "fromjson" and len(node[2]) == 1:
         inner = _value_of(node[2][0], env)
-        if inner is not _UNKNOWN:
+        if isinstance(inner, str):
             try:
-                return json.loads(str(inner))
+                return json.loads(inner)
             except ValueError:
                 return _UNKNOWN
     return _UNKNOWN
+
+
+def _to_number(value: object) -> float:
+    """VALUE cast the way GitHub casts before it compares two types."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (bool, int, float)):
+        return float(value)
+    if isinstance(value, str):
+        if not value:
+            return 0.0
+        if _JSON_NUMBER.fullmatch(value):
+            return float(value)
+    return float("nan")
+
+
+def _to_string(value: object) -> str | None:
+    """VALUE cast the way GitHub casts a function's string argument. An array
+    or an object gets None, because this reader does not model that cast."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(int(value)) if float(value).is_integer() else str(value)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _loose_equal(left: object, right: object) -> bool:
+    """GitHub's ``==``. Two strings compare without regard to case. Two values
+    of different types compare as numbers, so ``null == ''`` is true. An array
+    or an object equals only itself."""
+    if isinstance(left, str) and isinstance(right, str):
+        return left.casefold() == right.casefold()
+    if isinstance(left, (list, dict)) or isinstance(right, (list, dict)):
+        return left is right
+    if type(left) is type(right):
+        return left == right
+    return _to_number(left) == _to_number(right)
+
+
+def _truthy(value: object) -> bool:
+    """GitHub's truthiness: false, null, 0, NaN and '' are false."""
+    if isinstance(value, (list, dict)):
+        return True
+    if isinstance(value, str):
+        return value != ""
+    number = _to_number(value)
+    return number == number and number != 0
+
+
+def _string_call(name: str, args: list, env: dict) -> object:
+    """startsWith / endsWith / contains over string casts, without case."""
+    hay, needle = (_value_of(arg, env) for arg in args)
+    if hay is _UNKNOWN or needle is _UNKNOWN:
+        return _UNKNOWN
+    if name == "contains" and isinstance(hay, list):
+        return any(_loose_equal(item, needle) for item in hay)
+    hay_text, needle_text = _to_string(hay), _to_string(needle)
+    if hay_text is None or needle_text is None:
+        return _UNKNOWN
+    hay_text, needle_text = hay_text.casefold(), needle_text.casefold()
+    if name == "startswith":
+        return hay_text.startswith(needle_text)
+    if name == "endswith":
+        return hay_text.endswith(needle_text)
+    return needle_text in hay_text
 
 
 def truth_of(node: tuple, env: dict) -> object:
@@ -229,19 +368,15 @@ def truth_of(node: tuple, env: dict) -> object:
         return _UNKNOWN if inner is _UNKNOWN else not inner
     if node[0] == "cmp" and node[1] in ("==", "!="):
         left, right = _value_of(node[2], env), _value_of(node[3], env)
-        if _UNKNOWN in (left, right):
+        if left is _UNKNOWN or right is _UNKNOWN:
             return _UNKNOWN
-        equal = str(left) == str(right)
+        equal = _loose_equal(left, right)
         return equal if node[1] == "==" else not equal
-    if node[0] == "call" and node[1] == "contains" and len(node[2]) == 2:
-        hay, needle = _value_of(node[2][0], env), _value_of(node[2][1], env)
-        if _UNKNOWN in (hay, needle):
-            return _UNKNOWN
-        if isinstance(hay, list):
-            return str(needle) in [str(item) for item in hay]
-        return str(needle) in str(hay)
-    if node[0] == "lit":
-        return node[1] not in ("", "false", "0")
+    if node[0] == "call" and node[1] in _STRING_CALLS and len(node[2]) == 2:
+        return _string_call(node[1], node[2], env)
+    if node[0] in ("lit", "path"):
+        value = _value_of(node, env)
+        return _UNKNOWN if value is _UNKNOWN else _truthy(value)
     return _UNKNOWN
 
 
@@ -294,17 +429,48 @@ def _excluded_on(cond: str, pairs: list[tuple[str, str | None]]) -> list[str]:
     tree = _Parser(cond).parse()
     excluded = []
     for event, action in pairs:
-        env = {"github.event_name": event}
-        if action is not None:
-            env["github.event.action"] = action
-        if truth_of(tree, env) is False:
+        if truth_of(tree, event_env(event, action)) is False:
             excluded.append(event if action is None else f"{event}:{action}")
     return excluded
 
 
-def check_file(path: Path) -> list[tuple[int | None, str]]:
+def gates_the_queue(path: Path) -> bool:
+    """True when the workflow at PATH fires on a pull request event and on
+    ``merge_group``.
+
+    A file that does not parse answers False. Its own ``check_file`` run
+    reports it, so the answer here only loses evidence of a queue.
+    """
+    try:
+        doc = safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError:
+        return False
+    events = declared_events(doc)
+    return "merge_group" in events and bool(events & PR_EVENTS)
+
+
+def uses_merge_queue(paths: list[Path]) -> bool:
+    """True when a workflow in PATHS gates both pull requests and the queue.
+
+    The ruleset that turns the queue on lives outside the tree. A gate that
+    already answers the queue's event is the tree's own record that a queue runs.
+    """
+    return any(gates_the_queue(path) for path in paths)
+
+
+def _siblings(path: Path) -> list[Path]:
+    """The workflow files in PATH's directory, PATH included."""
+    return sorted(p for glob in WORKFLOW_GLOBS for p in path.parent.glob(glob))
+
+
+def check_file(
+    path: Path, merge_queue: bool | None = None
+) -> list[tuple[int | None, str]]:
     """Return (line, message) for every closure job provably skipped on a
-    gating event.
+    gating event, and for every required job the merge queue never runs.
+
+    MERGE_QUEUE says whether the repo uses a merge queue. None reads it from
+    the workflow files beside PATH.
 
     A file that cannot be parsed as YAML is itself reported as a violation
     (line ``None``) rather than silently passed as clean — matching the sibling
@@ -340,6 +506,19 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     required = _marked_jobs(blocks, jobs)
 
     violations: list[tuple[int | None, str]] = []
+    events = {event for event, _ in pairs}
+    if required and events & PR_EVENTS and "merge_group" not in events:
+        if merge_queue is None:
+            merge_queue = uses_merge_queue(_siblings(path))
+        if merge_queue:
+            for root in required:
+                start, block = blocks.get(root, (1, ""))
+                span_end = start + len(block.splitlines()) - 1
+                if not annotated_near(
+                    lines, start, OPT_OUT, span_end=span_end, comments=comments
+                ):
+                    violations.append((start, _no_queue_trigger(root)))
+
     judged: set[str] = set()
     for root in required:
         for name in sorted(needs_closure(jobs, root)):
@@ -378,6 +557,19 @@ def _excluded(name: str, root: str, excluded: list[str], cond: str) -> str:
     )
 
 
+def _no_queue_trigger(root: str) -> str:
+    return (
+        f"required check '{root}' runs on pull requests, but its workflow does "
+        "not fire on merge_group. Another pull request gate here does, so this "
+        "repo uses a merge queue. GitHub requires the same checks of a queue batch, "
+        "so every batch waits for this context until the queue times it out. "
+        "Add `merge_group:` to the workflow's `on:` block. If the check only "
+        "judges the pull request, skip its steps there, so the job still reports. "
+        "Annotate the job "
+        f"with '# {OPT_OUT}: <reason>' if no queue gates this branch."
+    )
+
+
 def _unreadable(name: str, cond: str, err: ExpressionError) -> str:
     return (
         f"job '{name}' is in a required check's needs closure but its `if:` "
@@ -393,9 +585,11 @@ def workflow_files() -> list[Path]:
 
 def main() -> int:
     total = 0
-    for path in workflow_files():
+    files = workflow_files()
+    merge_queue = uses_merge_queue(files)
+    for path in files:
         rel = path.relative_to(REPO_ROOT)
-        for line, message in check_file(path):
+        for line, message in check_file(path, merge_queue):
             loc = f"file={rel},line={line}" if line else f"file={rel}"
             print(f"::error {loc}::{message}")
             total += 1
