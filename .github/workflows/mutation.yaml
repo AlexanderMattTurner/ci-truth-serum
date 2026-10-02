@@ -81,6 +81,8 @@ jobs:
           - '.github/scripts/run-mutation.sh'
           - '.github/scripts/run-mutation-shard.sh'
           - '.github/scripts/mutation_shards.py'
+          - '.github/scripts/_repo_root.py'
+          - '.github/scripts/prune-mutation-session.py'
           - '.github/scripts/aggregate-mutation.py'
           - '.github/actions/setup-uv/**'
           - '.github/workflows/mutation.yaml'

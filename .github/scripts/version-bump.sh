@@ -320,12 +320,7 @@ if npm view "$PACKAGE_NAME@$NEW_VERSION" version &>/dev/null; then
 fi
 
 # Update package.json in working directory only (not committed to git)
-NEW_VERSION="$NEW_VERSION" node -e '
-const fs = require("fs");
-const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-pkg.version = process.env.NEW_VERSION;
-fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-'
+NEW_VERSION="$NEW_VERSION" node "$SCRIPT_DIR/set-package-version.mjs" package.json
 log "Set package.json to $NEW_VERSION (working directory only)"
 
 # Build and publish to npm. Treat "already published" (the registry's caching

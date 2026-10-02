@@ -1,0 +1,1 @@
+- **`check-counted-repo-root`** flags a path that counts parents up from `__file__`, such as `Path(__file__).parents[3]`. Nothing checks that depth, so a moved file points at the wrong directory, and a scan under it reports a clean result. Opt out with `# allow-counted-root: <reason>`.

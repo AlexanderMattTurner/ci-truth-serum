@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._helpers import commit_all, init_test_repo, load_hook
+from tests._helpers import REPO_ROOT, commit_all, init_test_repo, load_hook
 
 mod = load_hook("check_duplicate_class_names.py", "check_duplicate_class_names")
 
@@ -303,7 +303,7 @@ def test_the_real_tree_scanned_through_run_file_cli_exits_0_or_1() -> None:
     driven through the real module file, not a mocked stand-in."""
     result = subprocess.run(
         [sys.executable, mod.__file__, "ci_truth_serum/check_duplicate_class_names.py"],
-        cwd=str(Path(__file__).resolve().parents[2]),
+        cwd=str(REPO_ROOT),
         capture_output=True,
         check=False,
     )

@@ -16,6 +16,7 @@
 #
 # Env: SHARD_ID (required)  SHARD_INDEX/SHARD_TOTAL (mutant slice, default 0/1)
 #      HYPOTHESIS_PROFILE (default dev, a fast property budget)
+#      MUTANT_MEMORY_LIMIT_KB / MUTANT_PROCESS_LIMIT (caps, default 4000000 / 2048)
 set -euo pipefail
 
 : "${SHARD_ID:?SHARD_ID must be set to a shard id from mutation_shards.py}"
@@ -28,6 +29,16 @@ session="cr-${SHARD_ID}.sqlite"
 report_dir="reports/mutation"
 
 export HYPOTHESIS_PROFILE="${HYPOTHESIS_PROFILE:-dev}"
+
+# Cap every process this shard starts, the per-mutant test runs included. A mutant
+# can turn a loop into an endless one (`i += 1` -> `i += 0` in glob_to_regex grows a
+# list without bound). cosmic-ray's 60s timeout is too slow: that test run held
+# several GB first, and on a CI runner the kernel killed the runner itself. Under the
+# cap the run ends with a MemoryError or a failed fork, which cosmic-ray scores as
+# KILLED, so no mutant is excused and the gates are unchanged. The memory cap is per
+# process. The process cap is per user, so it also bounds a fork loop.
+ulimit -v "${MUTANT_MEMORY_LIMIT_KB:-4000000}"
+ulimit -u "${MUTANT_PROCESS_LIMIT:-2048}"
 
 python "${here}/mutation_shards.py" --write-config "${SHARD_ID}" >/dev/null
 
@@ -55,7 +66,7 @@ else
   # mutants disjointly and completely (init is deterministic, so every runner sees
   # the same rowid order). total=1 keeps everything.
   if [[ "${shard_total}" -gt 1 ]]; then
-    python -c 'import sqlite3, sys; db, total, index = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]); conn = sqlite3.connect(db); conn.execute("DELETE FROM work_items WHERE rowid % ? != ?", (total, index)); conn.commit(); conn.close()' \
+    python "${here}/prune-mutation-session.py" \
       "${session}" "${shard_total}" "${shard_index}"
   fi
   echo "::endgroup::"

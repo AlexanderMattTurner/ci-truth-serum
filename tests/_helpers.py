@@ -4,6 +4,7 @@ Lives in a regular module (not `conftest.py`) so it can be imported directly
 without manipulating `sys.path` or relying on the conftest plugin loader.
 """
 
+import ast
 import importlib.util
 import os
 import re
@@ -14,7 +15,15 @@ from types import ModuleType
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(
+    subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=Path(__file__).resolve().parent,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+)
 HOOKS_DIR = REPO_ROOT / "ci_truth_serum"
 
 
@@ -113,6 +122,43 @@ def copy_script_to(script_name: str, dest_dir: Path) -> Path:
             dest.chmod(0o755)
             return dest
     raise FileNotFoundError(f"Could not find {script_name} in any known location")
+
+
+def local_import_closure(script: Path) -> list[Path]:
+    """SCRIPT plus every sibling module it imports, directly or through another.
+
+    A script under ``.github/scripts/`` reaches its helpers with a plain
+    ``import name`` after a ``sys.path`` insert. A test that copies the script
+    into a temporary tree must copy those helpers too, and a hand-written list of
+    them goes stale the day a script gains an import.
+    """
+    found: dict[str, Path] = {}
+    pending = [script]
+    while pending:
+        current = pending.pop()
+        if current.name in found:
+            continue
+        found[current.name] = current
+        if current.suffix != ".py":
+            continue
+        for node in ast.walk(ast.parse(current.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                names = [node.module]
+            else:
+                continue
+            for name in names:
+                sibling = current.with_name(name.split(".")[0] + ".py")
+                if sibling.is_file():
+                    pending.append(sibling)
+    return list(found.values())
+
+
+def copy_script_with_imports(script: Path, dest_dir: Path) -> None:
+    """Copy SCRIPT and its sibling imports into DEST_DIR, keeping file modes."""
+    for source in local_import_closure(script):
+        shutil.copy2(source, dest_dir / source.name)
 
 
 def unscanned_note(err: str) -> str:

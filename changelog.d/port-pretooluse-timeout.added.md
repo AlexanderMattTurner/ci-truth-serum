@@ -1,0 +1,1 @@
+- `check-pretooluse-timeout`: a new check that requires an explicit numeric `timeout` on each Claude Code `PreToolUse` hook entry in `.claude/settings.json` and `.claude/settings.local.json`. A hook that reaches its timeout does not block the tool call, so the bound must be a value that somebody chose.

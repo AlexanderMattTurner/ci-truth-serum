@@ -142,6 +142,16 @@
   additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
   types_or: [shell, python, yaml]
 
+- id: check-container-job-shell
+  name: "honesty: every container job names the shell its run steps use"
+  description: GitHub runs a run step with no shell in a container job as `sh -e {0}`. actionlint and shellcheck read it as bash, so bash syntax passes every lint and then fails on the runner.
+  entry: python -m ci_truth_serum.check_container_job_shell
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
 # ───────────────────────── Tier 1 · Identity (default-on) ────────────────────
 - id: check-pinned-base-images
   name: "identity: enforce digest-pinned Docker base images"
@@ -204,6 +214,22 @@
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
   types: [yaml]
+
+- id: check-pretooluse-timeout
+  name: "security: require an explicit timeout on every Claude Code PreToolUse hook"
+  description: A PreToolUse hook that reaches its timeout does not block the tool call, so a gate with no explicit timeout fails open at a default nobody chose.
+  entry: python -m ci_truth_serum.check_pretooluse_timeout
+  language: python
+  files: (^|/)\.claude/settings(\.local)?\.json$
+  types: [json]
+
+- id: check-grant-wildcard
+  name: "security: ban a Claude Code allow rule whose * extends a word"
+  description: An allow rule like Bash(git diff*) has no space before the *, so it also approves git difftool. Bash(git diff *) still matches the bare command.
+  entry: python -m ci_truth_serum.check_grant_wildcard
+  language: python
+  files: (^|/)\.claude/settings(\.local)?\.json$
+  types: [json]
 
 # ───────────────────────── Tier 2 · Opinionated (opt-in) ─────────────────────
 # These prescribe a specific architecture. Enable only if you follow it.
@@ -539,6 +565,40 @@
   # and the script (or the shell entrypoint) whose imports it reads. A
   # workflow-only filter never runs on the commit that adds the bare import.
   files: '(^\.github/(workflows|actions)/.*\.ya?ml$)|\.(js|mjs|cjs|jsx|ts|mts|cts|tsx|sh|bash)$'
+
+- id: check-artifact-pattern-overlap
+  name: "opinionated: a download pattern collects one upload family only"
+  description: A download-artifact `pattern:` that matches the names of two different uploads in one run merges both into one input. The next step then reads a file of the wrong shape, and nothing reports it.
+  entry: python -m ci_truth_serum.check_artifact_pattern_overlap
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-embedded-program-length
+  name: "opinionated: cap a program written as a shell string"
+  description: "A python/node/perl/ruby program passed as -c/-e text or fed from a heredoc is a string to every linter, so it ships unchecked. Tune --max-lines/--max-chars."
+  entry: python -m ci_truth_serum.check_embedded_program_length
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types_or: [shell, yaml]
+
+- id: check-main-push
+  name: "opinionated: ban a shell git push whose destination is a protected branch"
+  description: "A script that pushes straight to the default branch skips review and the required checks, and a merge queue restarts every queued group. Name the branches with `--branch` (default main and master)."
+  entry: python -m ci_truth_serum.check_main_push
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types_or: [shell, yaml]
+
+- id: check-rename-onto-symlink
+  name: 'opinionated: ban `mv "$f.tmp" "$f"` onto a path that may be a symlink'
+  description: "A rename replaces a destination symlink instead of following it, so an atomic write of a config file kept as a link silently detaches it."
+  entry: python -m ci_truth_serum.check_rename_onto_symlink
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  types: [shell]
 
 # ───────────────────────── Extras · Unrelated bonus checks ───────────────────
 # Useful, but unrelated to CI truth. Opt-in.
@@ -934,6 +994,31 @@
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
   types: [yaml]
+
+- id: check-counted-repo-root
+  name: "extra: ban a repository root counted off __file__'s parents"
+  description: "`Path(__file__).parents[3]` states a depth that nothing checks. A moved file then points at the wrong directory, and a scan under it reports a clean result."
+  entry: python -m ci_truth_serum.check_counted_repo_root
+  language: python
+  additional_dependencies: [PyYAML]
+  types: [python]
+
+- id: check-duplicate-local-hook
+  name: "extra: ban a local pre-commit hook whose id or command is defined twice"
+  description: "pre-commit accepts a duplicate local hook. `pre-commit run <id>` runs every copy, and `SKIP=<id>` skips every copy."
+  entry: python -m ci_truth_serum.check_duplicate_local_hook
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.pre-commit-config\.yaml$
+
+- id: check-bash32-portability
+  name: "extra: ban GNU-only flags and bash-4 syntax in scripts that run on macOS"
+  description: "`grep -P` or `${v,,}` passes a Linux CI runner and aborts on macOS's BSD tools and bash 3.2. Name your macOS scripts with `files:`; `--only bsd|bash32` picks one rule set."
+  entry: python -m ci_truth_serum.check_bash32_portability
+  language: python
+  additional_dependencies: [tree-sitter, tree-sitter-bash]
+  types: [shell]
 
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
