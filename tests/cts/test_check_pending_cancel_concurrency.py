@@ -824,3 +824,380 @@ def test_a_run_id_escape_without_an_if_still_needs_a_shared_arm(tmp_path):
         PUSH_AND_PR, "true", _escape("github.event_name == 'push'", "''")
     ).replace("    if: true\n", "")
     assert "never serialized" in _only(pc.check_file(_write(tmp_path, body)))
+
+
+# ── shape 1: the `if:` reads the ref or an input, not the event payload ──────
+
+PUSH = "  push:\n"
+DISPATCH = "  workflow_dispatch:\n    inputs:\n      deploy:\n        type: boolean\n"
+CALL = "  workflow_call:\n    inputs:\n      deploy:\n        type: boolean\n"
+
+
+@pytest.mark.parametrize(
+    ("trigger", "condition"),
+    [
+        (PUSH, "github.ref == 'refs/heads/main'"),
+        (PUSH, "startsWith(github.ref, 'refs/tags/')"),
+        (PUSH, "github.ref_name == 'main'"),
+        (PUSH, "github.ref_type == 'tag'"),
+        (PUSH, "github.ref_protected"),
+        (PUSH, "github.sha != github.event.before"),
+        (PUSH, "github.event_name == 'push' && github.ref == 'refs/heads/main'"),
+        (LABELED, "github.head_ref != 'release'"),
+        (LABELED, "github.base_ref == 'main'"),
+        (DISPATCH, "inputs.deploy"),
+        (DISPATCH, "inputs.env == 'prod'"),
+        (DISPATCH, "${{ inputs['env'] == 'prod' }}"),
+        (DISPATCH, "github.event.inputs.env == 'prod'"),
+        (CALL, "inputs.deploy == true"),
+        (CALL, "${{ !inputs.deploy }}"),
+    ],
+)
+def test_a_fixed_group_behind_a_ref_or_input_condition_is_an_error(
+    tmp_path, trigger, condition
+):
+    """Two pushes to different refs, or two dispatches with different inputs,
+    disagree on the `if:`. The run that skips the job still claims the one
+    fixed slot and evicts the run that serves."""
+    message = _only(
+        pc.check_file(_write(tmp_path, _fixed_group_job(trigger, condition)))
+    )
+    assert "reads the event payload, the ref or an input" in message
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        "w-${{ github.ref }}",
+        "w-${{ inputs.env }}",
+        "w-${{ github.ref == 'refs/heads/main' && 'shared' "
+        "|| format('inert-{0}', github.run_id) }}",
+    ],
+)
+def test_a_group_that_reads_the_ref_or_an_input_is_not_this_arm(tmp_path, group):
+    """A group that reads the ref or an input can vary with the `if:`, so this
+    arm leaves it alone, as it leaves a group that reads the payload."""
+    body = _fixed_group_job(PUSH, "github.ref == 'refs/heads/main'", group)
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+@pytest.mark.parametrize(
+    ("trigger", "condition"),
+    [
+        (PUSH, "github.event_name == 'push'"),
+        (PUSH, "github.repository == 'owner/repo'"),
+        (DISPATCH, "vars.DEPLOY == 'on'"),
+        (DISPATCH, "github.event_name == 'workflow_dispatch'"),
+    ],
+)
+def test_a_fixed_group_behind_a_condition_with_no_ref_or_input_read_is_clean(
+    tmp_path, trigger, condition
+):
+    """The sample reads only the event name, the repository and a repository
+    variable. Two runs of one trigger agree on each of them."""
+    body = _fixed_group_job(trigger, condition)
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_reasoned_annotation_suppresses_the_ref_arm(tmp_path):
+    body = _fixed_group_job(PUSH, "github.ref == 'refs/heads/main'")
+    assert len(pc.check_file(_write(tmp_path, body))) == 1
+    body = body.replace("  work:\n", "  work: # inert-group-ok: each push is cheap\n")
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+# ── shape 1: a workflow-level group that never shares ────────────────────────
+
+
+def _workflow_group(trigger: str, group: str, job_if: str = "") -> str:
+    return (
+        f"name: x\non:\n{trigger}"
+        "concurrency:\n"
+        f"  group: {group}\n"
+        "jobs:\n"
+        "  work:\n"
+        f"{job_if}"
+        "    runs-on: ubuntu-latest\n"
+        "    steps: []\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("trigger", "group"),
+    [
+        # `''` is falsy, so `||` hands back the run id even when cond holds.
+        (PUSH_AND_PR, _escape("github.event_name == 'push'", "''")),
+        # Inverted: the workflow only runs on push, the group shares on a PR.
+        (PUSH, _escape("github.event_name == 'pull_request'", "'shared'")),
+        # The condition is false on every declared trigger.
+        (PUSH, _escape("github.event_name == 'schedule'", "'shared'")),
+        # The run id sits in the first arm.
+        (PUSH, "w-${{ github.event_name == 'push' && github.run_id || 'shared' }}"),
+    ],
+)
+def test_a_workflow_level_run_id_escape_that_never_shares_is_an_error(
+    tmp_path, trigger, group
+):
+    body = _workflow_group(trigger, group)
+    line, message = _only_with_line(pc.check_file(_write(tmp_path, body)))
+    assert body.splitlines()[line - 1].startswith("concurrency:")
+    assert "the workflow chooses its concurrency group" in message
+    assert "never serialized" in message
+
+
+def _only_with_line(violations: list) -> tuple:
+    assert len(violations) == 1, violations
+    return violations[0]
+
+
+def test_a_workflow_level_scalar_shorthand_is_judged_too(tmp_path):
+    body = (
+        "name: x\non:\n  push:\n"
+        "concurrency: w-${{ github.event_name == 'push' && '' || github.run_id }}\n"
+        "jobs: {}\n"
+    )
+    assert "never serialized" in _only(pc.check_file(_write(tmp_path, body)))
+
+
+@pytest.mark.parametrize(
+    ("trigger", "group"),
+    [
+        (PUSH_AND_PR, _escape("github.event_name == 'push'", "'shared'")),
+        (PUSH, _escape("github.event_name == 'push'", "'shared'")),
+        # A condition this reader cannot decide is left alone.
+        (PUSH, _escape("vars.SERIAL == 'on'", "'shared'")),
+        # A bare run id is a deliberate group of one.
+        (PUSH, "w-${{ github.run_id }}"),
+        (
+            "  push:\n  schedule:\n    - cron: '0 0 * * *'\n",
+            _escape("github.event_name == 'push'", "'shared'"),
+        ),
+    ],
+)
+def test_a_workflow_level_group_that_shares_somewhere_is_clean(
+    tmp_path, trigger, group
+):
+    assert pc.check_file(_write(tmp_path, _workflow_group(trigger, group))) == []
+
+
+def test_a_reasoned_annotation_suppresses_the_workflow_level_arm(tmp_path):
+    body = _workflow_group(PUSH, _escape("github.event_name == 'push'", "''"))
+    assert len(pc.check_file(_write(tmp_path, body))) == 1
+    reasoned = body.replace(
+        "concurrency:\n", "concurrency:\n  # inert-group-ok: one run per push\n"
+    )
+    assert pc.check_file(_write(tmp_path, reasoned)) == []
+    bare = body.replace("concurrency:\n", "concurrency:\n  # inert-group-ok:\n")
+    assert len(pc.check_file(_write(tmp_path, bare))) == 1
+
+
+def test_a_job_annotation_does_not_suppress_the_workflow_level_arm(tmp_path):
+    body = _workflow_group(PUSH, _escape("github.event_name == 'push'", "''"))
+    body = body.replace("  work:\n", "  work: # inert-group-ok: unrelated\n")
+    assert len(pc.check_file(_write(tmp_path, body))) == 1
+
+
+def test_an_annotation_in_a_quoted_group_does_not_suppress_the_workflow_arm(tmp_path):
+    group = (
+        "\"w-${{ github.event_name == 'push' && '' || github.run_id }} "
+        '# inert-group-ok: x"'
+    )
+    body = _workflow_group(PUSH, group)
+    assert "never serialized" in _only(pc.check_file(_write(tmp_path, body)))
+
+
+# ── shape 1: a called workflow reads its CALLER's event ──────────────────────
+
+CALLED = "  workflow_call:\n"
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "github.event_name == 'pull_request'",
+        "github.event_name != 'pull_request'",
+        'contains(fromJSON(\'["push", "schedule"]\'), github.event_name)',
+        "github.event.pull_request.head.repo.fork == false",
+        "github.event_name == 'pull_request' && inputs.paths != ''",
+    ],
+)
+def test_a_called_workflow_reading_its_callers_event_shares_a_fixed_slot(
+    tmp_path, condition
+):
+    """A caller's `github` context reaches the called workflow, so one caller
+    can serve the job while another skips it. Both claim the one fixed slot."""
+    message = _only(
+        pc.check_file(_write(tmp_path, _fixed_group_job(CALLED, condition)))
+    )
+    assert "reads the event payload, the ref or an input" in message
+
+
+def test_a_called_workflow_with_a_group_that_reads_the_ref_is_clean(tmp_path):
+    body = _fixed_group_job(
+        CALLED, "github.event_name == 'pull_request'", "w-${{ github.ref }}"
+    )
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_called_workflow_beside_a_direct_trigger_still_serves_on_the_call(tmp_path):
+    """`push` reads the name as 'push', which skips the job. The called arm stays
+    undecided, so the job counts as serving there and shares the skipped slot."""
+    body = _fixed_group_job(PUSH + CALLED, "github.event_name == 'pull_request'")
+    message = _only(pc.check_file(_write(tmp_path, body)))
+    assert "skips on a 'push' run and runs on a 'workflow_call' run" in message
+
+
+# ── shape 1: a ref or input read counts only where the event varies it ───────
+
+SCHEDULE = "  schedule:\n    - cron: '0 0 * * *'\n"
+ISSUE_COMMENT = "  issue_comment:\n    types: [created]\n"
+
+
+@pytest.mark.parametrize(
+    ("trigger", "condition"),
+    [
+        # Every scheduled or comment-triggered run carries the default branch.
+        (SCHEDULE, "github.ref == 'refs/heads/main'"),
+        (ISSUE_COMMENT, "github.ref_name == 'main'"),
+        (SCHEDULE, "startsWith(github.ref, 'refs/heads/')"),
+        # `github.head_ref` and `github.base_ref` are empty off a pull request.
+        (PUSH, "github.head_ref"),
+        (PUSH, "github.head_ref != ''"),
+        (PUSH, "github.base_ref == 'main'"),
+        (SCHEDULE, "github.head_ref == ''"),
+        # No push, schedule or pull-request run carries an input.
+        (PUSH, "inputs.deploy"),
+        (SCHEDULE, "inputs.env == 'prod'"),
+        (LABELED, "${{ inputs['env'] == 'prod' }}"),
+    ],
+)
+def test_a_ref_or_input_read_on_an_event_that_cannot_vary_it_is_clean(
+    tmp_path, trigger, condition
+):
+    """On `schedule` every run reads one ref. On `push` the head ref and every
+    input read as empty. The runs agree on the `if:`, so none skips while
+    another serves."""
+    body = _fixed_group_job(trigger, condition)
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+@pytest.mark.parametrize(
+    ("trigger", "condition"),
+    [
+        (PUSH + SCHEDULE, "github.ref == 'refs/heads/main'"),
+        (PUSH + DISPATCH, "inputs.deploy"),
+        (SCHEDULE + DISPATCH, "inputs.deploy"),
+        (SCHEDULE + LABELED, "github.head_ref != 'release'"),
+    ],
+)
+def test_a_ref_or_input_read_is_judged_on_each_trigger_that_varies_it(
+    tmp_path, trigger, condition
+):
+    """One trigger that can vary the read is enough, whatever the others do."""
+    message = _only(
+        pc.check_file(_write(tmp_path, _fixed_group_job(trigger, condition)))
+    )
+    assert "reads the event payload, the ref or an input" in message
+
+
+def test_a_reason_above_the_workflow_level_concurrency_key_suppresses(tmp_path):
+    """The reason may sit in the comment block directly above the key, as it
+    may above any other construct."""
+    body = _workflow_group(PUSH, _escape("github.event_name == 'push'", "''"))
+    assert len(pc.check_file(_write(tmp_path, body))) == 1
+    above = body.replace(
+        "concurrency:\n", "# inert-group-ok: one run per push\nconcurrency:\n"
+    )
+    assert pc.check_file(_write(tmp_path, above)) == []
+    detached = body.replace(
+        "concurrency:\n", "# inert-group-ok: one run per push\n\nconcurrency:\n"
+    )
+    assert len(pc.check_file(_write(tmp_path, detached))) == 1
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_a_quoted_concurrency_key_is_located_and_its_opt_out_read(tmp_path, quote):
+    group = _escape("github.event_name == 'push'", "''")
+    key = f"{quote}concurrency{quote}"
+    body = _workflow_group(PUSH, group).replace("concurrency:", f"{key}:")
+    line, message = _only_with_line(pc.check_file(_write(tmp_path, body)))
+    assert body.splitlines()[line - 1].startswith(key)
+    assert "never serialized" in message
+    reasoned = body.replace(
+        f"{key}:\n", f"{key}:\n  # inert-group-ok: one run per push\n"
+    )
+    assert pc.check_file(_write(tmp_path, reasoned)) == []
+
+
+# ── shape 1: the chosen operand must BE a per-run value ──────────────────────
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        # The second operand reads the run id but returns the constant.
+        "w-${{ github.event_name == 'schedule' && 'shared' "
+        "|| (github.run_id && 'constant') }}",
+        # The run id sits in a format() argument its template never uses.
+        "w-${{ github.event_name == 'schedule' && 'shared' "
+        "|| format('inert-{0}', 'x', github.run_id) }}",
+        # The run id is only an argument of a call this reader does not model.
+        "w-${{ github.event_name == 'schedule' && 'shared' || toJSON(github.run_id) }}",
+    ],
+)
+def test_a_run_id_read_that_does_not_reach_the_group_is_clean(tmp_path, group):
+    """On a push-only workflow these groups all end in one constant string, so
+    the runs DO share a slot. Reading the run id inside the operand is not the
+    same as returning it."""
+    assert pc.check_file(_write(tmp_path, _workflow_group(PUSH, group))) == []
+
+
+@pytest.mark.parametrize(
+    "operand",
+    [
+        "github.run_id",
+        "(github.run_id)",
+        "format('inert-{0}', github.run_id)",
+        "format('inert-{0}-{1}', github.workflow, github.run_id)",
+        "(github.run_id || 'x')",
+        "('' || github.run_id)",
+        "'x' && github.run_id",
+    ],
+)
+def test_a_run_id_operand_that_returns_the_run_id_is_an_error(tmp_path, operand):
+    group = f"w-${{{{ github.event_name == 'schedule' && 'shared' || {operand} }}}}"
+    body = _workflow_group(PUSH, group)
+    assert "never serialized" in _only(pc.check_file(_write(tmp_path, body)))
+
+
+# ── shape 1: a called workflow's group may read its caller's event ───────────
+
+
+@pytest.mark.parametrize(
+    "group",
+    [
+        "${{ github.event_name }}",
+        "w-${{ github.event_name || 'none' }}",
+    ],
+)
+def test_a_called_workflow_group_keyed_on_the_caller_event_is_clean(tmp_path, group):
+    """Two callers on different events get different groups, so a caller that
+    skips the job cannot evict the caller that serves it."""
+    body = _fixed_group_job(CALLED, "github.event_name == 'push'", group)
+    assert pc.check_file(_write(tmp_path, body)) == []
+
+
+def test_a_direct_trigger_group_keyed_on_the_event_name_stays_an_error(tmp_path):
+    """On `labeled` the event name is `pull_request` for every run, so the group
+    is one slot however it is spelled."""
+    body = _fixed_group_job(
+        LABELED, "github.event.label.name == 'go'", "${{ github.event_name }}"
+    )
+    assert "reads the event payload" in _only(pc.check_file(_write(tmp_path, body)))
+
+
+def test_a_called_workflow_group_with_no_caller_key_stays_an_error(tmp_path):
+    body = _fixed_group_job(
+        CALLED, "github.event_name == 'push'", "${{ github.workflow }}"
+    )
+    assert "reads the event payload" in _only(pc.check_file(_write(tmp_path, body)))
