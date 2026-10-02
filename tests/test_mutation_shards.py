@@ -10,7 +10,6 @@ scopes the suite to that module.
 import importlib.util
 import json
 import math
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +17,7 @@ from pathlib import Path
 import pytest
 import tomllib
 
-from tests._helpers import REPO_ROOT
+from tests._helpers import REPO_ROOT, copy_script_with_imports
 
 _SRC = REPO_ROOT / ".github" / "scripts" / "mutation_shards.py"
 _spec = importlib.util.spec_from_file_location("mutation_shards", _SRC)
@@ -421,8 +420,7 @@ def test_cli_write_config_writes_parseable_toml(tmp_path: Path) -> None:
     (tmp_path / ".github" / "scripts").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")  # the root marker
     dest = tmp_path / ".github" / "scripts" / "mutation_shards.py"
-    dest.write_text(_SRC.read_text(encoding="utf-8"), encoding="utf-8")
-    shutil.copy(_SRC.with_name("_repo_root.py"), dest.with_name("_repo_root.py"))
+    copy_script_with_imports(_SRC, dest.parent)
     result = subprocess.run(
         [sys.executable, str(dest), "--write-config", "check_a"],
         capture_output=True,

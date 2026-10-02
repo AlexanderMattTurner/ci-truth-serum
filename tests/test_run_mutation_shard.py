@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._helpers import REPO_ROOT
+from tests._helpers import REPO_ROOT, copy_script_with_imports
 
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "run-mutation-shard.sh"
 PLANNER = REPO_ROOT / ".github" / "scripts" / "mutation_shards.py"
@@ -30,6 +30,17 @@ PRUNER = REPO_ROOT / ".github" / "scripts" / "prune-mutation-session.py"
 COSMIC_RAY_STUB = """#!/usr/bin/env bash
 set -euo pipefail
 echo "$*" >>"$STUB_LOG"
+if [[ "${1:-}" == "exec" ]]; then
+  # What a runaway mutant does: ask for more memory than the cap allows. The
+  # control asks for far less, so a pass cannot come from every allocation failing.
+  for gib_bytes in 1073741824 4294967296; do
+    if python -c 'import sys; bytearray(int(sys.argv[1]))' "$gib_bytes" 2>/dev/null; then
+      echo "alloc $gib_bytes ok" >>"$STUB_LOG"
+    else
+      echo "alloc $gib_bytes refused" >>"$STUB_LOG"
+    fi
+  done
+fi
 if [[ "${1:-}" == "init" ]]; then
   python -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); \
 c.execute("CREATE TABLE work_items (job_id TEXT)"); \
@@ -66,7 +77,7 @@ def _write_repo(root: Path) -> None:
     scripts.mkdir(parents=True)
     (root / "pyproject.toml").write_text("", encoding="utf-8")  # the root marker
     for source in (SCRIPT, PLANNER, PRUNER):
-        (scripts / source.name).write_bytes(source.read_bytes())
+        copy_script_with_imports(source, scripts)
     (scripts / SCRIPT.name).chmod(0o755)
 
 
@@ -124,6 +135,21 @@ def test_a_cold_shard_builds_its_session_and_reports(repo: Path) -> None:
     assert any(c.startswith("exec ") for c in commands), commands
     assert (repo / "cr-check_a.sqlite").is_file()
     assert (repo / "reports" / "mutation" / "check_a.json").is_file()
+
+
+def test_the_exec_step_runs_under_a_memory_cap(repo: Path) -> None:
+    """A test run that wants more memory than the cap allows is refused it.
+
+    A mutant that grows a list without bound must end in a MemoryError, which
+    cosmic-ray scores as killed. Without the cap the run held several GB until the
+    timeout and the CI runner was killed. The 1 GiB request is the control: it
+    must still succeed, so the cap is a bound and not a blanket refusal.
+    """
+    result = _run(repo, "check_a")
+    assert result.returncode == 0, result.stderr
+    commands = _commands(repo)
+    assert "alloc 1073741824 ok" in commands, commands
+    assert "alloc 4294967296 refused" in commands, commands
 
 
 def test_a_restored_session_is_resumed_never_rebuilt(repo: Path) -> None:
