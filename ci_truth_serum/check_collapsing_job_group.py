@@ -62,6 +62,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     declared_events,
     group_collapse_events,
     group_has_per_ref_key,
+    group_of,
     job_admitted_events,
     workflow_files,
     yaml_comment_view,
@@ -136,8 +137,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     for name, cfg in jobs.items():
         if not isinstance(cfg, dict):
             continue
-        conc = cfg.get("concurrency")
-        group = conc.get("group") if isinstance(conc, dict) else conc
+        group = group_of(cfg.get("concurrency"))
         if not isinstance(group, str) or not group:
             continue
         if not group_has_per_ref_key(group):
