@@ -362,9 +362,9 @@ def test_a_source_target_no_tracked_file_answers_adds_nothing(tmp_path: Path):
 
 
 def test_source_targets_reads_the_path_not_the_command_word(tmp_path: Path):
-    targets = mod._source_targets('source "$D/lib-retry.sh"\n')
-    assert "source" not in targets
-    assert targets == {"$D/lib-retry.sh"}
+    shell, _ = mod._shell_targets('source "$D/lib-retry.sh"\n')
+    assert "source" not in shell
+    assert shell == {"$D/lib-retry.sh"}
 
 
 def test_main_passes_when_the_import_is_also_listed(tmp_path: Path):
@@ -767,7 +767,7 @@ def test_main_reads_a_declaration_in_a_variable_invoked_entry_point(
 def test_main_reads_a_declaration_in_a_shell_entry_point(
     tmp_path: Path, capsys: pytest.CaptureFixture
 ):
-    """The shell half of the same term, and the load-bearing one: `_sourced`
+    """The shell half of the same term, and the load-bearing one: `_shell_closure`
     skips the entry points themselves, so a declaration in the script the job
     runs reaches the scan only through that term."""
     repo = _repo(tmp_path)
@@ -825,3 +825,176 @@ def test_main_reads_prose_after_the_paths_as_a_path(
     assert mod.main(["--repo-root", str(repo)]) == 1
     out = capsys.readouterr().out
     assert "`sparse-checkout-needs: (read` names no tracked file" in out
+
+
+# ── a script that RUNS another script, and a local action's own steps ─────
+_INSTALLER = ".github/scripts/install-rclone.sh"
+
+# The measured shape: the entry point sources one library and then RUNS a
+# sibling through a path an expansion decides. Neither the `source` walk nor
+# the job's own `run:` text names the sibling.
+_SETUP_SCRIPT = (
+    "#!/usr/bin/env bash\n"
+    'SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n'
+    "# shellcheck source=lib-rclone-pin.sh\n"
+    'source "$SCRIPT_DIR/lib-rclone-pin.sh"\n'
+    'bash "$SCRIPT_DIR/install-rclone.sh" "$@" || install_status=$?\n'
+)
+
+
+def _setup_repo(tmp_path: Path, sparse: str, run: str, extra_steps: str = "") -> Path:
+    repo = _repo(tmp_path)
+    _write(repo, ".github/workflows/w.yaml", _workflow_text(sparse, run, extra_steps))
+    _write(repo, ".github/scripts/setup-chart-upload.sh", _SETUP_SCRIPT)
+    _write(repo, ".github/scripts/lib-rclone-pin.sh", "RCLONE_FETCH_FAILED=3\n")
+    _write(repo, _INSTALLER, "echo install\n")
+    return repo
+
+
+_SETUP_AND_LIB = (
+    ".github/scripts/setup-chart-upload.sh\n"
+    "            .github/scripts/lib-rclone-pin.sh"
+)
+
+
+def test_main_follows_a_script_a_listed_script_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """The list covers the entry point and what it sources. The sibling the
+    entry point RUNS is still missing, and the runner dies on that line."""
+    repo = _setup_repo(
+        tmp_path, _SETUP_AND_LIB, "bash .github/scripts/setup-chart-upload.sh"
+    )
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert f"misses `{_INSTALLER}`" in out
+    assert "lib-rclone-pin.sh" not in out
+
+
+def test_main_passes_when_the_run_script_is_also_listed(tmp_path: Path):
+    repo = _setup_repo(
+        tmp_path,
+        f"{_SETUP_AND_LIB}\n            {_INSTALLER}",
+        "bash .github/scripts/setup-chart-upload.sh",
+    )
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '"$SCRIPT_DIR/install-rclone.sh" "$@"',
+        'sh "$SCRIPT_DIR/install-rclone.sh"',
+        "./install-rclone.sh",
+    ],
+)
+def test_shell_targets_reads_each_way_a_script_runs_a_script(line: str):
+    shell, python = mod._shell_targets(f"{line}\n")
+    assert {t.rsplit("/", 1)[-1] for t in shell} == {"install-rclone.sh"}
+    assert python == set()
+
+
+def test_shell_targets_reads_a_python_script_a_shell_script_runs():
+    shell, python = mod._shell_targets('python3 -I "$DIR/render.py" --out x\n')
+    assert shell == set()
+    assert python == {"$DIR/render.py"}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        'echo "run install-rclone.sh next"',
+        "bash -c 'echo install-rclone.sh'",
+        "cat > out.txt <<'EOF'\nbash install-rclone.sh\nEOF",
+    ],
+)
+def test_shell_targets_ignores_a_script_name_no_shell_runs(line: str):
+    """A message string, a `-c` body and a heredoc body are text, not a run."""
+    assert mod._shell_targets(f"{line}\n") == (set(), set())
+
+
+def test_main_follows_a_python_script_a_shell_script_runs(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """The Python file a script runs is an entry point too, so its own
+    imports are owed."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts/run.sh", "bash .github/scripts/run.sh"),
+    )
+    _write(repo, ".github/scripts/run.sh", 'python3 "$(dirname "$0")/render.py"\n')
+    _write(repo, ".github/scripts/render.py", "from _lockfiles import rule_for\n")
+    _write(repo, ".github/scripts/_lockfiles.py", "rule_for = 1\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert "misses `.github/scripts/render.py`" in out
+    assert "misses `.github/scripts/_lockfiles.py`" in out
+
+
+_COMPOSITE = (
+    "runs:\n"
+    "  using: composite\n"
+    "  steps:\n"
+    "    - shell: bash\n"
+    "      run: bash .github/scripts/setup-chart-upload.sh /tmp/rclone-dl\n"
+)
+
+
+def test_main_reads_the_steps_of_a_local_composite_action(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """`uses: ./.github/actions/x` runs that action's own steps against the
+    job's tree, so what those steps run is owed exactly as a `run:` is."""
+    repo = _setup_repo(
+        tmp_path,
+        ".github/actions/setup-chart-upload",
+        "echo hi",
+        "      - uses: ./.github/actions/setup-chart-upload\n",
+    )
+    _write(repo, ".github/actions/setup-chart-upload/action.yaml", _COMPOSITE)
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    for dep in (
+        ".github/scripts/setup-chart-upload.sh",
+        ".github/scripts/lib-rclone-pin.sh",
+        _INSTALLER,
+    ):
+        assert f"misses `{dep}`" in out
+
+
+def test_main_reads_a_composite_action_a_composite_action_uses(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    repo = _setup_repo(
+        tmp_path,
+        f".github/actions\n            {_SETUP_AND_LIB}",
+        "echo hi",
+        "      - uses: ./.github/actions/outer\n",
+    )
+    _write(
+        repo,
+        ".github/actions/outer/action.yml",
+        "runs:\n  using: composite\n  steps:\n    - uses: ./.github/actions/inner\n",
+    )
+    _write(repo, ".github/actions/inner/action.yml", _COMPOSITE)
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert f"misses `{_INSTALLER}`" in capsys.readouterr().out
+
+
+def test_main_passes_a_composite_action_whose_closure_is_listed(tmp_path: Path):
+    repo = _setup_repo(
+        tmp_path,
+        ".github/actions/setup-chart-upload\n            .github/scripts",
+        "echo hi",
+        "      - uses: ./.github/actions/setup-chart-upload\n",
+    )
+    _write(repo, ".github/actions/setup-chart-upload/action.yaml", _COMPOSITE)
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
