@@ -1,0 +1,1 @@
+- `check-sparse-checkout-closure`: follows each script that a shell script runs (`bash "$SCRIPT_DIR/x.sh"`, `"$DIR/x.py"`), and reads the steps of each local composite action that a job uses. Before, the check followed only `source` lines and the job's own `run:` steps. A job whose list omitted a script that another script ran passed the check and then failed on the runner.
