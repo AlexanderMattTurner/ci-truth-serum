@@ -34,7 +34,6 @@ Invoked by pre-commit with the staged shell files as arguments.
 
 import sys
 from pathlib import Path
-from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -44,7 +43,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     iter_nodes,
     node_text,
     parse,
-    unquote,
+    redirect_parts,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
@@ -102,45 +101,6 @@ _BOTH_OPERATORS = frozenset({"&>", "&>>"})
 _DUP_OPERATOR = ">&"
 
 
-class RedirectParts(NamedTuple):
-    """A `file_redirect`'s pieces: the file descriptor it points (or None for
-    the default), the operator, and the destination."""
-
-    descriptor: "str | None"
-    operator: str
-    destination: str
-
-
-def _redirect_parts(redirect) -> RedirectParts:
-    """(file descriptor, operator, destination) of a ``file_redirect``.
-
-    The destination is the token right AFTER the operator, not the node's last
-    child: the grammar folds a following argument into the same `file_redirect`
-    (`foo >/dev/null "a;b"` parks the string there), so reading the last child
-    would misread the destination on exactly the commands that also pass
-    arguments."""
-    children = redirect.children
-    descriptor = next(
-        (node_text(c) for c in children if c.type == "file_descriptor"),
-        None,
-    )
-    index = next(
-        (
-            i
-            for i, child in enumerate(children)
-            if child.type in _WRITE_OPERATORS
-            or child.type in _BOTH_OPERATORS
-            or child.type == _DUP_OPERATOR
-        ),
-        None,
-    )
-    if index is None or index + 1 >= len(children):
-        return RedirectParts(descriptor, "", "")
-    return RedirectParts(
-        descriptor, children[index].type, unquote(node_text(children[index + 1]))
-    )
-
-
 def _suppresses_stderr(redirects: list) -> bool:
     """True when REDIRECTS leave file descriptor 2 pointing at /dev/null.
 
@@ -153,7 +113,7 @@ def _suppresses_stderr(redirects: list) -> bool:
     survives). The two carry the same three tokens."""
     streams = {"1": "", "2": ""}  # "" — still attached to the caller's stream
     for redirect in sorted(redirects, key=lambda node: node.start_byte):
-        descriptor, operator, destination = _redirect_parts(redirect)
+        descriptor, operator, destination = redirect_parts(redirect)
         if operator in _BOTH_OPERATORS:
             streams["1"] = streams["2"] = destination
         elif operator in _WRITE_OPERATORS:
