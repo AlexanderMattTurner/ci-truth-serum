@@ -296,6 +296,13 @@ def test_stderr_alone_on_the_stream_is_not_a_merge(src: str) -> None:
         ("x=$(cmd 2>/dev/null |& tail -1)\n", [1]),
         ("x=$(cmd 3>&1 2>&3 | tail -1)\n", [1]),
         ('out=$(cmd 2>&1)\n[[ "$out" == x ]]\n', [2]),
+        # `{fd}>log` names a new descriptor, so stdout stays on the stream
+        ("x=$(cmd {log_fd}>log 2>&1 | tail -1)\n", [1]),
+        # a descriptor longer than `int()` accepts is still just a name
+        ("x=$(cmd " + "9" * 5000 + ">log 2>&1 | tail -1)\n", [1]),
+        # rule (b): the merged stream is discarded before it reaches the value
+        ('out=$(cmd 2>&1 | cat >/dev/null)\n[[ "$out" == x ]]\n', []),
+        ('out=$(cmd 2>&1 | cat)\n[[ "$out" == x ]]\n', [2]),
     ],
 )
 def test_both_streams_on_the_stream_still_fire(src: str, expected: list[int]) -> None:
