@@ -1,0 +1,1 @@
+`check-workflow-secret-names` now reads `secrets.` and `vars.` names only inside an expression: a `${{ … }}` span or an `if:` value. A file name such as `scrubbed-env-vars.json` or `secrets.md` in a `paths:` filter no longer counts as a reference.
