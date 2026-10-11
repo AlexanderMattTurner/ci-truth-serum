@@ -23,8 +23,8 @@ mod = load_hook("check_workflow_secret_names.py", "check_workflow_secret_names")
         ("t: ${{ secrets.GITHUB_TOKEN }}", set()),  # implicit, never listed
         ("t: ${{ github.token }}", set()),  # context form, implicit
         ("plain text, no refs", set()),
-        ("x: secrets.lower_name", {"lower_name"}),
-        ("x: secrets.9BAD", set()),  # not a valid secret name
+        ("x: ${{ secrets.lower_name }}", {"lower_name"}),
+        ("x: ${{ secrets.9BAD }}", set()),  # not a valid secret name
     ],
 )
 def test_referenced_names(text: str, expected: set) -> None:
@@ -148,6 +148,8 @@ def test_main_name_only_mentioned_in_a_comment_is_not_demanded(
         "config/redactor/scrubbed-env-vars.json",
         "docs/secrets.md",
         "lib/read.secrets.py",
+        "secrets.md",
+        "'vars.json'",
     ],
 )
 def test_main_a_file_name_holding_a_context_word_is_not_a_reference(
@@ -158,13 +160,32 @@ def test_main_a_file_name_holding_a_context_word_is_not_a_reference(
 
 
 @pytest.mark.parametrize(
-    "expression", ["${{ vars.REAL }}", "${{ !secrets.REAL }}", "${{ (vars.REAL) }}"]
+    "line",
+    [
+        "t: ${{ vars.REAL }}",
+        "t: ${{ !secrets.REAL }}",
+        "t: ${{ (vars.REAL) }}",
+        "if: secrets.REAL != ''",
+        "if: >-\n  github.event_name == 'push' &&\n  vars.REAL",
+    ],
 )
-def test_main_a_reference_after_an_operator_is_still_demanded(
-    tmp_path, monkeypatch, expression: str
+def test_main_a_reference_in_an_expression_is_still_demanded(
+    tmp_path, monkeypatch, line: str
 ) -> None:
-    _repo(tmp_path, monkeypatch, f"t: {expression}\n", "# nothing listed\n")
+    _repo(tmp_path, monkeypatch, f"{line}\n", "# nothing listed\n")
     assert mod.main() == 1
+
+
+def test_main_a_context_word_inside_an_expression_string_is_not_a_reference(
+    tmp_path, monkeypatch
+) -> None:
+    _repo(
+        tmp_path,
+        monkeypatch,
+        "k: ${{ hashFiles('config/vars.json', 'secrets.md') }}\n",
+        "",
+    )
+    assert mod.main() == 0
 
 
 def test_main_real_reference_is_still_demanded(tmp_path, monkeypatch) -> None:
