@@ -29,7 +29,7 @@ _SHARD_IDS = [s["id"] for s in ms.expand_shards(REPO_ROOT)]
 
 
 def _reports(ids: list[str], rate: str = "0.10") -> list[dict]:
-    return [{"id": i, "rate": rate} for i in ids]
+    return [{"id": i, "rate": rate, "survivors": []} for i in ids]
 
 
 def test_complete_set_passes_and_summarizes() -> None:
@@ -75,3 +75,31 @@ def test_load_reports_reads_nested_dirs(tmp_path: Path) -> None:
         )
     loaded = agg._load_reports(tmp_path)
     assert {r["id"] for r in loaded} == set(_SHARD_IDS[:3])
+
+
+# ── survivors: the Markdown the daily ledger turns into the mutation issue
+def test_survivors_markdown_lists_each_survivor_under_its_module() -> None:
+    reports = _reports(["check_b", "check_a"])
+    reports[0]["survivors"] = [
+        {
+            "path": "ci_truth_serum/check_b.py",
+            "line": 7,
+            "operator": "core/NumberReplacer",
+            "definition": "f",
+        },
+        {
+            "path": "ci_truth_serum/check_b.py",
+            "line": 9,
+            "operator": "core/AddNot",
+            "definition": None,
+        },
+    ]
+    assert agg.survivors_markdown(reports) == (
+        "### `check_b` (survival rate 0.10)\n\n"
+        "- `ci_truth_serum/check_b.py:7` `core/NumberReplacer` in `f`\n"
+        "- `ci_truth_serum/check_b.py:9` `core/AddNot`"
+    )
+
+
+def test_survivors_markdown_is_empty_when_every_mutant_died() -> None:
+    assert agg.survivors_markdown(_reports(_SHARD_IDS)) == ""

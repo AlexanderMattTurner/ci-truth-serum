@@ -12,6 +12,7 @@ session file. Everything else runs for real: the shard planner is the committed
 one and ``python`` is this interpreter.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -24,6 +25,7 @@ from tests._helpers import REPO_ROOT, copy_script_with_imports
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "run-mutation-shard.sh"
 PLANNER = REPO_ROOT / ".github" / "scripts" / "mutation_shards.py"
 PRUNER = REPO_ROOT / ".github" / "scripts" / "prune-mutation-session.py"
+REPORTER = REPO_ROOT / ".github" / "scripts" / "write-shard-report.py"
 
 # Records its argv, one command per line, and creates the session file on
 # `init` — the one side effect the script's control flow turns on.
@@ -76,7 +78,7 @@ def _write_repo(root: Path) -> None:
     scripts = root / ".github" / "scripts"
     scripts.mkdir(parents=True)
     (root / "pyproject.toml").write_text("", encoding="utf-8")  # the root marker
-    for source in (SCRIPT, PLANNER, PRUNER):
+    for source in (SCRIPT, PLANNER, PRUNER, REPORTER):
         copy_script_with_imports(source, scripts)
     (scripts / SCRIPT.name).chmod(0o755)
 
@@ -134,7 +136,10 @@ def test_a_cold_shard_builds_its_session_and_reports(repo: Path) -> None:
     assert any(c.startswith("init ") for c in commands), commands
     assert any(c.startswith("exec ") for c in commands), commands
     assert (repo / "cr-check_a.sqlite").is_file()
-    assert (repo / "reports" / "mutation" / "check_a.json").is_file()
+    report = json.loads(
+        (repo / "reports" / "mutation" / "check_a.json").read_text(encoding="utf-8")
+    )
+    assert report == {"id": "check_a", "rate": "0.25", "survivors": []}
 
 
 def test_the_exec_step_runs_under_a_memory_cap(repo: Path) -> None:
