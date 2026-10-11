@@ -142,6 +142,31 @@ def test_main_name_only_mentioned_in_a_comment_is_not_demanded(
     assert mod.main() == 0
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "config/redactor/scrubbed-env-vars.json",
+        "docs/secrets.md",
+        "lib/read.secrets.py",
+    ],
+)
+def test_main_a_file_name_holding_a_context_word_is_not_a_reference(
+    tmp_path, monkeypatch, path: str
+) -> None:
+    _repo(tmp_path, monkeypatch, f"on:\n  push:\n    paths:\n      - {path}\n", "")
+    assert mod.main() == 0
+
+
+@pytest.mark.parametrize(
+    "expression", ["${{ vars.REAL }}", "${{ !secrets.REAL }}", "${{ (vars.REAL) }}"]
+)
+def test_main_a_reference_after_an_operator_is_still_demanded(
+    tmp_path, monkeypatch, expression: str
+) -> None:
+    _repo(tmp_path, monkeypatch, f"t: {expression}\n", "# nothing listed\n")
+    assert mod.main() == 1
+
+
 def test_main_real_reference_is_still_demanded(tmp_path, monkeypatch) -> None:
     _repo(tmp_path, monkeypatch, "t: ${{ secrets.REAL }}\n", "# nothing listed\n")
     assert mod.main() == 1

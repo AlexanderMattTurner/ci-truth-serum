@@ -43,11 +43,11 @@ ALLOWLIST = Path(".github") / "workflow-secrets.txt"
 # the extraction regex never matches anyway).
 IMPLICIT = frozenset({"GITHUB_TOKEN"})
 
-# A `secrets.NAME` / `vars.NAME` context reference. The leading boundary rejects
-# a longer path (`foo.secrets.X` cannot occur in workflow expressions anyway);
-# names follow GitHub's secret-name grammar (alnum + underscore, not leading
-# digit).
-_REF = re.compile(r"\b(?:secrets|vars)\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+# A `secrets.NAME` / `vars.NAME` context reference. The lookbehind rejects a word
+# that ends a file name, such as `scrubbed-env-vars.json` in a `paths:` filter:
+# no expression puts `-`, `/` or `.` directly before a context name. Names follow
+# GitHub's secret-name grammar (alnum + underscore, not leading digit).
+_REF = re.compile(r"(?<![\w./-])(?:secrets|vars)\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 
 
 def referenced_names(text: str) -> set[str]:
