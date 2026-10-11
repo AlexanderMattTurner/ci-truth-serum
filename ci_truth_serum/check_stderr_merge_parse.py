@@ -61,6 +61,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     iter_nodes,
     node_text,
     parse,
+    redirect_parts,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
@@ -127,8 +128,6 @@ _BLOCKS = frozenset(
 # The pipe operators between a `pipeline`'s stages, so stage enumeration can skip
 # them without positional indexing.
 _PIPE_TOKENS = frozenset({"|", "|&"})
-# `{name}>file` makes bash pick a free descriptor and store its number in NAME.
-_BRACE_FD = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 
 def _statement_rows(node) -> tuple[int, int]:
@@ -221,59 +220,36 @@ def _fd_key(digits: str) -> str:
     return digits.lstrip("0") or "0"
 
 
-def _brace_fd(redirect):
-    """`{name}` when REDIRECT is `{name}>…`, which the grammar parses as an
-    argument word that ends where the redirect starts; otherwise None."""
-    before = redirect.prev_sibling
-    if before is not None and before.type == "command" and before.children:
-        before = before.children[-1]
-    if before is None or before.end_byte != redirect.start_byte:
-        return None
-    text = node_text(before)
-    return text if _BRACE_FD.fullmatch(text) else None
-
-
 def _apply(fds: dict, redirect) -> None:
     """Point FDS's entries where REDIRECT sends them. A target the grammar
     cannot name statically (`2>&$fd`, a file) becomes a fresh object, which is
     never the captured stream."""
-    children = redirect.children
-    op = next((c for c in children if not c.is_named), None)
-    if op is None:
+    descriptor, op, target = redirect_parts(redirect)
+    if not op:
         return
-    fd_node = next((c for c in children if c.type == "file_descriptor"), None)
-    brace = None if fd_node is not None else _brace_fd(redirect)
-    dest = next(
-        (c for c in children if c.is_named and c.start_byte > op.start_byte), None
-    )
-    target = (
-        node_text(dest)
-        if dest is not None and dest.type in ("word", "number")
-        else None
-    )
-    if fd_node is not None:
-        fd = _fd_key(node_text(fd_node))
+    if descriptor is None:
+        fd = "0" if op.startswith("<") else "1"
     else:
-        fd = brace or ("0" if op.type.startswith("<") else "1")
-    if op.type in ("&>", "&>>") or (
-        op.type == ">&"
-        and fd_node is None
-        and brace is None
-        and target is not None
+        fd = _fd_key(descriptor) if descriptor.isdigit() else descriptor
+    dup = op in (">&", "<&")
+    if op in ("&>", "&>>") or (
+        op == ">&"
+        and descriptor is None
+        and target
         and not target.rstrip("-").isdigit()
         and target != "-"
     ):
         # `&>f`, and `>&f` with a non-numeric target, send BOTH streams to f.
         fds["1"] = fds["2"] = object()
-    elif op.type == ">&-" or (op.type in (">&", "<&") and target == "-"):
+    elif op in (">&-", "<&-") or (dup and target == "-"):
         fds.pop(fd, None)
-    elif op.type in (">&", "<&") and target is not None and target.isdigit():
+    elif dup and target.isdigit():
         source = fds.get(_fd_key(target))
         if source is None:
             fds.pop(fd, None)
         else:
             fds[fd] = source
-    elif op.type in (">&", "<&") and target is not None and target[:-1].isdigit():
+    elif dup and target[:-1].isdigit() and target.endswith("-"):
         # `2>&1-` MOVES fd 1 onto fd 2: the copy above, then fd 1 is closed.
         source = fds.pop(_fd_key(target[:-1]), None)
         if source is None:
