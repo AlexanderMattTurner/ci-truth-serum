@@ -1,1 +1,0 @@
-`check-stderr-merge-parse` now follows each redirect in order. It no longer flags `x="$(cmd 2>&1 >/dev/null | tail -n 3)"`, where `2>&1` points stderr at the pipe and `>/dev/null` then sends stdout away, so the pipe carries stderr alone. It now also flags a merge through another file descriptor, such as `cmd 3>&1 2>&3 | tail -1`.
