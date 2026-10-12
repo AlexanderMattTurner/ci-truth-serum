@@ -1,0 +1,7 @@
+overrides:
+  # Patched: GHSA-ph9p-34f9-6g65 (path traversal, high), GHSA-52f5-9888-hmc6 (symlink, low)
+  tmp: ">=0.2.6"
+  # Patched: GHSA-2g4f-4pwh-qvx6 (ReDoS via $data option, moderate)
+  ajv: ">=8.18.0"
+  # Patched: GHSA-r4xh-jqrq-34v2 (quadratic-time parse, moderate)
+  smol-toml: ">=1.8.1"
