@@ -64,16 +64,8 @@ runs:
     # a consumer that never had a Python project would otherwise hard-fail every
     # workflow that passes setup-python: true, on its very first sync PR.
     - name: Set up uv
-<<<<<<< local
-      if: inputs.setup-python == 'true'
-      uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-||||||| base
-      if: inputs.setup-python == 'true'
-      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-=======
       if: inputs.setup-python == 'true' && hashFiles('pyproject.toml') != ''
-      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
->>>>>>> template
+      uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       with:
         enable-cache: true
         cache-dependency-glob: "uv.lock"

@@ -56,14 +56,8 @@ jobs:
     # check-conclusion-coverage declares: a publish that times out, or that
     # GitHub never started, is as red as one that failed.
     if: >-
-<<<<<<< local
       contains(fromJSON('["failure","timed_out","startup_failure","action_required"]'),
       github.event.workflow_run.conclusion) &&
-||||||| base
-      github.event.workflow_run.conclusion == 'failure' &&
-=======
-      contains(fromJSON('["action_required", "failure", "startup_failure", "timed_out"]'), github.event.workflow_run.conclusion) &&
->>>>>>> template
       github.event.workflow_run.event != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
