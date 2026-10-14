@@ -10,9 +10,9 @@ drafter, a release token) silently degrades. Real incidents: a workflow read
 plain commit list for a week; three renames of a release token each surfaced
 only at runtime.
 
-The contract: every `secrets.<NAME>` / `vars.<NAME>` referenced anywhere under
-`.github/workflows/` and `.github/actions/` — in workflow content, not in a
-`#` comment merely discussing one — must appear in
+The contract: every `secrets.<NAME>` / `vars.<NAME>` referenced under
+`.github/workflows/` and `.github/actions/` — inside an expression, not in a
+`#` comment or a file name merely holding one — must appear in
 `.github/workflow-secrets.txt` (one name per line, `#` comments allowed,
 sorted; a trailing comment may note repo/org scope), and every listed name
 must still be referenced — both directions, so the allowlist is a reviewed
@@ -25,7 +25,10 @@ list is ignored.
 
 import re
 import sys
+from collections.abc import Iterator
 from pathlib import Path
+
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import strip_yaml_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -43,22 +46,52 @@ ALLOWLIST = Path(".github") / "workflow-secrets.txt"
 # the extraction regex never matches anyway).
 IMPLICIT = frozenset({"GITHUB_TOKEN"})
 
-# A `secrets.NAME` / `vars.NAME` context reference. The leading boundary rejects
-# a longer path (`foo.secrets.X` cannot occur in workflow expressions anyway);
-# names follow GitHub's secret-name grammar (alnum + underscore, not leading
-# digit).
-_REF = re.compile(r"\b(?:secrets|vars)\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+# GitHub evaluates a context only inside an expression: a `${{ … }}` span, or an
+# `if:` value, which is an expression without the wrapper. Everywhere else
+# `vars.json` is text, such as `scrubbed-env-vars.json` in a `paths:` filter.
+_EXPRESSION = re.compile(r"\$\{\{(?P<body>.*?)\}\}", re.DOTALL)
+# An expression's string literal is single-quoted, with `''` as the escape.
+_STRING_LITERAL = re.compile(r"'(?:[^']|'')*'")
+# A `secrets.NAME` / `vars.NAME` context reference. The lookbehind rejects a
+# longer path (`inputs.vars.X`); names follow GitHub's secret-name grammar
+# (alnum + underscore, not leading digit).
+_REF = re.compile(r"(?<![\w.])(?:secrets|vars)\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _if_conditions(node: object) -> Iterator[str]:
+    """Every string value under an `if` key anywhere in a loaded workflow."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "if" and isinstance(value, str):
+                yield value
+            else:
+                yield from _if_conditions(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _if_conditions(item)
 
 
 def referenced_names(text: str) -> set[str]:
-    """Every secret/var name TEXT actually references, minus the implicit set.
+    """Every secret/var name TEXT's expressions reference, minus the implicit set.
 
     Comments are stripped first: a name only *mentioned* in a comment is not a
     reference, and demanding it be allowlisted would push a fake name into the
     allowlist — blunting the round-trip that catches a misspelled secret.
     """
+    expressions = [
+        m.group("body") for m in _EXPRESSION.finditer(strip_yaml_comments(text))
+    ]
+    try:
+        document = yaml.safe_load(text)
+    # GitHub refuses a workflow YAML cannot parse, so its bare `if:` values never
+    # run; its `${{ … }}` spans are still read above.
+    except yaml.YAMLError:
+        document = None
+    expressions += _if_conditions(document)
     return {
-        m.group("name") for m in _REF.finditer(strip_yaml_comments(text))
+        m.group("name")
+        for expression in expressions
+        for m in _REF.finditer(_STRING_LITERAL.sub("''", expression))
     } - IMPLICIT
 
 

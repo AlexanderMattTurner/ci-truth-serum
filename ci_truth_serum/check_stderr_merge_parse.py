@@ -16,6 +16,11 @@ Flagged (precision over recall — plain diagnostic captures must never fire):
       a parsing command or read in a `[[ … ]]` comparison / `(( … ))`
       arithmetic.
 
+A merge means BOTH streams reach the captured stream once the command's
+redirects apply, left to right. `cmd 2>&1 >/dev/null | tail` points stderr at
+the pipe and then sends stdout away, so the pipe carries stderr alone and is
+not flagged.
+
 Parsing commands: head, tail, grep, awk, cut, sed, jq, sort, wc. NOT flagged:
 `var=$(cmd 2>&1)` followed only by echo/printf/logging — capture-for-
 diagnostics is the dominant legitimate use — and a capture the script branches
@@ -56,6 +61,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     iter_nodes,
     node_text,
     parse,
+    redirect_parts,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader,
@@ -68,10 +74,9 @@ OPT_OUT = "stderr-merge-ok"
 # Commands that read a stream as structured data. A merged stream reaching one of
 # these is the defect; `tee`, `cat`, a logger or a shell function are not.
 _PARSERS = frozenset({"head", "tail", "grep", "awk", "cut", "sed", "jq", "sort", "wc"})
-_MERGE = "2>&1"
 # `cmd |& parser` is defined by bash as `cmd 2>&1 | parser`, so it merges the same
 # two streams into the same parser. It is a pipe OPERATOR rather than a redirect,
-# which is why it needs naming separately from `_MERGE`.
+# which is why `_stage_pairs` names it separately from the stage's redirects.
 _MERGE_PIPE = "|&"
 # Operators inside `[[ … ]]` that rank/match the value as data. `-z`/`-n`
 # (emptiness) and `-f`-style file tests are diagnostics, so they are unary
@@ -165,10 +170,9 @@ def _owns(container, node) -> bool:
 
 def _stage_pairs(pipeline) -> list:
     """(stage, merges) for a `pipeline`'s stages in order, nested pipelines
-    flattened. MERGES is true when the stage's stderr joins the stream the NEXT
-    stage reads — either the stage carries its own `2>&1`, or the pipe after it is
-    `|&`, which is bash's exact shorthand for `2>&1 |` and merges the same two
-    streams by the same rule."""
+    flattened. MERGES is true when the stage's stderr joins its stdout on the
+    stream the NEXT stage reads — by its own redirects, or by the `|&` after it,
+    which bash defines as a `2>&1` applied after those redirects."""
     pairs: list = []
     for child in pipeline.children:
         if child.type == "comment":
@@ -177,7 +181,8 @@ def _stage_pairs(pipeline) -> list:
             # `|&` merges the stage to its LEFT, which after flattening a nested
             # pipeline is the last stage recorded so far.
             if child.type == _MERGE_PIPE and pairs:
-                pairs[-1] = (pairs[-1][0], True)
+                stage = pairs[-1][0]
+                pairs[-1] = (stage, _stage_merges(stage, pipe_merges=True))
             continue
         if child.type == "pipeline":
             pairs.extend(_stage_pairs(child))
@@ -191,14 +196,102 @@ def _stages(pipeline):
     return [stage for stage, _merges in _stage_pairs(pipeline)]
 
 
-def _stage_merges(stage) -> bool:
-    """True when STAGE redirects its own stderr onto stdout — a `file_redirect`
-    child of the stage itself, so a `2>&1` deeper inside (a nested substitution,
-    or the literal text of an argument) does not count."""
-    return any(
-        child.type == "file_redirect" and "".join(node_text(child).split()) == _MERGE
-        for child in stage.children
-    )
+def _redirects(stage) -> list:
+    """STAGE's own `file_redirect`s in the order bash applies them: those before
+    the command name (children of the `command`) and those after it (children of
+    the wrapping `redirected_statement`). A redirect deeper inside — a nested
+    substitution, a compound body — belongs to another command."""
+    owners = [stage]
+    command = _stage_command(stage)
+    if command is not None and command is not stage:
+        owners.append(command)
+    found = [
+        child
+        for owner in owners
+        for child in owner.children
+        if child.type == "file_redirect"
+    ]
+    return sorted(found, key=lambda node: node.start_byte)
+
+
+def _fd_key(digits: str) -> str:
+    """The table key for a numeric descriptor. Kept a string, so `007` and a
+    descriptor too long for `int()` both work."""
+    return digits.lstrip("0") or "0"
+
+
+def _apply(fds: dict, redirect) -> None:
+    """Point FDS's entries where REDIRECT sends them. A target the grammar
+    cannot name statically (`2>&$fd`, a file) becomes a fresh object, which is
+    never the captured stream."""
+    descriptor, op, target = redirect_parts(redirect)
+    if not op:
+        return
+    if descriptor is None:
+        fd = "0" if op.startswith("<") else "1"
+    else:
+        fd = _fd_key(descriptor) if descriptor.isdigit() else descriptor
+    dup = op in (">&", "<&")
+    if op in ("&>", "&>>") or (
+        op == ">&"
+        and descriptor is None
+        and target
+        and not target.rstrip("-").isdigit()
+        and target != "-"
+    ):
+        # `&>f`, and `>&f` with a non-numeric target, send BOTH streams to f.
+        fds["1"] = fds["2"] = object()
+    elif op in (">&-", "<&-") or (dup and target == "-"):
+        fds.pop(fd, None)
+    elif dup and target.isdigit():
+        source = fds.get(_fd_key(target))
+        if source is None:
+            fds.pop(fd, None)
+        else:
+            fds[fd] = source
+    elif dup and target[:-1].isdigit() and target.endswith("-"):
+        # `2>&1-` MOVES fd 1 onto fd 2: the copy above, then fd 1 is closed.
+        source = fds.pop(_fd_key(target[:-1]), None)
+        if source is None:
+            fds.pop(fd, None)
+        else:
+            fds[fd] = source
+    else:
+        fds[fd] = object()
+
+
+def _stage_fds(stage, pipe_merges: bool = False) -> tuple[dict, object]:
+    """Where each of STAGE's descriptors points once its redirects apply, and
+    the stream STAGE writes to.
+
+    Bash applies redirects left to right, each one copying or replacing one file
+    descriptor, so this replays them over a table. PIPE_MERGES appends the
+    `2>&1` that a `|&` after the stage implies."""
+    stream = object()
+    fds = {"1": stream, "2": object()}
+    for redirect in _redirects(stage):
+        _apply(fds, redirect)
+    if pipe_merges:
+        if "1" in fds:
+            fds["2"] = fds["1"]
+        else:
+            fds.pop("2", None)
+    return fds, stream
+
+
+def _stage_merges(stage, pipe_merges: bool = False) -> bool:
+    """True when STAGE's stdout and stderr BOTH reach the stream it writes to.
+    `cmd 2>&1 >/dev/null` points stderr at the stream, then sends stdout away:
+    the stream carries stderr ALONE, a value rather than a merge."""
+    fds, stream = _stage_fds(stage, pipe_merges)
+    return fds.get("1") is stream and fds.get("2") is stream
+
+
+def _passes_stdout(stage) -> bool:
+    """True when STAGE's stdout still reaches the stream it writes to, so what
+    it read can flow on to the captured value."""
+    fds, stream = _stage_fds(stage)
+    return fds.get("1") is stream
 
 
 def _stage_command(stage):
@@ -232,14 +325,32 @@ def _merged_then_parsed(subst) -> bool:
 
 
 def _merges(subst) -> bool:
-    """True when SUBST merges stderr into the stream it captures — by a `2>&1`
-    redirect, or by a `|&` pipe, which merges the identical pair of streams."""
-    if any(
-        "".join(node_text(node).split()) == _MERGE
-        for node in iter_nodes(subst, "file_redirect")
-    ):
-        return True
-    return any(True for _ in iter_nodes(subst, _MERGE_PIPE))
+    """True when some command inside SUBST sends both its stdout and its stderr
+    into the stream it writes — by its redirects, or by a `|&` pipe after it —
+    and every later pipeline stage passes that stream on."""
+    for pipeline in iter_nodes(subst, "pipeline"):
+        pairs = _stage_pairs(pipeline)
+        later = [stage for stage, _merges in pairs]
+        # The grammar hangs a redirect after the last stage on the whole
+        # pipeline, so that wrapper is the last thing the stream passes through.
+        if (
+            pipeline.parent is not None
+            and pipeline.parent.type == "redirected_statement"
+        ):
+            later.append(pipeline.parent)
+        for index, (_stage, merges) in enumerate(pairs):
+            if merges and all(_passes_stdout(node) for node in later[index + 1 :]):
+                return True
+    # A pipeline stage was judged above. A `command` under a `redirected_statement`
+    # holds only the redirects before its name; the statement replays those
+    # together with the ones after it.
+    return any(
+        _stage_merges(node)
+        for kind in ("redirected_statement", "command")
+        for node in iter_nodes(subst, kind)
+        if node.parent is None
+        or node.parent.type not in ("redirected_statement", "pipeline")
+    )
 
 
 def _captured_substitution(assign):

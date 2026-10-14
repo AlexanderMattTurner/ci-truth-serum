@@ -256,3 +256,60 @@ def test_merge_pipe_precision(src: str) -> None:
 def test_merge_pipe_opt_out_is_honored() -> None:
     src = "v=$(cmd |& tail -1)  # stderr-merge-ok: the tool prints its version on stderr\n"
     assert _lines(src) == []
+
+
+# ── redirect order: where each stream points once bash applies them ──────
+@pytest.mark.parametrize(
+    "src",
+    [
+        # stderr is pointed at the stream first, then stdout is sent away, so
+        # the stream carries stderr ALONE — a value, not stderr mixed into one
+        'x="$(cmd 2>&1 >/dev/null | tail -n 3)"\n',
+        "x=$(cmd 2>&1 1>/dev/null | grep -c err)\n",
+        'x=$(cmd 2>&1 >"$log" | tail -1)\n',
+        # a swap through fd 3: stderr on the stream, stdout on the old stderr
+        "x=$(cmd 3>&1 1>&2 2>&3 | tail -1)\n",
+        # both streams discarded; and both moved onto the old stderr
+        "x=$(cmd >/dev/null 2>&1 | tail -1)\n",
+        "x=$(cmd >&2 2>&1 | tail -1)\n",
+        # `|&` applies its `2>&1` AFTER the stage's own redirects, so stderr
+        # follows stdout into /dev/null
+        "x=$(cmd >/dev/null |& tail -1)\n",
+        # rule (b): a stderr-only capture compared later
+        'out=$(cmd 2>&1 >/dev/null)\nif [[ "$out" == x ]]; then\n  :\nfi\n',
+        # the same, with the `2>&1` written before the command name
+        'out=$(2>&1 cmd >/dev/null)\n[[ "$out" == x ]]\n',
+        # `2>&1-` moves stdout onto stderr and closes stdout
+        "x=$(cmd 2>&1- | tail -1)\n",
+    ],
+)
+def test_stderr_alone_on_the_stream_is_not_a_merge(src: str) -> None:
+    assert _lines(src) == []
+
+
+@pytest.mark.parametrize(
+    ("src", "expected"),
+    [
+        # the twins: both streams still reach the stream the parser reads
+        ("x=$(cmd 2>&1 1>&2 | tail -1)\n", [1]),
+        ("x=$(2>&1 cmd | tail -1)\n", [1]),
+        ("x=$(cmd 2>/dev/null |& tail -1)\n", [1]),
+        ("x=$(cmd 3>&1 2>&3 | tail -1)\n", [1]),
+        ('out=$(cmd 2>&1)\n[[ "$out" == x ]]\n', [2]),
+        # `{fd}>log` names a new descriptor, so stdout stays on the stream
+        ("x=$(cmd {log_fd}>log 2>&1 | tail -1)\n", [1]),
+        # a descriptor longer than `int()` accepts is still just a name
+        ("x=$(cmd " + "9" * 5000 + ">log 2>&1 | tail -1)\n", [1]),
+        # `3>&1 2>&3-` MOVES the stream onto stderr while stdout still holds it
+        ("x=$(cmd 3>&1 2>&3- | tail -1)\n", [1]),
+        # `&>f` sends both streams to f, so the later `1>&2` copies f, not the
+        # stream, back onto stdout
+        ("x=$(cmd 2>&1 &>f 1>&2 | tail -1)\n", []),
+        ("x=$(cmd 2>&1 >&f 1>&2 | tail -1)\n", []),
+        # rule (b): the merged stream is discarded before it reaches the value
+        ('out=$(cmd 2>&1 | cat >/dev/null)\n[[ "$out" == x ]]\n', []),
+        ('out=$(cmd 2>&1 | cat)\n[[ "$out" == x ]]\n', [2]),
+    ],
+)
+def test_both_streams_on_the_stream_still_fire(src: str, expected: list[int]) -> None:
+    assert _lines(src) == expected
