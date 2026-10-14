@@ -16,26 +16,17 @@ jobs:
   # reports, then opens only when config/hook/test sources change on a PR.
   decide:
     permissions:
-      contents: read
-      pull-requests: read
+      contents: read # the reusable gate checks out the tree
+      pull-requests: read # its live draft re-read (decide_pr_is_draft_now)
+      actions: read # its memo shadow lists this workflow's past runs (needed in a private fork)
     uses: ./.github/workflows/decide-reusable.yaml
     with:
-      filters: |
-        run:
-          - '.claude/**'
-          - '.ci_truth_serum/**'
-          - '.github/actions/setup-base-env/**'
-          - '.github/actions/setup-uv/**'
-          - '.github/scripts/validate-config.sh'
-          # install-claude-cli.sh reads this pin and rejects anything that is
-          # not MAJOR.MINOR.PATCH, and tests/test_claude_conflict_resolve_ladder.py
-          # runs that installer. Without this line a pin-only change skips the
-          # job and merges with the reporter green.
-          - '.github/claude-cli-version'
-          - '.github/workflows/**'
-          - 'tests/**'
-          - 'pyproject.toml'
-          - 'uv.lock'
+      # `.github/claude-cli-default/` holds the CLI pin. install-claude-cli.sh
+      # rejects a pin that is not MAJOR.MINOR.PATCH, and
+      # tests/test_claude_conflict_resolve_ladder.py runs that installer. So a
+      # pin-only change must open this gate, or it merges with the reporter green.
+      # POSIX ERE, read by `grep -E` — no PCRE escapes (\d, \w, (?:…)).
+      paths-regex: '^(\.claude/|\.ci_truth_serum/|\.github/actions/setup-base-env/|\.github/actions/setup-uv/|\.github/scripts/validate-config\.sh$|\.github/claude-cli-default/|\.github/workflows/|tests/|pyproject\.toml$|uv\.lock$)'
 
   validate:
     needs: decide
@@ -74,8 +65,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      
-
       - name: Fail if any required job did not pass
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1

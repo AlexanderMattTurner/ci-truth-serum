@@ -56,13 +56,7 @@ webi_install_if_missing() {
     # stable digest to pin; we harden with HTTPS-only (--proto =https), the
     # shebang check below, and a version-pinned $pkg instead.
     # pin-exempt: webi.sh bootstrap is generated per-request, no stable digest
-<<<<<<< local
     if curl --proto '=https' -fsSL --retry 3 --retry-all-errors --retry-delay 2 "https://webi.sh/$pkg" -o "$installer" 2>/dev/null; then
-||||||| base
-    if curl --proto '=https' -fsSL "https://webi.sh/$pkg" -o "$installer" 2>/dev/null; then
-=======
-    if curl --proto '=https' -fsSL --retry 3 --retry-delay 2 "https://webi.sh/$pkg" -o "$installer" 2>/dev/null; then
->>>>>>> template
       first_line="$(head -n 1 "$installer")"
       if grep -q '^#!' <<<"$first_line"; then
         sh "$installer" >/dev/null 2>&1 || warn "Failed to install $cmd"
@@ -128,17 +122,10 @@ webi_install_if_missing shfmt shfmt@3
 webi_install_if_missing gh gh@2
 webi_install_if_missing jq jq@1.7
 if ! command -v shellcheck &>/dev/null && is_root; then
-<<<<<<< local
   # pin-exempt: an apt version pin names a distro-specific build (2.5.0-1build1)
   # that the archive drops at the next point release, so the pin turns a working
   # install into a hard failure on a base-image bump. The three webi installs
   # above pin because their upstream keeps every version reachable.
-||||||| base
-=======
-  # pin-exempt: last-resort session-bootstrap fallback; apt's shellcheck version
-  # varies by base image, and the authoritative pin is the shellcheck-py
-  # pre-commit hook's rev, not this fallback binary.
->>>>>>> template
   { apt-get update -qq && apt-get install -y -qq shellcheck; } || warn "Failed to install shellcheck"
 fi
 
@@ -163,13 +150,7 @@ git config core.hooksPath .hooks
 # Pre-fetch the base branch so diffs against $CLAUDE_CODE_BASE_REF work
 # immediately (e.g. when creating PRs). Failure is non-fatal.
 if [[ -n "${CLAUDE_CODE_BASE_REF:-}" ]]; then
-<<<<<<< local
   timeout --kill-after=15 60 git fetch origin "$CLAUDE_CODE_BASE_REF" --quiet 2>/dev/null ||
-||||||| base
-  git fetch origin "$CLAUDE_CODE_BASE_REF" --quiet 2>/dev/null ||
-=======
-  timeout --kill-after=10 60 git fetch origin "$CLAUDE_CODE_BASE_REF" --quiet 2>/dev/null ||
->>>>>>> template
     warn "Failed to fetch base branch $CLAUDE_CODE_BASE_REF"
 fi
 

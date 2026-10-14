@@ -35,10 +35,6 @@ on: # zizmor: ignore[dangerous-triggers]
     workflows:
       - Auto version bump and publish
       - Release canary
-    # Both watched workflows run only from the default branch (a push trigger
-    # scoped to it, or a manual dispatch conventionally run from it); narrowing
-    # here stops a completion on any other branch from creating a run at all.
-    branches: [main, master]
 
 concurrency:
   # Keyed per triggering workflow so notifications never queue behind each other;

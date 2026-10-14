@@ -29,9 +29,11 @@ jobs:
       # it cannot drift out of date. The regex carries only what the derivation
       # cannot see: a path this job's tooling reads without any script naming it,
       # a script reached through a variable, and the composite action, which is
-      # YAML rather than shell.
+      # YAML rather than shell. In this repository the lifecycle also runs the
+      # ci_truth_serum hooks, so their sources, the Python and Node manifests and
+      # the pre-commit config are watched as well.
       # POSIX ERE, read by `grep -E` — no PCRE escapes (\d, \w, (?:…)).
-      paths-regex: '^(\.claude/hooks/|\.hooks/|setup\.sh$|pnpm-lock\.yaml$|\.github/actions/setup-base-env/|\.gitattributes$|\.github/tool-versions\.sh$|\.github/scripts/install-mergiraf\.sh$)'
+      paths-regex: '^(\.claude/hooks/|\.hooks/|\.claude/ci_truth_serum/|\.ci_truth_serum/|setup\.sh$|package\.json$|pnpm-lock\.yaml$|pyproject\.toml$|uv\.lock$|\.pre-commit-config\.yaml$|\.github/actions/setup-base-env/|\.github/actions/setup-uv/|\.github/workflows/hook-lifecycle\.yaml$|\.github/workflows/decide-reusable\.yaml$|\.gitattributes$|\.github/tool-versions\.sh$|\.github/scripts/install-mergiraf\.sh$)'
       # path-gate-ok: .github/scripts/run-hook-lifecycle.sh it is the shell-targets entry point below, so the decide job derives it and everything it reaches
       shell-targets: .github/scripts/run-hook-lifecycle.sh
       # The lifecycle run is a behavior test, so a comment-only touch of a watched
@@ -71,8 +73,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      
-
       - name: Fail if any required job did not pass
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1

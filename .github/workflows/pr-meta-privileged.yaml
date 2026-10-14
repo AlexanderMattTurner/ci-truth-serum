@@ -30,13 +30,7 @@ on:
 permissions: {}
 
 jobs:
-<<<<<<< local
   # ── cancel: orphaned runs on PR close ────────────────────────────────────
-||||||| base
-  # ── cancel-on-pr-close.yaml ──────────────────────────────────────────────
-=======
-  # ── Cancel superseded PR runs on close ───────────────────────────────────────────────────────────────────────────────
->>>>>>> template
   # SECURITY — pull_request_target is safe here because this job runs NO PR-authored
   # code. The only checkout is a sparse checkout of the BASE repo's own
   # .github/scripts at the trusted base ref (pull_request_target checks out the base,
@@ -74,13 +68,7 @@ jobs:
           CLOSED_AT: ${{ github.event.pull_request.closed_at }}
         run: bash .github/scripts/cancel-pr-runs.sh
 
-<<<<<<< local
   # ── label: merge-conflict labeler ────────────────────────────────────────
-||||||| base
-  # ── merge-conflict-labeler.yaml ──────────────────────────────────────────
-=======
-  # ── Merge-conflict labeler ─────────────────────────────────────────────────────────────────────────────────────────
->>>>>>> template
   # pull_request_target (not pull_request) so the label write has a write-scoped
   # token even from forks; it checks out only base-repo `.github/scripts` with no
   # persisted credentials and runs no PR-authored code, so the elevated token
@@ -121,7 +109,7 @@ jobs:
       # The labeler ships WITH the resolver it triggers, so no repository keeps a
       # copy of it to drift from the label the resolver reads.
       - name: Check out the resolver that provides the labeler
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: AlexanderMattTurner/agent-resolve-merge-conflicts
           ref: main

@@ -48,11 +48,5 @@ model_count=$(wc -w <<<"${BY_MODEL:-}")
 git commit -q -m "chore: resolve template-sync conflicts
 
 ${deterministic_count} resolved structurally (mergiraf), ${model_count} by the model."
-<<<<<<< local
 timeout --kill-after=15 60 git push origin HEAD:template-sync
-||||||| base
-git push origin HEAD:template-sync
-=======
-timeout --kill-after=10 60 git push origin HEAD:template-sync
->>>>>>> template
 echo "Pushed resolutions for ${#resolved[@]} file(s)."

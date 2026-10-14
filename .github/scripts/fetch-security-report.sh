@@ -74,17 +74,11 @@ if [[ -f package.json ]]; then
   pnpm_rc=$?
   printf '%s\n' "$pnpm_output" | awk 'NR <= 100' >>"$REPORT_PATH" # stderr-merge-ok: copied verbatim into the report so a reader sees pnpm's own diagnostics; never parsed or compared
   # Exit 0 = clean, exit 1 = vulnerabilities found (expected); higher = real error
-<<<<<<< local
   # echo-fallback-ok: the string is prose in the report a human and the triage
   # model read, never a value any code parses, and it STATES the incompleteness
   # rather than standing in for a clean result. The rest of the report (the
   # GitHub advisory data) is still worth triaging, so a pnpm failure degrades
   # this section instead of discarding the whole scan.
-||||||| base
-=======
-  # echo-fallback-ok: this note is appended to a human-read report, never
-  # captured or trusted as data — the real pnpm_rc is what the caller judges.
->>>>>>> template
   [[ "${pnpm_rc:-0}" -le 1 ]] || echo "_pnpm audit encountered an error (exit code $pnpm_rc); output above may be incomplete._" >>"$REPORT_PATH"
 else
   echo "_Skipped: no package.json (not a Node project)._" >>"$REPORT_PATH"

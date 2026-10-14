@@ -66,47 +66,25 @@ jobs:
   # on change on a PR (always open on non-pull_request events).
   decide-py:
     permissions:
-      contents: read
-      pull-requests: read
+      contents: read # the reusable gate checks out the tree
+      pull-requests: read # its live draft re-read (decide_pr_is_draft_now)
+      actions: read # its memo shadow lists this workflow's past runs (needed in a private fork)
     uses: ./.github/workflows/decide-reusable.yaml
     with:
-      filters: |
-        run:
-          - 'ci_truth_serum/**'
-          - 'tests/**'
-          - 'cosmic-ray.toml'
-          - 'pyproject.toml'
-          - 'uv.lock'
-          - '.python-version'
-          - '.github/scripts/run-mutation.sh'
-          - '.github/scripts/run-mutation-shard.sh'
-          - '.github/scripts/mutation_shards.py'
-          - '.github/scripts/_repo_root.py'
-          - '.github/scripts/prune-mutation-session.py'
-          - '.github/scripts/aggregate-mutation.py'
-          - '.github/actions/setup-uv/**'
-          - '.github/workflows/mutation.yaml'
-          - '.github/workflows/decide-reusable.yaml'
+      # POSIX ERE, read by `grep -E` — no PCRE escapes (\d, \w, (?:…)).
+      paths-regex: '^(ci_truth_serum/|tests/|cosmic-ray\.toml$|pyproject\.toml$|uv\.lock$|\.python-version$|\.github/scripts/run-mutation\.sh$|\.github/scripts/run-mutation-shard\.sh$|\.github/scripts/mutation_shards\.py$|\.github/scripts/_repo_root\.py$|\.github/scripts/prune-mutation-session\.py$|\.github/scripts/aggregate-mutation\.py$|\.github/actions/setup-uv/|\.github/workflows/mutation\.yaml$|\.github/workflows/decide-reusable\.yaml$)'
 
   decide-js:
     permissions:
-      contents: read
-      pull-requests: read
+      contents: read # the reusable gate checks out the tree
+      pull-requests: read # its live draft re-read (decide_pr_is_draft_now)
+      actions: read # its memo shadow lists this workflow's past runs (needed in a private fork)
     uses: ./.github/workflows/decide-reusable.yaml
     with:
-      filters: |
-        run:
-          - 'scripts/*.mjs'
-          # The suite stryker runs drives markdownlint through this config, so
-          # a change to it must re-run the mutation gate.
-          - '.markdownlint-cli2.jsonc'
-          - 'stryker.config.json'
-          - 'package.json'
-          - 'pnpm-lock.yaml'
-          - '.github/actions/setup-base-env/**'
-          - '.github/actions/setup-uv/**'
-          - '.github/workflows/mutation.yaml'
-          - '.github/workflows/decide-reusable.yaml'
+      # The suite stryker runs drives markdownlint through
+      # .markdownlint-cli2.jsonc, so a change to it must re-run the mutation gate.
+      # POSIX ERE, read by `grep -E` — no PCRE escapes (\d, \w, (?:…)).
+      paths-regex: '^(scripts/[^/]*\.mjs$|\.markdownlint-cli2\.jsonc$|stryker\.config\.json$|package\.json$|pnpm-lock\.yaml$|\.github/actions/setup-base-env/|\.github/actions/setup-uv/|\.github/workflows/mutation\.yaml$|\.github/workflows/decide-reusable\.yaml$)'
 
   # Expand the shard matrix from the committed tree (one shard per mutated hook
   # module). The aggregate job re-derives the same set from the same checkout, so

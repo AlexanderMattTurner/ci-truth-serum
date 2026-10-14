@@ -137,7 +137,8 @@ def test_3way_merge_outcomes(
     else:
         assert "<<<<<<<" in body and ">>>>>>>" in body
         assert "config/a.txt" in outputs["conflict_files"]
-        assert (child / ".template-sync-conflicts").exists()
+        # The markers on the branch are the record; the retired sidecar is gone.
+        assert not (child / ".template-sync-conflicts").exists()
 
 
 def test_clean_3way_merge_records_auto_merged(workdir: Path) -> None:
@@ -248,12 +249,14 @@ def test_no_base_conflict_when_local_differs_without_prev_sha(workdir: Path) -> 
     outputs = parse_outputs(output_file)
     assert outputs["has_conflicts"] == "true"
     assert "config/a.txt" in outputs["conflict_files"]
-    # The script overwrites the local file with the template version and
-    # emits a diff in conflict_report for human review — the report content
-    # is load-bearing for the downstream PR template.
-    assert (child / "config" / "a.txt").read_text(
-        encoding="utf-8"
-    ) == "template version\n"
+    # The script keeps both versions as conflict markers, so the template can
+    # never silently replace the local file, and emits a diff in
+    # conflict_report for human review — the report content is load-bearing
+    # for the downstream PR template.
+    assert (child / "config" / "a.txt").read_text(encoding="utf-8") == (
+        "<<<<<<< local\nlocal version\n||||||| base\n"
+        "=======\ntemplate version\n>>>>>>> template\n"
+    )
     assert "local version" in outputs["conflict_report"]
     assert "template version" in outputs["conflict_report"]
 
@@ -262,8 +265,8 @@ def test_conflict_report_is_capped_for_many_no_base_files(workdir: Path) -> None
     """Many no-merge-base files must not produce an unbounded PR body. The report
     becomes the create-pull-request body (passed through the environment); an
     oversized body aborts PR creation with E2BIG ("Argument list too long"). The
-    report is capped, and the full file list still lands in
-    .template-sync-conflicts so nothing load-bearing is lost."""
+    report is capped, and the uncapped conflict_files output plus the markers
+    in each file keep every conflicted path, so nothing load-bearing is lost."""
     child = workdir / "child"
     template = workdir / "template"
     big_local = "".join(f"local line {i}\n" for i in range(700))
@@ -284,11 +287,14 @@ def test_conflict_report_is_capped_for_many_no_base_files(workdir: Path) -> None
     # Uncapped this would be ~120 KB (12 files x head -500 of the per-file diff).
     assert len(report.encode()) <= 62000, len(report.encode())
     assert "truncated" in report
-    assert ".template-sync-conflicts" in report
-    # The complete conflicted-file list is preserved out-of-band.
-    listed = (child / ".template-sync-conflicts").read_text(encoding="utf-8")
+    assert "markers on the `template-sync` branch" in report
+    # The complete conflicted-file list is preserved out-of-band, uncapped.
+    listed = outputs["conflict_files"].split()
+    assert sorted(listed) == sorted(f"config/f{n}.txt" for n in range(12))
     for n in range(12):
-        assert f"config/f{n}.txt" in listed
+        assert "<<<<<<< " in (child / "config" / f"f{n}.txt").read_text(
+            encoding="utf-8"
+        )
 
 
 def test_detects_deleted_files(workdir: Path) -> None:

@@ -342,7 +342,13 @@ process_file() {
     ancestor=$(dirname "$ancestor")
   done
 
-  [[ "$parent_dir" != "." ]] && mkdir -p "$parent_dir" # bare-mkdir-ok: Linux CI runner (no BSD mkdir -p symlink semantics)
+  if [[ "$parent_dir" != "." ]]; then
+    mkdir -p "$parent_dir"
+    [[ -d "$parent_dir" ]] || {
+      echo "Error: could not create ${parent_dir}." >&2
+      exit 1
+    }
+  fi
 
   # Case 1: absent locally — a new template file, unless this repo removed it.
   if [[ ! -f "$rel_path" ]]; then
@@ -542,362 +548,6 @@ main() {
   echo "$TEMPLATE_SHA" >.template-version
 
   #############################################
-<<<<<<< local
-  # File processing
-  #############################################
-
-  # Resolve a single file's sync outcome using a 3-way merge strategy:
-  #
-  #   base     = the file at PREV_SHA in the template (last known common ancestor)
-  #   local    = the current file in the child repo
-  #   template = the file at HEAD in the template
-  #
-  # Decision tree:
-  #   1. File is new in template → copy it in.
-  #   2. Files are already identical → no-op.
-  #   3. No merge base (first sync or lost history) → apply template, record conflict.
-  #   4. Template is unchanged since base → local diverged alone; keep local.
-  #   5. Local is unchanged since base → template advanced alone; adopt template.
-  #   6. Both sides changed → attempt a 3-way merge:
-  #      a. Clean merge → write merged result.
-  #      b. Conflict → write conflict markers for Claude to resolve.
-  process_file() {
-    local rel_path="$1"
-    local template_file="_template/$rel_path"
-
-    local parent_dir
-    parent_dir=$(dirname "$rel_path")
-
-    # Case 0: the child deliberately made this path — or an ancestor directory —
-    # a symlink (e.g. a dotfiles repo pointing .claude/settings.json or
-    # .claude/hooks/ at another repo it clones at runtime). Never write it: cp
-    # through a dangling link errors out, through a live one it escapes into the
-    # link target, and mkdir -p on a symlinked directory fails outright. Leave
-    # the local structure alone; checked before the mkdir below.
-    if [[ -L "$rel_path" ]]; then
-      echo "Skipping symlink: $rel_path (local structure preserved)"
-      return
-    fi
-    local ancestor="$parent_dir"
-    while [[ "$ancestor" != "." && "$ancestor" != "/" && -n "$ancestor" ]]; do
-      if [[ -L "$ancestor" ]]; then
-        echo "Skipping under symlinked dir: $rel_path ($ancestor is a symlink)"
-        return
-      fi
-      ancestor=$(dirname "$ancestor")
-    done
-
-    if [[ "$parent_dir" != "." ]]; then
-      mkdir -p "$parent_dir"
-      [[ -d "$parent_dir" ]] || {
-        echo "Error: could not create ${parent_dir}." >&2
-        exit 1
-      }
-    fi
-
-    # Case 1: new file in template.
-    if [[ ! -f "$rel_path" ]]; then
-      cp "$template_file" "$rel_path"
-      echo "Added: $rel_path"
-      return
-    fi
-
-    # Case 2: already identical.
-    if diff -q "$rel_path" "$template_file" >/dev/null 2>&1; then
-      return
-    fi
-
-    # Case 3: no merge base — first sync or history unavailable.
-    if [[ -z "$PREV_SHA" ]]; then
-      record_no_base_conflict "$rel_path" "$template_file"
-      return
-    fi
-
-    local safe_name
-    safe_name=$(echo "$rel_path" | tr '/' '_')
-    local base_file="$WORK_DIR/merge_base_${safe_name}"
-
-    if ! git -C _template show "${PREV_SHA}:${rel_path}" >"$base_file" 2>/dev/null; then
-      rm -f "$base_file"
-      record_no_base_conflict "$rel_path" "$template_file"
-      return
-    fi
-
-    # Case 4: template unchanged since base — local diverged alone; keep local.
-    if diff -q "$base_file" "$template_file" >/dev/null 2>&1; then
-      echo "Unchanged in template: $rel_path (keeping local version)"
-      rm -f "$base_file"
-      return
-    fi
-
-    # Case 5: local unchanged since base — template advanced alone; adopt it.
-    if diff -q "$base_file" "$rel_path" >/dev/null 2>&1; then
-      cp "$template_file" "$rel_path"
-      echo "Updated: $rel_path (local was unmodified)"
-      rm -f "$base_file"
-      return
-    fi
-
-    # Case 6: both sides changed — attempt a 3-way merge.
-    local merge_result="$WORK_DIR/merge_result_${safe_name}"
-    cp "$rel_path" "$merge_result"
-
-    # --diff3 keeps the merge-base section between `|||||||` and `=======` in a
-    # conflict. It is what lets the structural resolver work on the result at
-    # all: mergiraf refuses a diff2-style conflict outright and returns no
-    # solution, so without this every sync conflict would need a model or a
-    # human. It also shows a human reviewer what the text was before either side
-    # touched it.
-    if git merge-file --diff3 -L "local" -L "base" -L "template" \
-      "$merge_result" "$base_file" "$template_file" 2>/dev/null; then
-      # Detect a silent downgrade: the merge base here is the single repo-wide
-      # PREV_SHA, which can be STALE for a file first synced at a different
-      # template SHA. A stale base makes git report a "clean" merge while
-      # actually dropping adopter-modified lines. Measure that against the
-      # pre-sync local ($rel_path, not yet overwritten) and surface it loudly so
-      # the reviewer never trusts "auto-merged" to mean "nothing lost".
-      local dropped
-      dropped=$(count_dropped_lines "$rel_path" "$merge_result")
-      cp "$merge_result" "$rel_path"
-      echo "Auto-merged: $rel_path (clean 3-way merge)"
-      echo "$rel_path" >>"$AUTO_MERGED_FILES"
-      if [[ "${dropped:-0}" -gt 0 ]]; then
-        echo "$rel_path" >>"$DOWNGRADE_FILES"
-        # %s are printf specifiers, not shell expansions; single quotes are correct.
-        # shellcheck disable=SC2016
-        printf -- '- `%s` — auto-merge dropped %s line(s) present in the local copy\n' \
-          "$rel_path" "$dropped" >>"$DOWNGRADE_REPORT"
-      fi
-      rm -f "$base_file" "$merge_result"
-      return
-    fi
-
-    # Case 6b: conflict markers produced — keep them for Claude to resolve.
-    cp "$merge_result" "$rel_path"
-    echo "CONFLICT (merge markers): $rel_path"
-    echo "$rel_path" >>"$CONFLICT_FILES"
-    {
-      echo "### \`$rel_path\`"
-      echo ""
-      echo "3-way merge produced **conflict markers** (\`<<<<<<<\`/\`=======\`/\`>>>>>>>\`)."
-      echo "Resolve them: keep local customizations, adopt template improvements."
-      echo ""
-      echo "<details>"
-      echo "<summary>View file with conflict markers</summary>"
-      echo ""
-      echo "\`\`\`"
-      head -500 "$rel_path"
-      echo "\`\`\`"
-      echo "</details>"
-      echo ""
-    } >>"$CONFLICT_REPORT"
-    rm -f "$base_file" "$merge_result"
-  }
-
-  record_no_base_conflict() {
-    local rel_path="$1" template_file="$2"
-    echo "CONFLICT (no base): $rel_path"
-    echo "$rel_path" >>"$CONFLICT_FILES"
-    {
-      echo "### \`$rel_path\`"
-      echo ""
-      echo "No merge base available (first sync or file history unavailable)."
-      echo "Template version has been applied. Restore any important local customizations."
-      echo ""
-      echo "<details>"
-      echo "<summary>Diff (old local → new template)</summary>"
-      echo ""
-      echo "\`\`\`diff"
-      # diff exits 0 (identical) or 1 (differs); anything higher is a real error.
-      # Capture into a variable so truncating with `head` can't SIGPIPE the diff.
-      diff_rc=0
-      diff_out=$(diff -u "$rel_path" "$template_file") || diff_rc=$?
-      [[ "${diff_rc:-0}" -le 1 ]] || exit "${diff_rc}"
-      head -500 <<<"$diff_out"
-      echo "\`\`\`"
-      echo "</details>"
-      echo ""
-    } >>"$CONFLICT_REPORT"
-    cp "$template_file" "$rel_path"
-  }
-
-  #############################################
-||||||| base
-  # File processing
-  #############################################
-
-  # Resolve a single file's sync outcome using a 3-way merge strategy:
-  #
-  #   base     = the file at PREV_SHA in the template (last known common ancestor)
-  #   local    = the current file in the child repo
-  #   template = the file at HEAD in the template
-  #
-  # Decision tree:
-  #   1. File is new in template → copy it in.
-  #   2. Files are already identical → no-op.
-  #   3. No merge base (first sync or lost history) → apply template, record conflict.
-  #   4. Template is unchanged since base → local diverged alone; keep local.
-  #   5. Local is unchanged since base → template advanced alone; adopt template.
-  #   6. Both sides changed → attempt a 3-way merge:
-  #      a. Clean merge → write merged result.
-  #      b. Conflict → write conflict markers for Claude to resolve.
-  process_file() {
-    local rel_path="$1"
-    local template_file="_template/$rel_path"
-
-    local parent_dir
-    parent_dir=$(dirname "$rel_path")
-
-    # Case 0: the child deliberately made this path — or an ancestor directory —
-    # a symlink (e.g. a dotfiles repo pointing .claude/settings.json or
-    # .claude/hooks/ at another repo it clones at runtime). Never write it: cp
-    # through a dangling link errors out, through a live one it escapes into the
-    # link target, and mkdir -p on a symlinked directory fails outright. Leave
-    # the local structure alone; checked before the mkdir below.
-    if [[ -L "$rel_path" ]]; then
-      echo "Skipping symlink: $rel_path (local structure preserved)"
-      return
-    fi
-    local ancestor="$parent_dir"
-    while [[ "$ancestor" != "." && "$ancestor" != "/" && -n "$ancestor" ]]; do
-      if [[ -L "$ancestor" ]]; then
-        echo "Skipping under symlinked dir: $rel_path ($ancestor is a symlink)"
-        return
-      fi
-      ancestor=$(dirname "$ancestor")
-    done
-
-    [[ "$parent_dir" != "." ]] && mkdir -p "$parent_dir"
-
-    # Case 1: new file in template.
-    if [[ ! -f "$rel_path" ]]; then
-      cp "$template_file" "$rel_path"
-      echo "Added: $rel_path"
-      return
-    fi
-
-    # Case 2: already identical.
-    if diff -q "$rel_path" "$template_file" >/dev/null 2>&1; then
-      return
-    fi
-
-    # Case 3: no merge base — first sync or history unavailable.
-    if [[ -z "$PREV_SHA" ]]; then
-      record_no_base_conflict "$rel_path" "$template_file"
-      return
-    fi
-
-    local safe_name
-    safe_name=$(echo "$rel_path" | tr '/' '_')
-    local base_file="$WORK_DIR/merge_base_${safe_name}"
-
-    if ! git -C _template show "${PREV_SHA}:${rel_path}" >"$base_file" 2>/dev/null; then
-      rm -f "$base_file"
-      record_no_base_conflict "$rel_path" "$template_file"
-      return
-    fi
-
-    # Case 4: template unchanged since base — local diverged alone; keep local.
-    if diff -q "$base_file" "$template_file" >/dev/null 2>&1; then
-      echo "Unchanged in template: $rel_path (keeping local version)"
-      rm -f "$base_file"
-      return
-    fi
-
-    # Case 5: local unchanged since base — template advanced alone; adopt it.
-    if diff -q "$base_file" "$rel_path" >/dev/null 2>&1; then
-      cp "$template_file" "$rel_path"
-      echo "Updated: $rel_path (local was unmodified)"
-      rm -f "$base_file"
-      return
-    fi
-
-    # Case 6: both sides changed — attempt a 3-way merge.
-    local merge_result="$WORK_DIR/merge_result_${safe_name}"
-    cp "$rel_path" "$merge_result"
-
-    # --diff3 keeps the merge-base section between `|||||||` and `=======` in a
-    # conflict. It is what lets the structural resolver work on the result at
-    # all: mergiraf refuses a diff2-style conflict outright and returns no
-    # solution, so without this every sync conflict would need a model or a
-    # human. It also shows a human reviewer what the text was before either side
-    # touched it.
-    if git merge-file --diff3 -L "local" -L "base" -L "template" \
-      "$merge_result" "$base_file" "$template_file" 2>/dev/null; then
-      # Detect a silent downgrade: the merge base here is the single repo-wide
-      # PREV_SHA, which can be STALE for a file first synced at a different
-      # template SHA. A stale base makes git report a "clean" merge while
-      # actually dropping adopter-modified lines. Measure that against the
-      # pre-sync local ($rel_path, not yet overwritten) and surface it loudly so
-      # the reviewer never trusts "auto-merged" to mean "nothing lost".
-      local dropped
-      dropped=$(count_dropped_lines "$rel_path" "$merge_result")
-      cp "$merge_result" "$rel_path"
-      echo "Auto-merged: $rel_path (clean 3-way merge)"
-      echo "$rel_path" >>"$AUTO_MERGED_FILES"
-      if [[ "${dropped:-0}" -gt 0 ]]; then
-        echo "$rel_path" >>"$DOWNGRADE_FILES"
-        # %s are printf specifiers, not shell expansions; single quotes are correct.
-        # shellcheck disable=SC2016
-        printf -- '- `%s` — auto-merge dropped %s line(s) present in the local copy\n' \
-          "$rel_path" "$dropped" >>"$DOWNGRADE_REPORT"
-      fi
-      rm -f "$base_file" "$merge_result"
-      return
-    fi
-
-    # Case 6b: conflict markers produced — keep them for Claude to resolve.
-    cp "$merge_result" "$rel_path"
-    echo "CONFLICT (merge markers): $rel_path"
-    echo "$rel_path" >>"$CONFLICT_FILES"
-    {
-      echo "### \`$rel_path\`"
-      echo ""
-      echo "3-way merge produced **conflict markers** (\`<<<<<<<\`/\`=======\`/\`>>>>>>>\`)."
-      echo "Resolve them: keep local customizations, adopt template improvements."
-      echo ""
-      echo "<details>"
-      echo "<summary>View file with conflict markers</summary>"
-      echo ""
-      echo "\`\`\`"
-      head -500 "$rel_path"
-      echo "\`\`\`"
-      echo "</details>"
-      echo ""
-    } >>"$CONFLICT_REPORT"
-    rm -f "$base_file" "$merge_result"
-  }
-
-  record_no_base_conflict() {
-    local rel_path="$1" template_file="$2"
-    echo "CONFLICT (no base): $rel_path"
-    echo "$rel_path" >>"$CONFLICT_FILES"
-    {
-      echo "### \`$rel_path\`"
-      echo ""
-      echo "No merge base available (first sync or file history unavailable)."
-      echo "Template version has been applied. Restore any important local customizations."
-      echo ""
-      echo "<details>"
-      echo "<summary>Diff (old local → new template)</summary>"
-      echo ""
-      echo "\`\`\`diff"
-      # diff exits 0 (identical) or 1 (differs); anything higher is a real error.
-      # Capture into a variable so truncating with `head` can't SIGPIPE the diff.
-      diff_rc=0
-      diff_out=$(diff -u "$rel_path" "$template_file") || diff_rc=$?
-      [[ "${diff_rc:-0}" -le 1 ]] || exit "${diff_rc}"
-      head -500 <<<"$diff_out"
-      echo "\`\`\`"
-      echo "</details>"
-      echo ""
-    } >>"$CONFLICT_REPORT"
-    cp "$template_file" "$rel_path"
-  }
-
-  #############################################
-=======
->>>>>>> template
   # Detect deleted files + process sync paths
   #############################################
 
@@ -971,20 +621,6 @@ main() {
   # cap_body_field invariant; has_downgrades stays a single-line flag.
   if [[ -s "$DOWNGRADE_FILES" ]]; then
     downgrade=$(tr '\n' ' ' <"$DOWNGRADE_FILES")
-<<<<<<< local
-    {
-      echo "has_downgrades=true"
-      echo "downgrade_files=$downgrade"
-    } >>"$GITHUB_OUTPUT"
-    downgrade_report=$(cat "$DOWNGRADE_REPORT")
-    emit_multiline_output "downgrade_report" "$downgrade_report"
-||||||| base
-    {
-      echo "has_downgrades=true"
-      echo "downgrade_files=$downgrade"
-    } >>"$GITHUB_OUTPUT"
-    emit_multiline_output "downgrade_report" "$(cat "$DOWNGRADE_REPORT")"
-=======
     capped_downgrade="$(cap_body_field "$downgrade" \
       "${CONFLICT_FILES_MAX_BYTES:-8000}" \
       "… list truncated; the sync log names every downgraded file.")"
@@ -995,7 +631,6 @@ main() {
       "${CONFLICT_REPORT_MAX_BYTES:-40000}" \
       "_Downgrade report truncated; the sync log names every downgraded file._")"
     emit_multiline_output "downgrade_report" "$capped_downgrade_report"
->>>>>>> template
   else
     echo "has_downgrades=false" >>"$GITHUB_OUTPUT"
   fi
@@ -1018,14 +653,6 @@ main() {
       conflicts=$(tr '\n' ' ' <"$CONFLICT_FILES")
       emit_multiline_output "conflict_files" "$conflicts"
     fi
-<<<<<<< local
-    conflict_report=$(cat "$CONFLICT_REPORT")
-    emit_multiline_output "conflict_report" "$conflict_report"
-    echo "Template updates available for: $conflicts" >.template-sync-conflicts
-||||||| base
-    emit_multiline_output "conflict_report" "$(cat "$CONFLICT_REPORT")"
-    echo "Template updates available for: $conflicts" >.template-sync-conflicts
-=======
     if [[ -s "$MARKERLESS_FILES" ]]; then
       markerless=$(tr '\n' ' ' <"$MARKERLESS_FILES")
       capped_markerless="$(cap_body_field "$markerless" \
@@ -1051,7 +678,6 @@ main() {
       capped_conflict_report="${capped_kept_local}${capped_marked}"
     fi
     emit_multiline_output "conflict_report" "$capped_conflict_report"
->>>>>>> template
   else
     echo "has_conflicts=false" >>"$GITHUB_OUTPUT"
   fi

@@ -91,16 +91,6 @@ env:
   # added to the template auto-sync without anyone having to edit this list.
   # Downstream-added files in these directories are left alone (sync only
   # copies files that exist in the template).
-<<<<<<< local
-  SYNC_PATHS: ".claude .hooks .github/actions .github/scripts .github/workflows .github/prompts .github/claude-cli-version"
-  # Paths to exclude from syncing. Supports both whole directories (matching
-  # entries in SYNC_PATHS) and individual files within synced directories.
-||||||| base
-  SYNC_PATHS: ".claude .hooks .github/actions .github/scripts .github/workflows .github/prompts"
-  # Paths to exclude from syncing. Supports both whole directories (matching
-  # entries in SYNC_PATHS) and individual files within synced directories.
-=======
->>>>>>> template
   #
   # An entry may also be a single FILE, which is how a synced file's DATA
   # dependency travels when it lives outside every synced directory. A synced
@@ -176,7 +166,7 @@ jobs:
     outputs:
       self_sync: ${{ steps.check.outputs.self_sync }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github/scripts
           persist-credentials: false
@@ -306,7 +296,6 @@ jobs:
       #
       # After create-pull-request the workspace is back on the base ref and the
       # markers live on the sync branch, so switch to it before resolving.
-<<<<<<< local
       #
       # The sync branch carries the TEMPLATE's copy of `.github/scripts`, because
       # that directory is one of the SYNC_PATHS. Running the resolver from the
@@ -331,11 +320,8 @@ jobs:
           echo "base=${DEST}" >>"$GITHUB_OUTPUT"
           echo "dir=${DEST}/.github/scripts" >>"$GITHUB_OUTPUT"
 
-||||||| base
-=======
       # Both steps need a marker-bearing file: a kept-local conflict emits no
       # conflict_files, and template-sync-resolve.sh refuses an empty list.
->>>>>>> template
       - name: Install mergiraf (pinned, digest-verified)
         if: inputs.dry-run != true && steps.sync.outputs.conflict_files != '' && steps.create-pr.outputs.pull-request-number
         run: bash .github/scripts/install-mergiraf.sh
@@ -353,27 +339,20 @@ jobs:
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
           GH_REPO: ${{ github.repository }}
-          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+          SCRIPTS_DIR: ${{ steps.resolver.outputs.dir }}
           BASE_WORKTREE: ${{ steps.resolver.outputs.base }}
         run: |
           git fetch --no-tags origin "+refs/heads/template-sync:refs/remotes/origin/template-sync"
           git checkout -B template-sync origin/template-sync
-<<<<<<< local
-          bash "${RESOLVER_DIR}/template-sync-resolve.sh"
-||||||| base
-          bash .github/scripts/template-sync-resolve.sh
-=======
-          # Tier 2 of the conflict resolution is the resolver's own fan-out, which
-          # lives in its own repository now. Pinned by SHA to the same commit
-          # auto-resolve-conflicts.yaml calls, so both run one version of it.
+          # The driver runs from the staged base ref. Its tier 2 is the fan-out of
+          # the resolver, which lives in its own repository and is pinned by SHA.
           resolver_dir="${RUNNER_TEMP}/template-sync-resolver"
           git clone --no-tags --depth 1 \
             "https://github.com/AlexanderMattTurner/agent-resolve-merge-conflicts.git" "${resolver_dir}"
           git -C "${resolver_dir}" fetch --no-tags --depth 1 origin ca9a3fa872a9c06ade766de9bf69ff7b0329247f
           git -C "${resolver_dir}" checkout --detach FETCH_HEAD
           RESOLVER_DIR="${resolver_dir}/.github/resolver" \
-            bash .github/scripts/template-sync-resolve.sh
->>>>>>> template
+            bash "${SCRIPTS_DIR}/template-sync-resolve.sh"
 
       - name: Push the resolutions
         if: steps.resolve.outcome == 'success' && (steps.resolve.outputs.deterministic != '' || steps.resolve.outputs.by_model != '')
@@ -390,31 +369,25 @@ jobs:
       # that holds the invariant: no file on `template-sync` carries a conflict
       # marker. It runs even when a step above it failed, because a resolve step
       # that died is exactly when the markers survive.
-      # It runs a BASE_SHA copy, not the workspace: `.github/scripts` is in
-      # SYNC_PATHS, so a sync can mark the gate's own file, and bash dies on it.
+      # It runs the staged base-ref copy, not the workspace: `.github/scripts` is
+      # in SYNC_PATHS, so a sync can mark the gate's own file, and bash dies on it.
       - name: Refuse conflict markers on the sync branch
         if: ${{ !cancelled() && inputs.dry-run != true && steps.create-pr.outputs.pull-request-number }}
         env:
-          BASE_SHA: ${{ github.sha }}
           # token-fallback-ok: designed graceful degradation, not an accident.
           GITHUB_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || secrets.GITHUB_TOKEN }}
-        run: |
-          set -o pipefail
-          gate_dir="${RUNNER_TEMP}/marker-gate"
-          mkdir -p "${gate_dir}" # bare-mkdir-ok: the extraction below is the post-condition and fails loudly
-          timeout --kill-after=30 300 git archive "${BASE_SHA}" .github/scripts | tar -x -f - -C "${gate_dir}"
-          bash "${gate_dir}/.github/scripts/template-sync-marker-gate.sh"
+          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
+        run: bash "${RESOLVER_DIR}/template-sync-marker-gate.sh"
 
       # A sync merges itself only when NOTHING needed judgement. See the script
       # for the full predicate; the two carve-outs are that a model-resolved file
       # never qualifies, and neither does a change to the supervision surface.
-      # It runs a BASE_SHA copy for the same reason the gate does: the gate
-      # passing only proves the branch carries no conflict marker, never that
+      # It runs the staged base-ref copy for the same reason the gate does: the
+      # gate passing only proves the branch carries no conflict marker, never that
       # this script or the predicate it reads still match the reviewed version.
       - name: Enable auto-merge on a fully deterministic sync
         if: inputs.dry-run != true && steps.create-pr.outputs.pull-request-number && vars.TEMPLATE_SYNC_AUTOMERGE != 'false'
         env:
-          BASE_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG || github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.create-pr.outputs.pull-request-number }}
@@ -423,17 +396,6 @@ jobs:
           HAS_DOWNGRADES: ${{ steps.sync.outputs.has_downgrades }}
           ALL_DETERMINISTIC: ${{ steps.resolve.outputs.all_deterministic }}
           CHANGED_PATHS: ${{ steps.sync.outputs.changed_paths }}
-<<<<<<< local
+          MARKERLESS_FILES: ${{ steps.sync.outputs.markerless_files }}
           RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
         run: bash "${RESOLVER_DIR}/template-sync-automerge.sh"
-||||||| base
-        run: bash .github/scripts/template-sync-automerge.sh
-=======
-          MARKERLESS_FILES: ${{ steps.sync.outputs.markerless_files }}
-        run: |
-          set -o pipefail
-          automerge_dir="${RUNNER_TEMP}/marker-gate-automerge"
-          mkdir -p "${automerge_dir}" # bare-mkdir-ok: the extraction below is the post-condition and fails loudly
-          timeout --kill-after=30 300 git archive "${BASE_SHA}" .github/scripts | tar -x -f - -C "${automerge_dir}"
-          bash "${automerge_dir}/.github/scripts/template-sync-automerge.sh"
->>>>>>> template

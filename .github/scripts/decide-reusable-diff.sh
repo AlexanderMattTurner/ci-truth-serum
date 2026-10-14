@@ -6,7 +6,7 @@
 #      SKIP_ON_DRAFT, IS_DRAFT
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib-decide-range.sh
+# shellcheck source=.github/scripts/lib-decide-range.sh
 . "$HERE/lib-decide-range.sh"
 # shellcheck source=lib-path-match.sh disable=SC1091
 . "$HERE/lib-path-match.sh"
