@@ -7,40 +7,29 @@ name: Mutation testing
 # .github/scripts/mutation_shards.py). Slices run in parallel so wall-clock is
 # the slowest single module, not the serial sum, and an aggregate step demands
 # one report per shard so a vanished slice can't score a subset as the whole.
-# This runs on a DAILY schedule, on demand, and for now on a pull request. One
+# This runs on a DAILY schedule and on demand, never on a pull request. One
 # cosmic-ray pass reruns the offline suite once per mutant, so the cost is paid
-# once a day against main rather than on every push to every branch. A mutant
-# that survives is a prompt to add a test, and a prompt does not have to arrive
-# before a merge to be worth acting on.
+# once a day against main rather than on every push to every branch. The gate job
+# skips a scheduled run when main has not moved since the last passing run. A
+# mutant that survives is a prompt to add a test, and the ledger job keeps one
+# issue listing every survivor, closed again once a run finds none.
 #
 # The Python side is INCREMENTAL. Each shard caches its cosmic-ray session under
 # a key that is a content hash of the shard's own inputs, so a run recomputes a
 # mutant only when something it depends on changed and restores the rest. Each
 # daily run therefore pays for the modules the day's merges touched.
 #
-# Both sides keep their decide-reusable path gates. With no pull_request event
-# those gates open on every run this workflow has, so they cost a runner start
-# and select nothing; they stay because the shards and the aggregate read their
-# outputs, and rewiring that graph is a larger change than the schedule.
-#
 # Gate semantics: a shard fails only when its unmutated baseline is red or
 # cosmic-ray errors — a surviving mutant is diagnostic, not a build break. The
 # mutation-passed reporter is an `if: always()` summary so a run always reaches a
-# conclusion. It is NOT a required check: a workflow with no pull_request trigger
-# posts no status on a pull request, so requiring it would leave every pull
-# request waiting on a check that never reports. A red daily run reaches a person
-# through build-publish-notify.yaml's workflow_run notifier.
+# conclusion. It is NOT a required check: this workflow has no pull_request
+# trigger, so it posts no status on a pull request. A red daily run reaches a
+# person through build-publish-notify.yaml's workflow_run notifier and the ledger.
 
 on:
   schedule:
     # cron-alert: false  # alerted repo-wide by build-publish-notify.yaml's workflow_run notifier, which check-failure-notifier-coverage holds exhaustive over every push/schedule workflow — this workflow has no in-workflow sink for this lint to credit
     - cron: "0 6 * * *" # daily 06:00 UTC
-  # `pull_request` stays until the branch-protection ruleset stops requiring
-  # mutation-passed. sync-required-checks.yaml rewrites that ruleset from the
-  # `required-check:` annotation below, and only on a push to main, so the two
-  # agree one merge after this one. A head with no pull_request trigger posts no
-  # status, and a required context that never reports holds the merge open.
-  pull_request:
   workflow_dispatch:
     inputs:
       hypothesis_profile:
@@ -61,59 +50,33 @@ permissions:
   contents: read
 
 jobs:
-  # Path gates: each runs unconditionally so the mutation-passed reporter always
-  # receives a conclusion, then opens only when files the matching side depends
-  # on change on a PR (always open on non-pull_request events).
-  decide-py:
+  # Skip a scheduled run when main has not moved since the last passing run. Its
+  # verdicts would repeat that run's, and so would the issue it writes.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
-      pull-requests: read
-    uses: ./.github/workflows/decide-reusable.yaml
-    with:
-      filters: |
-        run:
-          - 'ci_truth_serum/**'
-          - 'tests/**'
-          - 'cosmic-ray.toml'
-          - 'pyproject.toml'
-          - 'uv.lock'
-          - '.python-version'
-          - '.github/scripts/run-mutation.sh'
-          - '.github/scripts/run-mutation-shard.sh'
-          - '.github/scripts/mutation_shards.py'
-          - '.github/scripts/_repo_root.py'
-          - '.github/scripts/prune-mutation-session.py'
-          - '.github/scripts/aggregate-mutation.py'
-          - '.github/actions/setup-uv/**'
-          - '.github/workflows/mutation.yaml'
-          - '.github/workflows/decide-reusable.yaml'
-
-  decide-js:
-    permissions:
-      contents: read
-      pull-requests: read
-    uses: ./.github/workflows/decide-reusable.yaml
-    with:
-      filters: |
-        run:
-          - 'scripts/*.mjs'
-          # The suite stryker runs drives markdownlint through this config, so
-          # a change to it must re-run the mutation gate.
-          - '.markdownlint-cli2.jsonc'
-          - 'stryker.config.json'
-          - 'package.json'
-          - 'pnpm-lock.yaml'
-          - '.github/actions/setup-base-env/**'
-          - '.github/actions/setup-uv/**'
-          - '.github/workflows/mutation.yaml'
-          - '.github/workflows/decide-reusable.yaml'
+      actions: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+        run: bash .github/scripts/mutation-gate.sh
 
   # Expand the shard matrix from the committed tree (one shard per mutated hook
   # module). The aggregate job re-derives the same set from the same checkout, so
   # their shard counts are guaranteed identical — the gate can never score a subset.
   plan:
-    needs: decide-py
-    if: needs.decide-py.outputs.run == 'true'
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -155,8 +118,8 @@ jobs:
       # tree and run-mutation-shard.sh resumes it instead of re-running every
       # mutant. No restore-keys, deliberately: cosmic-ray records a verdict per
       # mutant and cannot re-validate one, so a near-miss session would score
-      # stale verdicts as current. The weekly cron run seeds these caches on
-      # main, which is the only scope a fresh pull request can read.
+      # stale verdicts as current. Every run is on main, so each day's run reads
+      # the caches the day before wrote.
       - name: Restore this shard's cosmic-ray session
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -184,7 +147,7 @@ jobs:
   # and print the per-shard survival rates. This is the coverage gate; the shards
   # themselves never fail on survivors.
   aggregate: # required-check: false  # rolled up by mutation-passed (which needs: aggregate)
-    needs: [decide-py, plan, mutation]
+    needs: [gate, plan, mutation]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -197,7 +160,7 @@ jobs:
       - name: Decide whether reports are owed
         id: owed
         env:
-          GATE: ${{ needs.decide-py.outputs.run }}
+          GATE: ${{ needs.gate.outputs.run }}
           PLAN: ${{ needs.plan.result }}
         run: |
           ran=false
@@ -224,12 +187,21 @@ jobs:
       # Python 3.12, so no toolchain setup is needed to enforce the coverage gate.
       - name: Aggregate and enforce one report per shard
         if: steps.owed.outputs.ran == 'true'
-        run: python3 .github/scripts/aggregate-mutation.py shard-reports
+        run: python3 .github/scripts/aggregate-mutation.py shard-reports survivors.md
+
+      - name: Upload the survivors list for the ledger
+        if: steps.owed.outputs.ran == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-survivors
+          path: survivors.md
+          if-no-files-found: error
+          retention-days: 14
 
   # JS counterpart: Stryker over the self-contained scripts/assemble-changelog.mjs.
   mutation-js:
-    needs: decide-js
-    if: needs.decide-js.outputs.run == 'true'
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -248,12 +220,53 @@ jobs:
 
   # Runs even when the gates close or a job is cancelled or skipped, so every
   # run reaches one conclusion a person can read.
-  mutation-passed: # required-check: false  # sync-required-checks.yaml drops it from the ruleset on the next push to main, which is what lets the pull_request trigger go
+  mutation-passed: # required-check: false  # the workflow has no pull_request trigger, so no pull request can wait on it
     if: always()
-    needs: [decide-py, decide-js, plan, mutation, aggregate, mutation-js]
+    needs: [gate, plan, mutation, aggregate, mutation-js]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Fail if any required job did not pass
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: exit 1
+
+  # Keep ONE issue in step with this run: a survivor or a red job rewrites it, a
+  # clean run closes it. A gated-out run measured nothing, so it leaves the issue.
+  ledger: # required-check: false  # writes the mutation issue on main; no pull request runs it
+    needs: [gate, plan, mutation, aggregate, mutation-js]
+    # A gate that failed before it chose is red too, so the issue records it.
+    if: always() && github.ref == 'refs/heads/main' && (needs.gate.outputs.run == 'true' || needs.gate.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      # GitHub claims the group when it creates the job, before it reads `if:`, so
+      # a run that skips this job takes its own inert group and evicts nothing.
+      group: >-
+        mutation-ledger-${{
+        (github.ref == 'refs/heads/main' && (needs.gate.outputs.run == 'true' || needs.gate.result == 'failure'))
+        && 'shared' || format('inert-{0}', github.run_id) }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download the survivors list
+        if: needs.plan.result == 'success' && needs.aggregate.result == 'success'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mutation-survivors
+      - name: Update the mutation issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SURVIVORS_FILE: survivors.md
+          RESULTS: |
+            gate=${{ needs.gate.result }}
+            plan=${{ needs.plan.result }}
+            mutation=${{ needs.mutation.result }}
+            aggregate=${{ needs.aggregate.result }}
+            mutation-js=${{ needs.mutation-js.result }}
+        run: python3 .github/scripts/mutation-issue.py

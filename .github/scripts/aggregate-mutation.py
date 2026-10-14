@@ -13,7 +13,11 @@ Survivors are not a build break here (matching the unsharded run-mutation.sh):
 the per-shard survival rates are printed as diagnostics, not thresholded. The
 gate is coverage completeness, not the score.
 
-Usage: python aggregate-mutation.py <reports-dir>
+With SURVIVORS-OUT, it also writes the surviving mutants as Markdown there, or
+an empty file when every shard killed every mutant. The daily ledger job turns
+that file into the persistent mutation issue.
+
+Usage: python aggregate-mutation.py <reports-dir> [<survivors-out>]
 """
 
 import json
@@ -59,15 +63,36 @@ def aggregate(repo_root: Path, reports: list[dict]) -> list[str]:
     return lines
 
 
+def survivors_markdown(reports: list[dict]) -> str:
+    """The surviving mutants in REPORTS, one section per module, or "" when
+    there are none."""
+    sections = []
+    for report in sorted(reports, key=lambda r: r["id"]):
+        found = report["survivors"]
+        if not found:
+            continue
+        lines = [f"### `{report['id']}` (survival rate {report['rate']})", ""]
+        for mutant in found:
+            where = f" in `{mutant['definition']}`" if mutant["definition"] else ""
+            lines.append(
+                f"- `{mutant['path']}:{mutant['line']}` `{mutant['operator']}`{where}"
+            )
+        sections.append("\n".join(lines))
+    return "\n\n".join(sections)
+
+
 def main(argv: list[str]) -> None:
-    if len(argv) != 1:
-        raise SystemExit("usage: aggregate-mutation.py <reports-dir>")
+    if len(argv) not in (1, 2):
+        raise SystemExit("usage: aggregate-mutation.py <reports-dir> [<survivors-out>]")
     repo_root = find_repo_root(Path(__file__).resolve().parent)
     reports_dir = Path(argv[0])
     if not reports_dir.is_dir():
         raise SystemExit(f"reports dir {reports_dir} does not exist")
 
-    lines = aggregate(repo_root, _load_reports(reports_dir))
+    reports = _load_reports(reports_dir)
+    lines = aggregate(repo_root, reports)
+    if len(argv) == 2:
+        Path(argv[1]).write_text(survivors_markdown(reports), encoding="utf-8")
     summary = "\n".join(lines)
     print(summary)
     step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
