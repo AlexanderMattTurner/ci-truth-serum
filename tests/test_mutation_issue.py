@@ -128,6 +128,8 @@ def _stub_gh(  # noqa: PLR0913 -- one argument per input that main() reads
 
     def fake_gh(*args: str) -> str:
         calls.append(args)
+        if args[:2] == ("issue", "create"):
+            return "https://github.com/o/r/issues/5\n"
         if args[:2] != ("issue", "list"):
             return ""
         issue = found[args[args.index("--state") + 1]]
@@ -170,8 +172,16 @@ def _stub_gh(  # noqa: PLR0913 -- one argument per input that main() reads
             "",
             None,
             (9, 9),
-            [],
-            id="clean-with-none-open-writes-nothing",
+            [("issue", "edit", "9")],
+            id="clean-stamps-the-closed-issue-and-leaves-it-closed",
+        ),
+        pytest.param(
+            "mutation=success\n",
+            "",
+            None,
+            None,
+            [("issue", "create", "--title"), ("issue", "close", "5")],
+            id="clean-with-no-issue-creates-it-closed-to-hold-the-stamp",
         ),
         pytest.param(
             "mutation=failure\n",

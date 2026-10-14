@@ -10,10 +10,11 @@ The survivors come from two tools: cosmic-ray for the Python modules, and
 Stryker for the JS scripts. Stryker exits 0 when a mutant survives, so its
 survivors reach the issue only through its JSON report.
 
-Every write stamps the body with the run number. Two runs can overlap, and
-GitHub does not order the jobs in a concurrency group. So a run that finds a
-newer stamp on the issue leaves the issue as it is, and stale findings never
-replace newer ones.
+Every run stamps the body with the run number, a clean run too. Two runs can
+overlap, and GitHub does not order the jobs in a concurrency group. So a run
+that finds a newer stamp on the issue leaves the issue as it is, and stale
+findings never replace newer ones. When no issue exists yet, a clean run
+creates the issue closed, only to hold its stamp.
 
 Env: RESULTS (one `job=result` line per job), SURVIVORS_FILE (the Markdown
 aggregate-mutation.py wrote; absent when no aggregate ran), STRYKER_REPORT
@@ -170,10 +171,16 @@ def main() -> None:
         )
         return
     if not red and not survivors:
-        if issue is not None and is_open:
+        # A clean run stamps the issue too, whatever its state, or an older red
+        # run that finishes later sees no newer stamp and reopens the issue.
+        clean = render_clean_body(run_url, sha, run_number)
+        if issue is None:
+            url = _gh("issue", "create", "--title", TITLE, "--body", clean)
+            number = url.strip().rpartition("/")[2]
+        else:
             number = str(issue["number"])
-            body = render_clean_body(run_url, sha, run_number)
-            _gh("issue", "edit", number, "--body", body)
+            _gh("issue", "edit", number, "--body", clean)
+        if issue is None or is_open:
             _gh(
                 "issue",
                 "close",
