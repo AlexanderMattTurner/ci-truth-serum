@@ -94,7 +94,17 @@ def test_survivors_markdown_lists_each_survivor_under_its_module() -> None:
             "definition": None,
         },
     ]
+    reports[1]["survivors"] = [
+        {
+            "path": "ci_truth_serum/check_a.py",
+            "line": 3,
+            "operator": "core/AddNot",
+            "definition": "g",
+        }
+    ]
     assert agg.survivors_markdown(reports) == (
+        "### `check_a` (survival rate 0.10)\n\n"
+        "- `ci_truth_serum/check_a.py:3` `core/AddNot` in `g`\n\n"
         "### `check_b` (survival rate 0.10)\n\n"
         "- `ci_truth_serum/check_b.py:7` `core/NumberReplacer` in `f`\n"
         "- `ci_truth_serum/check_b.py:9` `core/AddNot`"

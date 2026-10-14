@@ -234,7 +234,8 @@ jobs:
   # clean run closes it. A gated-out run measured nothing, so it leaves the issue.
   ledger: # required-check: false  # writes the mutation issue on main; no pull request runs it
     needs: [gate, plan, mutation, aggregate, mutation-js]
-    if: always() && github.ref == 'refs/heads/main' && needs.gate.outputs.run == 'true'
+    # A gate that failed before it chose is red too, so the issue records it.
+    if: always() && github.ref == 'refs/heads/main' && (needs.gate.outputs.run == 'true' || needs.gate.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
@@ -242,7 +243,7 @@ jobs:
       # a run that skips this job takes its own inert group and evicts nothing.
       group: >-
         mutation-ledger-${{
-        (github.ref == 'refs/heads/main' && needs.gate.outputs.run == 'true')
+        (github.ref == 'refs/heads/main' && (needs.gate.outputs.run == 'true' || needs.gate.result == 'failure'))
         && 'shared' || format('inert-{0}', github.run_id) }}
       cancel-in-progress: false
     permissions:
@@ -263,6 +264,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SURVIVORS_FILE: survivors.md
           RESULTS: |
+            gate=${{ needs.gate.result }}
             plan=${{ needs.plan.result }}
             mutation=${{ needs.mutation.result }}
             aggregate=${{ needs.aggregate.result }}

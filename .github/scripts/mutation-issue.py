@@ -19,6 +19,8 @@ from pathlib import Path
 MARKER = "<!-- mutation-testing-ledger -->"
 TITLE = "Mutation testing: surviving mutants or failed jobs"
 RED_RESULTS = frozenset({"failure", "cancelled"})
+# GitHub refuses an issue body longer than this many characters.
+BODY_LIMIT = 65_536
 
 
 def red_jobs(results: str) -> list[str]:
@@ -44,9 +46,17 @@ def render_body(red: list[str], survivors: str, run_url: str, sha: str) -> str:
     ]
     if red:
         parts.append("## Failed jobs\n\n" + "\n".join(f"- `{job}`" for job in red))
-    if survivors:
-        parts.append("## Surviving mutants\n\n" + survivors)
-    return "\n\n".join(parts) + "\n"
+    if not survivors:
+        return "\n\n".join(parts) + "\n"
+    head = "\n\n".join([*parts, "## Surviving mutants\n\n"])
+    if len(head) + len(survivors) + 1 > BODY_LIMIT:
+        cut = (
+            "\n\nThis list stops here to fit the issue. The `mutation-survivors`"
+            f" artifact of the run holds every survivor: {run_url}"
+        )
+        kept = survivors[: BODY_LIMIT - len(head) - len(cut) - 1]
+        survivors = kept.rpartition("\n")[0] + cut
+    return head + survivors + "\n"
 
 
 def _gh(*args: str) -> str:
