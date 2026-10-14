@@ -12,14 +12,16 @@ For each sparse-checkout step, this derives the job's dependencies from the
 `run:` steps that execute against ITS checkout (up to the job's next full
 checkout, or its end): a repo-relative path token under one of `--dep-dir`'s
 directories names a file the tree must contain, and a local composite action
-(`uses: ./dir`) names its whole directory. A Python file among them — or one
-the sparse-checkout list names itself and a step hands to an interpreter — is
-followed further through its own local imports (`_cts_py_imports.walk_imports`),
-since a list that stops at the entry point still serves a tree that dies on
-its first `import`.
+(`uses: ./dir`) names its whole directory and adds its own steps to the job's.
+A Python file among them — or one the sparse-checkout list names itself and a
+step hands to an interpreter — is followed further through its own local
+imports (`_cts_py_imports.walk_imports`), since a list that stops at the entry
+point still serves a tree that dies on its first `import`. A shell file is
+followed through each script it sources AND each script it runs
+(`bash "$SCRIPT_DIR/x.sh"`), since either line dies on a missing file.
 
-An `import` and a `source` are the only two references either walk can
-follow. A module that OPENS a file at run time — a helper that stats
+An `import`, a `source` and a script run are the only references these walks
+can follow. A module that OPENS a file at run time — a helper that stats
 `pyproject.toml` to find the repo root, a step that reads a template — writes
 neither, so that file stays invisible here and the job dies on the runner the
 first time that code path runs. A file in the closure declares such a path
@@ -59,6 +61,7 @@ only on a job's own `actions/checkout` step); the passed file list is ignored.
 """
 
 import argparse
+import posixpath
 import re
 import subprocess
 import sys
@@ -68,13 +71,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ARGUMENT_TYPES,
     PathologicalInputError,
     command_arguments,
     command_name,
-    command_words,
     iter_nodes,
     node_text,
     parse as parse_bash,
@@ -294,18 +298,180 @@ def _composite_dirs(window: tuple[JsonObject, ...]) -> set[str]:
     return dirs
 
 
+class UnreadableActionError(Exception):
+    """A local composite action that a job uses has an `action.yml` that is not
+    valid YAML. The job runs that action, so the check cannot judge the job."""
+
+
+def _action_steps(action_dir: str, root: Path) -> list[JsonObject]:
+    """The steps of the composite action in ACTION_DIR, or [] when it has no
+    `action.yml` or `action.yaml` to read.
+
+    A missing file adds nothing, so the derivation stays a widening one. A file
+    that is not valid YAML raises `UnreadableActionError`. The job runs that
+    action, and zero steps from it would give a clean pass over steps that this
+    check never read.
+    """
+    for name in ("action.yml", "action.yaml"):
+        try:
+            text = (root / action_dir / name).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            doc = yaml.safe_load(text)
+        except yaml.YAMLError as err:
+            raise UnreadableActionError(
+                f"{action_dir}/{name} is not valid YAML: {err}"
+            ) from err
+        runs = doc.get("runs") if isinstance(doc, dict) else None
+        steps = runs.get("steps") if isinstance(runs, dict) else None
+        return [s for s in steps or [] if isinstance(s, dict)]
+    return []
+
+
+# The key `_job_steps` adds to each step of a local composite action. Its value
+# is the action's directory, which `$GITHUB_ACTION_PATH` names on the runner.
+ACTION_DIR = "__action_dir__"
+
+
+def _replaces_tree(step: JsonObject) -> bool:
+    """Whether STEP always replaces the job's tree: a checkout with no `path:`
+    and no `if:`. `_window` ends at the first such step."""
+    return (
+        _is_checkout(step)
+        and not (step.get("with") or {}).get("path")
+        and not step.get("if")
+    )
+
+
+def _expand(
+    window: Iterable[JsonObject], root: Path, callers: frozenset[str]
+) -> tuple[list[JsonObject], bool]:
+    """(WINDOW with each local composite's steps put after the step that uses
+    it, whether a composite replaced the tree for good).
+
+    A composite runs its steps on the caller's tree, so the `_window` rule
+    applies inside it. A checkout there ends the composite's own steps. When
+    that checkout always runs, it also ends the caller's steps, because each
+    later caller step runs on the new tree. CALLERS holds the composites that
+    are already open, so an action that uses itself stops there.
+    """
+    steps: list[JsonObject] = []
+    for step in window:
+        steps.append(step)
+        action_dir = next(iter(_composite_dirs((step,))), None)
+        if action_dir is None or action_dir in callers:
+            continue
+        own = _action_steps(action_dir, root)
+        tagged = [{**s, ACTION_DIR: action_dir} for s in _window(own, 0)]
+        inner, replaced = _expand(tagged, root, callers | {action_dir})
+        steps += inner
+        if (replaced or any(map(_replaces_tree, own))) and not step.get("if"):
+            return steps, True
+    return steps, False
+
+
+def _job_steps(window: tuple[JsonObject, ...], root: Path) -> tuple[JsonObject, ...]:
+    """WINDOW plus the steps of every local composite action it uses, nested
+    actions included. A composite's steps run against the job's own tree, so
+    what they run is owed exactly as a `run:` in the workflow is. Each added
+    step carries its action's directory under `ACTION_DIR`."""
+    steps, _ = _expand(window, root, frozenset())
+    return tuple(steps)
+
+
+# The two spellings of the variable that holds a composite action's directory.
+# A `${GITHUB_ACTION_PATH:-x}` holds other text, so it does not match.
+_ACTION_PATH_VARS = frozenset({"$GITHUB_ACTION_PATH", "${GITHUB_ACTION_PATH}"})
+# The expression form. The runner replaces it in the `run:` text before a
+# shell reads that text, so a text substitution here does the same thing.
+_ACTION_PATH_EXPR = re.compile(r"\$\{\{\s*github\.action_path\s*\}\}")
+
+
+def _word_nodes(command: Node) -> list[Node]:
+    """COMMAND's name node, then its argument nodes: the nodes behind
+    `command_words`."""
+    return [
+        child
+        for child in command.children
+        if child.type == "command_name" or child.type in ARGUMENT_TYPES
+    ]
+
+
+def _word_path(word: Node, action_dir: str | None) -> str:
+    """WORD with one layer of quotes removed, as the path it names.
+
+    In a step of a composite action, each `$GITHUB_ACTION_PATH` expansion
+    becomes ACTION_DIR, and the `..` segments after it fold. Thus
+    `"${GITHUB_ACTION_PATH}/../../scripts/x.sh"` in `.github/actions/a` names
+    `.github/scripts/x.sh`. A single-quoted word holds no expansion node, so
+    its text stays as written, as it does in bash.
+    """
+    if action_dir is None:
+        return unquote(node_text(word))
+    raw = word.text
+    spans = [
+        node
+        for node in iter_nodes(word, "simple_expansion", "expansion")
+        if node_text(node) in _ACTION_PATH_VARS
+    ]
+    for node in reversed(spans):
+        raw = (
+            raw[: node.start_byte - word.start_byte]
+            + action_dir.encode()
+            + raw[node.end_byte - word.start_byte :]
+        )
+    text = unquote(raw.decode("utf-8", "replace"))
+    return posixpath.normpath(text) if text.startswith(f"{action_dir}/") else text
+
+
+def _step_commands(step: JsonObject) -> list[list[str]]:
+    """The words of each command in STEP's `run:` text, through `_word_path`."""
+    run = step.get("run")
+    if not isinstance(run, str):
+        return []
+    action_dir = step.get(ACTION_DIR)
+    if action_dir is not None:
+        run = _ACTION_PATH_EXPR.sub(lambda _: action_dir, run)
+    return [
+        [_word_path(word, action_dir) for word in _word_nodes(node)]
+        for node in iter_nodes(parse_bash(run), "command")
+    ]
+
+
+def _run_python(words: list[str]) -> list[str]:
+    """The `.py` files a command's WORDS run: the one an interpreter is handed
+    (`python3 x.py`), or the command word itself (`"$DIR/x.py"`, which runs
+    through the file's shebang)."""
+    found = interpreter_scripts(words)
+    if words and words[0].endswith(".py"):
+        found.append(words[0])
+    return found
+
+
 def _dependencies(
     window: tuple[JsonObject, ...], path_token_re: "re.Pattern[str]"
 ) -> set[str]:
+    """The paths WINDOW's steps name: each local composite's directory, and
+    each path token under a `--dep-dir` in a `run:` text. A composite's step
+    also adds the tokens in its words, after `_word_path` puts the action's
+    directory in place of `$GITHUB_ACTION_PATH`, since the text holds no
+    such token before that."""
     deps: set[str] = _composite_dirs(window)
     for step in window:
         run = step.get("run")
         if isinstance(run, str):
             deps |= set(path_token_re.findall(run))
+        if step.get(ACTION_DIR) is not None:
+            for words in _step_commands(step):
+                for word in words:
+                    deps |= set(path_token_re.findall(word))
     return deps
 
 
-def _entrypoints(checkout: Checkout, files: frozenset[str]) -> list[str]:
+def _entrypoints(
+    checkout: Checkout, steps: tuple[JsonObject, ...], files: frozenset[str]
+) -> list[str]:
     """The tracked Python files this job runs.
 
     A step that hands one to an interpreter names it on the command
@@ -317,14 +483,9 @@ def _entrypoints(checkout: Checkout, files: frozenset[str]) -> list[str]:
     list entry is the only place the job says it reads that file.
     """
     found = {pattern.rstrip("/") for pattern in checkout.patterns}
-    for step in checkout.window:
-        run = step.get("run")
-        if not isinstance(run, str):
-            continue
-        for node in iter_nodes(parse_bash(run), "command"):
-            words = command_words(node)
-            if words:
-                found |= set(interpreter_scripts(words))
+    for step in steps:
+        for words in _step_commands(step):
+            found |= {_normalize(script) for script in _run_python(words)}
     return sorted(dep for dep in found if dep.endswith(".py") and dep in files)
 
 
@@ -348,7 +509,31 @@ _SHELL_INTERPRETER = re.compile(r"(?:ba|z|k)?sh")
 _SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
 
 
-def _shell_entrypoints(checkout: Checkout, files: frozenset[str]) -> list[str]:
+def _run_shell_script(words: list[str]) -> str | None:
+    """The shell script a command's unquoted WORDS run, or None.
+
+    Either the command word itself (`./x.sh`, `"$DIR/x.sh"`), or the first
+    `.sh` word a shell interpreter is handed (`bash -e x.sh`). A `-c` hands
+    the shell a string to run, so a `.sh` after it is text in that string.
+    """
+    if not words:
+        return None
+    name = words[0]
+    if _SHELL_SUFFIX.search(name):
+        return name
+    if not _SHELL_INTERPRETER.fullmatch(name.rsplit("/", 1)[-1]):
+        return None
+    for candidate in words[1:]:
+        if candidate == "-c":
+            return None
+        if _SHELL_SUFFIX.search(candidate):
+            return candidate
+    return None
+
+
+def _shell_entrypoints(
+    checkout: Checkout, steps: tuple[JsonObject, ...], files: frozenset[str]
+) -> list[str]:
     """The tracked shell files this job runs.
 
     The same two sources as the Python entry points: a script a step hands to
@@ -357,50 +542,42 @@ def _shell_entrypoints(checkout: Checkout, files: frozenset[str]) -> list[str]:
     variable puts no readable path on the command.
     """
     found = {pattern.rstrip("/") for pattern in checkout.patterns}
-    for step in checkout.window:
-        run = step.get("run")
-        if not isinstance(run, str):
-            continue
-        for node in iter_nodes(parse_bash(run), "command"):
-            words = command_words(node)
-            if not words:
-                continue
-            name = words[0]
-            if name is not None and _SHELL_SUFFIX.search(name):
-                found.add(name.removeprefix("./"))
-            if name is None or not _SHELL_INTERPRETER.fullmatch(
-                name.rsplit("/", 1)[-1]
-            ):
-                continue
-            for candidate in words[1:]:
-                if candidate is None or candidate == "-c":
-                    break
-                if _SHELL_SUFFIX.search(candidate):
-                    found.add(candidate.removeprefix("./"))
-                    break
+    for step in steps:
+        for words in _step_commands(step):
+            script = _run_shell_script(words)
+            if script is not None:
+                found.add(_normalize(script))
     return sorted(dep for dep in found if _SHELL_SUFFIX.search(dep) and dep in files)
 
 
-def _source_targets(text: str) -> set[str]:
-    """The path each `source` / `.` line in TEXT names, as written.
+def _shell_targets(text: str) -> tuple[set[str], set[str]]:
+    """(shell files, Python files) the shell script TEXT sources or runs, each
+    path as written.
 
-    A sourced path is almost never a bare literal: the idiom is
-    `source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"`, whose value no static
-    reader can compute. Two things are readable — the `# shellcheck source=`
-    directive the script carries, and the literal SEGMENT after the last
-    slash. `_resolve_source` decides which of those names a real file, so a
-    guess that names nothing adds nothing.
+    Such a path is almost never a bare literal: the idiom is
+    `source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"` or
+    `bash "$SCRIPT_DIR/x.sh"`, whose value no static reader can compute. Two
+    things are readable — the `# shellcheck source=` directive the script
+    carries, and the literal SEGMENT after the last slash. `_resolve_source`
+    decides which of those names a real file, so a guess that names nothing
+    adds nothing.
     """
-    targets = {match.group("path") for match in _SHELLCHECK_SOURCE.finditer(text)}
+    shell = {match.group("path") for match in _SHELLCHECK_SOURCE.finditer(text)}
+    python: set[str] = set()
     for node in iter_nodes(parse_bash(text), "command"):
-        if command_name(node) not in ("source", "."):
+        if command_name(node) in ("source", "."):
+            # `command_arguments` yields the command NAME first, so the
+            # sourced path is the word after it.
+            arguments = command_arguments(node)[1:]
+            if arguments:
+                shell.add(unquote(node_text(arguments[0])))
             continue
-        # `command_arguments` yields the command NAME first, so the sourced
-        # path is the word after it.
-        arguments = command_arguments(node)[1:]
-        if arguments:
-            targets.add(unquote(node_text(arguments[0])))
-    return targets
+        words = [_word_path(word, None) for word in _word_nodes(node)]
+        script = _run_shell_script(words)
+        if script is not None:
+            shell.add(script)
+        python |= set(_run_python(words))
+    return shell, python
 
 
 def _resolve_source(target: str, importer: str, files: frozenset[str]) -> str | None:
@@ -421,13 +598,19 @@ def _resolve_source(target: str, importer: str, files: frozenset[str]) -> str | 
     return next((c for c in candidates if c in files), None)
 
 
-def _sourced(entrypoints: list[str], root: Path, files: frozenset[str]) -> set[str]:
-    """Every tracked shell file ENTRYPOINTS source, transitively.
+def _shell_closure(
+    entrypoints: list[str], root: Path, files: frozenset[str]
+) -> tuple[set[str], set[str]]:
+    """(shell files, Python files) ENTRYPOINTS source or run, transitively.
+    The shell set leaves out the entry points themselves.
 
     A list that stops at the entry point serves a tree that dies on its first
-    `source`, exactly as a Python list that stops before an `import` does.
+    `source`, or on the first sibling script it runs, exactly as a Python list
+    that stops before an `import` does. A Python file a script runs is
+    returned for the import walk; it runs no shell this walk can read.
     """
     seen: set[str] = set()
+    python: set[str] = set()
     pending = list(entrypoints)
     while pending:
         importer = pending.pop()
@@ -435,13 +618,19 @@ def _sourced(entrypoints: list[str], root: Path, files: frozenset[str]) -> set[s
             text = (root / importer).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        for target in _source_targets(text):
+        shell_targets, python_targets = _shell_targets(text)
+        python |= {
+            resolved
+            for target in python_targets
+            if (resolved := _resolve_source(target, importer, files)) is not None
+        }
+        for target in shell_targets:
             resolved = _resolve_source(target, importer, files)
             if resolved is None or resolved in seen or resolved in entrypoints:
                 continue
             seen.add(resolved)
             pending.append(resolved)
-    return seen
+    return seen, python
 
 
 @dataclass(frozen=True)
@@ -559,19 +748,22 @@ def uncovered(
     such a declaration widens nothing, and the caller reports it rather than
     dropping it.
     """
-    entrypoints = _entrypoints(checkout, files)
-    shell_entrypoints = _shell_entrypoints(checkout, files)
+    steps = _job_steps(checkout.window, root)
+    shell_entrypoints = _shell_entrypoints(checkout, steps, files)
+    sourced, shell_run_python = _shell_closure(shell_entrypoints, root, files)
+    entrypoints = sorted(set(_entrypoints(checkout, steps, files)) | shell_run_python)
     imported = _imported(entrypoints, root, files)
-    sourced = _sourced(shell_entrypoints, root, files)
-    deps = _dependencies(checkout.window, path_token_re) | imported | sourced
+    deps = _dependencies(steps, path_token_re) | imported | sourced | shell_run_python
     # The scan reads the files this job EXECUTES, which is a smaller set than
     # `deps`. A step that merely names a file (`ruff check x.py`) never runs
     # it, so what that file opens at run time is no dependency of this job, and
     # scanning it would turn a sound job red over a path it never touches. An
-    # entry point joins this set alone, never `deps`: it is already judged by
-    # `_dependencies` and by the list that names it, and this derivation may
-    # only ADD the paths a declaration names. The shell half of that term is
-    # the load-bearing one, since `_sourced` skips the entry points it starts
+    # entry point joins this set alone, never `deps` — except a Python file a
+    # shell script runs, which no `run:` text names, so `deps` is the only
+    # place that demands it. The others are already judged by `_dependencies`
+    # and by the list that names them, and this derivation may only ADD the
+    # paths a declaration names. The shell half of that term is
+    # the load-bearing one, since `_shell_closure` skips the entry points it starts
     # from; the Python half is spelled out too, so the set does not depend on
     # `walk_imports` seeding its own roots.
     #
@@ -585,7 +777,7 @@ def uncovered(
         | set(shell_entrypoints)
         | imported
         | sourced
-        | _composite_dirs(checkout.window)
+        | _composite_dirs(steps)
     )
     needs: list[Need] = []
     scanned: set[str] = set()
@@ -685,12 +877,14 @@ def main(argv: list[str] | None = None) -> int:
         for checkout in found:
             # A step's `run:` block over _MAX_PIPE_BYTES of piped bytes fails the
             # grammar loudly rather than silently: skipping it would false-green
-            # exactly the job this lint exists to read.
+            # exactly the job this lint exists to read. A local action whose
+            # `action.yml` is not valid YAML fails the same way, for the same
+            # reason.
             try:
                 missing, strays = uncovered(
                     checkout, files, exempt, root, path_token_re
                 )
-            except PathologicalInputError as err:
+            except (PathologicalInputError, UnreadableActionError) as err:
                 print(
                     f"::error file={rel},line={checkout.line}::job "
                     f"{checkout.job_name}: {err}"

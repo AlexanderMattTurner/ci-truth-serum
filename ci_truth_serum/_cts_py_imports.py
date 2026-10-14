@@ -33,15 +33,17 @@ def interpreter_scripts(words: Sequence[str | None]) -> list[str]:
     next word: `python3 -I x.py` puts an option between the two. A `-m`
     before it names a MODULE to run, so the `.py` that follows is that
     module's own argument rather than a file the interpreter imports
-    (`python3 -m pytest tests/x.py` runs pytest). A word an expansion decides
-    reads as None and ends the search, since the text names no real file.
+    (`python3 -m pytest tests/x.py` runs pytest). A `-c` ends the search the
+    same way: the interpreter runs the string after it, and a later `.py` word
+    is only an item in `sys.argv`. A word an expansion decides reads as None
+    and ends the search, since the text names no real file.
     """
     found = []
     for index, word in enumerate(words):
         if word is None or not _PY_INTERPRETER.fullmatch(word.rsplit("/", 1)[-1]):
             continue
         for candidate in words[index + 1 :]:
-            if candidate is None or candidate == "-m":
+            if candidate is None or candidate in ("-m", "-c"):
                 break
             if candidate.endswith(".py"):
                 found.append(candidate)
