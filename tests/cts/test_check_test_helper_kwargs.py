@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests._helpers import commit_all, init_test_repo, load_hook
+from tests._helpers import REPO_ROOT, commit_all, init_test_repo, load_hook
 
 mod = load_hook("check_test_helper_kwargs.py", "check_test_helper_kwargs")
 
@@ -480,7 +480,6 @@ def test_empty_argv_exits_2_via_cli_contract() -> None:
 def test_the_real_tree_is_clean() -> None:
     """No grandfathered baseline exists, so this is the whole contract: every
     hit on this pack's own tests/ tree is a defect someone must fix."""
-    repo_root = Path(__file__).resolve().parents[2]
-    argv = [str(p) for p in (repo_root / "tests").rglob("*.py")]
-    hits = mod.findings(argv, repo_root, ("tests",))
+    argv = [str(p) for p in (REPO_ROOT / "tests").rglob("*.py")]
+    hits = mod.findings(argv, REPO_ROOT, ("tests",))
     assert hits == []

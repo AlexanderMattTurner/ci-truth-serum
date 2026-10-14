@@ -108,6 +108,47 @@ def test_execution_forms_are_flagged_with_their_label(tmp_path, command, label):
     assert label in result[0][1]
 
 
+@pytest.mark.parametrize(
+    ("command", "label"),
+    [
+        ("python -m tools.render", "`python -m tools.render`"),
+        ("python3 -u -m tools", "`python3 -m tools`"),
+        ("/usr/bin/python3 scripts/x.py", "`python3 scripts/x.py`"),
+        ("pytest -q tests", "`pytest`"),
+        ("python -m pytest", "`python -m pytest`"),
+        ("env -u UV_NO_SYNC FOO=1 bash ./scripts/x.sh", "`bash ./scripts/x.sh`"),
+        ("uv run --python '>=3.13' --no-project bin/x", "`uv run bin/x`"),
+        ("uv run --extra dev pytest -q", "`uv run pytest`"),
+        ("uv run -m tools.render", "`uv run -m tools.render`"),
+        ("uv run python -m tools", "`uv run python -m tools`"),
+    ],
+)
+def test_module_and_wrapper_forms_are_flagged(tmp_path, monkeypatch, command, label):
+    """`python -m` imports from the working directory first, so a module the
+    checkout holds runs the checkout's code; `env` and `uv run` only start it."""
+    (tmp_path / "tools").mkdir()
+    monkeypatch.setattr(ue, "REPO_ROOT", tmp_path)
+    result = ue.check_file(_write(tmp_path, _wf(_PR_HEAD_SHA, _run_step(command))))
+    assert len(result) == 1
+    assert label in result[0][1]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python -m pip install x",
+        "uv run --with ruff ruff check",
+        "uvx ruff check",
+        "python script_name_without_suffix -m tools",
+    ],
+)
+def test_installed_modules_and_tools_are_not_counted(tmp_path, monkeypatch, command):
+    (tmp_path / "tools").mkdir()
+    monkeypatch.setattr(ue, "REPO_ROOT", tmp_path)
+    path = _write(tmp_path, _wf(_PR_HEAD_SHA, _run_step(command)))
+    assert ue.check_file(path) == []
+
+
 def test_workflow_run_head_without_pinning_if_is_flagged(tmp_path):
     """A privileged follow-up workflow reaching the same head. Nothing pins WHICH
     upstream run may reach the job, so the checkout is attacker-controlled."""
@@ -476,3 +517,196 @@ def test_each_rule_contributes(tmp_path, mutation, body):
         f"base fixture must be flagged for the {mutation} mutant to mean anything"
     )
     assert ue.check_file(_write(tmp_path, body, name="mutant.yaml")) == [], mutation
+
+
+# ── the merge commit: run before the job re-checks out a fixed branch ────────
+#
+# Under `pull_request`, a checkout with no `ref:` stages the PR's merge commit. A
+# later checkout of the default branch says the job does not trust that tree, but
+# a step that already ran from it could write $GITHUB_ENV, so the re-checkout is
+# too late.
+
+_DEFAULT_BRANCH = "${{ github.event.repository.default_branch }}"
+
+
+def _merge_wf(
+    first: str = "      - uses: actions/checkout@v4\n",
+    early: str = "      - run: bash .github/scripts/comment.sh\n",
+    recheckout_ref: str | None = _DEFAULT_BRANCH,
+    trigger: str = "pull_request",
+    secret_env: str = _SECRET_ENV,
+) -> str:
+    """A job that checks out FIRST, runs EARLY, re-checks out RECHECKOUT_REF, then
+    runs a script with SECRET_ENV live."""
+    recheckout = (
+        "      - uses: actions/checkout@v4\n"
+        f"        with:\n          ref: {recheckout_ref}\n"
+        if recheckout_ref is not None
+        else ""
+    )
+    return (
+        f"on:\n  {trigger}:\n"
+        "jobs:\n  delta:\n    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        + first
+        + early
+        + recheckout
+        + "      - run: bash .github/scripts/analyze.sh\n"
+        + secret_env
+    )
+
+
+@pytest.mark.parametrize("recheckout_ref", [_DEFAULT_BRANCH, "main"])
+def test_execution_before_a_default_branch_recheckout_is_flagged(
+    tmp_path, recheckout_ref
+):
+    result = ue.check_file(_write(tmp_path, _merge_wf(recheckout_ref=recheckout_ref)))
+    assert len(result) == 1
+    line, message = result[0]
+    assert line == 8  # the step that runs comment.sh
+    assert "job 'delta' stages the pull request's merge commit" in message
+    assert "`bash .github/scripts/comment.sh`" in message
+    assert "analyze.sh" not in message
+    assert "these secrets are live in the job: NPM_TOKEN" in message
+
+
+@pytest.mark.parametrize("ref", ["${{ github.sha }}", "${{ github.ref }}"])
+def test_merge_ref_spellings_stage_the_merge_commit(tmp_path, ref):
+    first = f"      - uses: actions/checkout@v4\n        with:\n          ref: {ref}\n"
+    assert len(ue.check_file(_write(tmp_path, _merge_wf(first=first)))) == 1
+
+
+def test_a_local_action_before_the_recheckout_is_flagged(tmp_path):
+    early = "      - uses: ./.github/actions/setup\n"
+    ((_line, message),) = ue.check_file(_write(tmp_path, _merge_wf(early=early)))
+    assert "local composite action `uses: ./.github/actions/setup`" in message
+
+
+def test_inline_reads_before_the_recheckout_are_clean(tmp_path):
+    """The fixed shape: only inline commands touch the merge commit."""
+    early = '      - run: git diff --name-only "$BASE"...HEAD\n'
+    assert ue.check_file(_write(tmp_path, _merge_wf(early=early))) == []
+
+
+_PR_IN_SUBDIR = "      - uses: actions/checkout@v4\n        with:\n          path: pr\n"
+
+
+def test_a_subdirectory_merge_checkout_governs_only_its_directory(tmp_path):
+    """`path: pr` stages the merge commit under pr/, so a root script is not its code."""
+    assert ue.check_file(_write(tmp_path, _merge_wf(first=_PR_IN_SUBDIR))) == []
+
+
+@pytest.mark.parametrize(
+    "early",
+    [
+        "      - run: bash pr/scripts/x.sh\n",
+        "      - run: make build\n        working-directory: pr\n",
+        "      - run: bash scripts/x.sh\n        working-directory: ./pr\n",
+    ],
+)
+def test_code_run_from_a_subdirectory_merge_checkout_is_flagged(tmp_path, early):
+    body = _merge_wf(first=_PR_IN_SUBDIR, early=early)
+    assert len(ue.check_file(_write(tmp_path, body))) == 1
+
+
+def test_a_fixed_checkout_into_a_subdirectory_is_also_the_recheckout(tmp_path):
+    body = _merge_wf().replace(
+        f"          ref: {_DEFAULT_BRANCH}\n",
+        f"          ref: {_DEFAULT_BRANCH}\n          path: trusted\n",
+    )
+    assert len(ue.check_file(_write(tmp_path, body))) == 1
+
+
+@pytest.mark.parametrize(
+    "early",
+    [
+        "      - run: bash x.sh\n        working-directory: ${{ runner.temp }}\n",
+        "      - run: bash x.sh\n        working-directory: /opt/tools\n",
+    ],
+)
+def test_a_step_outside_the_workspace_runs_no_checkout_code(tmp_path, early):
+    assert ue.check_file(_write(tmp_path, _merge_wf(early=early))) == []
+
+
+def test_a_checkout_of_another_repository_is_not_the_merge_commit(tmp_path):
+    first = (
+        "      - uses: actions/checkout@v4\n"
+        "        with:\n          repository: org/tools\n"
+    )
+    assert ue.check_file(_write(tmp_path, _merge_wf(first=first))) == []
+    recheckout = _merge_wf().replace(
+        f"          ref: {_DEFAULT_BRANCH}\n",
+        "          repository: org/tools\n          ref: main\n",
+    )
+    assert ue.check_file(_write(tmp_path, recheckout, name="other.yaml")) == []
+
+
+def test_the_merge_commit_sha_context_stages_the_merge_commit(tmp_path):
+    first = (
+        "      - uses: actions/checkout@v4\n        with:\n"
+        "          ref: ${{ github.event.pull_request.merge_commit_sha }}\n"
+    )
+    assert len(ue.check_file(_write(tmp_path, _merge_wf(first=first)))) == 1
+
+
+def test_a_job_that_never_runs_on_pull_request_is_clean(tmp_path):
+    body = _merge_wf(trigger="pull_request:\n  workflow_dispatch").replace(
+        "    runs-on: ubuntu-latest\n",
+        "    if: github.event_name == 'workflow_dispatch'\n    runs-on: ubuntu-latest\n",
+    )
+    assert ue.check_file(_write(tmp_path, body)) == []
+
+
+def test_an_opaque_recheckout_ref_is_not_guessed_at(tmp_path):
+    body = _merge_wf(recheckout_ref="${{ needs.pick.outputs.ref }}")
+    assert ue.check_file(_write(tmp_path, body)) == []
+
+
+_MERGE_VIOLATING = _merge_wf()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "body"),
+    [
+        ("pull-request-trigger-removed", _merge_wf(trigger="pull_request_target")),
+        ("live-secrets-removed", _merge_wf(secret_env="")),
+        ("recheckout-removed", _merge_wf(recheckout_ref=None)),
+        ("early-execution-removed", _merge_wf(early="      - run: echo hi\n")),
+        (
+            "first-checkout-pinned",
+            _merge_wf(
+                first="      - uses: actions/checkout@v4\n"
+                "        with:\n          ref: main\n"
+            ),
+        ),
+    ],
+    ids=lambda value: value if "\n" not in value else "",
+)
+def test_each_merge_commit_rule_contributes(tmp_path, mutation, body):
+    base = _write(tmp_path, _MERGE_VIOLATING, name="base.yaml")
+    assert len(ue.check_file(base)) == 1, mutation
+    assert ue.check_file(_write(tmp_path, body, name="mutant.yaml")) == [], mutation
+
+
+@pytest.mark.parametrize(
+    "token_step",
+    ["", "        env:\n          GH_TOKEN: ${{ github.token }}\n"],
+)
+def test_a_write_scoped_token_counts_whether_or_not_it_is_named(tmp_path, token_step):
+    """The runner receives the job's token for every job, so a write scope is in
+    reach of the PR's code even when no step names the token."""
+    body = _merge_wf(secret_env=token_step).replace(
+        "jobs:\n", "permissions:\n  pull-requests: write\njobs:\n", 1
+    )
+    ((_line, message),) = ue.check_file(_write(tmp_path, body))
+    assert "these secrets are live in the job: GITHUB_TOKEN" in message
+
+
+def test_a_job_permissions_block_replaces_the_workflows(tmp_path):
+    body = _merge_wf(secret_env="").replace(
+        "jobs:\n  delta:\n",
+        "permissions: write-all\njobs:\n  delta:\n"
+        "    permissions:\n      contents: read\n",
+        1,
+    )
+    assert ue.check_file(_write(tmp_path, body)) == []

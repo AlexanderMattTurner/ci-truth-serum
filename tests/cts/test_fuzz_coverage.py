@@ -53,6 +53,8 @@ FUZZ_REQUIRED = {
     "check_pipefail_grep_pipe": "violations",
     "check_folded_scalar_comment": "violations",
     "check_gh_slurp_jq": "violations",
+    "check_main_push": "violations",
+    "check_duplicate_local_hook": "findings",
     "check_substitution_exit_swallow": "violations",
     "check_argument_exit_swallow": "violations",
     "check_pinned_downloads": "violations",
@@ -98,6 +100,7 @@ FUZZ_REQUIRED = {
     "check_echo_fallback": "violations",
     "check_case_default": "violations",
     "check_soft_timeout": "violations",
+    "check_embedded_program_length": "violations",
     "check_flock_fixed_fd": "violations",
     "check_bare_return_status": "violations",
     "check_lockstep_pins": "check_pair",
@@ -143,6 +146,14 @@ FUZZ_REQUIRED = {
     "check_unreset_module_state": "violations",
     "check_unspecified_encoding": "violations",
     "check_wall_clock_assertions": "violations",
+    "_cts_claude_settings": "decode",
+    "check_pretooluse_timeout": "findings",
+    "check_grant_wildcard": "findings",
+    "check_bash32_portability": "violations",
+    "check_counted_repo_root": "violations",
+    "check_container_job_shell": "violations",
+    "check_artifact_pattern_overlap": "violations",
+    "check_rename_onto_symlink": "violations",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the

@@ -52,14 +52,96 @@ def test_two_calls_on_one_line_report_that_line_once() -> None:
     assert mod.violations("flock -x 9 && flock -x 8\n") == [1]
 
 
-def test_a_launcher_wrapping_flock_is_not_judged() -> None:
-    """Only the command's own NAME is in scope.
+# ── flagged: a prefix command runs flock ─────────────────────────────────
+@pytest.mark.parametrize(
+    "name, src",
+    [
+        ("sudo", "sudo flock -x 9\n"),
+        ("sudo with a valued option", "sudo -u root flock 9\n"),
+        ("sudo with a joined option", "sudo --user=root flock 9\n"),
+        ("sudo after its terminator", "sudo -- flock 9\n"),
+        ("sudo with a flag option", "sudo -E flock 9\n"),
+        ("sudo with an assignment", "sudo LC_ALL=C flock 9\n"),
+        ("sudo with an option then an assignment", "sudo -u root LC_ALL=C flock 9\n"),
+        ("doas", "doas -u root flock 9\n"),
+        ("command", "command flock 9\n"),
+        ("command with the default path", "command -p flock 9\n"),
+        ("env", "env flock 9\n"),
+        ("env with assignments and options", "env -u HOME LC_ALL=C flock -x 9\n"),
+        ("exec", "exec flock 9\n"),
+        ("nice", "nice -n 5 flock 9\n"),
+        ("nohup", "nohup flock 9 &\n"),
+        ("time", "time -p flock 9\n"),
+        ("two prefixes", "sudo env X=1 flock 9\n"),
+    ],
+)
+def test_a_prefix_command_running_flock_is_flagged(name: str, src: str) -> None:
+    """A prefix runs the program after it, so the lock is still on fd 9."""
+    assert mod.violations(src) == [1], name
 
-    A `flock` word further along a command line is somebody else's argument, and
-    no launcher usefully wraps this form: the descriptor the operand names
-    belongs to the shell that opened it.
-    """
-    assert mod.violations("sudo flock -x 9\n") == []
+
+def test_a_prefixed_call_is_reported_at_the_flock_word() -> None:
+    assert mod.violations("sudo -u root \\\n  flock 9\n") == [2]
+
+
+@pytest.mark.parametrize(
+    "name, src",
+    [
+        ("a lookup", "command -v flock 9\n"),
+        ("a lookup behind sudo", "sudo command -v flock\n"),
+        ("another program behind sudo", "sudo helper --lock flock 9\n"),
+        ("a prefix with a file operand", "sudo flock /var/lock/x cmd\n"),
+    ],
+)
+def test_a_prefix_that_does_not_lock_a_literal_passes(name: str, src: str) -> None:
+    assert mod.violations(src) == [], name
+
+
+@pytest.mark.parametrize(
+    "option",
+    ["-e", "--edit", "-K", "--remove-timestamp", "-l", "--list", "-v", "--validate"],
+)
+def test_a_sudo_mode_that_runs_no_program_is_not_a_flock_call(option: str) -> None:
+    """`sudo -l flock 9` asks what `flock 9` may do. It starts no process."""
+    assert mod.violations(f"sudo {option} flock 9\n") == []
+
+
+def test_a_doas_assignment_is_not_skipped() -> None:
+    """Only `env` and `sudo` take `NAME=VALUE`; to `doas` it names the program."""
+    assert mod.violations("doas LC_ALL=C flock 9\n") == []
+
+
+# ── a repo's own wrapper function ────────────────────────────────────────
+def test_a_named_wrapper_running_flock_is_flagged() -> None:
+    src = "run_priv flock 200\n"
+    assert mod.violations(src, wrappers=frozenset({"run_priv"})) == [1]
+
+
+def test_a_wrapper_chains_with_a_prefix() -> None:
+    src = "run_priv env X=1 flock 9\n"
+    assert mod.violations(src, wrappers=frozenset({"run_priv"})) == [1]
+
+
+def test_a_wrapper_is_judged_only_when_named() -> None:
+    """Any other word before `flock` is somebody else's argument."""
+    assert mod.violations("run_priv flock 200\n") == []
+
+
+def test_a_named_wrapper_running_another_program_passes() -> None:
+    src = "run_priv install -m 0644 flock 9\n"
+    assert mod.violations(src, wrappers=frozenset({"run_priv"})) == []
+
+
+# ── a prefix that closes inherited descriptors ───────────────────────────
+@pytest.mark.parametrize("prefix", ["sudo", "doas"])
+def test_an_exec_does_not_exempt_a_call_behind_a_closing_prefix(prefix: str) -> None:
+    """`sudo` and `doas` close every descriptor above 2, so fd 9 is not open
+    when flock runs, whatever the file opened."""
+    assert mod.violations(f"exec 9>/var/lock/x\n{prefix} flock -x 9\n") == [2]
+
+
+def test_an_exec_still_exempts_a_call_behind_a_transparent_prefix() -> None:
+    assert mod.violations("exec 9>/var/lock/x\ncommand flock -x 9\n") == []
 
 
 # ── not flagged: the file opens the descriptor itself ────────────────────
@@ -95,6 +177,19 @@ def test_an_exec_that_does_not_open_this_descriptor_still_flags(
     name: str, src: str
 ) -> None:
     assert mod.violations(src) == [2], name
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        "exec 9>/var/lock/x\nflock -x 9\n",
+        "exec 9</var/lock/x\nflock -s 9\n",
+    ],
+)
+def test_no_exec_exemption_reports_the_documented_pairing(src: str) -> None:
+    """An `exec 9>` replaces whatever fd 9 the caller passed in, so a repo whose
+    callers hand descriptors to its scripts can ban the literal number."""
+    assert mod.violations(src, exec_exempts=False) == [2]
 
 
 # ── not flagged: the descriptor is not a literal ─────────────────────────
@@ -164,9 +259,9 @@ def test_an_annotation_with_no_reason_does_not_suppress() -> None:
 
 
 # ── the argv/exit-code contract ──────────────────────────────────────────
-def _run(path: Path) -> subprocess.CompletedProcess:
+def _run(*argv: object) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(HOOKS_DIR / "check_flock_fixed_fd.py"), str(path)],
+        [sys.executable, str(HOOKS_DIR / "check_flock_fixed_fd.py"), *map(str, argv)],
         capture_output=True,
         text=True,
         check=False,
@@ -191,6 +286,30 @@ def test_main_exits_zero_on_a_clean_file(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert _run(script).returncode == 0
+
+
+def test_main_takes_a_wrapper_name(tmp_path: Path) -> None:
+    script = tmp_path / "lock.sh"
+    script.write_text("#!/bin/bash\nrun_priv flock 200\n", encoding="utf-8")
+    assert _run(script).returncode == 0
+    result = _run("--wrapper", "run_priv", script)
+    assert result.returncode == 1
+    assert f"{script}:2:" in result.stderr
+
+
+def test_main_takes_no_exec_exemption(tmp_path: Path) -> None:
+    script = tmp_path / "lock.sh"
+    script.write_text("#!/bin/bash\nexec 9>/tmp/x\nflock 9\n", encoding="utf-8")
+    assert _run(script).returncode == 0
+    result = _run("--no-exec-exemption", script)
+    assert result.returncode == 1
+    assert f"{script}:3:" in result.stderr
+
+
+def test_a_run_with_flags_and_no_files_refuses() -> None:
+    result = _run("--wrapper", "run_priv")
+    assert result.returncode == 2
+    assert "no files to scan" in result.stderr
 
 
 def test_a_file_the_grammar_refuses_fails_loudly(tmp_path: Path) -> None:

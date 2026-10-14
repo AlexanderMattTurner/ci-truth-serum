@@ -73,6 +73,8 @@ echo "Base version: $BASE_VERSION"
 # in $ASSEMBLE_CHANGELOG, falling back to the in-tree path only to bootstrap the
 # very PR that first adds the script (base has no copy yet).
 ASSEMBLE_CHANGELOG="${ASSEMBLE_CHANGELOG:-scripts/assemble-changelog.mjs}"
+# The version setter is staged from the base branch the same way as the assembler.
+SET_PACKAGE_VERSION="${SET_PACKAGE_VERSION:-.github/scripts/set-package-version.mjs}"
 UNRELEASED=$(node "$ASSEMBLE_CHANGELOG" --draft)
 
 # Labeling a PR with no pending fragments is a mistake — fail loudly.
@@ -164,12 +166,7 @@ echo "New version: $NEW_VERSION"
 RELEASE_DATE=$(date -u +%Y-%m-%d)
 
 # Bump package.json (matching prettier's 2-space + trailing newline).
-NEW_VERSION="$NEW_VERSION" node -e '
-const fs = require("fs");
-const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
-pkg.version = process.env.NEW_VERSION;
-fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
-'
+NEW_VERSION="$NEW_VERSION" node "$SET_PACKAGE_VERSION" package.json
 
 # Point the README's `rev:` pins at the tag this release will cut. The pins are
 # a consumer's copy-paste config, so a bump that leaves them behind ships a

@@ -1251,6 +1251,11 @@ def test_the_stand_alone_token_still_matches_in_both_forms() -> None:
         ("concurrency:\n  group: x\n", 1),
         # Spacing before the colon is tolerated.
         ("name: x\nconcurrency :\n  group: x\n", 2),
+        # A quoted key is the same key, however YAML spells it.
+        ('name: x\n"concurrency":\n  group: x\n', 2),
+        ("name: x\n'concurrency' :\n  group: x\n", 2),
+        # A key quoted on one side only is not a key.
+        ('name: x\n"concurrency:\n  group: x\n', 1),
         # An INDENTED (job-level) key is not the top-level block.
         ("name: x\njobs:\n  a:\n    concurrency:\n      group: x\n", 1),
         # No key at all falls back to line 1.

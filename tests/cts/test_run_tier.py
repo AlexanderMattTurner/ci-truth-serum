@@ -56,6 +56,7 @@ UNAGGREGATED = {
     "check-absolute-symlinks",
     "check-lockstep-pins",
     "check-env-symmetry",
+    "check-bash32-portability",
 }
 
 

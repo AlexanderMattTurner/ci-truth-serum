@@ -146,6 +146,7 @@ def _make_repo(
     scripts.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / ".github" / "scripts" / "release-readiness.sh", scripts)
     (scripts / "release-readiness.sh").chmod(0o755)
+    shutil.copy2(REPO_ROOT / ".github" / "scripts" / "set-package-version.mjs", scripts)
 
     libdir = repo / "bin" / "lib"
     libdir.mkdir(parents=True)

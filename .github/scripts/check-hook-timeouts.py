@@ -22,7 +22,9 @@ import json
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _repo_root import find_repo_root  # noqa: E402
+
 DEFAULT_FILES = (".claude/settings.json",)
 
 
@@ -56,7 +58,10 @@ def check_file(path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> None:
-    paths = [Path(a) for a in argv] or [REPO_ROOT / f for f in DEFAULT_FILES]
+    paths = [Path(a) for a in argv]
+    if not paths:
+        root = find_repo_root(Path(__file__).resolve().parent)
+        paths = [root / f for f in DEFAULT_FILES]
     status = 0
     for path in paths:
         for loc in check_file(path):

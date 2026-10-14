@@ -318,12 +318,7 @@ cut_release() {
   # branch the same way. Only a local run falls back to git.
   branch="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
   release_date=$(date -u +%Y-%m-%d)
-  NEW_VERSION="$CANDIDATE" node -e '
-const fs = require("fs");
-const pkg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-pkg.version = process.env.NEW_VERSION;
-fs.writeFileSync(process.argv[1], JSON.stringify(pkg, null, 2) + "\n");
-' "$ROOT/package.json"
+  NEW_VERSION="$CANDIDATE" node "$ROOT/.github/scripts/set-package-version.mjs" "$ROOT/package.json"
   # Same pin move release-prep.sh makes for a human release PR: the README's
   # `rev:` examples must name the tag this release cuts, or the default branch
   # lands red on tests/cts/test_readme_rev.py.

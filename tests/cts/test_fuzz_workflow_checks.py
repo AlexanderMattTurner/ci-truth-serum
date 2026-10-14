@@ -673,8 +673,9 @@ def test_analyze_tolerates_arbitrary_documents(doc: object, already: frozenset) 
     out = untrusted_exec.analyze(doc, already)
     assert isinstance(out, list)
     for item in out:
-        assert isinstance(item, tuple) and len(item) == 4
-        name, line, forms, secrets = item
+        assert isinstance(item, tuple) and len(item) == 5
+        name, line, forms, secrets, source = item
+        assert source in (untrusted_exec.HEAD_SOURCE, untrusted_exec.MERGE_SOURCE)
         assert isinstance(name, str)
         assert line is None or isinstance(line, int)
         assert isinstance(forms, list) and forms

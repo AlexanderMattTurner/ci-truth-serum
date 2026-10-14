@@ -25,6 +25,7 @@ pre-commit and CI always have them.
 import re
 from collections.abc import Sequence
 from functools import lru_cache
+from typing import NamedTuple
 
 import tree_sitter_bash
 from tree_sitter import Language, Node, Parser
@@ -259,6 +260,50 @@ def unquote(raw: str) -> str:
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
         return raw[1:-1]
     return raw
+
+
+class RedirectParts(NamedTuple):
+    """A `file_redirect`'s pieces: the descriptor it points (None for the
+    operator's default), the operator token, and the destination with one layer
+    of quotes removed ("" when the redirect names none)."""
+
+    descriptor: "str | None"
+    operator: str
+    destination: str
+
+
+# `{name}>file` makes bash pick a free descriptor and store its number in NAME.
+_BRACE_DESCRIPTOR = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+
+def _brace_descriptor(redirect: Node) -> "str | None":
+    """`{name}` when REDIRECT is `{name}>…`. The grammar parses `{name}` as the
+    command's last argument word, ending where the redirect starts."""
+    before = redirect.prev_sibling
+    if before is not None and before.type == "command" and before.children:
+        before = before.children[-1]
+    if before is None or before.end_byte != redirect.start_byte:
+        return None
+    text = node_text(before)
+    return text if _BRACE_DESCRIPTOR.fullmatch(text) else None
+
+
+def redirect_parts(redirect: Node) -> RedirectParts:
+    """(descriptor, operator, destination) of a ``file_redirect``.
+
+    The destination is the token right AFTER the operator, not the node's last
+    child: the grammar folds a following argument into the same `file_redirect`
+    (`foo >/dev/null "a;b"` parks the string there)."""
+    children = redirect.children
+    index = next((i for i, c in enumerate(children) if not c.is_named), None)
+    descriptor = next(
+        (node_text(c) for c in children if c.type == "file_descriptor"), None
+    ) or _brace_descriptor(redirect)
+    if index is None:
+        return RedirectParts(descriptor, "", "")
+    after = children[index + 1] if index + 1 < len(children) else None
+    destination = "" if after is None else unquote(node_text(after))
+    return RedirectParts(descriptor, children[index].type, destination)
 
 
 def program_name(word: str) -> str:

@@ -42,12 +42,16 @@ from pathlib import Path
 
 import tomllib
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _repo_root import find_repo_root  # noqa: E402
+
 CONFIG = "cosmic-ray.toml"
 SHARD_CONFIG = "cosmic-ray.shard.toml"
 # Every shard's per-mutant oracle is the module's own example suite under this
 # dir; the base test-command in cosmic-ray.toml targets the whole tree, and a
 # shard narrows it to one file (see _scoped_test_command).
 TEST_DIR = "tests/cts"
+
 
 # A module larger than this many source lines is split into ceil(lines / this)
 # sub-shards that each mutate the whole module but run only a disjoint slice of
@@ -91,6 +95,7 @@ HARNESS_INPUTS = (
     "uv.lock",
     ".python-version",
     ".github/scripts/mutation_shards.py",
+    ".github/scripts/_repo_root.py",
     ".github/scripts/run-mutation-shard.sh",
 )
 
@@ -313,7 +318,7 @@ def _write_config(repo_root: Path, shard_id: str) -> Path:
 
 
 def main(argv: list[str]) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = find_repo_root(Path(__file__).resolve().parent)
     if argv[:1] == ["--write-config"]:
         if len(argv) != 2:
             raise SystemExit("usage: mutation_shards.py --write-config <id>")

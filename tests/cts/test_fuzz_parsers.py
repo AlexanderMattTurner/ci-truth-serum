@@ -49,6 +49,7 @@ inline_run_length = load_hook("check_inline_run_length.py", "fuzz_inline_run_len
 linecheck = load_hook("_cts_linecheck.py", "fuzz_linecheck")
 env_symmetry = load_hook("check_env_symmetry.py", "fuzz_env_symmetry")
 gh_slurp_jq = load_hook("check_gh_slurp_jq.py", "fuzz_gh_slurp_jq")
+main_push = load_hook("check_main_push.py", "fuzz_main_push")
 py_ast = load_hook("_cts_py_ast.py", "fuzz_py_ast")
 
 # `violations(text) -> list[int]` line-oriented detectors. Each maps text to the
@@ -70,6 +71,7 @@ LINE_DETECTORS = {
     "check_global_stdio_swap": global_stdio_swap.violations,
     "check_secret_file_perms": secret_file_perms.violations,
     "check_gh_slurp_jq": gh_slurp_jq.violations,
+    "check_main_push": main_push.violations,
 }
 
 
@@ -79,6 +81,7 @@ LINE_DETECTORS = {
 # all inert noise -- it hits real branches (suppressors, downloaders, redirects,
 # heredocs, FROM lines, stdio swaps, annotations, comment/quote boundaries).
 _INTERESTING_TOKENS = [
+    "git push origin HEAD:main",
     "|| true",
     "|| :",
     "| tee",

@@ -22,7 +22,9 @@ the checked-out pull-request head, which the PR author rewrites at will:
      ``npx <bin>`` / ``make <target>``. The body comes from the checked-out
      ``package.json`` / ``Makefile``.
   3. a ``run:`` executing a workspace-relative path — ``bash ./scripts/x.sh``,
-     ``node scripts/x.mjs``, ``./bin/x``, ``python scripts/x.py``.
+     ``node scripts/x.mjs``, ``./bin/x``, ``python scripts/x.py`` — or a module
+     the checkout holds (``python -m pkg``), or ``pytest``, which imports the
+     checkout's tests. ``env`` and ``uv run`` prefixes are read through.
 
 THE UNIT OF ANALYSIS IS THE JOB, NOT THE STEP. One attacker-controlled step
 compromises every later step in the same job: it can append to ``$GITHUB_ENV``
@@ -34,6 +36,12 @@ earlier attacker step owns both. A ``$RUNNER_TEMP``-anchored ``run:`` is
 therefore not *itself* counted as an execution form, but it is not a rescue
 either: the job is still reported for whichever of the three forms it does have.
 
+THE MERGE COMMIT. Under ``pull_request``, a checkout with no ``ref:`` stages the
+PR's merge commit. Most repos accept that, because a branch pusher can also edit
+the workflow. A later checkout of the default branch in the same job says the
+author does not trust that tree with what follows. So a workspace execution
+BEFORE that re-checkout is reported. A re-checkout undoes neither file above.
+
 The only real fix is to move the credential out of the job that touches the
 untrusted tree (a two-job split, as in a repair/land pair), or to stop executing
 workspace-resolved code there at all.
@@ -43,6 +51,7 @@ JOB's block; the reason is REQUIRED (a bare marker states nothing and does not
 suppress). ``# trusted-base-ok`` deliberately does NOT suppress this lint.
 """
 
+import posixpath
 import re
 import sys
 from pathlib import Path
@@ -60,6 +69,9 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     LineLoader as _LineLoader,
     annotation_re,
+    declared_events,
+    has_trigger,
+    job_admitted_events,
     _job_blocks,
     workflow_files as _workflow_files,
     yaml_script_view,
@@ -90,6 +102,10 @@ WORKFLOW_RUN_REF = re.compile(r"github\.event\.workflow_run\.head_(?:sha|branch)
 # the workflow_run form can be rescued this way; a `pull_request.head` ref is
 # untrusted no matter what gates the job.
 _TRIGGER_PINNED = re.compile(r"workflow_run\.(?:head_branch|event)\s*==\s*['\"]")
+# The spellings of a `pull_request` run's own merge commit, which the PR author writes.
+_MERGE_REF = re.compile(
+    r"github\.(?:sha|ref)\b|github\.event\.pull_request\.merge_commit_sha|^refs/pull/"
+)
 _SECRET_REF = re.compile(r"secrets\.(?P<name>\w+)")
 # The default GITHUB_TOKEN is only worth stealing when the job can write with it;
 # a read-scoped one in a job env is noise, not a finding.
@@ -172,6 +188,42 @@ _INTERPRETERS = frozenset(
         "tsx",
     }
 )
+# Options of `env` that consume the next word.
+_ENV_VALUE_OPTIONS = frozenset(
+    {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}
+)
+# Options of `uv run` that consume the next word, so it is not read as the command.
+_UV_RUN_VALUE_OPTIONS = frozenset(
+    {
+        "-p",
+        "--python",
+        "--with",
+        "--with-editable",
+        "--with-requirements",
+        "--extra",
+        "--group",
+        "--no-group",
+        "--only-group",
+        "--package",
+        "--directory",
+        "--project",
+        "--env-file",
+        "--index",
+        "--default-index",
+        "--index-url",
+        "--extra-index-url",
+        "-f",
+        "--find-links",
+        "--config-file",
+        "--cache-dir",
+        "--python-preference",
+        "--resolution",
+        "--prerelease",
+        "--exclude-newer",
+        "-C",
+        "--config-setting",
+    }
+)
 # A filename that is executable content even without a directory component, so
 # `bash build.sh` counts as a workspace path the same way `bash ci/build.sh` does.
 _SCRIPT_SUFFIX = re.compile(r"\.(?:sh|bash|zsh|mjs|cjs|js|ts|py|rb|pl)$")
@@ -214,21 +266,32 @@ def _first_operand(words: list[str]) -> str:
     return next((w for w in words[1:] if not w.startswith("-")), "")
 
 
-def _script_execution(words: list[str]) -> str:
-    """The execution form WORDS is, as a short human label, or ``""`` for none.
+def _script_execution(words: list[str]) -> tuple[str, str | None]:
+    """The execution form WORDS is, as ``(label, path)``, or ``("", None)`` for none.
 
+    PATH is the workspace-relative file the command runs, or None when the command
+    resolves its code from the working directory (`make`, `pnpm build`, `pytest`).
     Covers forms 2 and 3 of the module docstring; form 1 (`uses: ./…`) is a YAML
     key, not a shell command, and is detected by the caller.
     """
     if not words:
-        return ""
+        return "", None
     name = unquote(words[0])
+    if name == "env":
+        return _script_execution(_after_env(words))
+    if name == "uv" and len(words) > 1 and unquote(words[1]) == "run":
+        return _uv_run_execution(words[2:])
+    if name == "pytest":
+        return "`pytest`", None
+    # `/usr/bin/python3 x.py` runs x.py exactly as `python3 x.py` does.
+    if name.startswith("/") and name.rsplit("/", 1)[-1] in _INTERPRETERS:
+        name = name.rsplit("/", 1)[-1]
     if name == "make":
         target = _first_operand(words)
-        return f"`make {target}`" if target else "`make`"
+        return (f"`make {target}`" if target else "`make`"), None
     if name in _BIN_RUNNERS:
         binary = _first_operand(words)
-        return f"`{name} {binary}`" if binary else ""
+        return (f"`{name} {binary}`" if binary else ""), None
     if name in _SCRIPT_RUNNERS:
         verb = _first_operand(words)
         operand = verb
@@ -240,17 +303,76 @@ def _script_execution(words: list[str]) -> str:
                 "",
             )
         if not operand or operand in _NON_SCRIPT_SUBCOMMANDS:
-            return ""
+            return "", None
         spelled = f"{verb} {operand}" if verb != operand else operand
-        return f"`{name} {spelled}`"
+        return f"`{name} {spelled}`", None
     if name in _INTERPRETERS:
+        module = _module_operand(words[1:])
+        if module:
+            if module == "pytest":
+                return f"`{name} -m pytest`", None
+            if _is_workspace_module(module):
+                return f"`{name} -m {module}`", module.split(".", 1)[0]
+            return "", None
         operand = _first_operand(words)
-        return f"`{name} {operand}`" if _is_workspace_path(operand) else ""
-    return f"`{name}`" if _is_workspace_path(name) else ""
+        if _is_workspace_path(operand):
+            return f"`{name} {operand}`", unquote(operand)
+        return "", None
+    return (f"`{name}`", name) if _is_workspace_path(name) else ("", None)
 
 
-def run_executions(script: str) -> list[str]:
-    """Every attacker-controlled execution in one ``run:`` body, as labels.
+def _after_env(words: list[str]) -> list[str]:
+    """The command `env` runs: WORDS without `env`, its options and its NAME=VALUE pairs."""
+    rest = [unquote(w) for w in words[1:]]
+    while rest and (rest[0].startswith("-") or "=" in rest[0]):
+        rest = rest[2:] if rest[0] in _ENV_VALUE_OPTIONS else rest[1:]
+    return rest
+
+
+def _module_operand(args: list[str]) -> str:
+    """The module after `-m` in ARGS, or `""` when ARGS run no module."""
+    for at, word in enumerate(unquote(w) for w in args):
+        if word == "-m":
+            return unquote(args[at + 1]) if at + 1 < len(args) else ""
+        if not word.startswith("-"):
+            return ""
+    return ""
+
+
+def _is_workspace_module(module: str) -> bool:
+    """True when `python -m MODULE` imports a package or module from the checkout.
+
+    Python puts the working directory first on the import path, so a top-level
+    name that exists in the checkout shadows any installed one."""
+    top = module.split(".", 1)[0]
+    return (REPO_ROOT / top).is_dir() or (REPO_ROOT / f"{top}.py").is_file()
+
+
+def _uv_run_execution(args: list[str]) -> tuple[str, str | None]:
+    """The execution form of `uv run ARGS`, judged as the command uv starts.
+
+    `uv run` syncs and installs the checkout's own project first. This lint does
+    not count that, for the reason it does not count `pnpm install`."""
+    args = [unquote(w) for w in args]
+    while args and args[0].startswith("-"):
+        flag = args.pop(0)
+        if flag in ("-m", "--module") and args:
+            module = args[0]
+            if module == "pytest":
+                return "`uv run -m pytest`", None
+            if _is_workspace_module(module):
+                return f"`uv run -m {module}`", module.split(".", 1)[0]
+            return "", None
+        if flag == "--":
+            break
+        if flag in _UV_RUN_VALUE_OPTIONS and args:
+            args.pop(0)
+    label, path = _script_execution(args)
+    return (f"`uv run {label.strip('`')}`" if label else ""), path
+
+
+def run_execution_paths(script: str) -> list[tuple[str, str | None]]:
+    """Every attacker-controlled execution in one ``run:`` body, as ``(label, path)``.
 
     tree-sitter never raises on malformed shell (errors become ERROR nodes), so a
     ``run:`` this cannot parse simply yields nothing. The one loud case is
@@ -259,10 +381,15 @@ def run_executions(script: str) -> list[str]:
         return []
     found = []
     for command in iter_nodes(_parse_bash(script), "command"):
-        label = _script_execution(_words(command))
-        if label and label not in found:
-            found.append(label)
+        label, path = _script_execution(_words(command))
+        if label and (label, path) not in found:
+            found.append((label, path))
     return found
+
+
+def run_executions(script: str) -> list[str]:
+    """Every attacker-controlled execution in one ``run:`` body, as labels."""
+    return list(dict.fromkeys(label for label, _ in run_execution_paths(script)))
 
 
 def step_executions(step: dict) -> list[str]:
@@ -273,6 +400,36 @@ def step_executions(step: dict) -> list[str]:
     if uses.startswith("./") or uses == ".":
         return [f"local composite action `uses: {uses}`"]
     return run_executions(step.get("run"))
+
+
+def _workspace_dir(value: object) -> str | None:
+    """VALUE as a normalised directory inside the workspace, or None when it is not.
+
+    An expression, a variable, an absolute path or one that climbs out names a
+    place this lint cannot resolve, so it declines rather than guesses."""
+    text = str(value or ".").strip()
+    if not text or text.startswith(("/", "~", "$")) or "${{" in text:
+        return None
+    norm = posixpath.normpath(text)
+    return None if norm == ".." or norm.startswith("../") else norm
+
+
+def step_execution_dirs(step: dict) -> list[tuple[str, str]]:
+    """Every execution in one step as ``(label, workspace path it runs from)``.
+
+    A relative path resolves against the step's `working-directory`, and a step
+    whose directory lies outside the workspace runs nothing from a checkout."""
+    uses = str(step.get("uses", "")).strip()
+    if uses.startswith("./") or uses == ".":
+        return [(f"local composite action `uses: {uses}`", posixpath.normpath(uses))]
+    base = _workspace_dir(step.get("working-directory"))
+    if base is None:
+        return []
+    out = []
+    for label, path in run_execution_paths(step.get("run")):
+        where = posixpath.normpath(posixpath.join(base, path)) if path else base
+        out.append((label, where))
+    return out
 
 
 def _steps(cfg: dict) -> list[dict]:
@@ -302,6 +459,75 @@ def job_checks_out_untrusted(cfg: dict) -> bool:
     return False
 
 
+def _own_checkout(step: dict) -> tuple[str, str] | None:
+    """``(directory, ref)`` for an `actions/checkout` of THIS repository, else None.
+
+    A checkout of another repository stages that repository's tree, not the pull
+    request's. A `path:` this lint cannot resolve makes the step unknown, so it
+    declines rather than guesses."""
+    uses = step.get("uses")
+    if not isinstance(uses, str) or not _CHECKOUT_ACTION.match(uses.strip()):
+        return None
+    with_block = step.get("with") if isinstance(step.get("with"), dict) else {}
+    repository = str(with_block.get("repository") or "")
+    if repository and "github.repository" not in repository:
+        return None
+    where = _workspace_dir(with_block.get("path"))
+    return None if where is None else (where, str(with_block.get("ref") or ""))
+
+
+def _tree_holding(path: str, trees: dict[str, bool]) -> bool:
+    """True when the deepest checkout that holds PATH is untrusted."""
+    holders = [d for d in trees if d == "." or path == d or path.startswith(d + "/")]
+    return trees[max(holders, key=len)] if holders else False
+
+
+def _names_a_fixed_branch(ref: str) -> bool:
+    """True when REF is the default branch's context or a literal the PR cannot move."""
+    if "${{" not in ref:
+        return bool(ref) and not _MERGE_REF.search(ref)
+    return "github.event.repository.default_branch" in ref
+
+
+def merge_ref_executions(doc: dict, cfg: dict) -> tuple[int | None, list[str]]:
+    """The executions a `pull_request` job runs from the PR's merge commit before
+    it re-checks out a fixed branch, with the first one's line.
+
+    Under `pull_request`, a checkout with no `ref:` stages the merge commit, which
+    the PR author writes. A same-repository PR gets the secrets. On most repos that
+    is accepted, because whoever pushes a branch can also edit the workflow. A later
+    checkout of the default branch is the job's own statement that the earlier tree
+    must not run with what follows. But code that already ran from that tree could
+    write $GITHUB_ENV or $GITHUB_PATH, and the re-checkout undoes neither.
+    """
+    if not has_trigger(doc, "pull_request"):
+        return None, []
+    if "pull_request" not in job_admitted_events(cfg.get("if"), declared_events(doc)):
+        return None, []
+    line, forms, pending = None, [], []
+    trees: dict[str, bool] = {}
+    for step in _steps(cfg):
+        checkout = _own_checkout(step)
+        if checkout is None:
+            pending += [
+                (step.get("__line__"), label)
+                for label, where in step_execution_dirs(step)
+                if _tree_holding(where, trees)
+            ]
+            continue
+        where, ref = checkout
+        if _names_a_fixed_branch(ref):
+            for at, label in pending:
+                line = at if line is None else line
+                if label not in forms:
+                    forms.append(label)
+        untrusted = not ref or bool(_MERGE_REF.search(ref))
+        trees[where] = untrusted
+        if not untrusted:
+            pending = []
+    return line, forms
+
+
 def _secret_names(value: object) -> set[str]:
     """Every ``secrets.NAME`` referenced anywhere inside VALUE (recursively).
 
@@ -327,9 +553,9 @@ def live_secrets(doc: dict, cfg: dict) -> set[str]:
 
     Workflow-level ``env`` is inherited; the job's own ``env`` and every step's
     ``env``/``with`` are in reach; ``secrets: inherit`` on a called workflow hands
-    over the lot. The default ``GITHUB_TOKEN`` counts only when the job can write
-    with it — a read-scoped one is not a credential worth stealing, and counting
-    it would report every ordinary CI job.
+    over the lot. The default ``GITHUB_TOKEN`` counts when the job can write with
+    it, named or not: the runner receives it for every job. A read-scoped one is
+    not worth stealing. A job's own ``permissions:`` replaces the workflow's.
     """
     names = _secret_names(doc.get("env"))
     names |= _secret_names(cfg.get("env"))
@@ -339,10 +565,10 @@ def live_secrets(doc: dict, cfg: dict) -> set[str]:
     if str(cfg.get("secrets")) == "inherit":
         names.add("inherit (all repository secrets)")
     names |= _secret_names(cfg.get("secrets"))
-    writes = _trusted_base._grants_write(doc.get("permissions")) or (
-        _trusted_base._grants_write(cfg.get("permissions"))
-    )
-    if not writes:
+    perms = cfg["permissions"] if "permissions" in cfg else doc.get("permissions")
+    if _trusted_base._grants_write(perms):
+        names.add(_DEFAULT_TOKEN)
+    else:
         names.discard(_DEFAULT_TOKEN)
     return names
 
@@ -359,8 +585,14 @@ def _opted_out(block: str) -> bool:
     return any(_ALLOW_RE.search(line) for line in yaml_script_view(block))
 
 
+HEAD_SOURCE = "checks out untrusted (pull-request head) content"
+MERGE_SOURCE = (
+    "stages the pull request's merge commit, re-checks out a fixed branch only later,"
+)
+
+
 def analyze(doc: object, already_reported: frozenset[str] = frozenset()) -> list[tuple]:
-    """Every violating job as ``(job_name, first_step_line, forms, secrets)``.
+    """Every violating job as ``(job_name, first_step_line, forms, secrets, source)``.
 
     ALREADY_REPORTED names the jobs ``check_trusted_base`` reports for this file;
     they are skipped so one job never yields two findings for one hole."""
@@ -373,26 +605,29 @@ def analyze(doc: object, already_reported: frozenset[str] = frozenset()) -> list
     for name, cfg in jobs.items():
         if not isinstance(cfg, dict) or str(name) in already_reported:
             continue
-        if not job_checks_out_untrusted(cfg):
-            continue
         secrets = live_secrets(doc, cfg)
         if not secrets:
             continue
         forms: list[str] = []
         line = None
-        for step in _steps(cfg):
-            labels = [lb for lb in step_executions(step) if lb not in forms]
-            if labels and line is None:
-                line = step.get("__line__")
-            forms += labels
+        source = HEAD_SOURCE
+        if job_checks_out_untrusted(cfg):
+            for step in _steps(cfg):
+                labels = [lb for lb in step_executions(step) if lb not in forms]
+                if labels and line is None:
+                    line = step.get("__line__")
+                forms += labels
+        else:
+            line, forms = merge_ref_executions(doc, cfg)
+            source = MERGE_SOURCE
         if forms:
-            violations.append((str(name), line, forms, sorted(secrets)))
+            violations.append((str(name), line, forms, sorted(secrets), source))
     return violations
 
 
-def _message(name: str, forms: list[str], secrets: list[str]) -> str:
+def _message(name: str, forms: list[str], secrets: list[str], source: str) -> str:
     return (
-        f"job '{name}' checks out untrusted (pull-request head) content AND "
+        f"job '{name}' {source} AND "
         f"executes code resolved from that checkout — {', '.join(forms)} — while "
         f"these secrets are live in the job: {', '.join(secrets)}. The PR author "
         "rewrites those bytes, so they run with the credentials above; and because "
@@ -427,11 +662,13 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     already = frozenset(_trusted_base.reported_job_names(doc, text))
     blocks = _job_blocks(text)
     out: list[tuple[int | None, str]] = []
-    for name, line, forms, secrets in analyze(doc, already):
+    for name, line, forms, secrets, source in analyze(doc, already):
         block = blocks.get(name)
         if block and _opted_out(block[1]):
             continue
-        out.append((line or (block[0] if block else 1), _message(name, forms, secrets)))
+        out.append(
+            (line or (block[0] if block else 1), _message(name, forms, secrets, source))
+        )
     return out
 
 

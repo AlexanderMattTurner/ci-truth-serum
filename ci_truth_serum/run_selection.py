@@ -19,8 +19,8 @@ Three failures exit 2 instead of running a smaller set: no ``--select`` at all,
 an unknown selector, and a selection that ends up empty. A hook that runs zero
 checks and reports success is the false green this pack exists to refuse.
 
-Members run exactly as under ``run_tier``: a workflow lint self-discovers
-``.github/{workflows,actions}``, and a content lint receives only the passed
+Members run exactly as under ``run_tier``: a workflow lint finds its own
+input (``.github/*``, a settings file, or the pre-commit config), and a content lint receives only the passed
 files of its kind. The registry of checks, tiers and tags is
 ``ci_truth_serum/_cts_registry.py``.
 """

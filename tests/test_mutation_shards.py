@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import tomllib
 
-from tests._helpers import REPO_ROOT
+from tests._helpers import REPO_ROOT, copy_script_with_imports
 
 _SRC = REPO_ROOT / ".github" / "scripts" / "mutation_shards.py"
 _spec = importlib.util.spec_from_file_location("mutation_shards", _SRC)
@@ -267,6 +267,7 @@ def _write_hashable_repo(root: Path) -> None:
         "uv.lock": "version = 1\n",
         ".python-version": "3.12\n",
         ".github/scripts/mutation_shards.py": "# planner\n",
+        ".github/scripts/_repo_root.py": "# root finder\n",
         ".github/scripts/run-mutation-shard.sh": "# runner\n",
     }.items():
         (root / path).write_text(text, encoding="utf-8")
@@ -321,6 +322,7 @@ def test_an_edit_invalidates_exactly_the_shards_that_read_it(
         "pyproject.toml",
         ".python-version",
         ".github/scripts/mutation_shards.py",
+        ".github/scripts/_repo_root.py",
         ".github/scripts/run-mutation-shard.sh",
     ],
 )
@@ -416,8 +418,9 @@ def test_cli_write_config_writes_parseable_toml(tmp_path: Path) -> None:
     # a copied minimal repo so the real tree is untouched.
     _write_min_repo(tmp_path, modules=["check_a.py"], tests=["test_check_a.py"])
     (tmp_path / ".github" / "scripts").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")  # the root marker
     dest = tmp_path / ".github" / "scripts" / "mutation_shards.py"
-    dest.write_text(_SRC.read_text(encoding="utf-8"), encoding="utf-8")
+    copy_script_with_imports(_SRC, dest.parent)
     result = subprocess.run(
         [sys.executable, str(dest), "--write-config", "check_a"],
         capture_output=True,

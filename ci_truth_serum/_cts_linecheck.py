@@ -1600,6 +1600,11 @@ _ACTIONLESS_EVENTS = frozenset(
     }
 )
 
+# The event of a reusable workflow that another workflow calls. Its `github`
+# context is the caller's, so a read of the event name or payload says nothing
+# about which event ran it.
+CALLED_EVENT = "workflow_call"
+
 # A payload path, and the events whose payload carries its first segment. A
 # condition that demands a value from one of these paths is false on every other
 # event, which is how a job's `if:` excludes an event without naming it.
@@ -1713,6 +1718,8 @@ def _term_truth(term: str, trigger: "Trigger") -> bool | None:
     """
     match = _EVENT_NAME_CMP.match(term)
     if match:
+        if trigger.event == CALLED_EVENT:
+            return None  # a called workflow reads its CALLER's event name
         literal = match.group("lit1") or match.group("lit2") or ""
         equal = _named_match([literal], trigger.event)
         return (
@@ -1743,6 +1750,8 @@ def _term_truth(term: str, trigger: "Trigger") -> bool | None:
             return None
         inner = match.group("term").strip().casefold()
         if inner == "github.event_name":
+            if trigger.event == CALLED_EVENT:
+                return None
             return _named_match(members, trigger.event)
         if inner == "github.event.action":
             if trigger.event.casefold() in _ACTIONLESS_EVENTS:
@@ -1762,6 +1771,8 @@ def _payload_truth(path: str, trigger: "Trigger") -> bool | None:
     Never True: the path being present says nothing about the value a demand
     compares it against, so this reader proves absence and nothing else.
     """
+    if trigger.event == CALLED_EVENT:
+        return None  # a called workflow reads its CALLER's payload
     for prefix, events in _PAYLOAD_EVENTS:
         if path == prefix or path.startswith(prefix):
             return None if trigger.event in events else False
@@ -1905,6 +1916,254 @@ def group_separates_triggers(group: str, first: Trigger, second: Trigger) -> boo
     return False
 
 
+# Contexts that hold one value for every run of one event in one workflow. A
+# group read only from these, and from literals, is one slot per event.
+# `github.actor` and `github.action` are the whole delta from
+# `_CONSTANT_CONTEXTS`: the actor differs between two deliveries of one event,
+# and the action id belongs to a step.
+_EVENT_CONSTANT_CONTEXTS = _CONSTANT_CONTEXTS - {"github.actor", "github.action"}
+
+# A read of the delivery itself that varies between two runs of EVERY trigger:
+# a payload path, the user that caused the run, or the commit it ran on.
+# `github.event.action` is left out, because `Trigger` already splits a
+# pull-request event by action. So are `repository` and `organization`: they
+# hold one value for every run.
+_DELIVERY_READ = re.compile(
+    r"\bgithub\.(?:event\.(?!action\b|repository\b|organization\b)[A-Za-z_]"
+    r"|(?:actor|triggering_actor|sha)\b)",
+    re.IGNORECASE,
+)
+
+# Reads whose value belongs to the EVENT. Each one varies only on the triggers
+# `_event_reads_vary` names: `github.ref` holds one string on every run of
+# `REF_CONSTANT_EVENTS`, `github.head_ref` is empty off a pull-request event, and
+# `inputs.*` is empty on an event that declares none.
+_REF_READ = re.compile(
+    r"\bgithub\.(?:ref|ref_name|ref_type|ref_protected)\b", re.IGNORECASE
+)
+_PR_REF_READ = re.compile(r"\bgithub\.(?:head_ref|base_ref)\b", re.IGNORECASE)
+_INPUT_READ = re.compile(r"(?<![\w.])inputs(?:\.|\[)", re.IGNORECASE)
+
+# The events whose runs can carry an input.
+_INPUT_EVENTS = frozenset({"workflow_dispatch", CALLED_EVENT})
+
+# A whole term that only asks whether one top-level payload object exists, as in
+# `github.event.pull_request` or `github.event.pull_request != null`. The
+# trigger fixes which objects the payload carries, so two runs agree on it.
+_PRESENCE_TERM = re.compile(
+    r"^!?\s*github\.event\.[A-Za-z_]\w*(?:\s*[!=]=\s*null)?$", re.IGNORECASE
+)
+
+_RUN_ID_READ = re.compile(r"\bgithub\.run_(?:id|number)\b", re.IGNORECASE)
+_RUN_ID_ATOM = re.compile(r"^github\.run_(?:id|number)$", re.IGNORECASE)
+
+
+def group_is_event_constant(group: str, called: bool = False) -> bool:
+    """True when GROUP holds one value for every run of one event.
+
+    Each `${{ … }}` span must be an `||` chain of literals and of the contexts in
+    `_EVENT_CONSTANT_CONTEXTS`. Any other span reads as varying, so the answer
+    under-reports. CALLED says the event is a called workflow's, whose event
+    name is its caller's and so differs between two callers.
+    """
+    constants = (
+        _EVENT_CONSTANT_CONTEXTS - {"github.event_name"}
+        if called
+        else _EVENT_CONSTANT_CONTEXTS
+    )
+    for span in _EXPR_SPAN.finditer(group):
+        atoms = _or_atoms(span.group("expr"))
+        if atoms is None:
+            return False
+        if not all(
+            _LITERAL_ATOM.match(atom) or atom.casefold() in constants for atom in atoms
+        ):
+            return False
+    return True
+
+
+# What a called workflow reads from its CALLER's context. The event name and
+# the action differ between two callers, though `Trigger` cannot split them.
+_CALLER_READ = re.compile(r"\bgithub\.event(?:_name\b|\.action\b)", re.IGNORECASE)
+
+
+def _event_reads_vary(expr: str, event: str) -> bool:
+    """Whether EXPR reads a ref or an input that can differ between two runs of
+    EVENT. A called workflow reads its caller's ref, so it counts as varying."""
+    called = event == CALLED_EVENT
+    return (
+        (bool(_REF_READ.search(expr)) and (called or event in REF_VARYING_EVENTS))
+        or (bool(_PR_REF_READ.search(expr)) and (called or event in HEAD_REF_EVENTS))
+        or (bool(_INPUT_READ.search(expr)) and event in _INPUT_EVENTS)
+    )
+
+
+def _reads_varying_delivery(expr: str, event: str) -> bool:
+    """Whether EXPR reads delivery data that can differ between two runs of one
+    trigger of EVENT. A term that only tests the presence of a payload object
+    does not. A called workflow also reads its caller's event name and action."""
+    expr = _strip_parens(expr.strip())
+    for operator in ("||", "&&"):
+        arms = _split_top_level(expr, operator)
+        if len(arms) > 1:
+            return any(_reads_varying_delivery(arm, event) for arm in arms)
+    if _PRESENCE_TERM.match(expr):
+        return False
+    return (
+        bool(_DELIVERY_READ.search(expr))
+        or _event_reads_vary(expr, event)
+        or (event == CALLED_EVENT and bool(_CALLER_READ.search(expr)))
+    )
+
+
+def job_delivery_split_triggers(
+    if_value: object, triggers: Iterable[Trigger]
+) -> list[Trigger]:
+    """The TRIGGERS on which a job's `if:` reads the delivery and stays undecided.
+
+    On such a trigger one run can serve the job and the next run can skip it.
+    Take `if: github.event.label.name == 'go'` on `pull_request` / `labeled`.
+    A run for the label `go` serves the job, and a run for the label `wip`
+    skips it. A `push` can read `github.ref`, and a `workflow_dispatch` run can
+    read `inputs.deploy`. A called workflow can read its caller's event name.
+    """
+    expression = unwrap_expression(str(if_value or "")).strip()
+    text = _LITERAL_SPAN.sub(" ", expression)
+    return [
+        trigger
+        for trigger in triggers
+        if _reads_varying_delivery(text, trigger.event)
+        and _expression_truth(expression, trigger) is None
+    ]
+
+
+def _operand_truth(operand: str) -> bool | None:
+    """Whether an `&&` operand is truthy, or None when this reader cannot tell.
+
+    GitHub reads the empty string as false. A `format()` call whose template
+    holds text outside its `{N}` slots always returns a non-empty string.
+    """
+    operand = _strip_parens(operand.strip())
+    if _LITERAL_ATOM.match(operand):
+        return operand != "''"
+    if _RUN_ID_ATOM.match(operand):
+        return True
+    template = re.match(
+        r"^format\s*\(\s*'(?P<template>(?:[^']|'')*)'", operand, re.IGNORECASE
+    )
+    if template and re.sub(r"\{\d+\}", "", template.group("template")):
+        return True
+    return None
+
+
+class RunIdEscape(NamedTuple):
+    """`condition && first || second`, split at its top-level operators."""
+
+    condition: str
+    first: str
+    second: str
+
+
+def _run_id_escape(expr: str) -> RunIdEscape | None:
+    """The (condition, first, second) parts of `cond && first || second`, when
+    exactly one of FIRST and SECOND reads the run id. Any other shape is None."""
+    arms = _split_top_level(_strip_parens(expr.strip()), "||")
+    if len(arms) != 2:
+        return None
+    parts = _split_top_level(_strip_parens(arms[0]), "&&")
+    if len(parts) < 2:
+        return None
+    first, second = parts[-1], arms[1]
+    reads = [
+        bool(_RUN_ID_READ.search(_LITERAL_SPAN.sub(" ", operand)))
+        for operand in (first, second)
+    ]
+    if reads[0] == reads[1]:
+        return None
+    return RunIdEscape(" && ".join(parts[:-1]), first, second)
+
+
+def group_has_run_id_escape(group: str) -> bool:
+    """True when a span of GROUP chooses between the run id and a shared value.
+
+    The shape is `cond && 'shared' || format('inert-{0}', github.run_id)`.
+    """
+    return any(
+        _run_id_escape(span.group("expr")) for span in _EXPR_SPAN.finditer(group)
+    )
+
+
+def _format_arguments(operand: str) -> list[str] | None:
+    """The template and arguments of a `format(...)` OPERAND, else None."""
+    match = re.match(r"^format\s*\((?P<args>.*)\)$", operand, re.IGNORECASE | re.DOTALL)
+    if match is None:
+        return None
+    return _split_top_level(match.group("args"), ",")
+
+
+def _operand_is_per_run(operand: str) -> bool:
+    """Whether OPERAND evaluates to a value that is new on every run.
+
+    Reading the run id is not enough: `github.run_id && 'constant'` reads it and
+    returns the constant. The operand must BE the run id, or a `format()` that
+    puts it in a slot, or an `&&` / `||` chain whose selected arm is one. A shape
+    this reader cannot settle answers False, so the check under-reports.
+    """
+    operand = _strip_parens(operand.strip())
+    if _RUN_ID_ATOM.match(operand):
+        return True
+    for operator in ("||", "&&"):
+        arms = _split_top_level(operand, operator)
+        if len(arms) > 1:
+            for arm in arms[:-1]:
+                truth = _operand_truth(arm)
+                if truth is None:
+                    return False
+                if truth == (operator == "||"):
+                    return _operand_is_per_run(arm)
+            return _operand_is_per_run(arms[-1])
+    pieces = _format_arguments(operand)
+    if not pieces:
+        return False
+    template = re.match(r"^'(?P<text>(?:[^']|'')*)'$", pieces[0])
+    if template is None:
+        return False
+    slots = {
+        int(slot.group("index"))
+        for slot in re.finditer(r"\{(?P<index>\d+)\}", template.group("text"))
+    }
+    return any(
+        _operand_is_per_run(pieces[index + 1])
+        for index in slots
+        if index + 1 < len(pieces)
+    )
+
+
+def group_is_per_run_on(group: str, trigger: Trigger) -> bool:
+    """True when a run-id escape in GROUP certainly picks its run-id operand on
+    TRIGGER, so every run of that trigger gets a group of its own.
+
+    `cond && '' || <run id>` picks the run id even when `cond` holds, because
+    GitHub reads the empty string as false.
+    """
+    for span in _EXPR_SPAN.finditer(group):
+        escape = _run_id_escape(span.group("expr"))
+        if escape is None:
+            continue
+        truth = _expression_truth(escape.condition, trigger)
+        if truth is None:
+            continue
+        chosen = escape.second
+        if truth:
+            first_truth = _operand_truth(escape.first)
+            if first_truth is None:
+                continue
+            chosen = escape.first if first_truth else escape.second
+        if _operand_is_per_run(chosen):
+            return True
+    return False
+
+
 def group_is_per_ref(group: str, events: Iterable[str] = ()) -> bool:
     """True if a concurrency `group:` expression names the ref on every event
     EVENTS lists — meaning a superseding run is always the same ref's newer run,
@@ -2019,12 +2278,21 @@ def opted_out(text: str, token: str) -> bool:
     return any(marker.search(line) for line in yaml_comment_view(text))
 
 
+def group_of(conc: object) -> object:
+    """The group expression of a `concurrency:` value: the mapping's `group`
+    key, or the scalar shorthand itself. GitHub treats `concurrency: <expr>` as
+    `concurrency: {group: <expr>, cancel-in-progress: false}`."""
+    if isinstance(conc, dict):
+        return conc.get("group")
+    return conc
+
+
 def concurrency_line(text: str) -> int:
-    """Return the 1-based line number of the top-level `concurrency:` key, or 1
-    when the text has none (the fallback anchor). Shared by the concurrency
+    """Return the 1-based line number of the top-level `concurrency:` key, plain
+    or quoted, or 1 when the text has none (the fallback anchor). Shared by the concurrency
     lints so their `::error line=` annotations agree byte-for-byte."""
     for num, line in enumerate(text.splitlines(), 1):
-        if re.match(r"^concurrency\s*:", line):
+        if re.match(r"""^(?P<q>["']?)concurrency(?P=q)\s*:""", line):
             return num
     return 1
 

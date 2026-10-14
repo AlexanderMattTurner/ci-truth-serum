@@ -26,6 +26,19 @@ truthy half as a non-empty string: `cond && '' || …` is always inert, because
 GitHub reads the empty string as false. Opt out per job with
 "# inert-group-ok: <reason>".
 
+Two more arms of shape 1 read inside one trigger, and both use the same opt-out:
+
+- A FIXED group behind an `if:` that reads the delivery. On a `labeled` run,
+  `if: github.event.label.name == 'go'` can hold or fail. A push can read
+  `github.ref`, and a `workflow_dispatch` run can read `inputs.deploy`. So two
+  runs of one trigger can split into one that serves and one that skips, and
+  they share the one slot.
+- A run-id escape that picks the run id on EVERY trigger the job serves. The
+  condition is inverted, or the shared operand is `''`. The group then never
+  holds two runs, so the job is never serialized. A workflow-level group gets
+  the same reading over every trigger the workflow declares. Its opt-out sits
+  in the top-level `concurrency:` block.
+
 The sibling `check_collapsing_job_group` owns the neighbouring question: a group
 whose per-ref key is EMPTY on some event, so every run of that event shares one
 slot. There the runs sharing the slot are all runs of one event, so the job's
@@ -86,15 +99,22 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ALWAYS_REPORTER_SHAPE,
+    CALLED_EVENT,
     TWIN_SHAPE,
     _job_blocks,
     _marked_jobs,
     annotated,
+    annotated_near,
     concurrency_line,
     declared_triggers,
     decide_gate_names,
+    group_has_run_id_escape,
+    group_is_event_constant,
+    group_is_per_run_on,
+    group_of,
     group_separates_triggers,
     job_concurrency_line,
+    job_delivery_split_triggers,
     job_skipped_triggers,
     opted_out,
     required_check_shape,
@@ -159,15 +179,6 @@ def _storm_types(doc: dict) -> set[str]:
     return extra
 
 
-def _group_of(conc: object) -> object:
-    """The group expression of a `concurrency:` value: the mapping's `group`
-    key, or the scalar shorthand itself — GitHub treats `concurrency: <expr>`
-    as `concurrency: {group: <expr>, cancel-in-progress: false}`."""
-    if isinstance(conc, dict):
-        return conc.get("group")
-    return conc
-
-
 def _ref_keyed(group: object) -> bool:
     """True when a concurrency group expression is keyed per-ref/per-PR and NOT
     also per-run (github.run_id / run_number make it a group of one — safe)."""
@@ -212,53 +223,136 @@ _INERT_MESSAGE = (
 )
 
 
+_DELIVERY_MESSAGE = (
+    "job '{name}' holds the fixed concurrency group '{group}', and its `if:` "
+    "reads the event payload, the ref or an input. So on a {trigger} run the "
+    "job can run or skip, by what that one delivery carries. GitHub claims a "
+    "job's group slot when it "
+    "CREATES the job, BEFORE it reads the `if:`. A run that skips this job "
+    "therefore evicts the run queued in that slot to do the work. Read the same "
+    "condition in the group: end it '-shared' when the `if:` holds and "
+    "'-inert-${{{{ github.run_id }}}}' when it does not. Or add "
+    "'# " + INERT_OPT_OUT + ": <reason>'."
+)
+
+_MISFIRE_MESSAGE = (
+    "{subject} chooses its concurrency group between a shared value and the "
+    "run id, but it picks the run id on every trigger {scope} runs on. So the "
+    "group '{group}' never holds two runs, and {scope} is never serialized. "
+    "Either the condition is inverted, or the shared operand is ''. GitHub "
+    "reads '' as false, so `cond && '' || <run id>` picks the run id even when "
+    "cond holds. Make the condition true where {scope} runs, and give the "
+    "shared operand a non-empty value such as 'shared'. Or add "
+    "'# " + INERT_OPT_OUT + ": <reason>'."
+)
+
+
+def _shape_one_message(name: str, group: str, if_value: object, triggers) -> str | None:
+    """The shape-1 finding for one job, or None.
+
+    Three arms, in order. A trigger the job skips shares a group value with a
+    trigger it serves. A fixed group sits behind an `if:` that the payload
+    decides. A run-id escape picks the run id on every trigger the job serves.
+    Each arm answers only from definite readings, so it under-reports.
+    """
+    skipped = job_skipped_triggers(if_value, triggers)
+    served = [trigger for trigger in triggers if trigger not in skipped]
+    if not served:
+        return None  # the job runs on no trigger
+    pair = next(
+        (
+            (skip, serve)
+            for skip in skipped
+            for serve in served
+            if not group_separates_triggers(group, skip, serve)
+        ),
+        None,
+    )
+    if pair is not None:
+        return _INERT_MESSAGE.format(
+            name=name,
+            skipped=_trigger_name(pair[0]),
+            served=_trigger_name(pair[1]),
+            group=group,
+        )
+    split = [
+        trigger
+        for trigger in job_delivery_split_triggers(if_value, served)
+        if group_is_event_constant(group, trigger.event == CALLED_EVENT)
+    ]
+    if split:
+        return _DELIVERY_MESSAGE.format(
+            name=name, group=group, trigger=_trigger_name(split[0])
+        )
+    if group_has_run_id_escape(group) and all(
+        group_is_per_run_on(group, trigger) for trigger in served
+    ):
+        return _MISFIRE_MESSAGE.format(
+            subject=f"job '{name}'", scope="the job", group=group
+        )
+    return None
+
+
 def _inert_slot_violations(
     doc: dict, jobs: dict, blocks: dict, comment_lines: list[str]
 ) -> list[tuple[int | None, str]]:
-    """Every job that claims a shared group slot on a trigger where it SKIPS.
-
-    The pair reported is the first (skipped, served) trigger pair whose group
-    values can coincide. `job_skipped_triggers` answers only with definite
-    skips, so a job whose real gate this reader cannot see raises nothing.
-    """
+    """Every job whose group lets a skipping run take a working run's slot, or
+    whose run-id escape never shares a slot at all."""
     triggers = declared_triggers(doc)
     violations: list[tuple[int | None, str]] = []
     for name, cfg in jobs.items():
         if not isinstance(cfg, dict):
             continue
-        group = _group_of(cfg.get("concurrency"))
+        group = group_of(cfg.get("concurrency"))
         if not isinstance(group, str) or not group:
             continue
-        skipped = job_skipped_triggers(cfg.get("if"), triggers)
-        served = [trigger for trigger in triggers if trigger not in skipped]
-        if not skipped or not served:
-            continue  # the job runs on every trigger, or on none
-        pair = next(
-            (
-                (skip, serve)
-                for skip in skipped
-                for serve in served
-                if not group_separates_triggers(group, skip, serve)
-            ),
-            None,
-        )
-        if pair is None:
+        message = _shape_one_message(str(name), group, cfg.get("if"), triggers)
+        if message is None:
             continue
         block = blocks.get(str(name))
         if block and _block_opted_out(comment_lines, block):
             continue
         violations.append(
-            (
-                job_concurrency_line(block, block[0] if block else 1),
-                _INERT_MESSAGE.format(
-                    name=name,
-                    skipped=_trigger_name(pair[0]),
-                    served=_trigger_name(pair[1]),
-                    group=group,
-                ),
-            )
+            (job_concurrency_line(block, block[0] if block else 1), message)
         )
     return violations
+
+
+def _workflow_misfire_violations(
+    text: str, doc: dict, comment_lines: list[str]
+) -> list[tuple[int | None, str]]:
+    """The finding for a workflow-level group whose run-id escape picks the run
+    id on every trigger the workflow declares, or an empty list.
+
+    The group claims its slot for every run, so no job `if:` narrows the
+    triggers it serves. A declared opt-out in the `concurrency:` block clears it.
+    """
+    group = group_of(doc.get("concurrency"))
+    if not isinstance(group, str) or not group_has_run_id_escape(group):
+        return []
+    triggers = declared_triggers(doc)
+    if not triggers or not all(group_is_per_run_on(group, t) for t in triggers):
+        return []
+    line = concurrency_line(text)
+    lines = text.splitlines()
+    window = _top_level_block(lines, line)
+    if annotated_near(
+        lines, line, INERT_OPT_OUT, span_end=window.stop, comments=comment_lines
+    ):
+        return []
+    message = _MISFIRE_MESSAGE.format(
+        subject="the workflow", scope="the workflow", group=group
+    )
+    return [(line, message)]
+
+
+def _top_level_block(lines: list[str], start: int) -> range:
+    """The 0-based line indexes of the top-level key on 1-based line START and
+    its body: every following line that is blank or indented."""
+    end = start
+    while end < len(lines) and (not lines[end].strip() or lines[end][0] in " \t"):
+        end += 1
+    return range(start - 1, end)
 
 
 def _trigger_name(trigger) -> str:
@@ -307,7 +401,9 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     if not isinstance(jobs, dict):
         return []
     blocks = _job_blocks(text)
-    violations = _inert_slot_violations(doc, jobs, blocks, yaml_comment_view(text))
+    comment_lines = yaml_comment_view(text)
+    violations = _inert_slot_violations(doc, jobs, blocks, comment_lines)
+    violations += _workflow_misfire_violations(text, doc, comment_lines)
 
     storm = _storm_types(doc)
     if not storm:
@@ -323,7 +419,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
         )
     basis = heuristic or "the '# required-check: true' marker"
 
-    if _ref_keyed(_group_of(doc.get("concurrency"))):
+    if _ref_keyed(group_of(doc.get("concurrency"))):
         violations.append(
             (concurrency_line(text), f"workflow-level {_message(storm, basis)}")
         )
@@ -343,7 +439,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     for name, cfg in judged.items():
         if not isinstance(cfg, dict):
             continue
-        if _ref_keyed(_group_of(cfg.get("concurrency"))):
+        if _ref_keyed(group_of(cfg.get("concurrency"))):
             block = blocks.get(str(name))
             fallback = block[0] if block else concurrency_line(text)
             line = job_concurrency_line(block, fallback)

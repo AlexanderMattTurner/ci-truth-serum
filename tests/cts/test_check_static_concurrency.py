@@ -6,6 +6,8 @@ sibling ref cancels a pending run wholesale."""
 
 from pathlib import Path
 
+import pytest
+
 from tests._helpers import REPO_ROOT, load_hook
 
 sc = load_hook("check_static_concurrency.py", "check_static_concurrency")
@@ -212,9 +214,32 @@ def test_no_concurrency_block_is_clean(tmp_path):
     assert sc.check_file(_write(tmp_path, body)) is None
 
 
-def test_non_dict_concurrency_is_ignored(tmp_path):
-    """concurrency: somestring — unusual but not our problem."""
-    body = "name: x\non:\n  push:\nconcurrency: my-group\n" + REQUIRED_CHECK_JOBS
+@pytest.mark.parametrize("group", ["my-group", "${{ github.workflow }}"])
+def test_scalar_shorthand_static_group_is_an_error(tmp_path, group):
+    """GitHub reads `concurrency: <expr>` as `{group: <expr>}`. A static scalar
+    is one slot for every ref, the same as the mapping form."""
+    body = (
+        f"name: x\non:\n  pull_request:\n  merge_group:\nconcurrency: {group}\n"
+        + REQUIRED_CHECK_JOBS
+    )
+    result = sc.check_file(_write(tmp_path, body))
+    assert result is not None
+    line, message = result
+    assert line == 5
+    assert "static" in message
+
+
+def test_scalar_shorthand_per_ref_group_is_clean(tmp_path):
+    body = (
+        "name: x\non:\n  pull_request:\n  merge_group:\n"
+        "concurrency: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}\n"
+        + REQUIRED_CHECK_JOBS
+    )
+    assert sc.check_file(_write(tmp_path, body)) is None
+
+
+def test_scalar_shorthand_without_required_check_is_clean(tmp_path):
+    body = "name: x\non:\n  push:\nconcurrency: my-group\n" + PLAIN_JOBS
     assert sc.check_file(_write(tmp_path, body)) is None
 
 

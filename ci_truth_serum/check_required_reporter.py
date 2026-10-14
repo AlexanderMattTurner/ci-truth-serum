@@ -122,6 +122,7 @@ from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-
 from check_required_event_closure import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ExpressionError,
     _Parser,
+    event_env,
     truth_of,
 )
 
@@ -335,7 +336,7 @@ def _never_closes(condition: str, events: frozenset[str]) -> bool:
         # An expression this parser does not recognize proves nothing, so the
         # job keeps its skip. The specific recovery a bare crash would deny.
         return False
-    return all(truth_of(tree, {"github.event_name": event}) is True for event in events)
+    return all(truth_of(tree, event_env(event)) is True for event in events)
 
 
 def _skippable_jobs(jobs: dict, events: frozenset[str]) -> set[str]:
