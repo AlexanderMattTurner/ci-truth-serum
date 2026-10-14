@@ -18,7 +18,7 @@ set -euo pipefail
 # A process substitution hides its exit status, so a `git ls-files` that fails
 # (no repository, a corrupt index) would read as an empty index and pass. Write
 # the index to a file first, so `set -e` stops on the failure.
-index_file=$(mktemp)
+index_file=$(mktemp "${TMPDIR:-/tmp}/cts-absolute-symlinks.XXXXXX")
 trap 'rm -f "${index_file}"' EXIT
 git ls-files -s -z >"${index_file}"
 
