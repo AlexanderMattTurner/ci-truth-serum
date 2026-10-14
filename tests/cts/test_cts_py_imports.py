@@ -37,6 +37,8 @@ def write(root: Path, rel: str, body: str) -> Path:
         # `-m` names a MODULE to run; the `.py` after it is that module's own
         # argument, not a file the interpreter imports.
         (["python3", "-m", "pytest", "tests/x.py"], []),
+        # `-c` runs the string after it; a later `.py` is only `sys.argv`.
+        (["python3", "-c", "print(1)", "helper.py"], []),
         # A word an expansion decided reads as None and ends the search — a
         # candidate this cannot read must not be guessed at.
         (["python3", None, "script.py"], []),

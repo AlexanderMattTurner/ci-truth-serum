@@ -998,3 +998,177 @@ def test_main_passes_a_composite_action_whose_closure_is_listed(tmp_path: Path):
     _write(repo, ".github/actions/setup-chart-upload/action.yaml", _COMPOSITE)
     commit_all(repo)
     assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+def test_main_flags_a_composite_action_that_is_not_valid_yaml(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """The job runs the action, so zero steps from an `action.yml` the parser
+    rejects would be a clean pass over steps this check never read."""
+    repo = _setup_repo(
+        tmp_path,
+        ".github/actions/setup-chart-upload",
+        "echo hi",
+        "      - uses: ./.github/actions/setup-chart-upload\n",
+    )
+    _write(repo, ".github/actions/setup-chart-upload/action.yml", "runs:\n  steps: [\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert (
+        "job build: .github/actions/setup-chart-upload/action.yml is not valid YAML"
+        in out
+    )
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '"$SCRIPT_DIR/render.py" --out x',
+        "./render.py",
+        'python3 -I "$SCRIPT_DIR/render.py"',
+    ],
+)
+def test_shell_targets_reads_each_way_a_script_runs_a_python_script(line: str):
+    """A `.py` command word runs through the file's shebang, exactly as a
+    `.sh` command word does."""
+    shell, python = mod._shell_targets(f"{line}\n")
+    assert shell == set()
+    assert {t.rsplit("/", 1)[-1] for t in python} == {"render.py"}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "python3 -c 'print(1)' render.py",
+        'echo "run render.py next"',
+        "ruff check render.py",
+    ],
+)
+def test_shell_targets_ignores_a_python_name_no_interpreter_runs(line: str):
+    """A `-c` body is the program, so a later `.py` word is only `sys.argv`."""
+    assert mod._shell_targets(f"{line}\n") == (set(), set())
+
+
+def test_main_follows_a_python_script_a_shell_script_runs_by_its_shebang(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts/run.sh", "bash .github/scripts/run.sh"),
+    )
+    _write(repo, ".github/scripts/run.sh", '"$(dirname "$0")/render.py" --out x\n')
+    _write(repo, ".github/scripts/render.py", "from _lockfiles import rule_for\n")
+    _write(repo, ".github/scripts/_lockfiles.py", "rule_for = 1\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    assert "misses `.github/scripts/render.py`" in out
+    assert "misses `.github/scripts/_lockfiles.py`" in out
+
+
+def test_main_does_not_follow_a_py_word_after_python_dash_c(tmp_path: Path):
+    """`python3 -c '…' helper.py` runs the string. The helper and its imports
+    are owed nothing, so a list without them passes."""
+    repo = _repo(tmp_path)
+    _write(
+        repo,
+        ".github/workflows/w.yaml",
+        _workflow_text(".github/scripts/run.sh", "bash .github/scripts/run.sh"),
+    )
+    _write(repo, ".github/scripts/run.sh", "python3 -c 'print(1)' helper.py\n")
+    _write(repo, ".github/scripts/helper.py", "from _lockfiles import rule_for\n")
+    _write(repo, ".github/scripts/_lockfiles.py", "rule_for = 1\n")
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+# ── a composite action that names its own directory ──────────────────────
+@pytest.mark.parametrize(
+    "spelling",
+    ['"${GITHUB_ACTION_PATH}', '"$GITHUB_ACTION_PATH', '"${{ github.action_path }}'],
+)
+def test_main_resolves_a_script_a_composite_names_by_its_action_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture, spelling: str
+):
+    """The measured shape is `.github/actions/claude-run/action.yaml`: `bash
+    "${GITHUB_ACTION_PATH}/../../scripts/x.sh"`. No `run:` text holds the
+    path `.github/scripts/x.sh` until the action's directory replaces the
+    variable."""
+    repo = _setup_repo(
+        tmp_path,
+        ".github/actions/a",
+        "echo hi",
+        "      - uses: ./.github/actions/a\n",
+    )
+    _write(
+        repo,
+        ".github/actions/a/action.yml",
+        "runs:\n  using: composite\n  steps:\n    - shell: bash\n"
+        f'      run: bash {spelling}/../../scripts/setup-chart-upload.sh"\n',
+    )
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    out = capsys.readouterr().out
+    for dep in (
+        ".github/scripts/setup-chart-upload.sh",
+        ".github/scripts/lib-rclone-pin.sh",
+        _INSTALLER,
+    ):
+        assert f"misses `{dep}`" in out
+
+
+def test_step_commands_keeps_a_single_quoted_action_path_as_text():
+    """Bash expands nothing inside single quotes, so neither does this."""
+    step = {
+        "run": "bash '$GITHUB_ACTION_PATH/x.sh' \"$GITHUB_ACTION_PATH/../y.sh\"",
+        mod.ACTION_DIR: ".github/actions/a",
+    }
+    assert mod._step_commands(step) == [
+        ["bash", "$GITHUB_ACTION_PATH/x.sh", ".github/actions/y.sh"]
+    ]
+
+
+_CHECKOUT_THEN_RUN = (
+    "runs:\n  using: composite\n  steps:\n"
+    "    - uses: actions/checkout@abc\n"
+    "    - shell: bash\n"
+    "      run: bash .github/scripts/setup-chart-upload.sh\n"
+)
+
+
+def test_main_judges_no_step_after_a_composites_own_full_checkout(tmp_path: Path):
+    """The composite's checkout replaces the sparse tree. Its own later steps,
+    and the caller's later steps, run on the full tree, so the sparse list
+    owes them nothing."""
+    repo = _setup_repo(
+        tmp_path,
+        ".github/actions/a",
+        "echo hi",
+        "      - uses: ./.github/actions/a\n"
+        "      - run: bash .github/scripts/setup-chart-upload.sh\n",
+    )
+    _write(repo, ".github/actions/a/action.yml", _CHECKOUT_THEN_RUN)
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 0
+
+
+def test_main_judges_a_caller_step_after_a_conditional_composite_checkout(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+):
+    """A composite that the caller runs under `if:` might not run, so the
+    caller's later steps can still run on the sparse tree."""
+    repo = _setup_repo(
+        tmp_path,
+        ".github/actions/a",
+        "echo hi",
+        "      - uses: ./.github/actions/a\n"
+        "        if: github.event_name == 'push'\n"
+        "      - run: bash .github/scripts/setup-chart-upload.sh\n",
+    )
+    _write(repo, ".github/actions/a/action.yml", _CHECKOUT_THEN_RUN)
+    commit_all(repo)
+    assert mod.main(["--repo-root", str(repo)]) == 1
+    assert f"misses `{_INSTALLER}`" in capsys.readouterr().out
