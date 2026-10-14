@@ -161,3 +161,25 @@ def test_a_target_outside_the_repository_is_left_alone(
 
     result = run_script(empty_git_repo, copy_script)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("blank", [" ", "\t", "\n"], ids=["space", "tab", "newline"])
+def test_a_link_whose_path_holds_a_blank_is_judged_on_its_exact_path(
+    empty_git_repo: Path, copy_script, blank: str
+) -> None:
+    """The index splits mode, hash and path on blanks, so a blank in the path is
+    where a field split goes wrong. Plain `git ls-files -s` also quotes a path
+    that holds a tab or a newline, and a script that reads it reports `"a\\tb"`
+    rather than the link. Both the link's directory and its own name hold the
+    blank, so the `..` join runs on the exact path too: a join that stops at a
+    newline resolves `tools`, which no rule ignores, and the finding is lost."""
+    link_at = f"tools{blank}dir/link{blank}name"
+    _ignored_tree(empty_git_repo, link_at, "../node_modules/pkg/bin.js")
+    commit_all(empty_git_repo)
+
+    result = run_script(empty_git_repo, copy_script)
+    assert (result.returncode, result.stdout) == (
+        1,
+        "::error::Tracked symlinks resolve to paths a fresh clone does not have:\n"
+        f"{link_at} -> ../node_modules/pkg/bin.js (git ignores node_modules)\n",
+    ), result.stderr
