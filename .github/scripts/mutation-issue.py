@@ -53,9 +53,19 @@ def red_jobs(results: str) -> list[str]:
     return red
 
 
+def _code(text: str) -> str:
+    """TEXT as one Markdown code span on one line, whatever backticks it holds."""
+    flat = " ".join(text.split())
+    if "`" not in flat:
+        return f"`{flat}`"
+    return f"`` {flat} ``"
+
+
 def stryker_markdown(report: dict) -> str:
     """The undetected mutants in Stryker's JSON REPORT, one section per file,
-    or "" when there are none."""
+    or "" when there are none. One mutator can make several mutants at one
+    place (`a < b` becomes `a <= b` and `a >= b`), so each line also shows what
+    the code became."""
     sections = []
     for path, found in sorted(report["files"].items()):
         lines = []
@@ -65,14 +75,17 @@ def stryker_markdown(report: dict) -> str:
                 m["location"]["start"]["line"],
                 m["location"]["start"]["column"],
                 m["mutatorName"],
+                m.get("replacement", ""),
             ),
         ):
             if mutant["status"] not in UNDETECTED:
                 continue
             start = mutant["location"]["start"]
+            becomes = mutant.get("replacement") or mutant.get("description")
+            into = f" -> {_code(becomes)}" if becomes else ""
             lines.append(
                 f"- `{path}:{start['line']}:{start['column']}`"
-                f" `{mutant['mutatorName']}`{UNDETECTED[mutant['status']]}"
+                f" `{mutant['mutatorName']}`{into}{UNDETECTED[mutant['status']]}"
             )
         if lines:
             sections.append(f"### `{path}` (Stryker)\n\n" + "\n".join(lines))

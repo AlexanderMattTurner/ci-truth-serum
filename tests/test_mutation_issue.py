@@ -68,9 +68,11 @@ def test_an_unstamped_body_counts_as_older_than_any_run() -> None:
     assert mi.stamp_of(f"{mi.MARKER}\n\nwritten before runs stamped the issue") == 0
 
 
-def _mutant(line: int, column: int, mutator: str, status: str) -> dict:
-    return {
-        "id": f"{line}-{column}",
+def _mutant(
+    line: int, column: int, mutator: str, status: str, replacement: str | None = None
+) -> dict:
+    mutant = {
+        "id": f"{line}-{column}-{replacement}",
         "mutatorName": mutator,
         "location": {
             "start": {"line": line, "column": column},
@@ -78,6 +80,9 @@ def _mutant(line: int, column: int, mutator: str, status: str) -> dict:
         },
         "status": status,
     }
+    if replacement is not None:
+        mutant["replacement"] = replacement
+    return mutant
 
 
 def test_stryker_markdown_lists_undetected_mutants_in_source_order() -> None:
@@ -87,7 +92,8 @@ def test_stryker_markdown_lists_undetected_mutants_in_source_order() -> None:
                 "mutants": [
                     _mutant(9, 2, "BlockStatement", "Survived"),
                     _mutant(4, 7, "ConditionalExpression", "NoCoverage"),
-                    _mutant(4, 3, "EqualityOperator", "Survived"),
+                    _mutant(4, 3, "EqualityOperator", "Survived", "a >= b"),
+                    _mutant(4, 3, "EqualityOperator", "Survived", "a <= b"),
                     _mutant(5, 1, "StringLiteral", "Killed"),
                     _mutant(6, 1, "StringLiteral", "Timeout"),
                 ]
@@ -100,10 +106,30 @@ def test_stryker_markdown_lists_undetected_mutants_in_source_order() -> None:
         "### `scripts/a.mjs` (Stryker)\n\n"
         "- `scripts/a.mjs:2:5` `BooleanLiteral`\n\n"
         "### `scripts/b.mjs` (Stryker)\n\n"
-        "- `scripts/b.mjs:4:3` `EqualityOperator`\n"
+        "- `scripts/b.mjs:4:3` `EqualityOperator` -> `a <= b`\n"
+        "- `scripts/b.mjs:4:3` `EqualityOperator` -> `a >= b`\n"
         "- `scripts/b.mjs:4:7` `ConditionalExpression` (no test covers it)\n"
         "- `scripts/b.mjs:9:2` `BlockStatement`"
     )
+
+
+@pytest.mark.parametrize(
+    ("replacement", "shown"),
+    [
+        ("{\n  return;\n}", " -> `{ return; }`"),
+        ("`${a}`", " -> `` `${a}` ``"),
+        ("", ""),
+    ],
+)
+def test_stryker_markdown_shows_any_replacement_on_one_line(
+    replacement: str, shown: str
+) -> None:
+    report = {
+        "files": {
+            "scripts/a.mjs": {"mutants": [_mutant(2, 5, "X", "Survived", replacement)]}
+        }
+    }
+    assert mi.stryker_markdown(report).endswith(f"`scripts/a.mjs:2:5` `X`{shown}")
 
 
 def test_stryker_markdown_is_empty_when_every_mutant_died() -> None:
