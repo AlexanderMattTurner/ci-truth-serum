@@ -172,14 +172,28 @@ def test_a_link_whose_path_holds_a_blank_is_judged_on_its_exact_path(
     that holds a tab or a newline, and a script that reads it reports `"a\\tb"`
     rather than the link. Both the link's directory and its own name hold the
     blank, so the `..` join runs on the exact path too: a join that stops at a
-    newline resolves `tools`, which no rule ignores, and the finding is lost."""
+    newline resolves `tools`, which no rule ignores, and the finding is lost.
+    The target ends in the blank, because `$(…)` strips a trailing newline."""
     link_at = f"tools{blank}dir/link{blank}name"
-    _ignored_tree(empty_git_repo, link_at, "../node_modules/pkg/bin.js")
+    target = f"../node_modules/pkg/bin.js{blank}"
+    _ignored_tree(empty_git_repo, link_at, target)
     commit_all(empty_git_repo)
 
     result = run_script(empty_git_repo, copy_script)
     assert (result.returncode, result.stdout) == (
         1,
         "::error::Tracked symlinks resolve to paths a fresh clone does not have:\n"
-        f"{link_at} -> ../node_modules/pkg/bin.js (git ignores node_modules)\n",
+        f"{link_at} -> {target} (git ignores node_modules)\n",
     ), result.stderr
+
+
+def test_a_git_failure_fails_the_check(
+    tmp_path: Path, copy_script, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outside a repository `git ls-files` exits 128. Read through a process
+    substitution, that is an empty index and a pass, so the check stops on it."""
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    result = run_script(tmp_path, copy_script)
+    assert result.returncode == 128
+    assert "not a git repository" in result.stderr
+    assert result.stdout == ""

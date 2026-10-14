@@ -15,6 +15,13 @@
 
 set -euo pipefail
 
+# A process substitution hides its exit status, so a `git ls-files` that fails
+# (no repository, a corrupt index) would read as an empty index and pass. Write
+# the index to a file first, so `set -e` stops on the failure.
+index_file=$(mktemp)
+trap 'rm -f "${index_file}"' EXIT
+git ls-files -s -z >"${index_file}"
+
 violations=""
 # Each entry is `<mode> SP <hash> SP <stage> TAB <path>`. Split it with parameter
 # expansion, because a pipe per field forks three times for every tracked file: on
@@ -30,7 +37,10 @@ while IFS= read -r -d '' entry; do
   [[ "${mode}" = "120000" ]] || continue
   hash="${meta#* }"
   hash="${hash%% *}"
-  target=$(git cat-file blob "${hash}")
+  # `$(…)` strips trailing newlines, so the `x` keeps the target byte-exact. The
+  # `&&` keeps cat-file's exit status as the substitution's, so `set -e` sees it.
+  target=$(git cat-file blob "${hash}" && printf x)
+  target="${target%x}"
   case "${target}" in
   /*)
     violations="${violations}${path} -> ${target} (absolute path)"$'\n'
@@ -116,7 +126,7 @@ while IFS= read -r -d '' entry; do
   if [[ "${ignored}" != "" ]]; then
     violations="${violations}${path} -> ${target} (git ignores ${ignored})"$'\n'
   fi
-done < <(git ls-files -s -z)
+done <"${index_file}"
 
 if [[ "${violations}" != "" ]]; then
   echo "::error::Tracked symlinks resolve to paths a fresh clone does not have:"
