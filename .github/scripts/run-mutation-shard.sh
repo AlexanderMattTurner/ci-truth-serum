@@ -93,5 +93,5 @@ mkdir -p "${report_dir}"
   echo "::error::could not create ${report_dir}." >&2
   exit 1
 }
-python -c 'import json, sys; json.dump({"id": sys.argv[1], "rate": sys.argv[2]}, open(sys.argv[3], "w"))' \
-  "${SHARD_ID}" "${rate}" "${report_dir}/${SHARD_ID}.json"
+cosmic-ray dump "${session}" |
+  python "${here}/write-shard-report.py" "${SHARD_ID}" "${rate}" "${report_dir}/${SHARD_ID}.json"
