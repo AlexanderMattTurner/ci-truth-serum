@@ -15,7 +15,9 @@ wsr = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wsr)
 
 
-def _line(outcome: str | None, line: int, definition: str | None = "f") -> str:
+def _line(
+    outcome: str | None, line: int, definition: str | None = "f", column: int = 4
+) -> str:
     item = {
         "job_id": str(line),
         "mutations": [
@@ -23,8 +25,8 @@ def _line(outcome: str | None, line: int, definition: str | None = "f") -> str:
                 "module_path": "ci_truth_serum/check_a.py",
                 "operator_name": "core/AddNot",
                 "occurrence": 0,
-                "start_pos": [line, 4],
-                "end_pos": [line, 9],
+                "start_pos": [line, column],
+                "end_pos": [line, column + 5],
                 "operator_args": {},
                 "definition_name": definition,
             }
@@ -43,24 +45,34 @@ def _line(outcome: str | None, line: int, definition: str | None = "f") -> str:
     return json.dumps([item, result])
 
 
-def test_only_survived_mutants_are_reported_in_line_order() -> None:
+def test_only_survived_mutants_are_reported_in_source_order() -> None:
     lines = [
         _line("killed", 3),
         _line("survived", 9, None),
         _line(None, 5),
         _line("incompetent", 6),
+        _line("survived", 2, column=11),
         _line("survived", 2),
     ]
     assert wsr.survivors(lines + [""]) == [
         {
             "path": "ci_truth_serum/check_a.py",
             "line": 2,
+            "column": 5,
+            "operator": "core/AddNot",
+            "definition": "f",
+        },
+        {
+            "path": "ci_truth_serum/check_a.py",
+            "line": 2,
+            "column": 12,
             "operator": "core/AddNot",
             "definition": "f",
         },
         {
             "path": "ci_truth_serum/check_a.py",
             "line": 9,
+            "column": 5,
             "operator": "core/AddNot",
             "definition": None,
         },

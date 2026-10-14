@@ -20,7 +20,9 @@
     "cr-session.sqlite",
     "*.sqlite"
   ],
-  "reporters": ["clear-text", "progress"],
+  "reporters": ["clear-text", "progress", "json"],
+  "_json_comment": "The json reporter feeds the ledger job in mutation.yaml. Stryker exits 0 when a mutant survives, so this report is the only place the ledger can read JS survivors from.",
+  "jsonReporter": { "fileName": "reports/stryker/mutation.json" },
   "timeoutMS": 60000,
   "concurrency": 2
 }
