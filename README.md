@@ -454,6 +454,25 @@ The cost is one request for each 100 completed runs, plus one for each failing r
 
 **The obvious version of this scan reports every repo healthy.** A run that failed to load concludes `startup_failure`, and not `failure`. The `status=` filter on the runs listing matches the conclusion, so `status=failure` never returns one. This tool asks for `status=completed` and classifies each conclusion itself. It leaves out `cancelled` and `skipped`, because a run cancelled in the queue also holds zero jobs and is not a broken file.
 
+### Apply: trace the commands CI runs with trace-ci
+
+`trace-ci` reads the commands that CI really runs, when they are not in a GitHub workflow. A CircleCI job often runs `make check`, and the real work is in the `Makefile` recipes that `make check` reaches. The pre-commit lints read files by kind, so they never read those recipes as CI. `trace-ci` starts from the CI files and follows each `make` call with `make --dry-run --trace`. GNU make prints each command that it would run and the `Makefile` line that the command came from. The tool runs the content lints of this pack on those commands and reports each finding at its source line.
+
+It finds four more defects that no single file shows:
+
+- **A check that passes over nothing.** GNU make does not stop when a `$(shell …)` command fails; it uses the empty output. The tool makes each `$(shell …)` call fail, one at a time, and traces CI again. If `make` still exits 0 but runs fewer commands or fewer arguments, it reports the call. For example, `FILES := $(shell git ls-files)` feeds `pre-commit run --files $(FILES)`. When `git` fails, pre-commit gets no files, skips every hook, and exits 0.
+- **A failure that the recipe shell loses.** GNU make runs each recipe line with `/bin/sh -c`, which has no errexit and no pipefail. In `a; b` and `a | b`, CI sees only the status of `b`.
+- **A failure that make ignores.** A recipe line that starts with `-` cannot fail.
+- **A check that CI never runs.** A directory whose `Makefile` has a `check` goal, and that no CI step reaches, is reported. `--goal` changes the goal name.
+
+```bash
+trace-ci                                  # the repository in the current directory
+trace-ci --repo path/to/repo --select tier:1 --select tier:2
+trace-ci --no-fault-injection --format json
+```
+
+The tool follows CircleCI and GitHub Actions steps. It names the other CI files that it finds, such as `.gitlab-ci.yml`, and does not read them yet. It finds CI files with the `fileMatch` globs of the [SchemaStore catalog](https://www.schemastore.org/api/json/catalog.json), and it finds makefiles and Dockerfiles with `identify`. **Run it only on a tree that you trust as much as `make`:** a dry run still runs each `$(shell …)` call, and each recipe line that holds `$(MAKE)` or starts with `+`. To accept a finding, put `# trace-ci-ok: <reason>` on its line or on the line above it. For a directory that CI does not reach, put the comment on line 1 of its `Makefile`. It exits 1 when it finds anything, and 2 when it cannot trace (no GNU make 4.0 or later, or no CI file that it follows).
+
 ## Contributing
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) states the rule for what belongs here. It gives three tests a proposed check must pass, says which tier and tag a new check takes, and lists the files one check has to ship. Read it before you open a pull request that adds a check.

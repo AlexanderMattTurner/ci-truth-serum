@@ -48,6 +48,11 @@ release-canary = "ci_truth_serum.release_canary:main"
 # started, the one failure shape no static read of the tree can find. Not a
 # pre-commit lint and not in any tier aggregate.
 startup-failure-scan = "ci_truth_serum.startup_failure_scan:main"
+# Follow CI into the makefiles it runs: lint the commands CI really executes,
+# make each $(shell …) fail to find checks that pass over nothing, and name the
+# check goals no CI step reaches. Not a pre-commit lint and not in any tier
+# aggregate.
+trace-ci = "ci_truth_serum.trace_ci:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-xdist", "ruff", "hypothesis>=6"]

@@ -154,6 +154,7 @@ FUZZ_REQUIRED = {
     "check_container_job_shell": "violations",
     "check_artifact_pattern_overlap": "violations",
     "check_rename_onto_symlink": "violations",
+    "trace_ci": "shell_calls",
 }
 
 # Hooks that take only argv-of-paths / orchestrate and are deliberately not in the
