@@ -3,7 +3,9 @@
 
 Reads `cosmic-ray dump` on stdin, one JSON `[work_item, result]` pair per line,
 and writes `{id, rate, survivors}` to OUT. Each survivor names the file, line,
-operator and function of a mutant the module's own suite did not kill.
+column, operator and function of a mutant the module's own suite did not kill.
+The column tells apart two mutants of one operator on one line. It counts from
+1, like an editor; cosmic-ray counts it from 0.
 
 Usage: cosmic-ray dump SESSION | write-shard-report.py ID RATE OUT
 """
@@ -28,11 +30,14 @@ def survivors(dump_lines: Iterable[str]) -> list[dict]:
                 {
                     "path": mutation["module_path"],
                     "line": mutation["start_pos"][0],
+                    "column": mutation["start_pos"][1] + 1,
                     "operator": mutation["operator_name"],
                     "definition": mutation.get("definition_name"),
                 }
             )
-    return sorted(found, key=lambda s: (s["path"], s["line"], s["operator"]))
+    return sorted(
+        found, key=lambda s: (s["path"], s["line"], s["column"], s["operator"])
+    )
 
 
 def main(argv: list[str]) -> None:

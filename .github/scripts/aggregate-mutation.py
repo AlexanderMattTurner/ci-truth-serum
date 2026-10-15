@@ -75,7 +75,8 @@ def survivors_markdown(reports: list[dict]) -> str:
         for mutant in found:
             where = f" in `{mutant['definition']}`" if mutant["definition"] else ""
             lines.append(
-                f"- `{mutant['path']}:{mutant['line']}` `{mutant['operator']}`{where}"
+                f"- `{mutant['path']}:{mutant['line']}:{mutant['column']}`"
+                f" `{mutant['operator']}`{where}"
             )
         sections.append("\n".join(lines))
     return "\n\n".join(sections)

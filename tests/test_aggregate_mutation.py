@@ -84,12 +84,14 @@ def test_survivors_markdown_lists_each_survivor_under_its_module() -> None:
         {
             "path": "ci_truth_serum/check_b.py",
             "line": 7,
+            "column": 9,
             "operator": "core/NumberReplacer",
             "definition": "f",
         },
         {
             "path": "ci_truth_serum/check_b.py",
             "line": 9,
+            "column": 13,
             "operator": "core/AddNot",
             "definition": None,
         },
@@ -98,16 +100,17 @@ def test_survivors_markdown_lists_each_survivor_under_its_module() -> None:
         {
             "path": "ci_truth_serum/check_a.py",
             "line": 3,
+            "column": 5,
             "operator": "core/AddNot",
             "definition": "g",
         }
     ]
     assert agg.survivors_markdown(reports) == (
         "### `check_a` (survival rate 0.10)\n\n"
-        "- `ci_truth_serum/check_a.py:3` `core/AddNot` in `g`\n\n"
+        "- `ci_truth_serum/check_a.py:3:5` `core/AddNot` in `g`\n\n"
         "### `check_b` (survival rate 0.10)\n\n"
-        "- `ci_truth_serum/check_b.py:7` `core/NumberReplacer` in `f`\n"
-        "- `ci_truth_serum/check_b.py:9` `core/AddNot`"
+        "- `ci_truth_serum/check_b.py:7:9` `core/NumberReplacer` in `f`\n"
+        "- `ci_truth_serum/check_b.py:9:13` `core/AddNot`"
     )
 
 
