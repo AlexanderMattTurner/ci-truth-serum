@@ -13,7 +13,7 @@ text. Both stubs are needed: `install-claude-cli.sh` ends in `claude --version`,
 and the job that runs this suite never installs the CLI, so an unstubbed run
 exits 127 at the install and never reaches the guard at all.
 
-The installer still reads `.github/claude-cli-version` and rejects a value that
+The installer reads `.github/claude-cli-default/package.json` and rejects a value that
 is not `MAJOR.MINOR.PATCH`, so every case here is also the existence-and-shape
 guard for that pin.
 

@@ -135,7 +135,7 @@ fi
 # and still needs that human. Dismissing is also idempotent — a dismissed review's
 # state stops being CHANGES_REQUESTED, so a re-run finds nothing and says so.
 dismiss_stale_hold() {
-  local reason="$1" review_id dismiss_err
+  local reason="$1" review_id dismiss_err now_state
   # The most recent CHANGES_REQUESTED specifically, NOT the latest review: a
   # CHANGES_REQUESTED keeps blocking until dismissed or superseded by an APPROVED
   # from the same reviewer, and a later COMMENTED review does not clear it. So the
@@ -153,12 +153,19 @@ dismiss_stale_hold() {
     return 0
   fi
 
-  # Unlike the approval refusals above, a failed dismissal is NOT structural:
-  # nothing about this PR makes it permanently impossible, so it is a real error
-  # and must be seen rather than logged past.
+  # Unlike the approval refusals above, a failed dismissal is NOT structural, so
+  # it is a real error. One case is not: a human or another sweep can dismiss
+  # the hold between the read above and this call, and GitHub then refuses the
+  # PUT. Re-read the review to tell those apart. An unreadable state falls
+  # through to the loud failure, so a real fault is never swallowed.
   if ! dismiss_err="$(gh api --method PUT \
     "repos/${GH_REPO}/pulls/${PR}/reviews/${review_id}/dismissals" \
     -f message="$reason" -f event=DISMISS 2>&1)"; then
+    if now_state="$(gh api "repos/${GH_REPO}/pulls/${PR}/reviews/${review_id}" \
+      --jq '.state')" && [[ "$now_state" != "CHANGES_REQUESTED" ]]; then
+      echo "review ${review_id} is now '${now_state}', so someone else cleared its hold while this run worked; nothing to dismiss." >&2
+      return 0
+    fi
     echo "failed to dismiss the reviewer's stale hold (review ${review_id}): ${dismiss_err}" >&2
     return 1
   fi

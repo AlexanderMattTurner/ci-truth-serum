@@ -49,6 +49,7 @@ jobs:
       pull-requests: write # submit the approving review
       statuses: write # re-derive the gate verdict; no other scope
     env:
+      # The sweep's own PR listing runs on the Actions token.
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       # Job-level: a truncated status description has nowhere to send a reader

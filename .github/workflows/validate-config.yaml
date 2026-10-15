@@ -16,26 +16,17 @@ jobs:
   # reports, then opens only when config/hook/test sources change on a PR.
   decide:
     permissions:
-      contents: read
-      pull-requests: read
+      contents: read # the reusable gate checks out the tree
+      pull-requests: read # its live draft re-read (decide_pr_is_draft_now)
+      actions: read # its memo shadow lists this workflow's past runs (needed in a private fork)
     uses: ./.github/workflows/decide-reusable.yaml
     with:
-      filters: |
-        run:
-          - '.claude/**'
-          - '.ci_truth_serum/**'
-          - '.github/actions/setup-base-env/**'
-          - '.github/actions/setup-uv/**'
-          - '.github/scripts/validate-config.sh'
-          # install-claude-cli.sh reads this pin and rejects anything that is
-          # not MAJOR.MINOR.PATCH, and tests/test_claude_conflict_resolve_ladder.py
-          # runs that installer. Without this line a pin-only change skips the
-          # job and merges with the reporter green.
-          - '.github/claude-cli-version'
-          - '.github/workflows/**'
-          - 'tests/**'
-          - 'pyproject.toml'
-          - 'uv.lock'
+      # `.github/claude-cli-default/` holds the CLI pin. install-claude-cli.sh
+      # rejects a pin that is not MAJOR.MINOR.PATCH, and
+      # tests/test_claude_conflict_resolve_ladder.py runs that installer. So a
+      # pin-only change must open this gate, or it merges with the reporter green.
+      # POSIX ERE, read by `grep -E` — no PCRE escapes (\d, \w, (?:…)).
+      paths-regex: '^(\.claude/|\.ci_truth_serum/|\.github/actions/setup-base-env/|\.github/actions/setup-uv/|\.github/scripts/validate-config\.sh$|\.github/claude-cli-default/|\.github/workflows/|tests/|pyproject\.toml$|uv\.lock$)'
 
   validate:
     needs: decide
@@ -55,8 +46,16 @@ jobs:
       - name: Validate configuration
         run: bash .github/scripts/validate-config.sh
 
+      # `uv run` needs a pyproject.toml to run in, and `pytest tests/` exits 4 on
+      # a missing directory. template-sync delivers neither file, so a consumer
+      # with no Python project runs nothing here instead of failing.
+      # validate-config.sh above stays ungated — it needs only the .claude/ tree
+      # the sync delivers.
       - name: Test Claude hooks
-        run: uv run --extra dev pytest tests/
+        if: hashFiles('pyproject.toml') != ''
+        run: |
+          [[ -d tests ]] || { echo "No tests/ directory; nothing to run."; exit 0; }
+          uv run --extra dev pytest tests/
 
   # Stable Required check: runs even when `validate` is cancelled/skipped, so a
   # protected branch never gets stuck on a check that never reports.

@@ -84,17 +84,31 @@ jobs:
     # The skip set below, OR the on-demand label the skip notice offers. The
     # reviewer's own decide script answers a `labeled` event only for that
     # label, so every other label edit costs one skipped job.
+    #
+    # The title skip applies only to a TRUSTED author. The PR author writes the
+    # title, so an outside contributor could title a fork PR `chore: bump` to
+    # skip the review. A trusted author has a same-repo head branch, or an
+    # OWNER, MEMBER or COLLABORATOR association. auto-approve-skipped below
+    # carries the same guard, so an untrusted PR always gets the real review.
     if: >-
       github.event.label.name == 'needs-auto-review' ||
       (
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.type != 'Bot' &&
-      !startsWith(github.event.pull_request.title, 'chore:') &&
-      !startsWith(github.event.pull_request.title, 'chore(') &&
-      !startsWith(github.event.pull_request.title, 'style:') &&
-      !startsWith(github.event.pull_request.title, 'style(') &&
-      !startsWith(github.event.pull_request.title, 'release:') &&
-      !startsWith(github.event.pull_request.title, 'release(')
+        (
+          !(
+            github.event.pull_request.head.repo.full_name == github.repository ||
+            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+          ) ||
+          (
+            !startsWith(github.event.pull_request.title, 'chore:') &&
+            !startsWith(github.event.pull_request.title, 'chore(') &&
+            !startsWith(github.event.pull_request.title, 'style:') &&
+            !startsWith(github.event.pull_request.title, 'style(') &&
+            !startsWith(github.event.pull_request.title, 'release:') &&
+            !startsWith(github.event.pull_request.title, 'release(')
+          )
+        )
       )
     permissions:
       contents: read # the reviewer checks out this repository's default branch
@@ -170,12 +184,20 @@ jobs:
       github.event.pull_request.draft == false &&
       (
         github.event.pull_request.user.type == 'Bot' ||
-        startsWith(github.event.pull_request.title, 'chore:') ||
-        startsWith(github.event.pull_request.title, 'chore(') ||
-        startsWith(github.event.pull_request.title, 'style:') ||
-        startsWith(github.event.pull_request.title, 'style(') ||
-        startsWith(github.event.pull_request.title, 'release:') ||
-        startsWith(github.event.pull_request.title, 'release(')
+        (
+          (
+            github.event.pull_request.head.repo.full_name == github.repository ||
+            contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+          ) &&
+          (
+            startsWith(github.event.pull_request.title, 'chore:') ||
+            startsWith(github.event.pull_request.title, 'chore(') ||
+            startsWith(github.event.pull_request.title, 'style:') ||
+            startsWith(github.event.pull_request.title, 'style(') ||
+            startsWith(github.event.pull_request.title, 'release:') ||
+            startsWith(github.event.pull_request.title, 'release(')
+          )
+        )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -287,13 +309,17 @@ jobs:
         if: steps.prepare.outputs.has_deltas == 'true'
         uses: ./.github/actions/claude-run
         with:
-          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          fallback_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
-          fallback_oauth_token_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
-          fallback_oauth_token_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
-          fallback_oauth_token_4: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4 }}
-          fallback_oauth_token_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
-          fallback_oauth_token_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
+          # CLAUDE_CODE_OAUTH_TOKEN fills the LAST tier: it is the account an
+          # operator already has, so CI spends every token provisioned for CI
+          # first. A tier left unset is skipped, so a setup that configures only
+          # that one secret reaches it with no wasted attempt.
+          oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+          fallback_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
+          fallback_oauth_token_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
+          fallback_oauth_token_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4 }}
+          fallback_oauth_token_4: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
+          fallback_oauth_token_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
+          fallback_oauth_token_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Give the action the workflow token directly. Without it, the action
           # tries to mint one via an OIDC→GitHub-App token exchange that isn't
           # authorized here and fails with "401 Invalid OIDC token" before Claude

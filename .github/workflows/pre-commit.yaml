@@ -13,6 +13,12 @@ permissions:
   contents: read
 
 jobs:
+  # Every step is gated on the root file it needs, so the whole job is a no-op —
+  # not a hard failure — in a consumer that has none of them. template-sync
+  # delivers this workflow but delivers no .pre-commit-config.yaml, package.json
+  # or .nvmrc, so a repo that never had them would otherwise go red on every PR
+  # from its first sync onwards. An absent .pre-commit-config.yaml means there
+  # are no hooks to run, which is not-applicable rather than unverifiable.
   pre-commit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -41,12 +47,14 @@ jobs:
         # from package.json against the registry.
         run: pnpm install --no-frozen-lockfile
       - name: Restore pre-commit cache
+        if: hashFiles('.pre-commit-config.yaml') != ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
           restore-keys: pre-commit-${{ runner.os }}-
       - name: Run pre-commit
+        if: hashFiles('.pre-commit-config.yaml') != ''
         run: uvx pre-commit==4.6.0 run --all-files --show-diff-on-failure
 
   # Stable Required check: runs even when `pre-commit` is cancelled/skipped, so
@@ -61,7 +69,6 @@ jobs:
         with:
           sparse-checkout: |
             .github/actions/report-job-result
-            .github/scripts
           persist-credentials: false
 
       - name: Report result
