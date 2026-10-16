@@ -473,6 +473,15 @@ trace-ci --no-fault-injection --format json
 
 The tool follows CircleCI and GitHub Actions steps. It names the other CI files that it finds, such as `.gitlab-ci.yml`, and does not read them yet. It finds CI files with the `fileMatch` globs of the [SchemaStore catalog](https://www.schemastore.org/api/json/catalog.json), and it finds makefiles and Dockerfiles with `identify`. **Run it only on a tree that you trust as much as `make`:** a dry run still runs each `$(shell …)` call, each recipe line that holds `$(MAKE)` or starts with `+`, and the recipes that remake an included makefile. Run it on a clean checkout, as CI does: make skips a rule whose target file is up to date, so a file from a local build can hide a rule. The tool gives make the variables that CI sets to a literal value, such as `CI=true` and the `environment:` or `env:` values of the job and the step. To accept a finding, put `# trace-ci-ok: <reason>` in a comment on its line or on the line above it. A marker in a string or a YAML value accepts nothing. For a directory that CI does not reach, put the comment on line 1 of its `Makefile`. It exits 1 when it finds anything, and 2 when it cannot trace (no GNU make 4.0 or later, or no CI file that it follows).
 
+An `untraced` finding names work that the tool cannot follow, so you know that nothing checked it. The tool reports these cases:
+
+- A `make` that runs in a container, on another host, in a development shell such as `nix develop`, or in a `bash -c` script.
+- A recipe line that runs make, but does not say `$(MAKE)`. A dry run prints that line and does not run it.
+- A rule whose commands mix with other output: the output of a `$(MAKE)` line, or the `$(info …)` text of the recipe that make runs next.
+- A sub-make with `--no-print-directory`.
+
+The content lints read only the steps that run in a POSIX shell, and the tool still follows the `make` calls of the other steps. A CircleCI job gets its images, shell and environment from the `executors:` entry that it names.
+
 ## Contributing
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) states the rule for what belongs here. It gives three tests a proposed check must pass, says which tier and tag a new check takes, and lists the files one check has to ship. Read it before you open a pull request that adds a check.

@@ -57,9 +57,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     comment_lines,
     shell_comments,
-)
-from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    yaml_script_view,
+    yaml_comments,
 )
 from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     DOCKERFILE,
@@ -238,15 +236,26 @@ class Traced:
     goals: tuple[str, ...] = ()
 
 
+class Follow(NamedTuple):
+    """The rule that a make ran after rule run RUN: its MAKEFILE, and LINE, its
+    first recipe line."""
+
+    run: int
+    makefile: Path
+    line: int
+
+
 @dataclass(frozen=True)
 class Trace:
     """The result of one dry run. HIDDEN is true when a sub-make printed no
-    `Entering directory` line, so its commands look like the parent's."""
+    `Entering directory` line, so its commands look like the parent's.
+    FOLLOWS is as `parse_trace` returns it."""
 
     returncode: int
     commands: tuple[Traced, ...]
     stderr: str
     hidden: bool = False
+    follows: tuple[Follow, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -390,24 +399,33 @@ def circleci_steps(text: str, source: str) -> tuple[list[CiStep], list[Image]]:
 
     A reusable command under `commands:` runs only where a job calls it, with
     the job's shell, directory and environment, so its steps are read at each
-    call. The steps of a `when` or an `unless` step are read as steps that run."""
+    call. The steps of a `when` or an `unless` step are read as steps that run.
+    A job takes its images, shell, directory and environment from the
+    `executors:` entry that it names, and its own keys win. An executor from
+    an orb is not in the file, so trace-ci cannot read it."""
     root = yaml.compose(text, Loader=yaml.SafeLoader)
     commands = dict(_items(_child(root, "commands")))
+    executors = dict(_items(_child(root, "executors")))
     steps: list[CiStep] = []
     images: list[Image] = []
     for name, body in _items(_child(root, "jobs")):
+        executor = _child(body, "executor")
+        executor = executors.get(_scalar(executor) or _scalar(_child(executor, "name")))
         directory = _circleci_path(
-            _scalar(_child(body, "working_directory")) or "~/project", None
+            _scalar(_job_field(body, executor, "working_directory")) or "~/project",
+            None,
         )
         job = _CircleJob(
             source,
             name,
-            _scalar(_child(body, "shell")),
+            _scalar(_job_field(body, executor, "shell")),
             directory,
             _circleci_checkout(body, directory),
-            CIRCLECI_ENV | _env(_child(body, "environment")),
+            CIRCLECI_ENV
+            | _env(_child(executor, "environment"))
+            | _env(_child(body, "environment")),
         )
-        for entry in _seq(_child(body, "docker")):
+        for entry in _seq(_job_field(body, executor, "docker")):
             image = _child(entry, "image")
             if isinstance(image, yaml.ScalarNode):
                 images.append(
@@ -415,6 +433,14 @@ def circleci_steps(text: str, source: str) -> tuple[list[CiStep], list[Image]]:
                 )
         steps += _circleci_run_steps(_child(body, "steps"), job, commands, ())
     return steps, images
+
+
+def _job_field(
+    job: yaml.Node, executor: yaml.Node | None, key: str
+) -> yaml.Node | None:
+    """The KEY of a CircleCI JOB, or of its EXECUTOR when the job has none."""
+    own = _child(job, key)
+    return own if own is not None else _child(executor, key)
 
 
 def _circleci_run_steps(
@@ -465,14 +491,15 @@ def _circleci_run(run: yaml.Node, line: int, job: _CircleJob) -> CiStep:
             f"{job.source}:{line}: this `run:` step has no "
             "command string, so trace-ci cannot read what it runs"
         )
+    shell = shell or CIRCLECI_DEFAULT_SHELL
     return CiStep(
         job.source,
         job.name,
-        shell or CIRCLECI_DEFAULT_SHELL,
+        shell,
         command.value,
         scalar_lines(command),
         _circleci_dir(wd, job.directory, job.checkout),
-        lint=True,
+        lint=posix_shell(shell),
         env=tuple(env.items()),
     )
 
@@ -624,8 +651,19 @@ WRAPPERS = frozenset(
 )
 # The words that can come between a wrapper and the command that it runs.
 WRAPPER_WORD = re.compile(r"-.*|\w+=.*|\d+(?:\.\d+)?[smhd]?|run|exec")
-# Programs that run a `make` in another file system, which trace-ci cannot see.
-REMOTE = frozenset({"docker", "podman", "ssh", "kubectl", "vagrant"})
+# Programs that run a `make` where trace-ci cannot follow it: a shell on a
+# script, a container, another host, or a development shell.
+ELSEWHERE = SHELLS | {
+    "docker",
+    "podman",
+    "ssh",
+    "kubectl",
+    "vagrant",
+    "nix",
+    "nix-shell",
+    "devbox",
+}
+LAUNCHERS = MAKE_PROGRAMS | WRAPPERS | ELSEWHERE
 
 
 class Move(NamedTuple):
@@ -700,43 +738,15 @@ def _apply(stack: list[Path | None], move: Move, node) -> None:
         stack[-1] = target
 
 
-def _fold_directory(
-    cwd: Path, args: tuple[str, ...]
-) -> tuple[Path | None, tuple[str, ...]]:
-    """CWD moved by each `-C DIR` in a make call's ARGS, and ARGS without them.
-    The trace then starts in the directory whose makefile make reads. None
-    when a DIR is not plain."""
-    kept: list[str] = []
+def _fold_directory(cwd: Path, directories: Sequence[str]) -> Path | None:
+    """CWD moved by each `-C DIR` of a make call, in order. The trace then
+    starts in the directory whose makefile make reads. None when a DIR is not
+    plain."""
     here: Path | None = cwd
-    words = iter(args)
-    for arg in words:
-        target = None
-        if arg in ("-C", "--directory"):
-            target = next(words, "")
-        elif arg.startswith("--directory="):
-            target = arg.split("=", 1)[1]
-        elif arg.startswith("-C"):
-            target = arg[2:]
-        if target is None:
-            kept.append(arg)
-        elif here is not None:
+    for target in directories:
+        if here is not None:
             here = None if not target or "$" in target else (here / target).resolve()
-    return here, tuple(kept)
-
-
-def _runs_make_in_a_script(words: list[str]) -> bool:
-    """Whether WORDS run a shell on a `-c` script that calls make."""
-    if program_name(words[0]) not in SHELLS:
-        return False
-    args = [unquote(w) for w in words[1:]]
-    for flag, script in zip(args, args[1:]):
-        if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", flag):
-            return any(
-                program_name(w[0]) in MAKE_PROGRAMS
-                for w in map(command_words, iter_nodes(parse(script), "command"))
-                if w
-            )
-    return False
+    return here
 
 
 def _prefix_env(node) -> tuple[tuple[str, str], ...]:
@@ -755,25 +765,52 @@ def _prefix_env(node) -> tuple[tuple[str, str], ...]:
     return tuple(env)
 
 
-def _make_words(words: list[str]) -> tuple[list[str], list[str]] | None:
-    """The words from `make` on, and the `VAR=value` words of an `env` before
-    it, when WORDS run make by itself or behind a WRAPPERS program."""
-    if program_name(words[0]) in MAKE_PROGRAMS:
+UNTRACED = "untraced"
+
+
+def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
+    """How the command WORDS runs make. The result is one of these:
+    - the words from `make` on, and the `VAR=value` words of the wrappers
+      before it, for a make that runs by itself or behind WRAPPERS programs;
+    - UNTRACED, for a make that runs where trace-ci cannot follow it: in a
+      shell script, a container, another host, a development shell, or the
+      directory of an `env -C`;
+    - None, when WORDS runs no make.
+    A word after a wrapper's option can be the option's value (`sudo -u ci`),
+    so it is skipped unless it names a program that can run make."""
+    name = program_name(words[0])
+    if name in MAKE_PROGRAMS:
         return words, []
-    if program_name(words[0]) not in WRAPPERS:
+    if name in ELSEWHERE:
+        return UNTRACED if _mentions_make(words[1:]) else None
+    if name not in WRAPPERS:
         return None
+    after_option = False
     for i, word in enumerate(words[1:], 1):
-        if program_name(word) in MAKE_PROGRAMS:
-            return words[i:], [w for w in words[1:i] if "=" in w]
-        if not WRAPPER_WORD.fullmatch(unquote(word)):
-            return None
+        text = unquote(word)
+        if name == "env" and re.fullmatch(r"-C.*|--chdir(?:=.*)?", text):
+            return UNTRACED if _mentions_make(words[i:]) else None
+        if WRAPPER_WORD.fullmatch(text):
+            after_option = text.startswith("-") and "=" not in text
+            continue
+        if after_option and program_name(text) not in LAUNCHERS:
+            after_option = False
+            continue
+        found = _launch(words[i:])
+        if isinstance(found, tuple):
+            env = [w for w in words[1:i] if re.fullmatch(r"\w+=.*", unquote(w))]
+            return found[0], env + found[1]
+        return found
     return None
 
 
-def _runs_make_remotely(words: list[str]) -> bool:
-    """Whether WORDS run `make` in a container or on another host."""
-    return program_name(words[0]) in REMOTE and any(
-        program_name(w) in MAKE_PROGRAMS for w in words[1:]
+def _mentions_make(words: list[str]) -> bool:
+    """Whether a word of WORDS is `make`, or a shell script that runs make."""
+    return any(
+        program_name(command[0]) in MAKE_PROGRAMS
+        for word in words
+        for command in map(command_words, iter_nodes(parse(unquote(word)), "command"))
+        if command
     )
 
 
@@ -785,8 +822,8 @@ def make_calls(step: CiStep, repo: Path) -> tuple[list[MakeCall], list[int]]:
     runs only on some paths (in a branch, a loop, a function or the background)
     makes the directory unknown after it. A `make` is returned as a line that
     cannot be traced when its directory is unknown or outside the checkout,
-    when it has an expansion or a CI template expression, or when a `bash -c`
-    script, a container or another host runs it."""
+    when it has an expansion or a CI template expression, or when `_launch`
+    finds that trace-ci cannot follow it."""
     start = (
         None
         if step.working_directory is None
@@ -804,21 +841,20 @@ def make_calls(step: CiStep, repo: Path) -> tuple[list[MakeCall], list[int]]:
         if name in DIR_COMMANDS:
             moves.append(_move_of(node, name, words))
             continue
-        if _runs_make_in_a_script(words) or _runs_make_remotely(words):
-            untraced.append(line)
-            continue
-        found = _make_words(words)
+        found = _launch(words)
         if found is None:
+            continue
+        if found == UNTRACED:
+            untraced.append(line)
             continue
         make_words, env_words = found
         stack: list[Path | None] = [start]
         for move in moves:
             if _contains(move.scope, node):
                 _apply(stack, move, node)
-        cwd, args = (
-            _fold_directory(stack[-1], tuple(unquote(w) for w in make_words[1:]))
-            if stack[-1] is not None
-            else (None, ())
+        args = parse_make_args([unquote(w) for w in make_words[1:]])
+        cwd = (
+            None if stack[-1] is None else _fold_directory(stack[-1], args.directories)
         )
         if (
             cwd is None
@@ -830,7 +866,7 @@ def make_calls(step: CiStep, repo: Path) -> tuple[list[MakeCall], list[int]]:
             continue
         env = step.env + _prefix_env(node)
         env += tuple(tuple(unquote(w).split("=", 1)) for w in env_words)
-        calls.append(MakeCall(step, cwd, args, line, env))
+        calls.append(MakeCall(step, cwd, args.args, line, env))
     return calls, untraced
 
 
@@ -881,6 +917,19 @@ def make_trace(
     path_prefix: Path | None = None,
     ci_env: Sequence[tuple[str, str]] = (),
 ) -> Trace:
+    parsed = parse_make_args(args)
+    # Parallel sub-makes mix their directory lines, so the trace runs one job
+    # at a time. A dry run builds nothing, so it loses nothing.
+    serial = parsed._replace(
+        options=(
+            *(
+                o
+                for o in parsed.options
+                if o != "--jobs" and not o.startswith("--jobs=")
+            ),
+            "--jobs=1",
+        )
+    )
     proc = subprocess.run(
         [
             make,
@@ -892,15 +941,17 @@ def make_trace(
             str(cwd),
             "--eval",
             f"$(info {LEVEL_MARK}$(MAKELEVEL))",
-            *args,
+            *serial.args,
         ],
         capture_output=True,
         text=True,
         env=_make_env(path_prefix, ci_env),
         check=False,
     )
-    commands, hidden = parse_trace(proc.stdout, cwd, *split_make_args(args))
-    return Trace(proc.returncode, tuple(commands), proc.stderr, hidden)
+    commands, hidden, follows = parse_trace(
+        proc.stdout, cwd, parsed.options, parsed.goals
+    )
+    return Trace(proc.returncode, tuple(commands), proc.stderr, hidden, follows)
 
 
 def parse_trace(
@@ -908,9 +959,10 @@ def parse_trace(
     cwd: Path,
     options: tuple[str, ...] = (),
     goals: tuple[str, ...] = (),
-) -> tuple[list[Traced], bool]:
-    """The commands in the stdout of `make --dry-run --trace`, and whether a
-    sub-make hid its directory.
+) -> "ParsedTrace":
+    """The commands in the stdout of `make --dry-run --trace`, whether a
+    sub-make hid its directory, and FOLLOWS: for each rule run, the makefile
+    and first recipe line of the rule that the same make ran next.
 
     GNU make names the FIRST RECIPE LINE of each rule that it runs, not the rule
     header. A command that ends in `\\` goes on to the next line. A sub-make
@@ -921,6 +973,7 @@ def parse_trace(
     level mark but no `Entering directory` line, and that hides it."""
     frames = [_Frame(cwd, 0, options, goals)]
     found: list[Traced] = []
+    follows: list[Follow] = []
     runs = 0
     hidden = False
     pending: list[str] = []
@@ -970,7 +1023,7 @@ def parse_trace(
             top = frames[-1]
             path = Path(m.group("file"))
             # The commands of a built-in rule are in no file of the repository.
-            top.where = (
+            where = (
                 None
                 if m.group("line") is None
                 else (
@@ -978,6 +1031,9 @@ def parse_trace(
                     int(m.group("line")),
                 )
             )
+            if top.where is not None and where is not None:
+                follows.append(Follow(top.run, *where))
+            top.where = where
             top.index, top.run, runs = 0, runs, runs + 1
             continue
         if frames[-1].where is None:
@@ -989,7 +1045,15 @@ def parse_trace(
     if pending:
         # The output ended inside a continued command. Keep what it printed.
         emit("\n".join(pending))
-    return found, hidden
+    return ParsedTrace(found, hidden, tuple(follows))
+
+
+class ParsedTrace(NamedTuple):
+    """What `parse_trace` reads from the output of a dry run."""
+
+    commands: list[Traced]
+    hidden: bool
+    follows: tuple[Follow, ...]
 
 
 @dataclass
@@ -1025,9 +1089,8 @@ def _sub_make_args(
     if not makes:
         return variables, ()
     words = makes[min(n, len(makes) - 1)]
-    _, args = _fold_directory(Path("/"), tuple(unquote(w) for w in words[1:]))
-    options, goals = split_make_args(args)
-    return variables + options, goals
+    args = parse_make_args([unquote(w) for w in words[1:]])
+    return variables + args.options, args.goals
 
 
 # A conditional directive can sit between the lines of one recipe.
@@ -1057,6 +1120,10 @@ def recipe_lines(
                 .replace("\t", "")
             )
             source = "\n".join(lines[start : i + 1])
+            # Make runs nothing for an empty line, and prints nothing for it.
+            if not re.sub(r"[@+\-\s]", "", source[len(recipe_prefix) :]):
+                i += 1
+                continue
             runs = "+" in prefix or "$(MAKE)" in source or "${MAKE}" in source
             out.append(RecipeLine(start + 1, i - start + 1, prefix, runs))
         elif line.strip() and not line.startswith("#") and not CONDITIONAL.match(line):
@@ -1082,42 +1149,151 @@ PROBE_SHELL, PROBE_FLAGS, PROBE_PREFIX = (
     "__cts_shellflags__=",
     "__cts_recipeprefix__=",
 )
-# The make options whose value can be the next word, so that word is no goal.
-MAKE_VALUE_OPTIONS = frozenset(
-    {
-        "-f",
-        "-C",
-        "-I",
-        "-o",
-        "-W",
-        "--file",
-        "--makefile",
-        "--directory",
-        "--include-dir",
-        "--old-file",
-        "--assume-old",
-        "--what-if",
-        "--new-file",
-        "--assume-new",
-    }
-)
+# The options of GNU make 4.3, from the `switches` table in its src/main.c.
+# Each name maps to its long name and how it takes a value:
+# - "value": the rest of the word, or else the next word;
+# - "optional": only the rest of the word (`-Oline`, `--debug=b`);
+# - "number": the rest of the word, or else the next word when it is a number;
+# - "" (None for a short option): no value.
+MAKE_SHORT_OPTIONS = {
+    **dict.fromkeys("bBdehikLmnpqrRsStvw"),
+    "C": ("directory", "value"),
+    "E": ("eval", "value"),
+    "f": ("file", "value"),
+    "I": ("include-dir", "value"),
+    "j": ("jobs", "number"),
+    "l": ("load-average", "number"),
+    "o": ("old-file", "value"),
+    "O": ("output-sync", "optional"),
+    "W": ("what-if", "value"),
+}
+MAKE_LONG_OPTIONS = {
+    "always-make": "",
+    "assume-new": "value",
+    "assume-old": "value",
+    "check-symlink-times": "",
+    "debug": "optional",
+    "directory": "value",
+    "dry-run": "",
+    "environment-overrides": "",
+    "eval": "value",
+    "file": "value",
+    "help": "",
+    "ignore-errors": "",
+    "include-dir": "value",
+    "jobs": "number",
+    "jobserver-auth": "value",
+    "jobserver-fds": "value",
+    "just-print": "",
+    "keep-going": "",
+    "load-average": "number",
+    "makefile": "value",
+    "max-load": "number",
+    "new-file": "value",
+    "no-builtin-rules": "",
+    "no-builtin-variables": "",
+    "no-keep-going": "",
+    "no-print-directory": "",
+    "no-silent": "",
+    "old-file": "value",
+    "output-sync": "optional",
+    "print-data-base": "",
+    "print-directory": "",
+    "question": "",
+    "quiet": "",
+    "recon": "",
+    "silent": "",
+    "stop": "",
+    "touch": "",
+    "trace": "",
+    "version": "",
+    "warn-undefined-variables": "",
+    "what-if": "value",
+}
+MAKE_FILE_OPTIONS = frozenset({"file", "makefile"})
 
 
-def split_make_args(
-    args: Sequence[str],
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """ARGS as (options, goals). The options include the variable assignments,
-    which choose the makefile and can set SHELL."""
+class MakeArgs(NamedTuple):
+    """The arguments of one make call. DIRECTORIES are its `-C` values, in
+    order, and FILES its `-f` values. OPTIONS are its other options, one word
+    each, and its `VAR=value` words. GOALS are the rest."""
+
+    directories: tuple[str, ...]
+    files: tuple[str, ...]
+    options: tuple[str, ...]
+    goals: tuple[str, ...]
+
+    @property
+    def args(self) -> tuple[str, ...]:
+        """Every argument but the `-C` values, as words that make reads back."""
+        dashed = any(g.startswith("-") for g in self.goals)
+        return (*self.options, *(("--",) if dashed else ()), *self.goals)
+
+
+def parse_make_args(args: Sequence[str]) -> MakeArgs:
+    """ARGS read as GNU make reads them: grouped short options (`-sC dir`),
+    a value in the same word or the next, a unique prefix of a long option, and
+    options after the goals. An option that make does not know is kept as an
+    option word, so make itself rejects it when trace-ci runs it."""
+    directories: list[str] = []
+    files: list[str] = []
     options: list[str] = []
     goals: list[str] = []
-    takes_value = False
-    for arg in args:
-        if takes_value or arg.startswith("-") or "=" in arg:
-            options.append(arg)
-            takes_value = arg in MAKE_VALUE_OPTIONS
+    words = list(args)
+    i = 0
+
+    def take(name: str, how: str, attached: str | None) -> None:
+        nonlocal i
+        value = attached
+        if value is None and i < len(words):
+            following = words[i]
+            if how == "value" or (
+                how == "number" and re.fullmatch(r"\d+(?:\.\d*)?|\.\d+", following)
+            ):
+                value, i = following, i + 1
+        if name == "directory":
+            directories.append(value or "")
+        elif name in MAKE_FILE_OPTIONS:
+            files.append(value or "")
+            options.append(f"--file={value or ''}")
         else:
-            goals.append(arg)
-    return tuple(options), tuple(goals)
+            options.append(f"--{name}" if value is None else f"--{name}={value}")
+
+    while i < len(words):
+        word = words[i]
+        i += 1
+        if word == "--":
+            for rest in words[i:]:
+                (options if "=" in rest else goals).append(rest)
+            break
+        if word.startswith("--"):
+            name, eq, attached = word[2:].partition("=")
+            known = (
+                [name]
+                if name in MAKE_LONG_OPTIONS
+                else [n for n in MAKE_LONG_OPTIONS if n.startswith(name)]
+            )
+            if len(known) != 1:
+                options.append(word)
+                continue
+            if MAKE_LONG_OPTIONS[known[0]]:
+                take(known[0], MAKE_LONG_OPTIONS[known[0]], attached if eq else None)
+            else:
+                options.append(f"--{known[0]}")
+            continue
+        if word.startswith("-") and len(word) > 1:
+            for n, letter in enumerate(word[1:], 2):
+                spec = MAKE_SHORT_OPTIONS.get(letter)
+                if not spec:
+                    options.append(f"-{letter}")
+                    continue
+                name, how = spec
+                rest = word[n:]
+                take(name, how, rest or None)
+                break
+            continue
+        (options if "=" in word else goals).append(word)
+    return MakeArgs(tuple(directories), tuple(files), tuple(options), tuple(goals))
 
 
 def make_shell(
@@ -1184,14 +1360,26 @@ class ShellOptions(NamedTuple):
     pipefail: bool
 
 
-def shell_options(shell: str, flags: str) -> ShellOptions:
-    """The options of SHELL when it runs with FLAGS. `env` and its options and
+def _shell_words(shell: str) -> list[str]:
+    """The words of SHELL from its interpreter on. `env` and its options and
     assignments are skipped, so `/usr/bin/env bash` reads as bash."""
-    words = shlex.split(shell) + shlex.split(flags)
+    words = shlex.split(shell)
     while len(words) > 1 and program_name(words[0]) == "env":
         words = words[1:]
         while len(words) > 1 and (words[0].startswith("-") or "=" in words[0]):
             words = words[1:]
+    return words
+
+
+def posix_shell(shell: str) -> bool:
+    """Whether SHELL is a POSIX shell, which the bash grammar can read.
+    PowerShell and `cmd.exe` are not."""
+    return program_name(_shell_words(shell)[0]).removesuffix(".exe") in SHELLS
+
+
+def shell_options(shell: str, flags: str) -> ShellOptions:
+    """The options of the POSIX SHELL when it runs with FLAGS."""
+    words = _shell_words(shell) + shlex.split(flags)
     interpreter = words[0]
     options: list[str] = []
     for word in words[1:]:
@@ -1696,11 +1884,13 @@ def _comments(path: str, text: str) -> dict[int, str]:
     accept a finding.
 
     In a YAML file a comment is a YAML comment or a comment in a `run:` script.
+    A CI file that trace-ci reports on parsed when it was read, so
+    `yaml_comments` never takes its text fallback here.
     In a makefile a recipe line goes to the shell, so the bash grammar finds
     its comment. Make has no parser here, but its rule for any other line is
     plain: an unescaped `#` starts a comment, even inside a `$(…)`."""
     if path.endswith((".yml", ".yaml")):
-        return dict(enumerate(yaml_script_view(text), 1))
+        return yaml_comments(text)
     if "makefile" not in identify.tags_from_filename(path):
         return comment_lines(text, path)
     comments: dict[int, str] = {}
@@ -1790,6 +1980,15 @@ def trace(
         )
 
     calls: list[MakeCall] = []
+    other_shells = sorted(
+        {s.shell for s in steps if s.shell and not posix_shell(s.shell)}
+    )
+    if other_shells:
+        notes.append(
+            "the content lints read only POSIX shell, so they do not read the "
+            f"steps that run in {', '.join(other_shells)}; trace-ci still "
+            "follows the make calls of those steps"
+        )
     for n, step in enumerate(steps):
         if step.lint:
             findings += _step_findings(
@@ -1841,7 +2040,10 @@ def trace(
         findings += _inject_faults(
             repo, make, surfaces.get("make", []), baselines, notes
         )
-    findings += _coverage(repo, make, surfaces.get("make", []), reached_dirs, goal)
+    untraced = sum(f.kind == "untraced" for f in findings)
+    findings += _coverage(
+        repo, make, surfaces.get("make", []), reached_dirs, goal, untraced
+    )
 
     unique = sorted(set(findings), key=lambda f: (f.path, f.line, f.kind, f.message))
     kept = [f for f in unique if not _annotated(repo, f)]
@@ -1851,15 +2053,7 @@ def trace(
 def _makefile_dirs(call: MakeCall) -> list[Path]:
     """The directories of the makefiles that CALL reads: each `-f FILE`, or
     the call's directory when it names none."""
-    files: list[str] = []
-    words = iter(call.args)
-    for arg in words:
-        if arg in ("-f", "--file", "--makefile"):
-            files.append(next(words, ""))
-        elif arg.startswith(("--file=", "--makefile=")):
-            files.append(arg.split("=", 1)[1])
-        elif arg.startswith("-f") and len(arg) > 2:
-            files.append(arg[2:])
+    files = parse_make_args(call.args).files
     return [(call.cwd / f).resolve().parent for f in files if f] or [call.cwd]
 
 
@@ -1905,8 +2099,11 @@ def _recipe_findings(
     expands to nothing, or a `define` that expands to several), the places do
     not match, so its commands are reported at the first recipe line. A dry run
     runs a `+` or `$(MAKE)` line, so its output mixes with the printed
-    commands: a rule with one is not checked when the counts do not match. Under `.ONESHELL` one shell
-    runs the whole recipe, so the rule is checked as one script."""
+    commands: a rule with one is not checked when the counts do not match.
+    Make prints the `$(info …)` text of a recipe before it names the rule, so
+    that text mixes with the commands of the rule before it, and that rule is
+    not checked. Under `.ONESHELL` one shell runs the whole recipe, so the rule
+    is checked as one script."""
     findings: list[TraceFinding] = []
     shells: dict[tuple, MakeShell] = {}
     rules: dict[tuple[Path, int], str] = {}
@@ -1915,7 +2112,8 @@ def _recipe_findings(
         runs: dict[int, list[Traced]] = {}
         for command in result.commands:
             runs.setdefault(command.run, []).append(command)
-        for group in runs.values():
+        follows = {f.run: f for f in result.follows}
+        for run, group in runs.items():
             first = group[0]
             key = (first.cwd, first.options, first.goals, call.env)
             if key not in shells:
@@ -1925,12 +2123,22 @@ def _recipe_findings(
                 continue
             seen.add((tuple(group), shell))
             path = os.path.relpath(first.makefile, repo)
-            recipe = recipe_lines(
-                first.makefile.read_text(encoding="utf-8", errors="replace"),
-                first.first_line,
-                shell.prefix,
-            )
+            source = first.makefile.read_text(encoding="utf-8", errors="replace")
+            recipe = recipe_lines(source, first.first_line, shell.prefix)
             rules[first.makefile, first.first_line] = shell.prefix
+            if run in follows and _prints_info(
+                follows[run].makefile, follows[run].line, shell.prefix
+            ):
+                makefile, line = follows[run].makefile, follows[run].line
+                findings.append(
+                    TraceFinding(
+                        path,
+                        first.first_line,
+                        "untraced",
+                        f"make expands the recipe at {os.path.relpath(makefile, repo)}:{line} before it names that rule, so the `$(info …)` text of that recipe comes out among this rule's commands; trace-ci cannot tell them apart and does not check this rule; use `@echo` in that recipe instead",
+                    )
+                )
+                continue
             entries = recipe
             if len(group) != len(recipe):
                 if any(e.runs for e in recipe):
@@ -1949,6 +2157,11 @@ def _recipe_findings(
                     "reports this rule's findings at its first recipe line"
                 )
                 entries = [RecipeLine(first.first_line, 1, "")] * len(group)
+            findings += [
+                TraceFinding(path, entry.start, "untraced", why)
+                for command, entry in zip(group, entries)
+                if not entry.runs and (why := _unfollowed_make(command.text))
+            ]
             units = [
                 [
                     BodyLine(t, path, entry.start + min(i, entry.count - 1))
@@ -1962,17 +2175,52 @@ def _recipe_findings(
                 findings += _unit_findings(path, shell, unit, synthetics)
     for (makefile, first_line), recipe_prefix in sorted(rules.items()):
         text = makefile.read_text(encoding="utf-8", errors="replace")
+        path = os.path.relpath(makefile, repo)
         for entry in recipe_lines(text, first_line, recipe_prefix):
             if "-" in entry.prefix:
                 findings.append(
                     TraceFinding(
-                        os.path.relpath(makefile, repo),
+                        path,
                         entry.start,
                         "ignored-error",
                         "this recipe line starts with `-`, so make ignores its exit status and CI passes when it fails; remove the `-`, or handle the failure in the command",
                     )
                 )
     return findings
+
+
+def _prints_info(makefile: Path, first_line: int, recipe_prefix: str) -> bool:
+    """Whether the recipe at FIRST_LINE of MAKEFILE calls make's `info`, which
+    prints to the same output as the commands of a dry run."""
+    text = makefile.read_text(encoding="utf-8", errors="replace")
+    return any(
+        re.search(r"\$[({]info\s", _recipe_source(text, entry, recipe_prefix))
+        for entry in recipe_lines(text, first_line, recipe_prefix)
+    )
+
+
+def _recipe_source(text: str, entry: RecipeLine, recipe_prefix: str) -> str:
+    """The text of the recipe line ENTRY of the makefile TEXT, as make writes
+    it, without its RECIPE_PREFIX and its `@+-` prefix."""
+    lines = text.splitlines()[entry.start - 1 : entry.start - 1 + entry.count]
+    lines[0] = re.sub(r"^[@+\-\s]*", "", lines[0][len(recipe_prefix) :])
+    return "\n".join(lines)
+
+
+def _unfollowed_make(text: str) -> str:
+    """Why trace-ci does not follow a make that the printed recipe command TEXT
+    runs, or "" when TEXT runs no make. A dry run runs only a line that is
+    written with `+` or `$(MAKE)`, so it printed this one and did not run it."""
+    found = [
+        _launch(words)
+        for words in map(command_words, iter_nodes(parse(text), "command"))
+        if words
+    ]
+    if any(isinstance(f, tuple) for f in found):
+        return "this recipe line runs make, but the line does not say `$(MAKE)`, so a dry run prints it and does not run it, and trace-ci does not follow that make; write `$(MAKE)`, which a dry run runs, and which passes the make flags on"
+    if UNTRACED in found:
+        return "this recipe line runs make in a shell script, a container, another host or a development shell, so trace-ci does not follow that make and does not check its commands"
+    return ""
 
 
 def _unit_findings(
@@ -2131,9 +2379,22 @@ def _inject_faults(
 
 
 def _coverage(
-    repo: Path, make: str, makefiles: list[str], reached: set[Path], goal: str
+    repo: Path,
+    make: str,
+    makefiles: list[str],
+    reached: set[Path],
+    goal: str,
+    untraced: int,
 ) -> list[TraceFinding]:
+    """An `uncovered` finding for each makefile with GOAL in a directory that
+    no traced make reached. UNTRACED counts the make calls that trace-ci could
+    not follow: one of them can run there, so the finding then says so."""
     findings: list[TraceFinding] = []
+    why = (
+        f"this makefile has a `{goal}` goal, but no CI step runs make in this directory, so its checks never run in CI"
+        if not untraced
+        else f"this makefile has a `{goal}` goal, but no make that trace-ci traced runs in this directory, and {untraced} `untraced` findings show make work that trace-ci could not follow; if none of it runs here, its checks never run in CI"
+    )
     if not goal:
         return findings
     for makefile in makefiles:
@@ -2144,14 +2405,7 @@ def _coverage(
         if directory in reached:
             continue
         if _has_goal(make, directory, goal):
-            findings.append(
-                TraceFinding(
-                    makefile,
-                    1,
-                    "uncovered",
-                    f"this makefile has a `{goal}` goal, but no CI step runs make in this directory, so its checks never run in CI",
-                )
-            )
+            findings.append(TraceFinding(makefile, 1, "uncovered", why))
     return findings
 
 

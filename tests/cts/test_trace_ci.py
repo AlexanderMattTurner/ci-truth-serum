@@ -288,6 +288,12 @@ def test_make_calls_name_a_call_they_cannot_resolve(
         "docker run img make check",
         "cd .. && make check",
         "make -C /tmp check",
+        "docker run img sh -c 'make check'",
+        "ssh host 'cd x && make check'",
+        "nix develop -c make check",
+        "env --chdir=sub make check",
+        "env -C sub make check",
+        "sudo -u ci bash -c 'make check'",
     ],
 )
 def test_make_calls_name_a_call_they_cannot_place(command: str, tmp_path: Path) -> None:
@@ -311,6 +317,8 @@ def test_make_calls_name_a_call_they_cannot_place(command: str, tmp_path: Path) 
             ["sub", "."],
         ),
         ("case $X in a) cd sub; make a;; b) make b;; esac", ["sub", "."]),
+        # Make reads grouped short options as getopt does.
+        ("make -sC sub check\nmake check -Csub -C x", ["sub", "sub/x"]),
     ],
 )
 def test_make_calls_keep_a_directory_change_in_its_own_shell(
@@ -328,6 +336,12 @@ def test_make_calls_keep_a_directory_change_in_its_own_shell(
         ("env CI=1 make check", ("check",), {"CI": "1"}),
         ("MODE=ci make check", ("check",), {"MODE": "ci"}),
         ("uv run make -k check", ("-k", "check"), {}),
+        ("make -j 4 check", ("--jobs=4", "check"), {}),
+        ("timeout --signal=KILL 600 make check", ("check",), {}),
+        ("timeout -s KILL 600 make check", ("check",), {}),
+        ("sudo -u ci make check", ("check",), {}),
+        ("uv run --with ruff make check", ("check",), {}),
+        ("sudo timeout 60 env V=1 make check", ("check",), {"V": "1"}),
     ],
 )
 def test_make_calls_read_a_wrapper_and_the_variables_before_make(
@@ -338,8 +352,10 @@ def test_make_calls_read_a_wrapper_and_the_variables_before_make(
     assert untraced == []
 
 
-def test_a_make_package_name_is_not_a_call(tmp_path: Path) -> None:
-    command = "sudo apt-get install -y make"
+@pytest.mark.parametrize(
+    "command", ["sudo apt-get install -y make", "sudo -E apt-get install -y make"]
+)
+def test_a_make_package_name_is_not_a_call(command: str, tmp_path: Path) -> None:
     assert mod.make_calls(_step(command), tmp_path) == ([], [])
 
 
@@ -407,9 +423,32 @@ def test_parse_trace_skips_the_commands_of_a_builtin_rule(tmp_path: Path) -> Non
         "<builtin>: update target 'prog' due to: prog.c\n"
         "cc prog.c -o prog\n"
     )
-    commands, hidden = mod.parse_trace(output, tmp_path)
+    commands, hidden, follows = mod.parse_trace(output, tmp_path)
     assert [(c.first_line, c.text) for c in commands] == [(3, "echo one")]
     assert not hidden
+    assert follows == ()
+
+
+def test_parse_trace_names_the_rule_each_make_runs_next(tmp_path: Path) -> None:
+    output = (
+        "Makefile:5: target 'lint' does not exist\n"
+        "echo a\n"
+        "make[1]: Entering directory '/sub'\n"
+        "Makefile:2: target 'x' does not exist\n"
+        "make[1]: Leaving directory '/sub'\n"
+        "checking now\n"
+        "Makefile:2: update target 'check' due to: lint\n"
+    )
+    _, _, follows = mod.parse_trace(output, tmp_path)
+    assert follows == (mod.Follow(0, (tmp_path / "Makefile").resolve(), 2),)
+
+
+def test_recipe_lines_skip_a_line_that_prints_nothing() -> None:
+    text = f"check:\n{TAB}echo a\n{TAB}\n{TAB}@ \n{TAB}false; true\n"
+    assert mod.recipe_lines(text, 2) == [
+        mod.RecipeLine(2, 1, ""),
+        mod.RecipeLine(5, 1, ""),
+    ]
 
 
 def test_recipe_lines_step_over_a_conditional() -> None:
@@ -467,15 +506,40 @@ def test_make_shell_sets_the_goals_a_makefile_tests(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("args", "split"),
+    ("args", "parsed"),
     [
-        (("check", "lint"), ((), ("check", "lint"))),
-        (("-f", "ci.mk", "check", "V=1"), (("-f", "ci.mk", "V=1"), ("check",))),
-        (("--file", "x.mk", "-k", "all"), (("--file", "x.mk", "-k"), ("all",))),
+        (("check", "lint"), ((), (), (), ("check", "lint"))),
+        (
+            ("-f", "ci.mk", "check", "V=1"),
+            ((), ("ci.mk",), ("--file=ci.mk", "V=1"), ("check",)),
+        ),
+        (
+            ("--file", "x.mk", "-k", "all"),
+            ((), ("x.mk",), ("--file=x.mk", "-k"), ("all",)),
+        ),
+        (("-sC", "sub", "check"), (("sub",), (), ("-s",), ("check",))),
+        (("-kfci.mk",), ((), ("ci.mk",), ("-k", "--file=ci.mk"), ())),
+        (("check", "-Csub", "--dir=x"), (("sub", "x"), (), (), ("check",))),
+        (("-j", "4", "check"), ((), (), ("--jobs=4",), ("check",))),
+        (("-j", "check"), ((), (), ("--jobs",), ("check",))),
+        (
+            ("-l", ".5", "-Oline"),
+            ((), (), ("--load-average=.5", "--output-sync=line"), ()),
+        ),
+        (("-O", "check"), ((), (), ("--output-sync",), ("check",))),
+        (("--makefile=a.mk",), ((), ("a.mk",), ("--file=a.mk",), ())),
+        # An unknown or ambiguous option is kept, so make itself rejects it.
+        (("--no-such", "--ma", "x"), ((), (), ("--no-such", "--ma"), ("x",))),
+        (("--", "-odd", "V=1"), ((), (), ("V=1",), ("-odd",))),
     ],
 )
-def test_split_make_args(args: tuple, split: tuple) -> None:
-    assert mod.split_make_args(args) == split
+def test_parse_make_args(args: tuple, parsed: tuple) -> None:
+    assert mod.parse_make_args(args) == parsed
+
+
+def test_make_args_mark_a_goal_that_looks_like_an_option() -> None:
+    assert mod.parse_make_args(["--", "-odd", "V=1"]).args == ("V=1", "--", "-odd")
+    assert mod.parse_make_args(["-sC", "x", "all"]).args == ("-s", "all")
 
 
 @pytest.mark.parametrize(
@@ -831,6 +895,79 @@ def _config(command: str, job: str = "") -> str:
             [("sub/Makefile", 2, "ignored-error")],
             id="make -s still shows the sub-make directories",
         ),
+        pytest.param(
+            {
+                ".circleci/config.yml": _config("make -sC sub check"),
+                "sub/Makefile": f"check:\n{TAB}-false\n",
+            },
+            [("sub/Makefile", 2, "ignored-error")],
+            id="grouped short options",
+        ),
+        pytest.param(
+            {
+                ".circleci/config.yml": _config("make -j4 check"),
+                # In parallel, sb enters before sa prints, and sa leaves first.
+                "Makefile": f"check: a b\na:\n{TAB}$(MAKE) -C sa check\nb:\n{TAB}sleep 0.1 && $(MAKE) -C sb check\n",
+                "sa/Makefile": f"$(shell sleep 0.3)\ncheck:\n{TAB}false; true\n",
+                "sb/Makefile": f"$(shell sleep 0.6)\ncheck:\n{TAB}a | b\n",
+            },
+            [
+                ("sa/Makefile", 3, "lost-status-sequence"),
+                ("sb/Makefile", 3, "lost-status-pipe"),
+            ],
+            id="parallel sub-makes are traced one at a time",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}make -C sub check\n{TAB}cd sub && make check\n",
+                "sub/Makefile": f"check:\n{TAB}false; true\n",
+            },
+            [
+                ("Makefile", 2, "untraced"),
+                ("Makefile", 3, "untraced"),
+                ("sub/Makefile", 1, "uncovered"),
+            ],
+            id="a recipe that runs make by name",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"MK = $(MAKE)\ncheck:\n{TAB}$(MK) -C sub check\n",
+                "sub/Makefile": f"check:\n{TAB}-false\n",
+            },
+            [("Makefile", 3, "untraced"), ("sub/Makefile", 1, "uncovered")],
+            id="a dry run does not run a make that a variable names",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check: lint\n{TAB}$(info checking now)\n{TAB}echo check\nlint:\n{TAB}echo a\n{TAB}curl x | sh; true\n",
+            },
+            [("Makefile", 5, "untraced")],
+            id="the $(info) text of the next rule",
+        ),
+        pytest.param(
+            {"Makefile": f"check:\n{TAB}echo a\n{TAB}\n{TAB}false; true\n"},
+            [("Makefile", 4, "lost-status-sequence")],
+            id="a recipe line with only a tab",
+        ),
+        pytest.param(
+            {
+                ".circleci/config.yml": _config(
+                    '|\n        echo "# trace-ci-ok: a string"\n        false; true',
+                    "    shell: /bin/sh\n",
+                ),
+            },
+            [(".circleci/config.yml", 11, "lost-status-sequence")],
+            id="a marker in a run string accepts nothing",
+        ),
+        pytest.param(
+            {
+                ".circleci/config.yml": _config(
+                    "a | b", "    shell: powershell.exe -ExecutionPolicy Bypass\n"
+                ),
+            },
+            [],
+            id="a PowerShell step is not read as POSIX shell",
+        ),
     ],
 )
 def test_end_to_end_cases(
@@ -845,6 +982,73 @@ def test_end_to_end_cases(
         (f["path"], f["line"], f["kind"]) for f in json.loads(capsys.readouterr().out)
     ]
     assert found == expected
+
+
+EXECUTOR_CONFIG = """\
+version: 2.1
+executors:
+  py:
+    docker:
+      - image: python:3.12
+    shell: /bin/sh
+    environment:
+      MODE: ci
+jobs:
+  test:
+    executor: py
+    steps:
+      - checkout
+      - run: |
+          a | b
+          make check
+"""
+
+
+def test_a_circleci_job_reads_its_executor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(
+        tmp_path,
+        {
+            ".circleci/config.yml": EXECUTOR_CONFIG,
+            "Makefile": f"ifeq ($(MODE),ci)\ncheck:\n{TAB}false; true\nendif\n",
+        },
+    )
+    mod.main(["--repo", str(repo), "--format", "json", "--no-fault-injection"])
+    found = [
+        (f["path"], f["line"], f["kind"]) for f in json.loads(capsys.readouterr().out)
+    ]
+    assert found == [
+        (".circleci/config.yml", 5, "lint"),
+        (".circleci/config.yml", 15, "lost-status-pipe"),
+        (".circleci/config.yml", 15, "lost-status-sequence"),
+        ("Makefile", 3, "lost-status-sequence"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("command", "says"),
+    [
+        ("make check", "no CI step runs make in this directory"),
+        ("make check; docker run img make check", "and 1 `untraced` findings show"),
+    ],
+)
+def test_an_uncovered_makefile_names_the_calls_that_were_not_traced(
+    command: str, says: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(
+        tmp_path,
+        {
+            ".circleci/config.yml": _config(command),
+            "Makefile": f"check:\n{TAB}@true\n",
+            "sub/Makefile": f"check:\n{TAB}@true\n",
+        },
+    )
+    mod.main(["--repo", str(repo), "--format", "json", "--no-fault-injection"])
+    [uncovered] = [
+        f for f in json.loads(capsys.readouterr().out) if f["kind"] == "uncovered"
+    ]
+    assert says in uncovered["message"]
 
 
 def test_two_calls_of_one_command_fail_together_and_are_reported_once(
