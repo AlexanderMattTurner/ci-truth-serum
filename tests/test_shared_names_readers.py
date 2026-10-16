@@ -24,6 +24,7 @@ import ast
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -48,10 +49,13 @@ def _tracked(*patterns: str) -> list[str]:
 
 
 def _python_readers() -> list[str]:
+    # This module names the file too, in NAMES_FILE, but it does not read it.
+    this_module = Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
     return [
         path
         for path in _tracked("*.py")
-        if any(
+        if path != this_module
+        and any(
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
             and node.value.endswith(NAMES_FILE)

@@ -31,6 +31,11 @@ jobs:
         run: uv run --extra dev ruff format --check ci_truth_serum tests/cts
       - name: Tests (pytest)
         run: uv run --extra dev pytest tests/cts -n auto -q
+      # A template sync can drop a name from shared-names.json that a file here
+      # still reads. validate-config.yaml runs this test only when tests/ or a
+      # workflow changes, so it runs here on every pull request.
+      - name: Shared-names readers (pytest)
+        run: uv run --extra dev pytest tests/test_shared_names_readers.py -q
 
   # Stable Required check: runs even when `test` is cancelled, so a protected
   # branch never gets stuck on a check that never reports.
