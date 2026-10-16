@@ -475,11 +475,13 @@ The tool follows CircleCI and GitHub Actions steps. It names the other CI files 
 
 An `untraced` finding names work that the tool cannot follow, so you know that nothing checked it. The tool reports these cases:
 
-- A `make` that runs in a container, on another host, in a development shell such as `nix develop`, or in a `bash -c` script.
-- A `make` after a wrapper option that changes the directory, such as `env -C sub`, or after a wrapper option that the tool does not know.
+- A `make` that runs in a container, on another host, in a development shell such as `nix develop`, in a `bash -c` script, or in an `env -S` string.
+- A `make` after a wrapper option that changes the directory, such as `env -C sub` or `sudo -i`.
+- A `make` after a wrapper option that the tool does not know. That option can take the next word as its value, so the tool cannot find the command.
 - A recipe line that runs make, but does not say `$(MAKE)`. A dry run prints that line and does not run it.
 - A rule whose commands mix with other output: the output of a `$(MAKE)` line, or the `$(info …)` text of the recipe that make runs next.
 - A sub-make with `--no-print-directory`.
+- A sub-make that syncs its output (`-O`) over more than one job, when a `$(MAKE)` line comes out between its jobs.
 
 The tool finds `$(info` only in the text of a recipe. When a variable or a `$(call …)` holds the `info`, the tool reads its text as a command of the rule before it.
 

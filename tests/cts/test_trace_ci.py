@@ -479,6 +479,13 @@ def test_make_calls_name_a_call_they_cannot_resolve(
         # An option that the table does not list can take the next word.
         "uv run --frobnicate lint make check",
         "sudo -D sub timeout 60 make check",
+        # A login shell starts in the home directory of the user.
+        "sudo -iu ci make check",
+        "sudo --login make check",
+        # `env -S` splits its value into the command.
+        "env -S 'make check'",
+        "env -iS'make check'",
+        "env --split-string='timeout 60 make' check",
     ],
 )
 def test_make_calls_name_a_call_they_cannot_place(command: str, tmp_path: Path) -> None:
@@ -527,7 +534,9 @@ def test_make_calls_keep_a_directory_change_in_its_own_shell(
         ("sudo -u ci make check", ("check",), {}),
         ("uv run --with ruff make check", ("check",), {}),
         ("sudo timeout 60 env V=1 make check", ("check",), {"V": "1"}),
-        ("sudo -iu ci make check", ("check",), {}),
+        ("sudo -Eu ci make check", ("check",), {}),
+        # A `--` ends the options, so the word after it is the command.
+        ("sudo -- make check", ("check",), {}),
         ("exec make check", ("check",), {}),
         ("uv run --only-group lint make check", ("check",), {}),
         ("uv run --index-url https://x/simple make check", ("check",), {}),
@@ -551,6 +560,14 @@ def test_make_calls_read_a_wrapper_and_the_variables_before_make(
         "sudo -H yum -y install make",
         "uv pip install make",
         "sudo -D /tmp apt-get install make",
+        # An option that the table lists as a flag takes no value, so the word
+        # after it is the command, and that command is not make.
+        "xvfb-run -a cargo make test",
+        "/usr/bin/time -v cargo make ci",
+        "sudo -E yarn make",
+        "uv run --frozen cargo make ci",
+        "sudo -- cargo make ci",
+        "env -S 'cargo make ci'",
     ],
 )
 def test_a_make_package_name_is_not_a_call(command: str, tmp_path: Path) -> None:
@@ -1173,6 +1190,52 @@ def _config(command: str, job: str = "") -> str:
             id="output sync from the makefiles",
         ),
         pytest.param(
+            {
+                ".circleci/config.yml": _config("make -j4 -O check"),
+                "Makefile": f"check:\n{TAB}$(MAKE) -C sub check\n",
+                "sub/Makefile": f"check:\n{TAB}$(MAKE) -C deep check\n{TAB}false; true\n",
+                "sub/deep/Makefile": f"check:\n{TAB}@true\n",
+            },
+            [("sub/Makefile", 3, "lost-status-sequence")],
+            id="output sync from the command line, through a sub-make's $(MAKE)",
+        ),
+        pytest.param(
+            {
+                ".circleci/config.yml": _config("make -j8 check"),
+                "Makefile": f"MAKEFLAGS += -Otarget\ncheck:\n{TAB}$(MAKE) -C sub check\n{TAB}$(MAKE) -C sub check\n{TAB}false; true\n",
+                "sub/Makefile": f"check:\n{TAB}a | b\n",
+            },
+            [
+                ("Makefile", 5, "lost-status-sequence"),
+                ("sub/Makefile", 2, "lost-status-pipe"),
+            ],
+            id="output sync with one job, and two sub-makes in one directory",
+        ),
+        pytest.param(
+            {
+                ".circleci/config.yml": _config("make -j4 -O check"),
+                "Makefile": f"check:\n{TAB}$(MAKE) -C sub -f ci.mk V=1 lint && $(MAKE) -C one lint\n",
+                "one/Makefile": f"lint:\n{TAB}@true\n",
+                "sub/ci.mk": "ifneq ($(MAKECMDGOALS),lint)\n$(error run lint)\nendif\n"
+                f"SHELL := /bin/bash\n.SHELLFLAGS := -eo pipefail -c\nlint:\n{TAB}a | b\n",
+            },
+            [],
+            id="output sync, and the first of two sub-makes on a line",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"MAKEFLAGS += -Otarget\ncheck:\n{TAB}$(MAKE) -C sub check\n",
+                "sub/Makefile": f"MAKEFLAGS += -j4\ncheck:\n{TAB}$(MAKE) -C deep check\n{TAB}false; true\n",
+                "sub/deep/Makefile": f"check:\n{TAB}@true\n",
+            },
+            [
+                (".circleci/config.yml", 8, "untraced"),
+                ("sub/Makefile", 1, "uncovered"),
+                ("sub/deep/Makefile", 1, "uncovered"),
+            ],
+            id="a sub-make that syncs its jobs and prints a $(MAKE) line between them",
+        ),
+        pytest.param(
             {"Makefile": f"check:\n{TAB}make --version\n{TAB}make -v\n{TAB}gmake -h\n"},
             [],
             id="a recipe that asks make for its version",
@@ -1210,6 +1273,30 @@ def _config(command: str, job: str = "") -> str:
             },
             [("Makefile", 5, "untraced")],
             id="the $(info) text of the next rule",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check: lint\n{TAB}echo $$(info x) a\n{TAB}echo check\nlint:\n{TAB}echo a\n{TAB}curl x | sh; true\n",
+            },
+            [
+                ("Makefile", 6, "lint"),
+                ("Makefile", 6, "lost-status-pipe"),
+                ("Makefile", 6, "lost-status-sequence"),
+            ],
+            id="a $$(info) is shell text, so the next rule is checked",
+        ),
+        # A known limit: trace-ci finds only a literal `$(info`, so the text of
+        # an indirect call comes out as one more command of the next rule.
+        pytest.param(
+            {
+                "Makefile": f"say = $(info $1)\ncheck: lint\n{TAB}$(call say,checking now)\n{TAB}echo check\nlint:\n{TAB}echo a\n{TAB}curl x | sh; true\n",
+            },
+            [
+                ("Makefile", 6, "lint"),
+                ("Makefile", 6, "lost-status-pipe"),
+                ("Makefile", 6, "lost-status-sequence"),
+            ],
+            id="an indirect $(info) call is read as a command of the next rule",
         ),
         pytest.param(
             {"Makefile": f"check:\n{TAB}echo a\n{TAB}\n{TAB}false; true\n"},

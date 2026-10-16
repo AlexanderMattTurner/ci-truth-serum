@@ -247,14 +247,13 @@ class Follow(NamedTuple):
 
 @dataclass(frozen=True)
 class Trace:
-    """The result of one dry run. HIDDEN is true when a sub-make printed no
-    `Entering directory` line, so its commands look like the parent's.
-    FOLLOWS is as `parse_trace` returns it."""
+    """The result of one dry run. HIDDEN and FOLLOWS are as `parse_trace`
+    returns them."""
 
     returncode: int
     commands: tuple[Traced, ...]
     stderr: str
-    hidden: bool = False
+    hidden: str = ""
     follows: tuple[Follow, ...] = ()
 
 
@@ -813,25 +812,36 @@ MAKE_PROGRAMS = frozenset({"make", "gmake"})
 
 
 class Wrapper(NamedTuple):
-    """A program that runs the command after its own arguments. VALUES are its
-    options that take a value, and CHDIR its options that change the directory.
+    """A program that runs the command after its own arguments, and its options:
+    - VALUES take a value, and FLAGS take none;
+    - CHDIR change the directory, and each takes a value unless it is in FLAGS;
+    - COMMAND take the command as their value (`env -S 'make check'`).
     FIRST are the words that come before the command, in order: a fixed
     subcommand, or None for any one word (the duration of `timeout`)."""
 
     values: frozenset[str] = frozenset()
     chdir: frozenset[str] = frozenset()
     first: tuple[str | None, ...] = ()
+    flags: frozenset[str] = frozenset()
+    command: frozenset[str] = frozenset()
 
 
-# The options of each wrapper, from its manual. An option that is not listed
-# takes no value, so the word after it is the command.
+# The options of each wrapper, from its manual. An option that no set lists
+# can take the next word as its value, so `_launch` cannot tell whether that
+# word is the command.
 WRAPPERS = {
     "timeout": Wrapper(
-        frozenset({"-s", "--signal", "-k", "--kill-after"}), first=(None,)
+        frozenset({"-s", "--signal", "-k", "--kill-after"}),
+        first=(None,),
+        flags=frozenset({"--foreground", "--preserve-status", "-v", "--verbose"}),
     ),
     "env": Wrapper(
-        frozenset({"-u", "--unset", "-S", "--split-string"}),
+        frozenset({"-u", "--unset"}),
         frozenset({"-C", "--chdir"}),
+        flags=frozenset(
+            {"-", "-i", "--ignore-environment", "-0", "--null", "-v", "--debug"}
+        ),
+        command=frozenset({"-S", "--split-string"}),
     ),
     "sudo": Wrapper(
         frozenset(
@@ -839,24 +849,39 @@ WRAPPERS = {
             | {"-C", "--close-from", "-r", "--role", "-t", "--type"}
             | {"-T", "--command-timeout", "-U", "--other-user"}
         ),
-        frozenset({"-D", "--chdir"}),
+        # A login shell starts in the home directory of the target user.
+        frozenset({"-D", "--chdir", "-i", "--login"}),
+        flags=frozenset(
+            {"-i", "--login", "-A", "--askpass", "-b", "--background"}
+            | {"-E", "--preserve-env", "-H", "--set-home", "-K", "-k"}
+            | {"--reset-timestamp", "-n", "--non-interactive", "-P"}
+            | {"--preserve-groups", "-S", "--stdin", "-s", "--shell"}
+        ),
     ),
     "nice": Wrapper(frozenset({"-n", "--adjustment"})),
-    "time": Wrapper(frozenset({"-f", "--format", "-o", "--output"})),
+    "time": Wrapper(
+        frozenset({"-f", "--format", "-o", "--output"}),
+        flags=frozenset(
+            {"-p", "--portability", "-v", "--verbose", "-a", "--append"}
+            | {"-q", "--quiet"}
+        ),
+    ),
     "nohup": Wrapper(),
-    "exec": Wrapper(frozenset({"-a"})),
+    "exec": Wrapper(frozenset({"-a"}), flags=frozenset({"-c", "-l"})),
     "stdbuf": Wrapper(frozenset({"-i", "--input", "-o", "--output", "-e", "--error"})),
     "ionice": Wrapper(
         frozenset(
             {"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "--pgid"}
             | {"-u", "--uid"}
-        )
+        ),
+        flags=frozenset({"-t", "--ignore"}),
     ),
     "xvfb-run": Wrapper(
         frozenset(
             {"-n", "--server-num", "-e", "--error-file", "-f", "--auth-file"}
             | {"-p", "--xauth-protocol", "-s", "--server-args", "-w", "--wait"}
-        )
+        ),
+        flags=frozenset({"-a", "--auto-servernum", "-l", "--listen-tcp"}),
     ),
     "uv": Wrapper(
         frozenset(
@@ -876,13 +901,34 @@ WRAPPERS = {
         ),
         frozenset({"--directory"}),
         ("run",),
+        frozenset(
+            {"--frozen", "--locked", "--no-sync", "--isolated", "--all-extras"}
+            | {"--no-dev", "--dev", "--all-groups", "--no-default-groups"}
+            | {"--no-project", "--active", "--offline", "-q", "--quiet", "-v"}
+            | {"--verbose", "--no-cache", "-n", "--refresh", "-U", "--upgrade"}
+            | {"--reinstall", "--no-env-file", "--no-progress", "--native-tls"}
+        ),
     ),
     "poetry": Wrapper(
-        frozenset({"-P", "--project"}), frozenset({"-C", "--directory"}), ("run",)
+        frozenset({"-P", "--project"}),
+        frozenset({"-C", "--directory"}),
+        ("run",),
+        frozenset(
+            {"-q", "--quiet", "-v", "--verbose", "-n", "--no-interaction"}
+            | {"--no-ansi"}
+        ),
     ),
     "pipenv": Wrapper(first=("run",)),
-    "pdm": Wrapper(frozenset({"-p", "--project"}), first=("run",)),
-    "hatch": Wrapper(frozenset({"-e", "--env"}), first=("run",)),
+    "pdm": Wrapper(
+        frozenset({"-p", "--project"}),
+        first=("run",),
+        flags=frozenset({"-v", "--verbose", "-q", "--quiet"}),
+    ),
+    "hatch": Wrapper(
+        frozenset({"-e", "--env"}),
+        first=("run",),
+        flags=frozenset({"-v", "--verbose", "-q", "--quiet"}),
+    ),
     "bundle": Wrapper(frozenset({"--gemfile"}), first=("exec",)),
 }
 # Programs that run a `make` where trace-ci cannot follow it: a shell on a
@@ -898,9 +944,9 @@ ELSEWHERE = SHELLS | {
     "devbox",
 }
 ELSEWHERE_TEXT = (
-    "in a shell script, a container, another host or a development shell, "
-    "in a directory that a wrapper option moves to, or after a wrapper "
-    "option that trace-ci does not know"
+    "in a shell script, a command string, a container, another host or a "
+    "development shell, in a directory that a wrapper option moves to, or "
+    "after a wrapper option that trace-ci does not know"
 )
 
 
@@ -1016,7 +1062,8 @@ def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
 
     An option that the WRAPPERS table does not list is read as a flag. That
     option can take the next word as its value, so when the words after that
-    word launch a make, the make is UNTRACED and not lost."""
+    word launch a make, the make is UNTRACED and not lost. A `--` ends the
+    options."""
     name = program_name(words[0])
     if name in MAKE_PROGRAMS:
         return words, []
@@ -1027,20 +1074,25 @@ def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
     spec = WRAPPERS[name]
     first = list(spec.first)
     env: list[str] = []
-    moved = unlisted = False
+    moved = unlisted = ended = False
     i = 1
     while i < len(words):
         text = unquote(words[i])
-        options = _wrapper_options(text)
+        options = [] if ended else _wrapper_options(text)
         # Whether the word before is an unlisted option that can take this word.
         after_unlisted, unlisted = unlisted, False
-        if options:
-            for option, attached in options:
-                if option in spec.chdir or option in spec.values:
-                    moved |= option in spec.chdir
-                    i += 0 if attached else 1
+        if text == "--" and not ended:
+            ended = True
+        elif options:
+            for option, value in options:
+                if option in spec.command:
+                    rest = words[i + 1 :] if value is None else [value, *words[i + 1 :]]
+                    return UNTRACED if _mentions_make(rest) else None
+                moved |= option in spec.chdir
+                if option in spec.values | spec.chdir - spec.flags:
+                    i += 0 if value is not None else 1
                     break
-                unlisted = not attached
+                unlisted = value is None and option not in spec.flags
         elif re.fullmatch(r"\w+=.*", text):
             env.append(words[i])
         elif first:
@@ -1060,27 +1112,28 @@ def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
     return None
 
 
-def _wrapper_options(text: str) -> list[tuple[str, bool]]:
-    """The options in the word TEXT, each with whether its value is in TEXT.
-    `-iu` holds `-i` and `-u`, and `--user=ci` holds `--user` with its value.
-    A short option that takes a value takes the rest of its group, so each
-    letter but the last has its value attached. A `-` alone is an option too
-    (`env -` empties the environment)."""
+def _wrapper_options(text: str) -> list[tuple[str, str | None]]:
+    """The options in the word TEXT, each with the value that TEXT holds for
+    it, or None. `-iu` holds `-i` and `-u`, and `--user=ci` holds `--user` with
+    the value `ci`. A short option that takes a value takes the rest of its
+    group, so the value of each letter is the letters after it, and the last
+    letter has None. A `-` alone is an option too (`env -` empties the
+    environment)."""
     if text == "-":
-        return [("-", False)]
+        return [("-", None)]
     if text.startswith("--") and len(text) > 2:
-        name, eq, _ = text.partition("=")
-        return [(name, bool(eq))]
+        name, eq, value = text.partition("=")
+        return [(name, value if eq else None)]
     if text.startswith("-") and len(text) > 1:
         letters = text[1:]
-        return [(f"-{c}", n < len(letters) - 1) for n, c in enumerate(letters)]
+        return [(f"-{c}", letters[n + 1 :] or None) for n, c in enumerate(letters)]
     return []
 
 
 def _mentions_make(words: list[str]) -> bool:
     """Whether a word of WORDS is `make`, or a shell script that runs make."""
     return any(
-        program_name(command[0]) in MAKE_PROGRAMS
+        _launch(command) is not None
         for word in words
         for command in map(command_words, iter_nodes(parse(unquote(word)), "command"))
         if command
@@ -1181,6 +1234,9 @@ def _make_env(
 # `--eval` reaches every sub-make through MAKEFLAGS, so each make prints this
 # line with its level as it starts, whether or not it prints its directory.
 LEVEL_MARK = "__cts_make_level__="
+# Why `parse_trace` cannot tell which make printed a command.
+HIDDEN_DIRECTORY = "a sub-make with `--no-print-directory`, so trace-ci cannot tell which makefile each command comes from; remove `--no-print-directory` to trace it"
+HIDDEN_SYNC = "a sub-make that syncs its output (`-O`) over more than one job, and a `$(MAKE)` or `+` line comes out between its jobs, so trace-ci cannot tell which make each command comes from; `-O` in a `MAKEFLAGS` reaches every sub-make, so remove it there to trace this call"
 
 
 def make_trace(
@@ -1208,6 +1264,9 @@ def make_trace(
             "--eval",
             ".NOTPARALLEL:",
             *parsed.args,
+            # With one job, make does not sync output (`-O`) in job chunks.
+            # The last `-j` wins, so this one goes after the call's own.
+            "--jobs=1",
         ],
         capture_output=True,
         text=True,
@@ -1226,9 +1285,10 @@ def parse_trace(
     options: tuple[str, ...] = (),
     goals: tuple[str, ...] = (),
 ) -> "ParsedTrace":
-    """The commands in the stdout of `make --dry-run --trace`, whether a
-    sub-make hid its directory, and FOLLOWS: for each rule run, the makefile
-    and first recipe line of the rule that the same make ran next.
+    """The commands in the stdout of `make --dry-run --trace`, HIDDEN, and
+    FOLLOWS: for each rule run, the makefile and first recipe line of the rule
+    that the same make ran next. HIDDEN says why trace-ci cannot tell which
+    make printed a command, or is "".
 
     GNU make names the FIRST RECIPE LINE of each rule that it runs, not the rule
     header. A command that ends in `\\` goes on to the next line. A sub-make
@@ -1236,16 +1296,28 @@ def parse_trace(
     the parent's rule goes on after it, so each sub-make keeps its own frame.
     The parent's last command is the one that started the sub-make, so it gives
     the sub-make's arguments. Each make prints its level mark once, as it
-    starts, so the mark tells a new sub-make from the same make again. Output
-    sync (`-O`) puts the output of each job between its own directory lines.
-    A sub-make with `--no-print-directory` prints its level mark but no
-    `Entering directory` line, and that hides it."""
+    starts, so the mark tells a new sub-make from the same make again.
+
+    Output sync (`-O`) puts the mark of a make that syncs from its start in a
+    pair of directory lines of its own. With one job, the rest of its output
+    is in one more pair. With more jobs, the output of each job is in its own
+    pair, and a `$(MAKE)` or `+` line is outside every pair, so a line between
+    two of its pairs can be its own or its parent's, and that hides it. A
+    sub-make with `--no-print-directory` prints its level mark but no
+    `Entering directory` line, and that hides it too."""
     frames = [_Frame(cwd, 0, options, goals)]
     found: list[Traced] = []
     follows: list[Follow] = []
     runs = 0
-    hidden = False
+    hidden = ""
     pending: list[str] = []
+    # The frame that each make level and directory left last, the makes whose
+    # mark is in a pair of its own, the make whose mark is the line before,
+    # and such a sub-make whose pair ended on the line before.
+    left: dict[tuple[int, Path], _Frame] = {}
+    synced: list[_Frame] = []
+    marked: _Frame | None = None
+    after_pair: _Frame | None = None
 
     def emit(text: str) -> None:
         top = frames[-1]
@@ -1265,6 +1337,8 @@ def parse_trace(
         top.last, top.started = text, 0
 
     for raw in output.splitlines():
+        was_marked, marked = marked, None
+        was_after_pair, after_pair = after_pair, None
         if pending:
             pending.append(raw)
             if not raw.endswith("\\"):
@@ -1275,32 +1349,41 @@ def parse_trace(
             parent, level = frames[-1], int(m.group("level") or 0)
             directory = Path(m.group("dir"))
             if level == parent.level and directory == parent.cwd:
-                # Output sync wraps the output of each job of a make in its own
-                # directory lines, so this is the same make, and not a new one.
                 frames.append(parent)
-                continue
-            args = (parent.options, parent.goals)
-            if level > parent.level:
-                # The last sub-make again, after output sync; its level mark
-                # below names a new one.
-                args = _sub_make_args(
-                    parent.last, max(parent.started - 1, 0), parent.options
+            else:
+                # The make that left this directory last, entering again; a
+                # level mark on the next line names a new make instead.
+                frame = left.get(
+                    (level, directory),
+                    _Frame(directory, level, parent.options, parent.goals),
                 )
-            frames.append(_Frame(directory, level, *args))
+                frame.pairs += 1
+                frames.append(frame)
             continue
         if raw.startswith(LEVEL_MARK):
             top, level = frames[-1], int(raw[len(LEVEL_MARK) :])
             parent = frames[-2] if len(frames) > 1 else top
             if level == top.level and parent.level < level:
-                top.options, top.goals = _sub_make_args(
-                    parent.last, parent.started, parent.options
+                # A new make, so the frame it entered as was not entered.
+                top.pairs -= 1
+                frames[-1] = _Frame(
+                    top.cwd,
+                    level,
+                    *_sub_make_args(parent.last, parent.started, parent.options),
                 )
                 parent.started += 1
-            hidden = hidden or level != top.level
+                marked = frames[-1]
+            if level != top.level:
+                hidden = hidden or HIDDEN_DIRECTORY
             continue
         if LEAVE.match(raw):
             if len(frames) > 1:
-                frames.pop()
+                top = frames.pop()
+                left[top.level, top.cwd] = top
+                if top is was_marked:
+                    synced.append(top)
+                if top in synced and top.level > 0:
+                    after_pair = top
             continue
         if MAKE_MESSAGE.match(raw):
             continue
@@ -1321,6 +1404,8 @@ def parse_trace(
             top.where = where
             top.index, top.run, runs = 0, runs, runs + 1
             continue
+        if was_after_pair is not None:
+            was_after_pair.bare_after = True
         if frames[-1].where is None:
             continue
         if raw.endswith("\\"):
@@ -1330,6 +1415,8 @@ def parse_trace(
     if pending:
         # The output ended inside a continued command. Keep what it printed.
         emit("\n".join(pending))
+    if any(f.pairs > 1 and f.bare_after for f in synced):
+        hidden = hidden or HIDDEN_SYNC
     return ParsedTrace(found, hidden, tuple(follows))
 
 
@@ -1337,11 +1424,11 @@ class ParsedTrace(NamedTuple):
     """What `parse_trace` reads from the output of a dry run."""
 
     commands: list[Traced]
-    hidden: bool
+    hidden: str
     follows: tuple[Follow, ...]
 
 
-@dataclass
+@dataclass(eq=False)
 class _Frame:
     """The state of one make level while `parse_trace` reads its output."""
 
@@ -1355,6 +1442,10 @@ class _Frame:
     # The last command, and how many sub-makes it started so far.
     last: str = ""
     started: int = 0
+    # How many pairs of directory lines it entered, and, for a make that
+    # syncs its output, whether a line followed one of its pairs.
+    pairs: int = 0
+    bare_after: bool = False
 
 
 def _sub_make_args(
@@ -2301,7 +2392,7 @@ def trace(
                     call.step.source,
                     call.line,
                     "untraced",
-                    f"`make {' '.join(call.args)}` runs a sub-make with `--no-print-directory`, so trace-ci cannot tell which makefile each command comes from, and its commands are not checked; remove `--no-print-directory` to trace it",
+                    f"`make {' '.join(call.args)}` runs {result.hidden}; its commands are not checked",
                 )
             )
             continue
@@ -2482,20 +2573,17 @@ def _recipe_findings(
 
 def _prints_info(makefile: Path, first_line: int, recipe_prefix: str) -> bool:
     """Whether the recipe at FIRST_LINE of MAKEFILE calls make's `info`, which
-    prints to the same output as the commands of a dry run."""
+    prints to the same output as the commands of a dry run. A `$$` is a `$` for
+    the shell, so `$$(info x)` is no call."""
     text = makefile.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
     return any(
-        re.search(r"\$[({]info\s", _recipe_source(text, entry, recipe_prefix))
+        re.search(
+            r"(?<!\$)(?:\$\$)*\$[({]info\s",
+            "\n".join(lines[entry.start - 1 : entry.start - 1 + entry.count]),
+        )
         for entry in recipe_lines(text, first_line, recipe_prefix)
     )
-
-
-def _recipe_source(text: str, entry: RecipeLine, recipe_prefix: str) -> str:
-    """The text of the recipe line ENTRY of the makefile TEXT, as make writes
-    it, without its RECIPE_PREFIX and its `@+-` prefix."""
-    lines = text.splitlines()[entry.start - 1 : entry.start - 1 + entry.count]
-    lines[0] = re.sub(r"^[@+\-\s]*", "", lines[0][len(recipe_prefix) :])
-    return "\n".join(lines)
 
 
 def _unfollowed_make(text: str) -> str:
