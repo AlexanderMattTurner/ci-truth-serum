@@ -1456,11 +1456,14 @@ def _sub_make_args(
     the sub-make also gets the `VAR=value` words of INHERITED. Its `-C` is left
     out: the frame has its directory."""
     variables = tuple(o for o in inherited if "=" in o and not o.startswith("-"))
-    makes = [
-        words
+    launches = [
+        _launch(words)
         for words in map(command_words, iter_nodes(parse(text), "command"))
-        if words and program_name(words[0]) in MAKE_PROGRAMS
+        if words
     ]
+    # A wrapper such as `env FOO=1 $(MAKE) -f x.mk` hides the make word, and
+    # its `-f` decides which directories the sub-make reaches.
+    makes = [found[0] for found in launches if isinstance(found, tuple)]
     if not makes:
         return variables, ()
     words = makes[min(n, len(makes) - 1)]
@@ -2396,11 +2399,11 @@ def trace(
             )
             continue
         baselines[call] = result
-        reached_dirs.update(c.makefile.parent for c in result.commands)
         # A sub-make that a recipe starts (`$(MAKE) -C sub check`) reads the
         # makefile in its own directory, even when the recipes that it runs
         # come from an included file such as `mk/common.mk`.
         for command in result.commands:
+            reached_dirs.add(command.makefile.parent)
             reached_dirs.update(_makefile_dirs(command.cwd, command.options))
         if result.returncode != 0:
             last = (result.stderr.strip().splitlines() or [""])[-1]
@@ -2436,7 +2439,8 @@ def _kept(repo: Path, findings: list[TraceFinding]) -> list[TraceFinding]:
 
 def _makefile_dirs(cwd: Path, args: Sequence[str]) -> list[Path]:
     """The directories of the makefiles that a make in CWD with ARGS reads:
-    each `-f FILE`, or CWD when it names none."""
+    each `-f FILE`, or CWD when it names none. ARGS can be the OPTIONS of a
+    `Traced`."""
     files = parse_make_args(args).files
     return [(cwd / f).resolve().parent for f in files if f] or [cwd]
 

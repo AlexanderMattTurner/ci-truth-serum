@@ -1097,13 +1097,31 @@ def _config(command: str, job: str = "") -> str:
         ),
         pytest.param(
             {
-                ".circleci/config.yml": _config("make check"),
                 "Makefile": f"check:\n{TAB}$(MAKE) -C pkg check\n",
                 "pkg/Makefile": "include ../mk/common.mk\n",
                 "mk/common.mk": f"check:\n{TAB}@true\n",
             },
             [],
             id="a sub-make whose recipes come from an included file reaches its directory",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}$(MAKE) -C pkg -f ../other/Makefile check\n",
+                "pkg/Makefile": f"check:\n{TAB}@true\n",
+                "other/Makefile": "include ../mk/common.mk\n",
+                "mk/common.mk": f"check:\n{TAB}@true\n",
+            },
+            [("pkg/Makefile", 1, "uncovered")],
+            id="a sub-make reads its -f in its -C directory and not its own makefile",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}env FOO=1 $(MAKE) -C pkg -f ../mk/common.mk check\n",
+                "pkg/Makefile": f"check:\n{TAB}@true\n",
+                "mk/common.mk": f"check:\n{TAB}@true\n",
+            },
+            [("pkg/Makefile", 1, "uncovered")],
+            id="a sub-make behind a wrapper reads its -f and not its own makefile",
         ),
         pytest.param(
             {
