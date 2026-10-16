@@ -38,8 +38,9 @@ import tempfile
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Protocol
 
 import yaml
 from identify import identify
@@ -110,8 +111,6 @@ CI_GLOBS: dict[str, tuple[str, ...]] = {
     "cirrus": (".cirrus.yml",),
     "woodpecker": ("**/.woodpecker.yml", "**/.woodpecker.yaml"),
 }
-# The CI systems whose steps this tool reads.
-FOLLOWED = frozenset({"github-actions", "circleci"})
 
 # CircleCI runs a step with this shell when the step and its job name none.
 CIRCLECI_DEFAULT_SHELL = "/bin/bash -eo pipefail"
@@ -369,6 +368,17 @@ def scalar_lines(node: yaml.ScalarNode) -> tuple[int, ...]:
 # The variables that each CI system sets in every job.
 CIRCLECI_ENV = {"CI": "true", "CIRCLECI": "true"}
 GITHUB_ENV = {"CI": "true", "GITHUB_ACTIONS": "true"}
+# The directory that GitHub runs a job in. Only paths relative to the checkout
+# leave the readers, so any absolute name serves.
+GITHUB_WORKSPACE = "/github/workspace"
+# GitHub runs a step with this shell when the step and its defaults name none.
+# It runs the `bash` and `sh` keywords with these options.
+GITHUB_DEFAULT_SHELL = "bash -e {0}"
+GITHUB_WINDOWS_SHELL = "pwsh"
+GITHUB_SHELLS = {
+    "bash": "bash --noprofile --norc -eo pipefail {0}",
+    "sh": "sh -e {0}",
+}
 
 
 def _env(node: yaml.Node | None) -> dict[str, str]:
@@ -384,29 +394,147 @@ def _env(node: yaml.Node | None) -> dict[str, str]:
     }
 
 
-class _CircleJob(NamedTuple):
-    """What a CircleCI job gives each of its steps."""
+@dataclass(frozen=True)
+class _Job:
+    """What a CI job gives each of its steps: the SHELL and DIRECTORY of a step
+    that names none, the CHECKOUT directory that holds the code, and the ENV.
+    DIRECTORY and CHECKOUT are absolute, or None when trace-ci cannot know
+    them. LINT is whether the content lints read the steps of the job."""
 
     source: str
     name: str
-    shell: str | None
+    shell: str
     directory: str | None
     checkout: str | None
     env: dict[str, str]
+    lint: bool
+
+
+class _Run(NamedTuple):
+    """A `run:` step, with the defaults of its job applied. DIRECTORY is
+    absolute, or None when trace-ci cannot know it."""
+
+    command: yaml.Node | None
+    line: int
+    shell: str
+    directory: str | None
+    env: yaml.Node | None
+
+
+class _Call(NamedTuple):
+    """A step that runs the step list STEPS of the file SOURCE: a CircleCI
+    command or a local GitHub composite action, which NAME names."""
+
+    name: str
+    source: str
+    steps: yaml.Node | None
+
+
+class _ReadStep(Protocol):
+    """Turns one step of a CI file into the runs and calls that it holds."""
+
+    def __call__(self, entry: yaml.Node) -> list[_Run | _Call]: ...
+
+
+def _job_steps(
+    job: _Job,
+    source: str,
+    entries: yaml.Node | None,
+    read: _ReadStep,
+    calling: tuple[str, ...] = (),
+) -> list[CiStep]:
+    """The steps of JOB in the step list ENTRIES of SOURCE. A call runs where a
+    job calls it, with the job's shell, directory and environment, so its
+    steps are read at each call. CALLING names the calls that ENTRIES is
+    inside, so a call to itself stops the trace instead of looping."""
+    steps: list[CiStep] = []
+    for entry in _seq(entries):
+        for item in read(entry):
+            if isinstance(item, _Run):
+                steps.append(_ci_step(job, source, item))
+                continue
+            if item.name in calling:
+                raise TraceError(
+                    f"{source}: {item.name!r} calls itself, "
+                    f"through {' -> '.join((*calling, item.name))}"
+                )
+            steps += _job_steps(
+                job, item.source, item.steps, read, (*calling, item.name)
+            )
+    return steps
+
+
+def _ci_step(job: _Job, source: str, run: _Run) -> CiStep:
+    """The step RUN of JOB, which the file SOURCE holds."""
+    if not isinstance(run.command, yaml.ScalarNode):
+        raise TraceError(
+            f"{source}:{run.line}: this `run:` step has no "
+            "command string, so trace-ci cannot read what it runs"
+        )
+    directory = (
+        None
+        if run.directory is None or job.checkout is None
+        else _inside(posixpath.relpath(run.directory, job.checkout))
+    )
+    return CiStep(
+        source,
+        job.name,
+        run.shell,
+        run.command.value,
+        scalar_lines(run.command),
+        directory,
+        lint=job.lint and posix_shell(run.shell),
+        env=tuple((job.env | _env(run.env)).items()),
+    )
+
+
+def _image(source: str, job: str, node: yaml.Node | None) -> list[Image]:
+    """The image that NODE names for JOB, or none when NODE is not a literal
+    image name."""
+    if (
+        not isinstance(node, yaml.ScalarNode)
+        or "$" in node.value
+        or CI_EXPRESSION.search(node.value)
+    ):
+        return []
+    return [Image(source, job, node.value, node.start_mark.line + 1)]
+
+
+def _ci_path(path: str, base: str | None) -> str | None:
+    """PATH as an absolute path, where `~` stays the first part (`/~/project`).
+    A relative PATH is read from BASE. None when PATH has an expansion, or is
+    relative and BASE is None."""
+    if "$" in path:
+        return None
+    if path == "~" or path.startswith("~/"):
+        return posixpath.normpath("/" + path)
+    if path.startswith("/"):
+        return posixpath.normpath(path)
+    return None if base is None else posixpath.normpath(posixpath.join(base, path))
+
+
+def _inside(path: str) -> str | None:
+    """PATH, relative to the checkout, normalised. None when it leaves the
+    checkout, is absolute, or has an expansion. The checkout itself is ""."""
+    path = posixpath.normpath(path)
+    if "$" in path or path.startswith(("/", "~", "..")):
+        return None
+    return "" if path == "." else path
 
 
 def circleci_steps(
-    text: str, source: str, notes: list[str]
+    text: str, source: str, repo: Path, notes: list[str]
 ) -> tuple[list[CiStep], list[Image]]:
     """The `run:` steps and the job images of a CircleCI configuration.
 
-    A reusable command under `commands:` runs only where a job calls it, with
-    the job's shell, directory and environment, so its steps are read at each
-    call. The steps of a `when` or an `unless` step are read as steps that run.
-    A job takes its images, shell, directory and environment from the
-    `executors:` entry that it names, and its own keys win. An executor from
-    an orb is not in the file, so trace-ci cannot read it, and it says so in
-    NOTES. A Windows job runs PowerShell unless it names a shell."""
+    A reusable command under `commands:` is a call (see `_job_steps`). The
+    steps of a `when` or an `unless` step are read as steps that run. A job
+    takes its images, shell, directory and environment from the `executors:`
+    entry that it names, and its own keys win. An executor from an orb is not
+    in the file, so trace-ci cannot read it, and it says so in NOTES. A Windows
+    job runs PowerShell unless it names a shell. REPO is not read: every
+    reader takes it."""
+    del repo
     root = yaml.compose(text, Loader=yaml.SafeLoader)
     commands = dict(_items(_child(root, "commands")))
     executors = dict(_items(_child(root, "executors")))
@@ -429,32 +557,28 @@ def circleci_steps(
                 "cannot read its images, and it reads its steps with the "
                 "default shell of the job"
             )
-        directory = _circleci_path(
+        directory = _ci_path(
             _scalar(_job_field(body, executor, "working_directory")) or "~/project",
             None,
         )
-        job = _CircleJob(
+        windows = _windows_job(body, executor, executor_name, windows_orbs)
+        job = _Job(
             source,
             name,
             _scalar(_job_field(body, executor, "shell"))
-            or (
-                WINDOWS_SHELL
-                if _windows_job(body, executor, executor_name, windows_orbs)
-                else None
-            ),
+            or (WINDOWS_SHELL if windows else CIRCLECI_DEFAULT_SHELL),
             directory,
             _circleci_checkout(body, directory),
             CIRCLECI_ENV
             | _env(_child(executor, "environment"))
             | _env(_child(body, "environment")),
+            lint=True,
         )
         for entry in _seq(_job_field(body, executor, "docker")):
-            image = _child(entry, "image")
-            if isinstance(image, yaml.ScalarNode):
-                images.append(
-                    Image(source, name, image.value, image.start_mark.line + 1)
-                )
-        steps += _circleci_run_steps(_child(body, "steps"), job, commands, ())
+            images += _image(source, name, _child(entry, "image"))
+        steps += _job_steps(
+            job, source, _child(body, "steps"), partial(_circleci_step, job, commands)
+        )
     return steps, images
 
 
@@ -485,78 +609,38 @@ def _job_field(
     return own if own is not None else _child(executor, key)
 
 
-def _circleci_run_steps(
-    entries: yaml.Node | None,
-    job: _CircleJob,
-    commands: dict[str, yaml.Node],
-    calling: tuple[str, ...],
-) -> list[CiStep]:
-    """The `run:` steps in the step list ENTRIES of JOB. CALLING names the
-    reusable commands that the list is inside, so a command that calls itself
-    stops the trace instead of looping."""
-    steps: list[CiStep] = []
-    for entry in _seq(entries):
-        pairs = (
-            [(entry.value, None)]
-            if isinstance(entry, yaml.ScalarNode)
-            else _items(entry)
-        )
-        for key, value in pairs:
-            if key == "run":
-                steps.append(_circleci_run(value, entry.start_mark.line + 1, job))
-            elif key in ("when", "unless"):
-                steps += _circleci_run_steps(
-                    _child(value, "steps"), job, commands, calling
-                )
-            elif key in commands:
-                if key in calling:
-                    raise TraceError(
-                        f"{job.source}: the reusable command {key!r} calls itself, "
-                        f"through {' -> '.join((*calling, key))}"
-                    )
-                steps += _circleci_run_steps(
-                    _child(commands[key], "steps"), job, commands, (*calling, key)
-                )
-    return steps
-
-
-def _circleci_run(run: yaml.Node, line: int, job: _CircleJob) -> CiStep:
-    """The `run:` step whose value is RUN, on LINE of JOB."""
-    command, shell, wd, env = run, job.shell, None, job.env
-    if isinstance(run, yaml.MappingNode):
-        command = _child(run, "command")
-        shell = _scalar(_child(run, "shell")) or shell
-        wd = _scalar(_child(run, "working_directory"))
-        env = env | _env(_child(run, "environment"))
-    if not isinstance(command, yaml.ScalarNode):
-        raise TraceError(
-            f"{job.source}:{line}: this `run:` step has no "
-            "command string, so trace-ci cannot read what it runs"
-        )
-    shell = shell or CIRCLECI_DEFAULT_SHELL
-    return CiStep(
-        job.source,
-        job.name,
-        shell,
-        command.value,
-        scalar_lines(command),
-        _circleci_dir(wd, job.directory, job.checkout),
-        lint=posix_shell(shell),
-        env=tuple(env.items()),
+def _circleci_step(
+    job: _Job, commands: dict[str, yaml.Node], entry: yaml.Node
+) -> list[_Run | _Call]:
+    """The runs and calls in the CircleCI step ENTRY of JOB."""
+    pairs = (
+        [(entry.value, None)] if isinstance(entry, yaml.ScalarNode) else _items(entry)
     )
+    found: list[_Run | _Call] = []
+    for key, value in pairs:
+        if key == "run":
+            found.append(_circleci_run(job, value, entry.start_mark.line + 1))
+        elif key in ("when", "unless"):
+            for inner in _seq(_child(value, "steps")):
+                found += _circleci_step(job, commands, inner)
+        elif key in commands:
+            found.append(_Call(key, job.source, _child(commands[key], "steps")))
+    return found
 
 
-def _circleci_path(path: str, base: str | None) -> str | None:
-    """PATH as an absolute path, where `~` stays the first part (`/~/project`).
-    A relative PATH is read from BASE. None when PATH has an expansion, or is
-    relative and BASE is None."""
-    if "$" in path:
-        return None
-    if path == "~" or path.startswith("~/"):
-        return posixpath.normpath("/" + path)
-    if path.startswith("/"):
-        return posixpath.normpath(path)
-    return None if base is None else posixpath.normpath(posixpath.join(base, path))
+def _circleci_run(job: _Job, run: yaml.Node, line: int) -> _Run:
+    """The `run:` step whose value is RUN, on LINE of JOB. A relative
+    `working_directory` is read from the job's directory."""
+    if not isinstance(run, yaml.MappingNode):
+        return _Run(run, line, job.shell, job.directory, None)
+    wd = _scalar(_child(run, "working_directory"))
+    return _Run(
+        _child(run, "command"),
+        line,
+        _scalar(_child(run, "shell")) or job.shell,
+        job.directory if wd is None else _ci_path(wd, job.directory),
+        _child(run, "environment"),
+    )
 
 
 def _circleci_checkout(job: yaml.Node, job_dir: str | None) -> str | None:
@@ -568,74 +652,130 @@ def _circleci_checkout(job: yaml.Node, job_dir: str | None) -> str | None:
             return job_dir
         if isinstance(step, yaml.MappingNode) and _child(step, "checkout") is not None:
             path = _scalar(_child(_child(step, "checkout"), "path"))
-            return job_dir if path is None else _circleci_path(path, job_dir)
+            return job_dir if path is None else _ci_path(path, job_dir)
     return "/~/project"
 
 
-def _circleci_dir(
-    wd: str | None, job_dir: str | None, checkout: str | None
-) -> str | None:
-    """The directory of a step relative to the CHECKOUT. CircleCI reads a
-    relative step directory WD from the job's directory, JOB_DIR. None when
-    trace-ci cannot find the directory in the checkout."""
-    path = job_dir if wd is None else _circleci_path(wd, job_dir)
-    if path is None or checkout is None:
-        return None
-    return _inside(posixpath.relpath(path, checkout))
+def workflow_steps(
+    text: str, source: str, repo: Path, notes: list[str]
+) -> tuple[list[CiStep], list[Image]]:
+    """The `run:` steps and the job images of a GitHub Actions workflow.
 
-
-def _inside(path: str) -> str | None:
-    """PATH, relative to the checkout, normalised. None when it leaves the
-    checkout, is absolute, or has an expansion. The checkout itself is ""."""
-    path = posixpath.normpath(path)
-    if "$" in path or path.startswith(("/", "~", "..")):
-        return None
-    return "" if path == "." else path
-
-
-def workflow_steps(text: str, source: str) -> list[CiStep]:
-    """The `run:` steps of a GitHub Actions workflow.
-
-    The lints of this pack read these steps already, so the steps are traced for
-    the `make` calls in them and are not written out for the lints again."""
+    A step takes its shell and directory from the `defaults.run` of its job,
+    and then of the workflow. A relative directory is read from the
+    workspace. A job on a Windows runner runs `pwsh` unless it names a shell.
+    A local composite action (`uses: ./dir`) in REPO is a call (see
+    `_job_steps`). A remote action is code from another repository, so
+    trace-ci does not read it, and it says so in NOTES for a local action
+    that is not composite. The lints of this pack read the steps of a
+    workflow already, so the content lints do not read them again."""
     root = yaml.compose(text, Loader=yaml.SafeLoader)
     top_run = _child(_child(root, "defaults"), "run")
     top_env = GITHUB_ENV | _env(_child(root, "env"))
     steps: list[CiStep] = []
-    for job, body in _items(_child(root, "jobs")):
+    images: list[Image] = []
+    for name, body in _items(_child(root, "jobs")):
         job_run = _child(_child(body, "defaults"), "run")
-        job_env = top_env | _env(_child(body, "env"))
-        for step in _seq(_child(body, "steps")):
-            run = _child(step, "run")
-            if not isinstance(run, yaml.ScalarNode):
-                continue
-            wd = next(
-                (
-                    v
-                    for v in (
-                        _scalar(_child(step, "working-directory")),
-                        _scalar(_child(job_run, "working-directory")),
-                        _scalar(_child(top_run, "working-directory")),
-                    )
-                    if v is not None
-                ),
-                "",
+        shell, wd = (
+            _scalar(_child(job_run, key)) or _scalar(_child(top_run, key))
+            for key in ("shell", "working-directory")
+        )
+        job = _Job(
+            source,
+            name,
+            _github_shell(shell, _github_windows(_child(body, "runs-on"))),
+            _ci_path(wd or ".", GITHUB_WORKSPACE),
+            _github_checkout(_child(body, "steps")),
+            top_env | _env(_child(body, "env")),
+            lint=False,
+        )
+        services = [v for _, v in _items(_child(body, "services"))]
+        for node in (_child(body, "container"), *services):
+            image = node if isinstance(node, yaml.ScalarNode) else _child(node, "image")
+            images += _image(source, name, image)
+        steps += _job_steps(
+            job,
+            source,
+            _child(body, "steps"),
+            partial(_github_step, repo, job, notes),
+        )
+    return steps, images
+
+
+def _github_shell(name: str | None, windows: bool = False) -> str:
+    """The command that runs a step whose `shell:` is NAME, or that names none.
+    A name that is not a keyword is a command already."""
+    if name is None:
+        return GITHUB_WINDOWS_SHELL if windows else GITHUB_DEFAULT_SHELL
+    return GITHUB_SHELLS.get(name, name)
+
+
+def _github_windows(runs_on: yaml.Node | None) -> bool:
+    """Whether a job whose `runs-on:` is RUNS_ON runs on a Windows runner."""
+    labels = [runs_on] if isinstance(runs_on, yaml.ScalarNode) else _seq(runs_on)
+    return any((_scalar(label) or "").lower().startswith("windows") for label in labels)
+
+
+def _github_checkout(steps: yaml.Node | None) -> str | None:
+    """Where the first `actions/checkout` step of this repository puts the code:
+    its `path`, read from the workspace. A job without one has the workspace."""
+    for step in _seq(steps):
+        action = (_scalar(_child(step, "uses")) or "").partition("@")[0]
+        given = _child(step, "with")
+        if action == "actions/checkout" and _child(given, "repository") is None:
+            return _ci_path(_scalar(_child(given, "path")) or ".", GITHUB_WORKSPACE)
+    return GITHUB_WORKSPACE
+
+
+def _github_step(
+    repo: Path, job: _Job, notes: list[str], entry: yaml.Node
+) -> list[_Run | _Call]:
+    """The run or the call in the GitHub step ENTRY of JOB."""
+    line = entry.start_mark.line + 1
+    run = _child(entry, "run")
+    if run is not None:
+        shell = _scalar(_child(entry, "shell"))
+        wd = _scalar(_child(entry, "working-directory"))
+        return [
+            _Run(
+                run,
+                line,
+                job.shell if shell is None else _github_shell(shell),
+                job.directory if wd is None else _ci_path(wd, GITHUB_WORKSPACE),
+                _child(entry, "env"),
             )
-            # The shell is left empty: these steps are not written out for the
-            # lints, so nothing reads it.
-            steps.append(
-                CiStep(
-                    source,
-                    job,
-                    "",
-                    run.value,
-                    scalar_lines(run),
-                    _inside(wd or "."),
-                    lint=False,
-                    env=tuple((job_env | _env(_child(step, "env"))).items()),
-                )
-            )
-    return steps
+        ]
+    uses = _scalar(_child(entry, "uses")) or ""
+    if not uses.startswith("./"):
+        return []
+    directory = _inside(uses)
+    found = [
+        posixpath.join(directory, name)
+        for name in ("action.yml", "action.yaml")
+        if directory is not None and (repo / directory / name).is_file()
+    ]
+    if not found:
+        raise TraceError(
+            f"{job.source}:{line}: the local action {uses!r} has no action.yml "
+            "in the repository, so trace-ci cannot read its steps"
+        )
+    action = yaml.compose(
+        (repo / found[0]).read_text(encoding="utf-8"), Loader=yaml.SafeLoader
+    )
+    runs = _child(action, "runs")
+    using = _scalar(_child(runs, "using"))
+    if using != "composite":
+        notes.append(
+            f"{job.source}:{line}: the local action {uses!r} runs with "
+            f"`using: {using}`, so trace-ci does not read what it runs"
+        )
+        return []
+    return [_Call(found[0], found[0], _child(runs, "steps"))]
+
+
+# The CI systems whose steps this tool reads, and the reader of each.
+READERS = {"circleci": circleci_steps, "github-actions": workflow_steps}
+FOLLOWED = frozenset(READERS)
 
 
 def ci_shell_text(command: str) -> str:
@@ -2106,14 +2246,13 @@ def trace(
     synthetics: list[Synthetic] = []
     steps: list[CiStep] = []
     images: list[Image] = []
-    for source in surfaces.get("circleci", []):
-        found_steps, found_images = circleci_steps(
-            (repo / source).read_text(encoding="utf-8"), source, notes
-        )
-        steps += found_steps
-        images += found_images
-    for source in surfaces.get("github-actions", []):
-        steps += workflow_steps((repo / source).read_text(encoding="utf-8"), source)
+    for system, read in READERS.items():
+        for source in surfaces.get(system, []):
+            found_steps, found_images = read(
+                (repo / source).read_text(encoding="utf-8"), source, repo, notes
+            )
+            steps += found_steps
+            images += found_images
 
     if images:
         synthetics.append(

@@ -82,7 +82,7 @@ jobs:
 
 
 def test_circleci_steps_keep_the_source_line_of_each_command_line() -> None:
-    steps, images = mod.circleci_steps(CIRCLECI, "c.yml", [])
+    steps, images = mod.circleci_steps(CIRCLECI, "c.yml", Path(), [])
     assert [(s.job, s.shell, s.lines, s.working_directory) for s in steps] == [
         ("test", mod.CIRCLECI_DEFAULT_SHELL, (11, 12), ""),
         ("test", mod.CIRCLECI_DEFAULT_SHELL, (13,), ""),
@@ -106,7 +106,7 @@ jobs:
         command: make lint
         working_directory: sub
 """
-    steps, images = mod.circleci_steps(text, "c.yml", [])
+    steps, images = mod.circleci_steps(text, "c.yml", Path(), [])
     assert [s.working_directory for s in steps] == ["app", "app/sub"]
     assert images == [mod.Image("c.yml", "test", "cimg/python:3.12", 4)]
 
@@ -146,8 +146,17 @@ jobs:
 def test_circleci_steps_find_the_step_directory_in_the_checkout(
     job: str, dirs: list
 ) -> None:
-    steps, _ = mod.circleci_steps(f"jobs:\n  j:\n{job}", "c.yml", [])
+    steps, _ = mod.circleci_steps(f"jobs:\n  j:\n{job}", "c.yml", Path(), [])
     assert [s.working_directory for s in steps] == dirs
+
+
+def test_circleci_images_skip_a_name_that_ci_fills_in() -> None:
+    text = (
+        "jobs:\n  j:\n    docker:\n    - image: << parameters.image >>\n"
+        "    - image: $IMAGE\n    - image: redis:7\n    steps: []\n"
+    )
+    _, images = mod.circleci_steps(text, "c.yml", Path(), [])
+    assert images == [mod.Image("c.yml", "j", "redis:7", 6)]
 
 
 def test_circleci_reads_a_reusable_command_at_each_call() -> None:
@@ -177,7 +186,7 @@ jobs:
         environment:
           STEP: "1"
 """
-    steps, _ = mod.circleci_steps(text, "c.yml", [])
+    steps, _ = mod.circleci_steps(text, "c.yml", Path(), [])
     assert [(s.command, s.working_directory) for s in steps] == [
         ("make lint", "app"),
         ("make lint", "app"),
@@ -219,20 +228,20 @@ def test_a_circleci_windows_job_runs_powershell(
     head: str, executor: str, shell: str
 ) -> None:
     text = head + WINDOWS_JOB.format(executor=executor)
-    steps, _ = mod.circleci_steps(text, "c.yml", [])
+    steps, _ = mod.circleci_steps(text, "c.yml", Path(), [])
     assert [s.shell for s in steps] == [shell]
 
 
 def test_a_circleci_command_that_calls_itself_is_refused() -> None:
     text = "commands:\n  a:\n    steps:\n    - a\njobs:\n  j:\n    steps:\n    - a\n"
     with pytest.raises(mod.TraceError, match="a -> a"):
-        mod.circleci_steps(text, "c.yml", [])
+        mod.circleci_steps(text, "c.yml", Path(), [])
 
 
 def test_a_circleci_run_step_without_a_command_is_refused() -> None:
     text = "jobs:\n  j:\n    steps:\n    - run:\n        name: x\n"
     with pytest.raises(mod.TraceError, match="c.yml:4"):
-        mod.circleci_steps(text, "c.yml", [])
+        mod.circleci_steps(text, "c.yml", Path(), [])
 
 
 def test_workflow_steps_read_the_environment() -> None:
@@ -250,7 +259,7 @@ jobs:
       env:
         A: step
 """
-    (step,) = mod.workflow_steps(text, "w.yml")
+    (step,), _ = mod.workflow_steps(text, "w.yml", Path(), [])
     assert dict(step.env) == {
         "CI": "true",
         "GITHUB_ACTIONS": "true",
@@ -277,13 +286,146 @@ jobs:
     - run: make lint
       working-directory: ${{ matrix.dir }}
 """
-    steps = mod.workflow_steps(text, "w.yml")
+    steps, _ = mod.workflow_steps(text, "w.yml", Path(), [])
     assert [(s.working_directory, s.lint) for s in steps] == [
         ("top", False),
         ("step", False),
         (None, False),
         (None, False),
     ]
+
+
+@pytest.mark.parametrize(
+    ("job", "shell"),
+    [
+        ("    runs-on: ubuntu-latest\n", "bash -e {0}"),
+        ("    runs-on: windows-latest\n", "pwsh"),
+        ("    runs-on: [self-hosted, Windows]\n", "pwsh"),
+        (
+            "    defaults:\n      run:\n        shell: bash\n",
+            "bash --noprofile --norc -eo pipefail {0}",
+        ),
+        (
+            "    runs-on: windows-latest\n    defaults:\n      run:\n        shell: sh\n",
+            "sh -e {0}",
+        ),
+        ("    runs-on: ${{ matrix.os }}\n", "bash -e {0}"),
+    ],
+)
+def test_workflow_steps_read_the_shell(job: str, shell: str) -> None:
+    text = f"jobs:\n  a:\n{job}    steps:\n    - run: make check\n    - run: x\n      shell: python\n"
+    steps, _ = mod.workflow_steps(text, "w.yml", Path(), [])
+    assert [s.shell for s in steps] == [shell, "python"]
+
+
+def test_workflow_steps_find_the_step_directory_in_the_checkout() -> None:
+    text = """\
+jobs:
+  a:
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: other/tools
+        path: tools
+    - uses: actions/checkout@v4
+      with:
+        path: code
+    - run: make
+    - run: make
+      working-directory: code/app
+    - run: make
+      working-directory: tools
+"""
+    steps, _ = mod.workflow_steps(text, "w.yml", Path(), [])
+    # The default directory is the workspace, which is above the checkout.
+    assert [s.working_directory for s in steps] == [None, "app", None]
+
+
+def test_workflow_steps_read_the_job_images() -> None:
+    text = """\
+jobs:
+  a:
+    container: node:22
+    services:
+      db:
+        image: postgres:16
+      cache: redis:7
+      dyn:
+        image: ${{ matrix.image }}
+  b:
+    container:
+      image: python:3.12
+"""
+    _, images = mod.workflow_steps(text, "w.yml", Path(), [])
+    assert images == [
+        mod.Image("w.yml", "a", "node:22", 3),
+        mod.Image("w.yml", "a", "postgres:16", 6),
+        mod.Image("w.yml", "a", "redis:7", 7),
+        mod.Image("w.yml", "b", "python:3.12", 12),
+    ]
+
+
+COMPOSITE = """\
+runs:
+  using: composite
+  steps:
+  - run: make lint
+    shell: bash
+    working-directory: app
+  - uses: {inner}
+"""
+
+
+def _action(repo: Path, name: str, text: str) -> None:
+    path = repo / ".github/actions" / name / "action.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_workflow_steps_read_a_local_composite_action_at_each_call(
+    tmp_path: Path,
+) -> None:
+    _action(tmp_path, "lint", COMPOSITE.format(inner="actions/setup-node@v4"))
+    _action(tmp_path, "node", "runs:\n  using: node20\n  main: index.js\n")
+    text = """\
+jobs:
+  a:
+    env:
+      MODE: ci
+    steps:
+    - uses: ./.github/actions/lint
+    - uses: ./.github/actions/node
+    - uses: ./.github/actions/lint
+"""
+    notes: list[str] = []
+    steps, _ = mod.workflow_steps(text, "w.yml", tmp_path, notes)
+    source = ".github/actions/lint/action.yml"
+    assert [(s.source, s.lines, s.shell, s.working_directory) for s in steps] == [
+        (source, (4,), "bash --noprofile --norc -eo pipefail {0}", "app")
+    ] * 2
+    assert dict(steps[0].env)["MODE"] == "ci"
+    assert notes == [
+        "w.yml:7: the local action './.github/actions/node' runs with "
+        "`using: node20`, so trace-ci does not read what it runs"
+    ]
+
+
+def test_a_composite_action_that_calls_itself_is_refused(tmp_path: Path) -> None:
+    _action(tmp_path, "a", COMPOSITE.format(inner="./.github/actions/a"))
+    text = "jobs:\n  j:\n    steps:\n    - uses: ./.github/actions/a\n"
+    with pytest.raises(mod.TraceError, match="action.yml -> .github"):
+        mod.workflow_steps(text, "w.yml", tmp_path, [])
+
+
+@pytest.mark.parametrize("uses", ["./.github/actions/gone", "./../outside"])
+def test_a_local_action_without_a_definition_is_refused(
+    uses: str, tmp_path: Path
+) -> None:
+    (tmp_path.parent / "outside").mkdir(exist_ok=True)
+    (tmp_path.parent / "outside/action.yml").write_text("runs: {}\n")
+    text = f"jobs:\n  j:\n    steps:\n    - uses: {uses}\n"
+    with pytest.raises(mod.TraceError, match="w.yml:4: the local action"):
+        mod.workflow_steps(text, "w.yml", tmp_path, [])
 
 
 def _step(command: str) -> "mod.CiStep":
@@ -1210,6 +1352,42 @@ def test_a_windows_orb_job_runs_powershell_and_names_its_executor(
     assert json.loads(out) == []
     assert "job 'test' runs on the executor 'win/default'" in err
     assert "do not read the steps that run in powershell.exe" in err
+
+
+GITHUB_WORKFLOW = """\
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: python:3.12
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/check
+    - run: Write-Output ok
+      shell: pwsh
+"""
+
+
+def test_a_workflow_runs_make_through_a_composite_action(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(
+        tmp_path,
+        {
+            ".circleci/config.yml": _config("true"),
+            ".github/workflows/ci.yml": GITHUB_WORKFLOW,
+            ".github/actions/check/action.yml": "runs:\n  using: composite\n"
+            "  steps:\n  - run: make check\n    shell: bash\n",
+            "Makefile": f"check:\n{TAB}-false\n",
+        },
+    )
+    mod.main(["--repo", str(repo), "--format", "json", "--no-fault-injection"])
+    out, err = capsys.readouterr()
+    assert [(f["path"], f["line"], f["kind"]) for f in json.loads(out)] == [
+        (".github/workflows/ci.yml", 5, "lint"),
+        ("Makefile", 2, "ignored-error"),
+    ]
+    assert "do not read the steps that run in pwsh" in err
 
 
 def test_two_calls_of_one_command_fail_together_and_are_reported_once(

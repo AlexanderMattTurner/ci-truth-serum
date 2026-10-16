@@ -483,7 +483,19 @@ An `untraced` finding names work that the tool cannot follow, so you know that n
 
 The tool finds `$(info` only in the text of a recipe. When a variable or a `$(call …)` holds the `info`, the tool reads its text as a command of the rule before it.
 
-The content lints read only the steps that run in a POSIX shell, and the tool still follows the `make` calls of the other steps. A CircleCI job gets its images, shell and environment from the `executors:` entry that it names. The tool cannot read an executor from an orb, and it says so. A Windows job runs PowerShell unless it names a shell.
+The tool reads CircleCI and GitHub Actions jobs in the same way. For each step it finds the shell, the directory in the checkout and the environment. It collects the job images for the Dockerfile lints. A CircleCI `commands:` entry and a local GitHub composite action (`uses: ./dir`) are step lists that a job calls, so the tool reads their steps at each call. It does not read a remote action, and it says so for a local action that is not composite.
+
+The two systems set different defaults:
+
+| What                      | CircleCI                                      | GitHub Actions                                                |
+| ------------------------- | --------------------------------------------- | ------------------------------------------------------------- |
+| Shell of a step           | `/bin/bash -eo pipefail`, or the job `shell:` | `bash -e {0}`, or `defaults.run.shell`                        |
+| Shell of a Windows job    | PowerShell                                    | `pwsh`                                                        |
+| Defaults of a job         | the `executors:` entry that it names          | `defaults.run` of the job, then of the workflow               |
+| A relative step directory | is read from the job directory                | is read from the workspace                                    |
+| Where the code is         | the `checkout` step and its `path`            | the `actions/checkout` step of this repository and its `path` |
+
+The content lints read only the CircleCI steps that run in a POSIX shell, because the lints of this pack read the steps of a GitHub workflow already. The tool follows the `make` calls of every step. It cannot read a CircleCI executor from an orb, and it says so.
 
 ## Contributing
 
