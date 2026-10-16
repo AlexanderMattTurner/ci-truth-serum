@@ -3,8 +3,7 @@
 
 A CircleCI job can run `make check`, and the real work is in the `Makefile`
 recipes that it reaches. No lint of this pack reads those recipes as CI. This
-tool starts from the CI files and follows what they run. The README section
-"Apply: trace the commands CI runs with trace-ci" states the full contract::
+tool starts from the CI files and follows what they run::
 
     trace-ci [--repo DIR] [--select SELECTOR] [--goal GOAL] [--format json]
 

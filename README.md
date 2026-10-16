@@ -70,6 +70,11 @@ These checks find code whose failure reports success.
 | `check-gh-slurp-jq`               | `gh` rejects `--slurp` with `--jq`, and `--slurp` without `--paginate`, while parsing arguments — so the call has never worked. Opt out with `# allow-gh-slurp-jq: <reason>`.                                                                                         | `gh api --slurp --jq .`                                          |
 | `check-container-job-shell`       | A step in a `container:` job with no shell runs as `sh -e`, but the lints read it as bash. Bash syntax passes the lints and breaks on the runner. Opt out with `# shell-default-ok: <reason>`.                                                                        | `container: ubuntu` with `- run: opts=(a b)`                     |
 | `check-truncating-pr-json`        | `gh pr view --json files` asks for `files(first: 100)` with no cursor. Past 100 files GitHub returns 100, `gh` exits 0, and nothing says the list is short.                                                                                                           | `gh pr view --json files` on a 300-file PR                       |
+| `trace-ci` (`vacuous-on-failure`) | make does not stop when a `$(shell …)` call fails. It uses the empty output, so the check runs over nothing and passes.                                                                                                                                               | `pre-commit run --files $(shell git ls-files)`                   |
+| `trace-ci` (`lost-status-*`)      | make runs each recipe line with `/bin/sh -c`, which has no errexit and no pipefail. In `a; b`, `a \| b` or a loop, CI sees only the last status.                                                                                                                      | `pytest; echo done` in a recipe                                  |
+| `trace-ci` (`ignored-error`)      | make ignores the exit status of a recipe line that starts with `-`.                                                                                                                                                                                                   | `-pytest` in a recipe                                            |
+| `trace-ci` (`uncovered`)          | A `Makefile` has a `check` goal that no CI step reaches, so its checks never run.                                                                                                                                                                                     | `sub/Makefile` that no job calls                                 |
+| `trace-ci` (`untraced`)           | CI runs a `make` that the tool cannot follow, so nothing checked its commands.                                                                                                                                                                                        | `docker run img make check`                                      |
 
 ### Identity (Tier 1, default-on)
 
@@ -267,6 +272,7 @@ Add each `- id:` on its own if you want it:
 - `check-lockstep-pins` is config-driven. It hard-errors without the per-repo `--pair` arguments that an aggregate cannot supply.
 - `check-env-symmetry` scans the whole tree and needs a per-project `--prefix` argument that an aggregate cannot supply.
 - `check-bash32-portability` judges every file it gets, so it needs your `files:` naming the scripts that run on macOS. `grep -P`, `sort -V` or `${v,,}` pass on Linux and abort on BSD tools or bash 3.2. Opt out with `# bash32-portability-ok: <reason>`.
+- `trace-ci` is a console script, not a hook. It follows each `make` that a CircleCI or GitHub Actions step runs. It runs the content lints of this pack on the recipe commands, and it reports the `trace-ci` rows above. Run `trace-ci` in a clean checkout that you trust as much as `make`: a dry run still runs each `$(shell …)` call. Accept a finding with `# trace-ci-ok: <reason>` in a comment on its line or the line above.
 
 You may mix an aggregate with individual ids. The named check then simply runs twice.
 
@@ -453,51 +459,6 @@ The scan reads the whole window for each workflow, and not the newest page of it
 The cost is one request for each 100 completed runs, plus one for each failing run that did not conclude `startup_failure`. A successful run costs nothing. The Actions API stops paginating at 1000 items, so one workflow costs at most 10 listings. A workflow busier than that is the one case the scan cannot read in full, and the report names it and marks its count as a floor.
 
 **The obvious version of this scan reports every repo healthy.** A run that failed to load concludes `startup_failure`, and not `failure`. The `status=` filter on the runs listing matches the conclusion, so `status=failure` never returns one. This tool asks for `status=completed` and classifies each conclusion itself. It leaves out `cancelled` and `skipped`, because a run cancelled in the queue also holds zero jobs and is not a broken file.
-
-### Apply: trace the commands CI runs with trace-ci
-
-`trace-ci` reads the commands that CI really runs, when they are not in a GitHub workflow. A CircleCI job often runs `make check`, and the real work is in the `Makefile` recipes that `make check` reaches. The pre-commit lints read files by kind, so they never read those recipes as CI. `trace-ci` starts from the CI files and follows each `make` call with `make --dry-run --trace`. GNU make prints each command that it would run and the `Makefile` line that the command came from. The tool runs the content lints of this pack on those commands and reports each finding at its source line.
-
-It finds four more defects that no single file shows:
-
-- **A check that passes over nothing.** GNU make does not stop when a `$(shell …)` command fails; it uses the empty output. The tool makes each `$(shell …)` call fail, one at a time, and traces CI again. If `make` still exits 0 but runs fewer commands or fewer arguments, it reports the call. For example, `FILES := $(shell git ls-files)` feeds `pre-commit run --files $(FILES)`. When `git` fails, pre-commit gets no files, skips every hook, and exits 0.
-- **A failure that the recipe shell loses.** GNU make runs each recipe line with `/bin/sh -c`, which has no errexit and no pipefail. In `a; b` and `a | b`, CI sees only the status of `b`. A loop such as `for d in $(DIRS); do $(MAKE) -C $$d; done` reports only its last pass. A failure that a `||` handles, as in `a || exit 1`, is not reported.
-- **A failure that make ignores.** A recipe line that starts with `-` cannot fail.
-- **A check that CI never runs.** A directory whose `Makefile` has a `check` goal, and that no CI step reaches, is reported. `--goal` changes the goal name.
-
-```bash
-trace-ci                                  # the repository in the current directory
-trace-ci --repo path/to/repo --select tier:1 --select tier:2
-trace-ci --no-fault-injection --format json
-```
-
-The tool follows CircleCI and GitHub Actions steps. It names the other CI files that it finds, such as `.gitlab-ci.yml`, and does not read them yet. It finds CI files with the `fileMatch` globs of the [SchemaStore catalog](https://www.schemastore.org/api/json/catalog.json), and it finds makefiles and Dockerfiles with `identify`. **Run it only on a tree that you trust as much as `make`:** a dry run still runs each `$(shell …)` call, each recipe line that holds `$(MAKE)` or starts with `+`, and the recipes that remake an included makefile. Run it on a clean checkout, as CI does: make skips a rule whose target file is up to date, so a file from a local build can hide a rule. The tool gives make the variables that CI sets to a literal value, such as `CI=true` and the `environment:` or `env:` values of the job and the step. To accept a finding, put `# trace-ci-ok: <reason>` in a comment on its line or on the line above it. A marker in a string or a YAML value accepts nothing. For a directory that CI does not reach, put the comment on line 1 of its `Makefile`. It exits 1 when it finds anything, and 2 when it cannot trace (no GNU make 4.0 or later, or no CI file that it follows).
-
-An `untraced` finding names work that the tool cannot follow, so you know that nothing checked it. The tool reports these cases:
-
-- A `make` that runs in a container, on another host, in a development shell such as `nix develop`, in a `bash -c` script, or in an `env -S` string.
-- A `make` after a wrapper option that changes the directory, such as `env -C sub` or `sudo -i`.
-- A `make` after a wrapper option that the tool does not know. That option can take the next word as its value, so the tool cannot find the command.
-- A recipe line that runs make, but does not say `$(MAKE)`. A dry run prints that line and does not run it.
-- A rule whose commands mix with other output: the output of a `$(MAKE)` line, or the `$(info …)` text of the recipe that make runs next.
-- A sub-make with `--no-print-directory`.
-- A sub-make that syncs its output (`-O`) over more than one job, when a `$(MAKE)` line comes out between its jobs.
-
-The tool finds `$(info` only in the text of a recipe. When a variable or a `$(call …)` holds the `info`, the tool reads its text as a command of the rule before it.
-
-The tool reads CircleCI and GitHub Actions jobs in the same way. For each step it finds the shell, the directory in the checkout and the environment. It collects the job images for the Dockerfile lints. A CircleCI `commands:` entry and a local GitHub composite action (`uses: ./dir`) are step lists that a job calls, so the tool reads their steps at each call. It does not read a remote action, and it says so for a local action that is not composite.
-
-The two systems set different defaults:
-
-| What                      | CircleCI                                      | GitHub Actions                                                |
-| ------------------------- | --------------------------------------------- | ------------------------------------------------------------- |
-| Shell of a step           | `/bin/bash -eo pipefail`, or the job `shell:` | `bash -e {0}`, or `defaults.run.shell`                        |
-| Shell of a Windows job    | PowerShell                                    | `pwsh`                                                        |
-| Defaults of a job         | the `executors:` entry that it names          | `defaults.run` of the job, then of the workflow               |
-| A relative step directory | is read from the job directory                | is read from the workspace                                    |
-| Where the code is         | the `checkout` step and its `path`            | the `actions/checkout` step of this repository and its `path` |
-
-The content lints read only the CircleCI steps that run in a POSIX shell, because the lints of this pack read the steps of a GitHub workflow already. The tool follows the `make` calls of every step. It cannot read a CircleCI executor from an orb, and it says so.
 
 ## Contributing
 
