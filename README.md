@@ -480,7 +480,7 @@ An `untraced` finding names work that the tool cannot follow, so you know that n
 - A rule whose commands mix with other output: the output of a `$(MAKE)` line, or the `$(info …)` text of the recipe that make runs next.
 - A sub-make with `--no-print-directory`.
 
-The content lints read only the steps that run in a POSIX shell, and the tool still follows the `make` calls of the other steps. A CircleCI job gets its images, shell and environment from the `executors:` entry that it names.
+The content lints read only the steps that run in a POSIX shell, and the tool still follows the `make` calls of the other steps. A CircleCI job gets its images, shell and environment from the `executors:` entry that it names. The tool cannot read an executor from an orb, and it says so. A Windows job runs PowerShell unless it names a shell.
 
 ## Contributing
 

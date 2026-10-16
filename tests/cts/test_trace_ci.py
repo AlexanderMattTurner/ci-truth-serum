@@ -294,6 +294,10 @@ def test_make_calls_name_a_call_they_cannot_resolve(
         "env --chdir=sub make check",
         "env -C sub make check",
         "sudo -u ci bash -c 'make check'",
+        "uv run --directory sub make check",
+        "poetry -C sub run make check",
+        "sudo -D sub make check",
+        "env -iC sub make check",
     ],
 )
 def test_make_calls_name_a_call_they_cannot_place(command: str, tmp_path: Path) -> None:
@@ -342,6 +346,8 @@ def test_make_calls_keep_a_directory_change_in_its_own_shell(
         ("sudo -u ci make check", ("check",), {}),
         ("uv run --with ruff make check", ("check",), {}),
         ("sudo timeout 60 env V=1 make check", ("check",), {"V": "1"}),
+        ("sudo -iu ci make check", ("check",), {}),
+        ("exec make check", ("check",), {}),
     ],
 )
 def test_make_calls_read_a_wrapper_and_the_variables_before_make(
@@ -353,7 +359,13 @@ def test_make_calls_read_a_wrapper_and_the_variables_before_make(
 
 
 @pytest.mark.parametrize(
-    "command", ["sudo apt-get install -y make", "sudo -E apt-get install -y make"]
+    "command",
+    [
+        "sudo apt-get install -y make",
+        "sudo -E apt-get -y install make",
+        "sudo -H yum -y install make",
+        "uv pip install make",
+    ],
 )
 def test_a_make_package_name_is_not_a_call(command: str, tmp_path: Path) -> None:
     assert mod.make_calls(_step(command), tmp_path) == ([], [])
@@ -919,6 +931,30 @@ def _config(command: str, job: str = "") -> str:
         ),
         pytest.param(
             {
+                "Makefile": f"check:\n{TAB}$(MAKE) -j4 inner\ninner: a b\na:\n{TAB}$(MAKE) -C sa check\nb:\n{TAB}sleep 0.1 && $(MAKE) -C sb check\n",
+                "sa/Makefile": f"$(shell sleep 0.3)\ncheck:\n{TAB}false; true\n",
+                "sb/Makefile": f"$(shell sleep 0.6)\ncheck:\n{TAB}a | b\n",
+            },
+            [
+                ("sa/Makefile", 3, "lost-status-sequence"),
+                ("sb/Makefile", 3, "lost-status-pipe"),
+            ],
+            id="a recipe's own -j runs one job at a time too",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"say = $(info == $(1) ==)\ncheck: lint\n{TAB}$(call say,running tests; may fail)\nlint:\n{TAB}echo lint\n"
+            },
+            [("Makefile", 5, "untraced")],
+            id="the $(info) text of the next rule, through a variable",
+        ),
+        pytest.param(
+            {"Makefile": f"check:\n{TAB}make --version\n"},
+            [],
+            id="a recipe that asks make for its version",
+        ),
+        pytest.param(
+            {
                 "Makefile": f"check:\n{TAB}make -C sub check\n{TAB}cd sub && make check\n",
                 "sub/Makefile": f"check:\n{TAB}false; true\n",
             },
@@ -1030,7 +1066,19 @@ def test_a_circleci_job_reads_its_executor(
     ("command", "says"),
     [
         ("make check", "no CI step runs make in this directory"),
-        ("make check; docker run img make check", "and 1 `untraced` findings show"),
+        (
+            "make check; docker run img make check",
+            "and 1 `untraced` finding shows make work",
+        ),
+        (
+            "|\n        make check\n        docker run img make check\n        ssh host make check",
+            "and 2 `untraced` findings show make work",
+        ),
+        # The user accepted the untraced call, so it does not count.
+        (
+            "make check; docker run img make check  # trace-ci-ok: runs elsewhere",
+            "no CI step runs make in this directory",
+        ),
     ],
 )
 def test_an_uncovered_makefile_names_the_calls_that_were_not_traced(
@@ -1049,6 +1097,30 @@ def test_an_uncovered_makefile_names_the_calls_that_were_not_traced(
         f for f in json.loads(capsys.readouterr().out) if f["kind"] == "uncovered"
     ]
     assert says in uncovered["message"]
+
+
+WINDOWS_CONFIG = """\
+version: 2.1
+orbs:
+  win: circleci/windows@5.0
+jobs:
+  test:
+    executor: win/default
+    steps:
+      - checkout
+      - run: $env:Path += ";C:\\tools"
+"""
+
+
+def test_a_windows_orb_job_runs_powershell_and_names_its_executor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _repo(tmp_path, {".circleci/config.yml": WINDOWS_CONFIG})
+    mod.main(["--repo", str(repo), "--format", "json", "--no-fault-injection"])
+    out, err = capsys.readouterr()
+    assert json.loads(out) == []
+    assert "job 'test' runs on the executor 'win/default'" in err
+    assert "do not read the steps that run in powershell.exe" in err
 
 
 def test_two_calls_of_one_command_fail_together_and_are_reported_once(
