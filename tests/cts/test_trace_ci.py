@@ -1097,6 +1097,16 @@ def _config(command: str, job: str = "") -> str:
         ),
         pytest.param(
             {
+                ".circleci/config.yml": _config("make check"),
+                "Makefile": f"check:\n{TAB}$(MAKE) -C pkg check\n",
+                "pkg/Makefile": "include ../mk/common.mk\n",
+                "mk/common.mk": f"check:\n{TAB}@true\n",
+            },
+            [],
+            id="a sub-make whose recipes come from an included file reaches its directory",
+        ),
+        pytest.param(
+            {
                 ".circleci/config.yml": _config(
                     "make check", "    environment:\n      MODE: ci\n"
                 ),

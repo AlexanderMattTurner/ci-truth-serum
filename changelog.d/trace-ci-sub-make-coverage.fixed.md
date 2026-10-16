@@ -1,0 +1,1 @@
+- `trace-ci`: a sub-make that a recipe starts (`$(MAKE) -C pkg check`) now counts its own directory as reached when its recipes come from an included file such as `mk/common.mk`. Before, the `uncovered` check reported that directory as one that no CI step reaches.

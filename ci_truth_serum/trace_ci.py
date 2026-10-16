@@ -2384,7 +2384,7 @@ def trace(
     reached_dirs: set[Path] = set()
     for call in calls:
         result = make_trace(make, call.cwd, call.args, ci_env=call.env)
-        reached_dirs.update(_makefile_dirs(call))
+        reached_dirs.update(_makefile_dirs(call.cwd, call.args))
         if result.hidden:
             findings.append(
                 TraceFinding(
@@ -2397,6 +2397,11 @@ def trace(
             continue
         baselines[call] = result
         reached_dirs.update(c.makefile.parent for c in result.commands)
+        # A sub-make that a recipe starts (`$(MAKE) -C sub check`) reads the
+        # makefile in its own directory, even when the recipes that it runs
+        # come from an included file such as `mk/common.mk`.
+        for command in result.commands:
+            reached_dirs.update(_makefile_dirs(command.cwd, command.options))
         if result.returncode != 0:
             last = (result.stderr.strip().splitlines() or [""])[-1]
             findings.append(
@@ -2429,11 +2434,11 @@ def _kept(repo: Path, findings: list[TraceFinding]) -> list[TraceFinding]:
     return [f for f in unique if not _annotated(repo, f)]
 
 
-def _makefile_dirs(call: MakeCall) -> list[Path]:
-    """The directories of the makefiles that CALL reads: each `-f FILE`, or
-    the call's directory when it names none."""
-    files = parse_make_args(call.args).files
-    return [(call.cwd / f).resolve().parent for f in files if f] or [call.cwd]
+def _makefile_dirs(cwd: Path, args: Sequence[str]) -> list[Path]:
+    """The directories of the makefiles that a make in CWD with ARGS reads:
+    each `-f FILE`, or CWD when it names none."""
+    files = parse_make_args(args).files
+    return [(cwd / f).resolve().parent for f in files if f] or [cwd]
 
 
 def _step_findings(
