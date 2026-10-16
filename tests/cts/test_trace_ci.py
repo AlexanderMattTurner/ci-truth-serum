@@ -660,6 +660,53 @@ def test_parse_trace_names_the_rule_each_make_runs_next(tmp_path: Path) -> None:
     assert follows == (mod.Follow(0, (tmp_path / "Makefile").resolve(), 2),)
 
 
+def test_parse_trace_records_each_sub_make_that_starts(tmp_path: Path) -> None:
+    mark = mod.LEVEL_MARK
+    output = (
+        f"{mark}0\n"
+        "Makefile:2: target 'check' does not exist\n"
+        "make -C a -f ../x.mk check; make -C b check\n"
+        f"make[1]: Entering directory '{tmp_path / 'a'}'\n"
+        f"{mark}1\n"
+        f"make[1]: Leaving directory '{tmp_path / 'a'}'\n"
+        f"make[1]: Entering directory '{tmp_path / 'b'}'\n"
+        f"{mark}1\n"
+        f"make[1]: Leaving directory '{tmp_path / 'b'}'\n"
+    )
+    assert mod.parse_trace(output, tmp_path, ("V=1",)).sub_makes == (
+        mod.SubMake(tmp_path / "a", ("V=1", "--file=../x.mk")),
+        mod.SubMake(tmp_path / "b", ("V=1",)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param(
+            "env FOO=1 make -C pkg -f ../x.mk check",
+            (("--file=../x.mk",), ("check",), "pkg"),
+            id="a wrapper hides no make word",
+        ),
+        pytest.param(
+            "env -C pkg make check",
+            ((), (), None),
+            id="a wrapper that moves the directory starts no make that is found",
+        ),
+    ],
+)
+def test_sub_make_args(
+    text: str,
+    expected: tuple[tuple[str, ...], tuple[str, ...], str | None],
+    tmp_path: Path,
+) -> None:
+    options, goals, start = expected
+    assert mod._sub_make_args(text, 0, (), tmp_path) == mod.SubMakeArgs(
+        options,
+        goals,
+        None if start is None else (tmp_path / start).resolve(),
+    )
+
+
 def test_recipe_lines_skip_a_line_that_prints_nothing() -> None:
     text = f"check:\n{TAB}echo a\n{TAB}\n{TAB}@ \n{TAB}false; true\n"
     assert mod.recipe_lines(text, 2) == [
@@ -1130,6 +1177,25 @@ def _config(command: str, job: str = "") -> str:
             },
             [],
             id="a sub-make that prints no command reaches its directory",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}env -C a $(MAKE) -f ../mk/x.mk check && $(MAKE) -C b check\n",
+                "a/Makefile": f"check:\n{TAB}@true\n",
+                "b/Makefile": f"check:\n{TAB}@true\n",
+                "mk/x.mk": f"check:\n{TAB}@true\n",
+            },
+            [("a/Makefile", 1, "uncovered")],
+            id="a sub-make whose make command is not found takes no other make's -f",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}$(MAKE) --version && $(MAKE) -C sub -f ../x.mk check\n",
+                "sub/Makefile": f"check:\n{TAB}@true\n",
+                "x.mk": f"check:\n{TAB}@true\n",
+            },
+            [("Makefile", 2, "untraced"), ("sub/Makefile", 1, "uncovered")],
+            id="a make that starts no sub-make gives its options to no sub-make",
         ),
         pytest.param(
             {
