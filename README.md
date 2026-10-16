@@ -476,9 +476,12 @@ The tool follows CircleCI and GitHub Actions steps. It names the other CI files 
 An `untraced` finding names work that the tool cannot follow, so you know that nothing checked it. The tool reports these cases:
 
 - A `make` that runs in a container, on another host, in a development shell such as `nix develop`, or in a `bash -c` script.
+- A `make` after a wrapper option that changes the directory, such as `env -C sub`, or after a wrapper option that the tool does not know.
 - A recipe line that runs make, but does not say `$(MAKE)`. A dry run prints that line and does not run it.
 - A rule whose commands mix with other output: the output of a `$(MAKE)` line, or the `$(info …)` text of the recipe that make runs next.
 - A sub-make with `--no-print-directory`.
+
+The tool finds `$(info` only in the text of a recipe. When a variable or a `$(call …)` holds the `info`, the tool reads its text as a command of the rule before it.
 
 The content lints read only the steps that run in a POSIX shell, and the tool still follows the `make` calls of the other steps. A CircleCI job gets its images, shell and environment from the `executors:` entry that it names. The tool cannot read an executor from an orb, and it says so. A Windows job runs PowerShell unless it names a shell.
 

@@ -82,7 +82,7 @@ jobs:
 
 
 def test_circleci_steps_keep_the_source_line_of_each_command_line() -> None:
-    steps, images = mod.circleci_steps(CIRCLECI, "c.yml")
+    steps, images = mod.circleci_steps(CIRCLECI, "c.yml", [])
     assert [(s.job, s.shell, s.lines, s.working_directory) for s in steps] == [
         ("test", mod.CIRCLECI_DEFAULT_SHELL, (11, 12), ""),
         ("test", mod.CIRCLECI_DEFAULT_SHELL, (13,), ""),
@@ -106,7 +106,7 @@ jobs:
         command: make lint
         working_directory: sub
 """
-    steps, images = mod.circleci_steps(text, "c.yml")
+    steps, images = mod.circleci_steps(text, "c.yml", [])
     assert [s.working_directory for s in steps] == ["app", "app/sub"]
     assert images == [mod.Image("c.yml", "test", "cimg/python:3.12", 4)]
 
@@ -146,7 +146,7 @@ jobs:
 def test_circleci_steps_find_the_step_directory_in_the_checkout(
     job: str, dirs: list
 ) -> None:
-    steps, _ = mod.circleci_steps(f"jobs:\n  j:\n{job}", "c.yml")
+    steps, _ = mod.circleci_steps(f"jobs:\n  j:\n{job}", "c.yml", [])
     assert [s.working_directory for s in steps] == dirs
 
 
@@ -177,7 +177,7 @@ jobs:
         environment:
           STEP: "1"
 """
-    steps, _ = mod.circleci_steps(text, "c.yml")
+    steps, _ = mod.circleci_steps(text, "c.yml", [])
     assert [(s.command, s.working_directory) for s in steps] == [
         ("make lint", "app"),
         ("make lint", "app"),
@@ -187,16 +187,52 @@ jobs:
     assert dict(steps[2].env)["STEP"] == "1"
 
 
+WINDOWS_JOB = "jobs:\n  j:\n    executor: {executor}\n    steps:\n    - run: x\n"
+
+
+@pytest.mark.parametrize(
+    ("head", "executor", "shell"),
+    [
+        (
+            "orbs:\n  windows: circleci/windows@5.0\n",
+            "windows/server-2022",
+            "powershell.exe",
+        ),
+        (
+            "orbs:\n  win: circleci/node@5.0\n",
+            "win/default",
+            mod.CIRCLECI_DEFAULT_SHELL,
+        ),
+        (
+            "executors:\n  w:\n    resource_class: windows.medium\n",
+            "w",
+            "powershell.exe",
+        ),
+        (
+            "executors:\n  w:\n    machine:\n      image: windows-server-2022-gui:current\n",
+            "w",
+            "powershell.exe",
+        ),
+    ],
+)
+def test_a_circleci_windows_job_runs_powershell(
+    head: str, executor: str, shell: str
+) -> None:
+    text = head + WINDOWS_JOB.format(executor=executor)
+    steps, _ = mod.circleci_steps(text, "c.yml", [])
+    assert [s.shell for s in steps] == [shell]
+
+
 def test_a_circleci_command_that_calls_itself_is_refused() -> None:
     text = "commands:\n  a:\n    steps:\n    - a\njobs:\n  j:\n    steps:\n    - a\n"
     with pytest.raises(mod.TraceError, match="a -> a"):
-        mod.circleci_steps(text, "c.yml")
+        mod.circleci_steps(text, "c.yml", [])
 
 
 def test_a_circleci_run_step_without_a_command_is_refused() -> None:
     text = "jobs:\n  j:\n    steps:\n    - run:\n        name: x\n"
     with pytest.raises(mod.TraceError, match="c.yml:4"):
-        mod.circleci_steps(text, "c.yml")
+        mod.circleci_steps(text, "c.yml", [])
 
 
 def test_workflow_steps_read_the_environment() -> None:
@@ -298,6 +334,9 @@ def test_make_calls_name_a_call_they_cannot_resolve(
         "poetry -C sub run make check",
         "sudo -D sub make check",
         "env -iC sub make check",
+        # An option that the table does not list can take the next word.
+        "uv run --frobnicate lint make check",
+        "sudo -D sub timeout 60 make check",
     ],
 )
 def test_make_calls_name_a_call_they_cannot_place(command: str, tmp_path: Path) -> None:
@@ -348,6 +387,10 @@ def test_make_calls_keep_a_directory_change_in_its_own_shell(
         ("sudo timeout 60 env V=1 make check", ("check",), {"V": "1"}),
         ("sudo -iu ci make check", ("check",), {}),
         ("exec make check", ("check",), {}),
+        ("uv run --only-group lint make check", ("check",), {}),
+        ("uv run --index-url https://x/simple make check", ("check",), {}),
+        ("uv run -C k=v --no-group dev make check", ("check",), {}),
+        ("env - make check", ("check",), {}),
     ],
 )
 def test_make_calls_read_a_wrapper_and_the_variables_before_make(
@@ -365,6 +408,7 @@ def test_make_calls_read_a_wrapper_and_the_variables_before_make(
         "sudo -E apt-get -y install make",
         "sudo -H yum -y install make",
         "uv pip install make",
+        "sudo -D /tmp apt-get install make",
     ],
 )
 def test_a_make_package_name_is_not_a_call(command: str, tmp_path: Path) -> None:
@@ -777,6 +821,16 @@ def test_end_to_end_reports_each_defect_at_its_source_line(
         ),
         pytest.param(
             {
+                "Makefile": f"check:\n{TAB}$(MAKE) -C one lint && $(MAKE) -C sub -f ci.mk V=1 lint\n",
+                "one/Makefile": f"lint:\n{TAB}@true\n",
+                "sub/ci.mk": "ifneq ($(MAKECMDGOALS),lint)\n$(error run lint)\nendif\n"
+                f"SHELL := /bin/bash\n.SHELLFLAGS := -eo pipefail -c\nlint:\n{TAB}a | b\n",
+            },
+            [],
+            id="the second sub-make of a line is read with its own options",
+        ),
+        pytest.param(
+            {
                 "Makefile": f"check:\n{TAB}$(MAKE) --no-print-directory -C sub lint\n",
                 "sub/Makefile": f"lint:\n{TAB}-a | b\n",
             },
@@ -943,15 +997,50 @@ def _config(command: str, job: str = "") -> str:
         ),
         pytest.param(
             {
-                "Makefile": f"say = $(info == $(1) ==)\ncheck: lint\n{TAB}$(call say,running tests; may fail)\nlint:\n{TAB}echo lint\n"
+                "Makefile": f"define CHECKS\na | b\nfalse; true\nendef\ncheck: lint\n{TAB}@true\nlint:\n{TAB}$(CHECKS)\n"
             },
-            [("Makefile", 5, "untraced")],
-            id="the $(info) text of the next rule, through a variable",
+            [
+                ("Makefile", 8, "lost-status-pipe"),
+                ("Makefile", 8, "lost-status-sequence"),
+            ],
+            id="a canned recipe that another rule follows is checked",
         ),
         pytest.param(
-            {"Makefile": f"check:\n{TAB}make --version\n"},
+            {
+                ".circleci/config.yml": _config("make -j4 -O check"),
+                "Makefile": f"check: a b\na:\n{TAB}echo a\nb:\n{TAB}$(MAKE) -C sub check\n{TAB}false; true\n",
+                "sub/Makefile": f"check: x\n{TAB}a | b\nx:\n{TAB}-echo x\n",
+            },
+            [
+                ("Makefile", 6, "lost-status-sequence"),
+                ("sub/Makefile", 2, "lost-status-pipe"),
+                ("sub/Makefile", 4, "ignored-error"),
+            ],
+            id="output sync from the command line",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"MAKEFLAGS += -j4 --output-sync=target\ncheck: a b\na:\n{TAB}false; true\nb:\n{TAB}$(MAKE) -C sub check\n",
+                "sub/Makefile": f"MAKEFLAGS += -Otarget\ncheck: x\n{TAB}a | b\nx:\n{TAB}-echo x\n",
+            },
+            [
+                ("Makefile", 4, "lost-status-sequence"),
+                ("sub/Makefile", 3, "lost-status-pipe"),
+                ("sub/Makefile", 5, "ignored-error"),
+            ],
+            id="output sync from the makefiles",
+        ),
+        pytest.param(
+            {"Makefile": f"check:\n{TAB}make --version\n{TAB}make -v\n{TAB}gmake -h\n"},
             [],
             id="a recipe that asks make for its version",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check: lint\n{TAB}$(info === a | b ===)\n{TAB}echo check\nlint:\n{TAB}$(EMPTY)\n{TAB}echo lint\n"
+            },
+            [("Makefile", 5, "untraced")],
+            id="the $(info) text of the next rule, with counts that match",
         ),
         pytest.param(
             {

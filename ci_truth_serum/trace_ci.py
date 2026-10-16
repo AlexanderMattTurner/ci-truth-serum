@@ -396,7 +396,7 @@ class _CircleJob(NamedTuple):
 
 
 def circleci_steps(
-    text: str, source: str, notes: list[str] | None = None
+    text: str, source: str, notes: list[str]
 ) -> tuple[list[CiStep], list[Image]]:
     """The `run:` steps and the job images of a CircleCI configuration.
 
@@ -410,6 +410,11 @@ def circleci_steps(
     root = yaml.compose(text, Loader=yaml.SafeLoader)
     commands = dict(_items(_child(root, "commands")))
     executors = dict(_items(_child(root, "executors")))
+    windows_orbs = {
+        alias
+        for alias, orb in _items(_child(root, "orbs"))
+        if (_scalar(orb) or "").startswith("circleci/windows@")
+    }
     steps: list[CiStep] = []
     images: list[Image] = []
     for name, body in _items(_child(root, "jobs")):
@@ -417,7 +422,7 @@ def circleci_steps(
             _child(_child(body, "executor"), "name")
         )
         executor = executors.get(executor_name)
-        if executor_name is not None and executor is None and notes is not None:
+        if executor_name is not None and executor is None:
             notes.append(
                 f"{source}: job {name!r} runs on the executor {executor_name!r}, "
                 "which is not in this file (an orb executor), so trace-ci "
@@ -432,7 +437,11 @@ def circleci_steps(
             source,
             name,
             _scalar(_job_field(body, executor, "shell"))
-            or (WINDOWS_SHELL if _windows_job(body, executor_name) else None),
+            or (
+                WINDOWS_SHELL
+                if _windows_job(body, executor, executor_name, windows_orbs)
+                else None
+            ),
             directory,
             _circleci_checkout(body, directory),
             CIRCLECI_ENV
@@ -449,15 +458,22 @@ def circleci_steps(
     return steps, images
 
 
-def _windows_job(job: yaml.Node, executor_name: str | None) -> bool:
+def _windows_job(
+    job: yaml.Node,
+    executor: yaml.Node | None,
+    executor_name: str | None,
+    windows_orbs: set[str],
+) -> bool:
     """Whether the CircleCI JOB runs on Windows: a Windows resource class or
-    machine image, or an executor of the Windows orb (`win/…`)."""
+    machine image of the job or its EXECUTOR, or an executor of an orb that
+    WINDOWS_ORBS names (the aliases of `circleci/windows`)."""
+    resource_class = _scalar(_job_field(job, executor, "resource_class")) or ""
+    image = _scalar(_child(_job_field(job, executor, "machine"), "image")) or ""
+    orb, slash, _ = (executor_name or "").partition("/")
     return (
-        (_scalar(_child(job, "resource_class")) or "").startswith("windows.")
-        or (_scalar(_child(_child(job, "machine"), "image")) or "").startswith(
-            "windows-"
-        )
-        or (executor_name or "").startswith("win/")
+        resource_class.startswith("windows.")
+        or image.startswith("windows-")
+        or (bool(slash) and orb in windows_orbs)
     )
 
 
@@ -705,8 +721,18 @@ WRAPPERS = {
     "uv": Wrapper(
         frozenset(
             {"--with", "--with-requirements", "--with-editable", "--python", "-p"}
-            | {"--extra", "--group", "--package", "--project", "--env-file"}
-            | {"--index", "--default-index", "--cache-dir", "--config-file"}
+            | {"--extra", "--no-extra", "--group", "--no-group", "--only-group"}
+            | {"--package", "--project", "--env-file", "--cache-dir"}
+            | {"--index", "--default-index", "--index-url", "-i", "--config-file"}
+            | {"--extra-index-url", "--find-links", "-f", "--index-strategy"}
+            | {"--keyring-provider", "--allow-insecure-host", "--resolution"}
+            | {"--prerelease", "--fork-strategy", "--exclude-newer"}
+            | {"--exclude-newer-package", "--config-setting", "-C"}
+            | {"--config-settings-package", "--no-build-isolation-package"}
+            | {"--upgrade-package", "-P", "--reinstall-package"}
+            | {"--refresh-package", "--no-build-package", "--no-binary-package"}
+            | {"--link-mode", "--python-platform", "--python-preference"}
+            | {"--color"}
         ),
         frozenset({"--directory"}),
         ("run",),
@@ -731,6 +757,11 @@ ELSEWHERE = SHELLS | {
     "nix-shell",
     "devbox",
 }
+ELSEWHERE_TEXT = (
+    "in a shell script, a container, another host or a development shell, "
+    "in a directory that a wrapper option moves to, or after a wrapper "
+    "option that trace-ci does not know"
+)
 
 
 class Move(NamedTuple):
@@ -839,10 +870,13 @@ def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
     """How the command WORDS runs make. The result is one of these:
     - the words from `make` on, and the `VAR=value` words of the wrappers
       before it, for a make that runs by itself or behind WRAPPERS programs;
-    - UNTRACED, for a make that runs where trace-ci cannot follow it: in a
-      shell script, a container, another host, a development shell, or the
-      directory that a wrapper option moves to;
-    - None, when WORDS runs no make."""
+    - UNTRACED, for a make that runs where trace-ci cannot follow it (see
+      ELSEWHERE_TEXT);
+    - None, when WORDS runs no make.
+
+    An option that the WRAPPERS table does not list is read as a flag. That
+    option can take the next word as its value, so when the words after that
+    word launch a make, the make is UNTRACED and not lost."""
     name = program_name(words[0])
     if name in MAKE_PROGRAMS:
         return words, []
@@ -853,17 +887,20 @@ def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
     spec = WRAPPERS[name]
     first = list(spec.first)
     env: list[str] = []
+    moved = unlisted = False
     i = 1
     while i < len(words):
         text = unquote(words[i])
         options = _wrapper_options(text)
+        # Whether the word before is an unlisted option that can take this word.
+        after_unlisted, unlisted = unlisted, False
         if options:
             for option, attached in options:
-                if option in spec.chdir:
-                    return UNTRACED if _mentions_make(words[i:]) else None
-                if option in spec.values:
+                if option in spec.chdir or option in spec.values:
+                    moved |= option in spec.chdir
                     i += 0 if attached else 1
                     break
+                unlisted = not attached
         elif re.fullmatch(r"\w+=.*", text):
             env.append(words[i])
         elif first:
@@ -872,7 +909,13 @@ def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
                 return None
         else:
             found = _launch(words[i:])
-            return (found[0], env + found[1]) if isinstance(found, tuple) else found
+            if found is None and after_unlisted and words[i + 1 :]:
+                found = None if _launch(words[i + 1 :]) is None else UNTRACED
+            if found is None:
+                return None
+            if moved or found == UNTRACED:
+                return UNTRACED
+            return found[0], env + found[1]
         i += 1
     return None
 
@@ -881,7 +924,10 @@ def _wrapper_options(text: str) -> list[tuple[str, bool]]:
     """The options in the word TEXT, each with whether its value is in TEXT.
     `-iu` holds `-i` and `-u`, and `--user=ci` holds `--user` with its value.
     A short option that takes a value takes the rest of its group, so each
-    letter but the last has its value attached."""
+    letter but the last has its value attached. A `-` alone is an option too
+    (`env -` empties the environment)."""
+    if text == "-":
+        return [("-", False)]
     if text.startswith("--") and len(text) > 2:
         name, eq, _ = text.partition("=")
         return [(name, bool(eq))]
@@ -1049,8 +1095,11 @@ def parse_trace(
     prints its rules between `Entering directory` and `Leaving directory`, and
     the parent's rule goes on after it, so each sub-make keeps its own frame.
     The parent's last command is the one that started the sub-make, so it gives
-    the sub-make's arguments. A sub-make with `--no-print-directory` prints its
-    level mark but no `Entering directory` line, and that hides it."""
+    the sub-make's arguments. Each make prints its level mark once, as it
+    starts, so the mark tells a new sub-make from the same make again. Output
+    sync (`-O`) puts the output of each job between its own directory lines.
+    A sub-make with `--no-print-directory` prints its level mark but no
+    `Entering directory` line, and that hides it."""
     frames = [_Frame(cwd, 0, options, goals)]
     found: list[Traced] = []
     follows: list[Follow] = []
@@ -1084,14 +1133,30 @@ def parse_trace(
             continue
         if m := ENTER.match(raw):
             parent, level = frames[-1], int(m.group("level") or 0)
+            directory = Path(m.group("dir"))
+            if level == parent.level and directory == parent.cwd:
+                # Output sync wraps the output of each job of a make in its own
+                # directory lines, so this is the same make, and not a new one.
+                frames.append(parent)
+                continue
             args = (parent.options, parent.goals)
             if level > parent.level:
-                args = _sub_make_args(parent.last, parent.started, parent.options)
-                parent.started += 1
-            frames.append(_Frame(Path(m.group("dir")), level, *args))
+                # The last sub-make again, after output sync; its level mark
+                # below names a new one.
+                args = _sub_make_args(
+                    parent.last, max(parent.started - 1, 0), parent.options
+                )
+            frames.append(_Frame(directory, level, *args))
             continue
         if raw.startswith(LEVEL_MARK):
-            hidden = hidden or int(raw[len(LEVEL_MARK) :]) != frames[-1].level
+            top, level = frames[-1], int(raw[len(LEVEL_MARK) :])
+            parent = frames[-2] if len(frames) > 1 else top
+            if level == top.level and parent.level < level:
+                top.options, top.goals = _sub_make_args(
+                    parent.last, parent.started, parent.options
+                )
+                parent.started += 1
+            hidden = hidden or level != top.level
             continue
         if LEAVE.match(raw):
             if len(frames) > 1:
@@ -2082,7 +2147,7 @@ def trace(
                     step.source,
                     line,
                     "untraced",
-                    "this `make` call has an expansion or a CI template expression, runs in a directory outside the checkout, or follows a `cd` that trace-ci cannot resolve, so its commands are not checked",
+                    f"this `make` call has an expansion or a CI template expression, runs in a directory outside the checkout, follows a `cd` that trace-ci cannot resolve, or runs {ELSEWHERE_TEXT}, so its commands are not checked",
                 )
             )
 
@@ -2186,9 +2251,10 @@ def _recipe_findings(
     runs a `+` or `$(MAKE)` line, so its output mixes with the printed
     commands: a rule with one is not checked when the counts do not match.
     Make prints the `$(info …)` text of a recipe before it names the rule, so
-    that text mixes with the commands of the rule before it. A rule that
-    printed more commands than it has lines, and that another rule follows,
-    is not checked. Under `.ONESHELL` one shell runs the whole recipe, so the rule
+    that text mixes with the commands of the rule before it, and that rule is
+    not checked. trace-ci finds `$(info` only in the recipe text, so an `info`
+    that a variable or a `$(call …)` holds is read as a command of the rule
+    before it. Under `.ONESHELL` one shell runs the whole recipe, so the rule
     is checked as one script."""
     findings: list[TraceFinding] = []
     shells: dict[tuple, MakeShell] = {}
@@ -2212,6 +2278,19 @@ def _recipe_findings(
             source = first.makefile.read_text(encoding="utf-8", errors="replace")
             recipe = recipe_lines(source, first.first_line, shell.prefix)
             rules[first.makefile, first.first_line] = shell.prefix
+            if run in follows and _prints_info(
+                follows[run].makefile, follows[run].line, shell.prefix
+            ):
+                after = follows[run]
+                findings.append(
+                    TraceFinding(
+                        path,
+                        first.first_line,
+                        "untraced",
+                        f"make expands the recipe at {os.path.relpath(after.makefile, repo)}:{after.line} before it names that rule, so the `$(info …)` text of that recipe comes out among this rule's commands; trace-ci cannot tell them apart and does not check this rule; use `@echo` in that recipe instead",
+                    )
+                )
+                continue
             entries = recipe
             if len(group) != len(recipe):
                 if any(e.runs for e in recipe):
@@ -2221,17 +2300,6 @@ def _recipe_findings(
                             first.first_line,
                             "untraced",
                             "this rule has a `+` or `$(MAKE)` line, which a dry run runs, and the output of that line mixes with the commands that make prints, so trace-ci cannot tell them apart and does not check this rule",
-                        )
-                    )
-                    continue
-                if len(group) > len(recipe) and run in follows:
-                    after = follows[run]
-                    findings.append(
-                        TraceFinding(
-                            path,
-                            first.first_line,
-                            "untraced",
-                            f"make printed {len(group)} lines for this recipe of {len(recipe)} lines; they can be commands from a variable of several lines, or `$(info …)` text of the recipe at {os.path.relpath(after.makefile, repo)}:{after.line}, which make prints before it names that rule; trace-ci cannot tell which, so it does not check this rule",
                         )
                     )
                     continue
@@ -2273,6 +2341,24 @@ def _recipe_findings(
     return findings
 
 
+def _prints_info(makefile: Path, first_line: int, recipe_prefix: str) -> bool:
+    """Whether the recipe at FIRST_LINE of MAKEFILE calls make's `info`, which
+    prints to the same output as the commands of a dry run."""
+    text = makefile.read_text(encoding="utf-8", errors="replace")
+    return any(
+        re.search(r"\$[({]info\s", _recipe_source(text, entry, recipe_prefix))
+        for entry in recipe_lines(text, first_line, recipe_prefix)
+    )
+
+
+def _recipe_source(text: str, entry: RecipeLine, recipe_prefix: str) -> str:
+    """The text of the recipe line ENTRY of the makefile TEXT, as make writes
+    it, without its RECIPE_PREFIX and its `@+-` prefix."""
+    lines = text.splitlines()[entry.start - 1 : entry.start - 1 + entry.count]
+    lines[0] = re.sub(r"^[@+\-\s]*", "", lines[0][len(recipe_prefix) :])
+    return "\n".join(lines)
+
+
 def _unfollowed_make(text: str) -> str:
     """Why trace-ci does not follow a make that the printed recipe command TEXT
     runs, or "" when TEXT runs no make. A dry run runs only a line that is
@@ -2284,13 +2370,13 @@ def _unfollowed_make(text: str) -> str:
     ]
     if any(
         isinstance(f, tuple)
-        and not {"--version", "--help"}
+        and not {"--version", "--help", "-v", "-h"}
         & set(parse_make_args([unquote(w) for w in f[0][1:]]).options)
         for f in found
     ):
         return "this recipe line runs make, but the line does not say `$(MAKE)`, so a dry run prints it and does not run it, and trace-ci does not follow that make; write `$(MAKE)`, which a dry run runs, and which passes the make flags on"
     if UNTRACED in found:
-        return "this recipe line runs make in a shell script, a container, another host or a development shell, so trace-ci does not follow that make and does not check its commands"
+        return f"this recipe line runs make {ELSEWHERE_TEXT}, so trace-ci does not follow that make and does not check its commands"
     return ""
 
 
