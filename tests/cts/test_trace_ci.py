@@ -640,7 +640,7 @@ def test_parse_trace_skips_the_commands_of_a_builtin_rule(tmp_path: Path) -> Non
         "<builtin>: update target 'prog' due to: prog.c\n"
         "cc prog.c -o prog\n"
     )
-    commands, hidden, follows = mod.parse_trace(output, tmp_path)
+    commands, hidden, follows, _ = mod.parse_trace(output, tmp_path)
     assert [(c.first_line, c.text) for c in commands] == [(3, "echo one")]
     assert not hidden
     assert follows == ()
@@ -656,7 +656,7 @@ def test_parse_trace_names_the_rule_each_make_runs_next(tmp_path: Path) -> None:
         "checking now\n"
         "Makefile:2: update target 'check' due to: lint\n"
     )
-    _, _, follows = mod.parse_trace(output, tmp_path)
+    follows = mod.parse_trace(output, tmp_path).follows
     assert follows == (mod.Follow(0, (tmp_path / "Makefile").resolve(), 2),)
 
 
@@ -1122,6 +1122,14 @@ def _config(command: str, job: str = "") -> str:
             },
             [("pkg/Makefile", 1, "uncovered")],
             id="a sub-make behind a wrapper reads its -f and not its own makefile",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}$(MAKE) -C pkg check\n",
+                "pkg/Makefile": "check:\n",
+            },
+            [],
+            id="a sub-make that prints no command reaches its directory",
         ),
         pytest.param(
             {

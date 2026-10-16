@@ -244,16 +244,24 @@ class Follow(NamedTuple):
     line: int
 
 
+class SubMake(NamedTuple):
+    """A sub-make that a dry run started: its directory, and its options."""
+
+    cwd: Path
+    options: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class Trace:
-    """The result of one dry run. HIDDEN and FOLLOWS are as `parse_trace`
-    returns them."""
+    """The result of one dry run. HIDDEN, FOLLOWS and SUB_MAKES are as
+    `parse_trace` returns them."""
 
     returncode: int
     commands: tuple[Traced, ...]
     stderr: str
     hidden: str = ""
     follows: tuple[Follow, ...] = ()
+    sub_makes: tuple[SubMake, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1272,10 +1280,12 @@ def make_trace(
         env=_make_env(path_prefix, ci_env),
         check=False,
     )
-    commands, hidden, follows = parse_trace(
+    commands, hidden, follows, sub_makes = parse_trace(
         proc.stdout, cwd, parsed.options, parsed.goals
     )
-    return Trace(proc.returncode, tuple(commands), proc.stderr, hidden, follows)
+    return Trace(
+        proc.returncode, tuple(commands), proc.stderr, hidden, follows, sub_makes
+    )
 
 
 def parse_trace(
@@ -1287,7 +1297,8 @@ def parse_trace(
     """The commands in the stdout of `make --dry-run --trace`, HIDDEN, and
     FOLLOWS: for each rule run, the makefile and first recipe line of the rule
     that the same make ran next. HIDDEN says why trace-ci cannot tell which
-    make printed a command, or is "".
+    make printed a command, or is "". SUB_MAKES has each sub-make that
+    started, also one that printed no command.
 
     GNU make names the FIRST RECIPE LINE of each rule that it runs, not the rule
     header. A command that ends in `\\` goes on to the next line. A sub-make
@@ -1307,6 +1318,7 @@ def parse_trace(
     frames = [_Frame(cwd, 0, options, goals)]
     found: list[Traced] = []
     follows: list[Follow] = []
+    sub_makes: list[SubMake] = []
     runs = 0
     hidden = ""
     pending: list[str] = []
@@ -1372,6 +1384,7 @@ def parse_trace(
                 )
                 parent.started += 1
                 marked = frames[-1]
+                sub_makes.append(SubMake(marked.cwd, marked.options))
             if level != top.level:
                 hidden = hidden or HIDDEN_DIRECTORY
             continue
@@ -1416,7 +1429,7 @@ def parse_trace(
         emit("\n".join(pending))
     if any(f.pairs > 1 and f.bare_after for f in synced):
         hidden = hidden or HIDDEN_SYNC
-    return ParsedTrace(found, hidden, tuple(follows))
+    return ParsedTrace(found, hidden, tuple(follows), tuple(sub_makes))
 
 
 class ParsedTrace(NamedTuple):
@@ -1425,6 +1438,7 @@ class ParsedTrace(NamedTuple):
     commands: list[Traced]
     hidden: str
     follows: tuple[Follow, ...]
+    sub_makes: tuple[SubMake, ...]
 
 
 @dataclass(eq=False)
@@ -2399,12 +2413,12 @@ def trace(
             )
             continue
         baselines[call] = result
+        reached_dirs.update(c.makefile.parent for c in result.commands)
         # A sub-make that a recipe starts (`$(MAKE) -C sub check`) reads the
-        # makefile in its own directory, even when the recipes that it runs
-        # come from an included file such as `mk/common.mk`.
-        for command in result.commands:
-            reached_dirs.add(command.makefile.parent)
-            reached_dirs.update(_makefile_dirs(command.cwd, command.options))
+        # makefile in its own directory, even when it prints no command, or
+        # its recipes come from an included file such as `mk/common.mk`.
+        for sub in result.sub_makes:
+            reached_dirs.update(_makefile_dirs(sub.cwd, sub.options))
         if result.returncode != 0:
             last = (result.stderr.strip().splitlines() or [""])[-1]
             findings.append(
@@ -2440,7 +2454,7 @@ def _kept(repo: Path, findings: list[TraceFinding]) -> list[TraceFinding]:
 def _makefile_dirs(cwd: Path, args: Sequence[str]) -> list[Path]:
     """The directories of the makefiles that a make in CWD with ARGS reads:
     each `-f FILE`, or CWD when it names none. ARGS can be the OPTIONS of a
-    `Traced`."""
+    `SubMake`."""
     files = parse_make_args(args).files
     return [(cwd / f).resolve().parent for f in files if f] or [cwd]
 
