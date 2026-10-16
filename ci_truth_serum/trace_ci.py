@@ -1,59 +1,34 @@
 #!/usr/bin/env python3
 """Trace the commands that CI really runs, and find where CI can pass over a failure.
 
-The lints in this pack read files by kind: a GitHub workflow, a shell script, a
-`Dockerfile`. Much CI is in other files. A CircleCI job can run `make check`,
-and the real work is in the `Makefile` recipes that `make check` reaches. No
-lint reads those recipes as CI, so a defect in them is not seen. This tool
-starts from the CI files and follows what they run::
+A CircleCI job can run `make check`, and the real work is in the `Makefile`
+recipes that it reaches. No lint of this pack reads those recipes as CI. This
+tool starts from the CI files and follows what they run. The README section
+"Apply: trace the commands CI runs with trace-ci" states the full contract::
 
-    trace-ci                     # the repository in the current directory
-    trace-ci --repo path/to/repo --select tier:1 --select tier:2
-    trace-ci --format json
+    trace-ci [--repo DIR] [--select SELECTOR] [--goal GOAL] [--format json]
 
-It does four things:
+1. It runs `make --dry-run --trace` for each `make` that a CircleCI or GitHub
+   Actions step calls. The content lints read each printed command, and each
+   finding points back to its source line.
+2. It makes each `$(shell …)` call fail, and reports a call when make still
+   exits 0 but runs fewer commands or arguments.
+3. It reports a status that the recipe shell loses in `a; b`, in `a | b`, or
+   in a loop, and a recipe line that starts with `-`.
+4. It reports a directory whose `Makefile` has a `check` goal that no CI step
+   reaches.
 
-1. It finds the CI files by their paths. The CircleCI and GitHub Actions files
-   are followed. Other CI systems are named on stderr, because this tool does
-   not read them yet.
-2. It runs `make --dry-run --trace` for each `make` that a CI step calls. GNU
-   make prints each command that it would run, and the `Makefile` line that the
-   command came from. Each command goes into a temporary file, with the shell
-   options that it really runs under. The content lints of this pack then read
-   those files, and each finding points back to the source line.
-3. It makes each `$(shell …)` call in the makefiles fail, one at a time, and
-   traces CI again. GNU make does not stop when a `$(shell …)` command fails. It
-   uses the empty output. If `make` still exits 0 but runs fewer commands or
-   fewer arguments, the CI check can pass when it checked nothing. A worked
-   case: `FILES := $(shell git ls-files)` feeds `pre-commit run --files
-   $(FILES)`. If `git` fails, pre-commit gets no files, skips every hook, and
-   exits 0.
-4. It finds a directory whose `Makefile` has a `check` goal that no CI step
-   reaches (`--goal` changes the name).
-
-It also reports two make-only defects in the commands that CI reaches. GNU make
-runs each recipe line with `/bin/sh -c`, so `a; b` reports only the status of
-`b`, and `a | b` reports only the status of `b`. A recipe line that starts with
-`-` has its failure ignored.
-
-Run this tool only on a tree that you trust as much as you trust `make`. A dry
-run still runs each `$(shell …)` call, and each recipe line that holds `$(MAKE)`
-or starts with `+`.
-
-To accept a finding, put `# trace-ci-ok: <reason>` on its line or on the line
-above it. For an uncovered directory, put the comment on line 1 of its
-`Makefile`. A finding from a content lint takes that lint's own annotation, in
-the CI step or the recipe line.
-
-Exit status: 0 when there is no finding, 1 when there are findings, and 2 when
-the tool cannot do the trace (no GNU make, no CI file that it follows, or a
-selection that matches no content lint).
+Trust the tree as you trust `make`: a dry run still runs each `$(shell …)`
+call and each `+` or `$(MAKE)` recipe line. A `# trace-ci-ok: <reason>`
+comment on a finding's line, or on the line above it, accepts the finding.
+Exit status: 0 for no finding, 1 for findings, 2 when the tool cannot trace.
 """
 
 import argparse
 import fnmatch
 import json
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -72,11 +47,19 @@ from identify import identify
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     command_words,
+    condition_parts,
     iter_nodes,
     node_text,
     parse,
     program_name,
     unquote,
+)
+from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    comment_lines,
+    shell_comments,
+)
+from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    yaml_script_view,
 )
 from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     DOCKERFILE,
@@ -169,13 +152,20 @@ SHELL_BUILTINS = frozenset(
     }
 )
 
+# A rule from make's built-in rules is named `<builtin>`, with no line.
 TRACE_RULE = re.compile(
-    r"^(?P<file>.+?):(?P<line>\d+): (?:target '.*' does not exist|update target '.*' due to: .*)$"
+    r"^(?P<file>.+?)(?::(?P<line>\d+))?: (?:target '.*' does not exist|update target '.*' due to: .*)$"
 )
 MAKE_MESSAGE = re.compile(r"^\S*make(?:\[\d+\])?: ")
-ENTER = re.compile(r"^\S*make(?:\[\d+\])?: Entering directory '(?P<dir>.*)'$")
+ENTER = re.compile(
+    r"^\S*make(?:\[(?P<level>\d+)\])?: Entering directory '(?P<dir>.*)'$"
+)
 LEAVE = re.compile(r"^\S*make(?:\[\d+\])?: Leaving directory '(?P<dir>.*)'$")
 MAKE_REF_PLACEHOLDER = "__cts_make_ref__"
+# A GitHub Actions `${{ … }}` or a CircleCI `<< … >>` template expression. A
+# CircleCI name always holds a dot (`parameters.x`), so `cat <<EOF >> f` is no match.
+CI_EXPRESSION = re.compile(r"\$\{\{.*?\}\}|<<\s*\w+(?:\.[\w-]+)+\s*>>")
+CI_PLACEHOLDER = "${CTS_CI_EXPRESSION}"
 # Nodes whose value only the shell can compute. A `make` call that holds one
 # cannot be traced, because trace-ci does not know the goal or the argument.
 EXPANSIONS = (
@@ -200,8 +190,11 @@ class CiStep:
     shell: str
     command: str
     lines: tuple[int, ...]
-    working_directory: str
+    # Relative to the checkout. None when trace-ci cannot find it there.
+    working_directory: str | None
     lint: bool
+    # The environment variables that CI sets to a literal value for the step.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -222,31 +215,49 @@ class MakeCall:
     cwd: Path
     args: tuple[str, ...]
     line: int
+    # The step's environment, and each `VAR=value` written before `make`.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
 class Traced:
-    """One command that a dry run of make prints."""
+    """One command that a dry run of make prints.
+
+    RUN numbers the rule runs of one trace, so the commands of one run can be
+    counted. LEVEL is 0 for the make that CI calls and N for a `make[N]`.
+    OPTIONS and GOALS are the arguments of the make that printed the command."""
 
     makefile: Path
     first_line: int
     index: int
     text: str
     cwd: Path
+    run: int = 0
+    level: int = 0
+    options: tuple[str, ...] = ()
+    goals: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Trace:
+    """The result of one dry run. HIDDEN is true when a sub-make printed no
+    `Entering directory` line, so its commands look like the parent's."""
+
     returncode: int
     commands: tuple[Traced, ...]
     stderr: str
+    hidden: bool = False
 
 
 @dataclass(frozen=True)
 class RecipeLine:
+    """A logical recipe line: its first line, its line count, its `@+-` prefix,
+    and whether a dry run still runs it (a `+` line, or a `$(MAKE)` line)."""
+
     start: int
     count: int
     prefix: str
+    runs: bool = False
 
 
 @dataclass(frozen=True)
@@ -303,19 +314,26 @@ def discover(files: Sequence[str]) -> dict[str, list[str]]:
 # --------------------------------------------------------------------------- #
 # Read the CI steps
 # --------------------------------------------------------------------------- #
+def _pairs(node: yaml.MappingNode) -> list[tuple[str, yaml.Node]]:
+    """The keys and values of NODE, with each `<<: *anchor` merged in.
+
+    `yaml.compose` leaves merge keys as they are written. PyYAML's own
+    `flatten_mapping` merges them, and it puts the merged pairs first, so the
+    LAST pair of a key is the value that a YAML loader gives it."""
+    yaml.SafeLoader("").flatten_mapping(node)
+    return [(k.value, v) for k, v in node.value if isinstance(k, yaml.ScalarNode)]
+
+
 def _child(node: yaml.Node | None, key: str) -> yaml.Node | None:
     if not isinstance(node, yaml.MappingNode):
         return None
-    for k, v in node.value:
-        if isinstance(k, yaml.ScalarNode) and k.value == key:
-            return v
-    return None
+    return dict(_pairs(node)).get(key)
 
 
 def _items(node: yaml.Node | None) -> list[tuple[str, yaml.Node]]:
     if not isinstance(node, yaml.MappingNode):
         return []
-    return [(k.value, v) for k, v in node.value if isinstance(k, yaml.ScalarNode)]
+    return list(dict(_pairs(node)).items())
 
 
 def _seq(node: yaml.Node | None) -> list[yaml.Node]:
@@ -338,61 +356,172 @@ def scalar_lines(node: yaml.ScalarNode) -> tuple[int, ...]:
     return (node.start_mark.line + 1,) * count
 
 
+# The variables that each CI system sets in every job.
+CIRCLECI_ENV = {"CI": "true", "CIRCLECI": "true"}
+GITHUB_ENV = {"CI": "true", "GITHUB_ACTIONS": "true"}
+
+
+def _env(node: yaml.Node | None) -> dict[str, str]:
+    """The variables of an `env:` or `environment:` mapping that have a literal
+    value. A value with an expansion or a CI template expression is known only
+    in CI, so the variable is left out."""
+    return {
+        k: v.value
+        for k, v in _items(node)
+        if isinstance(v, yaml.ScalarNode)
+        and "$" not in v.value
+        and not CI_EXPRESSION.search(v.value)
+    }
+
+
+class _CircleJob(NamedTuple):
+    """What a CircleCI job gives each of its steps."""
+
+    source: str
+    name: str
+    shell: str | None
+    directory: str | None
+    checkout: str | None
+    env: dict[str, str]
+
+
 def circleci_steps(text: str, source: str) -> tuple[list[CiStep], list[Image]]:
-    """The `run:` steps and the job images of a CircleCI configuration."""
+    """The `run:` steps and the job images of a CircleCI configuration.
+
+    A reusable command under `commands:` runs only where a job calls it, with
+    the job's shell, directory and environment, so its steps are read at each
+    call. The steps of a `when` or an `unless` step are read as steps that run."""
     root = yaml.compose(text, Loader=yaml.SafeLoader)
+    commands = dict(_items(_child(root, "commands")))
     steps: list[CiStep] = []
     images: list[Image] = []
-    for section in ("jobs", "commands"):
-        for job, body in _items(_child(root, section)):
-            job_shell = _scalar(_child(body, "shell"))
-            job_wd = _scalar(_child(body, "working_directory"))
-            for entry in _seq(_child(body, "docker")):
-                image = _child(entry, "image")
-                if isinstance(image, yaml.ScalarNode):
-                    images.append(
-                        Image(source, job, image.value, image.start_mark.line + 1)
-                    )
-            for step in _seq(_child(body, "steps")):
-                run = _child(step, "run")
-                if run is None:
-                    continue
-                command, shell, wd = run, job_shell, job_wd
-                if isinstance(run, yaml.MappingNode):
-                    command = _child(run, "command")
-                    shell = _scalar(_child(run, "shell")) or shell
-                    wd = _scalar(_child(run, "working_directory")) or wd
-                if not isinstance(command, yaml.ScalarNode):
-                    raise TraceError(
-                        f"{source}:{step.start_mark.line + 1}: this `run:` step has no "
-                        "command string, so trace-ci cannot read what it runs"
-                    )
-                steps.append(
-                    CiStep(
-                        source,
-                        job,
-                        shell or CIRCLECI_DEFAULT_SHELL,
-                        command.value,
-                        scalar_lines(command),
-                        _circleci_dir(wd, source, run.start_mark.line + 1),
-                        lint=True,
-                    )
+    for name, body in _items(_child(root, "jobs")):
+        directory = _circleci_path(
+            _scalar(_child(body, "working_directory")) or "~/project", None
+        )
+        job = _CircleJob(
+            source,
+            name,
+            _scalar(_child(body, "shell")),
+            directory,
+            _circleci_checkout(body, directory),
+            CIRCLECI_ENV | _env(_child(body, "environment")),
+        )
+        for entry in _seq(_child(body, "docker")):
+            image = _child(entry, "image")
+            if isinstance(image, yaml.ScalarNode):
+                images.append(
+                    Image(source, name, image.value, image.start_mark.line + 1)
                 )
+        steps += _circleci_run_steps(_child(body, "steps"), job, commands, ())
     return steps, images
 
 
-def _circleci_dir(wd: str | None, source: str, line: int) -> str:
-    """WD relative to the checkout. CircleCI checks the code out to `~/project`."""
-    if wd is None or wd in ("~/project", "."):
-        return ""
-    if wd.startswith("~/project/"):
-        return wd[len("~/project/") :]
-    if not wd.startswith(("/", "~", "$")):
-        return wd
-    raise TraceError(
-        f"{source}:{line}: working_directory {wd!r} is outside ~/project, so "
-        "trace-ci cannot find it in the checkout"
+def _circleci_run_steps(
+    entries: yaml.Node | None,
+    job: _CircleJob,
+    commands: dict[str, yaml.Node],
+    calling: tuple[str, ...],
+) -> list[CiStep]:
+    """The `run:` steps in the step list ENTRIES of JOB. CALLING names the
+    reusable commands that the list is inside, so a command that calls itself
+    stops the trace instead of looping."""
+    steps: list[CiStep] = []
+    for entry in _seq(entries):
+        pairs = (
+            [(entry.value, None)]
+            if isinstance(entry, yaml.ScalarNode)
+            else _items(entry)
+        )
+        for key, value in pairs:
+            if key == "run":
+                steps.append(_circleci_run(value, entry.start_mark.line + 1, job))
+            elif key in ("when", "unless"):
+                steps += _circleci_run_steps(
+                    _child(value, "steps"), job, commands, calling
+                )
+            elif key in commands:
+                if key in calling:
+                    raise TraceError(
+                        f"{job.source}: the reusable command {key!r} calls itself, "
+                        f"through {' -> '.join((*calling, key))}"
+                    )
+                steps += _circleci_run_steps(
+                    _child(commands[key], "steps"), job, commands, (*calling, key)
+                )
+    return steps
+
+
+def _circleci_run(run: yaml.Node, line: int, job: _CircleJob) -> CiStep:
+    """The `run:` step whose value is RUN, on LINE of JOB."""
+    command, shell, wd, env = run, job.shell, None, job.env
+    if isinstance(run, yaml.MappingNode):
+        command = _child(run, "command")
+        shell = _scalar(_child(run, "shell")) or shell
+        wd = _scalar(_child(run, "working_directory"))
+        env = env | _env(_child(run, "environment"))
+    if not isinstance(command, yaml.ScalarNode):
+        raise TraceError(
+            f"{job.source}:{line}: this `run:` step has no "
+            "command string, so trace-ci cannot read what it runs"
+        )
+    return CiStep(
+        job.source,
+        job.name,
+        shell or CIRCLECI_DEFAULT_SHELL,
+        command.value,
+        scalar_lines(command),
+        _circleci_dir(wd, job.directory, job.checkout),
+        lint=True,
+        env=tuple(env.items()),
     )
+
+
+def _circleci_path(path: str, base: str | None) -> str | None:
+    """PATH as an absolute path, where `~` stays the first part (`/~/project`).
+    A relative PATH is read from BASE. None when PATH has an expansion, or is
+    relative and BASE is None."""
+    if "$" in path:
+        return None
+    if path == "~" or path.startswith("~/"):
+        return posixpath.normpath("/" + path)
+    if path.startswith("/"):
+        return posixpath.normpath(path)
+    return None if base is None else posixpath.normpath(posixpath.join(base, path))
+
+
+def _circleci_checkout(job: yaml.Node, job_dir: str | None) -> str | None:
+    """Where JOB's `checkout` step puts the code. Its `path` is read from the
+    job's directory, and the job's directory is the default. A job without a
+    `checkout` step finds the code in `~/project`, the default checkout path."""
+    for step in _seq(_child(job, "steps")):
+        if _scalar(step) == "checkout":
+            return job_dir
+        if isinstance(step, yaml.MappingNode) and _child(step, "checkout") is not None:
+            path = _scalar(_child(_child(step, "checkout"), "path"))
+            return job_dir if path is None else _circleci_path(path, job_dir)
+    return "/~/project"
+
+
+def _circleci_dir(
+    wd: str | None, job_dir: str | None, checkout: str | None
+) -> str | None:
+    """The directory of a step relative to the CHECKOUT. CircleCI reads a
+    relative step directory WD from the job's directory, JOB_DIR. None when
+    trace-ci cannot find the directory in the checkout."""
+    path = job_dir if wd is None else _circleci_path(wd, job_dir)
+    if path is None or checkout is None:
+        return None
+    return _inside(posixpath.relpath(path, checkout))
+
+
+def _inside(path: str) -> str | None:
+    """PATH, relative to the checkout, normalised. None when it leaves the
+    checkout, is absolute, or has an expansion. The checkout itself is ""."""
+    path = posixpath.normpath(path)
+    if "$" in path or path.startswith(("/", "~", "..")):
+        return None
+    return "" if path == "." else path
 
 
 def workflow_steps(text: str, source: str) -> list[CiStep]:
@@ -402,9 +531,11 @@ def workflow_steps(text: str, source: str) -> list[CiStep]:
     the `make` calls in them and are not written out for the lints again."""
     root = yaml.compose(text, Loader=yaml.SafeLoader)
     top_run = _child(_child(root, "defaults"), "run")
+    top_env = GITHUB_ENV | _env(_child(root, "env"))
     steps: list[CiStep] = []
     for job, body in _items(_child(root, "jobs")):
         job_run = _child(_child(body, "defaults"), "run")
+        job_env = top_env | _env(_child(body, "env"))
         for step in _seq(_child(body, "steps")):
             run = _child(step, "run")
             if not isinstance(run, yaml.ScalarNode):
@@ -421,54 +552,285 @@ def workflow_steps(text: str, source: str) -> list[CiStep]:
                 ),
                 "",
             )
-            shell = next(
-                (
-                    v
-                    for v in (
-                        _scalar(_child(step, "shell")),
-                        _scalar(_child(job_run, "shell")),
-                        _scalar(_child(top_run, "shell")),
-                    )
-                    if v is not None
-                ),
-                "bash -e {0}",
-            )
+            # The shell is left empty: these steps are not written out for the
+            # lints, so nothing reads it.
             steps.append(
-                CiStep(source, job, shell, run.value, scalar_lines(run), wd, lint=False)
+                CiStep(
+                    source,
+                    job,
+                    "",
+                    run.value,
+                    scalar_lines(run),
+                    _inside(wd or "."),
+                    lint=False,
+                    env=tuple((job_env | _env(_child(step, "env"))).items()),
+                )
             )
     return steps
+
+
+def ci_shell_text(command: str) -> str:
+    """COMMAND with each CI template expression (`${{ … }}`, `<< … >>`) made a
+    shell expansion. The CI system fills them in before the shell runs, so the
+    shell grammar must not read `<<` as a heredoc. The length of each line can
+    change, but no line is added or removed."""
+    return CI_EXPRESSION.sub(lambda _: CI_PLACEHOLDER, command)
+
+
+# The nodes whose commands run in a subshell. A `cd` in one does not reach the
+# commands after it.
+SUBSHELL_SCOPES = frozenset(
+    {"subshell", "command_substitution", "process_substitution", "pipeline"}
+)
+# The nodes whose commands run only on some paths, or only when called. A `cd`
+# in one moves the directory for a later command in the same branch, and for
+# no command in another branch. After the node, the directory is unknown.
+GUARDS = frozenset(
+    {
+        "if_statement",
+        "elif_clause",
+        "else_clause",
+        "case_item",
+        "for_statement",
+        "c_style_for_statement",
+        "while_statement",
+        "function_definition",
+    }
+)
+BRANCH_CLAUSES = frozenset({"elif_clause", "else_clause", "case_item"})
+DIR_COMMANDS = frozenset({"cd", "pushd", "popd"})
+SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+MAKE_PROGRAMS = frozenset({"make", "gmake"})
+# Programs that run the command after their own options, as `timeout 600 make`
+# does. A `make` behind one of them is traced like a `make` on its own.
+WRAPPERS = frozenset(
+    {
+        "timeout",
+        "env",
+        "sudo",
+        "nice",
+        "time",
+        "nohup",
+        "stdbuf",
+        "ionice",
+        "xvfb-run",
+        "uv",
+        "poetry",
+        "pipenv",
+        "pdm",
+        "hatch",
+        "bundle",
+    }
+)
+# The words that can come between a wrapper and the command that it runs.
+WRAPPER_WORD = re.compile(r"-.*|\w+=.*|\d+(?:\.\d+)?[smhd]?|run|exec")
+# Programs that run a `make` in another file system, which trace-ci cannot see.
+REMOTE = frozenset({"docker", "podman", "ssh", "kubectl", "vagrant"})
+
+
+class Move(NamedTuple):
+    """A `cd`, `pushd` or `popd`. SCOPE is the subshell that it moves, or None
+    for the step's own shell. CONDITIONAL is the node below SCOPE that runs it
+    only on some paths, or None, and BRANCH is the id of its branch there."""
+
+    scope: object
+    conditional: object
+    branch: int | None
+    name: str
+    words: list[str]
+
+
+def _move_of(node, name: str, words: list[str]) -> Move:
+    background = node.next_sibling is not None and node.next_sibling.type == "&"
+    if background or node.parent.type == "pipeline":
+        return Move(node, None, None, name, words)
+    conditional = branch = None
+    parent = node.parent
+    while parent is not None and parent.type not in SUBSHELL_SCOPES:
+        if conditional is None and parent.type in GUARDS:
+            branch = parent.id
+            conditional = parent.parent if parent.type in BRANCH_CLAUSES else parent
+        parent = parent.parent
+    return Move(parent, conditional, branch, name, words)
+
+
+def _branch(conditional, node) -> int:
+    """The id of the branch of CONDITIONAL that NODE is in. The `then` branch of
+    an `if`, and the body of a loop or a function, is CONDITIONAL itself."""
+    for child in conditional.named_children:
+        if child.type in BRANCH_CLAUSES and _contains(child, node):
+            return child.id
+    return conditional.id
+
+
+def _contains(scope, node) -> bool:
+    return scope is None or (
+        scope.start_byte <= node.start_byte and node.end_byte <= scope.end_byte
+    )
+
+
+def _apply(stack: list[Path | None], move: Move, node) -> None:
+    """Apply MOVE to STACK, whose last entry is the directory of NODE. A target
+    that this tool cannot follow, or a move that runs only on some paths to NODE,
+    makes the directory None. A move in another branch than NODE's does not
+    run on NODE's path."""
+    if move.conditional is not None:
+        if not _contains(move.conditional, node):
+            stack[-1] = None
+            return
+        if _branch(move.conditional, node) != move.branch:
+            return
+    if move.name == "popd":
+        if len(stack) > 1:
+            stack.pop()
+        else:
+            stack[-1] = None
+        return
+    args = [unquote(w) for w in move.words[1:]]
+    plain = (
+        len(args) == 1
+        and not args[0].startswith(("~", "-"))
+        and "$" not in move.words[1]
+    )
+    here = stack[-1]
+    target = (here / args[0]).resolve() if plain and here is not None else None
+    if move.name == "pushd":
+        stack.append(target)
+    else:
+        stack[-1] = target
+
+
+def _fold_directory(
+    cwd: Path, args: tuple[str, ...]
+) -> tuple[Path | None, tuple[str, ...]]:
+    """CWD moved by each `-C DIR` in a make call's ARGS, and ARGS without them.
+    The trace then starts in the directory whose makefile make reads. None
+    when a DIR is not plain."""
+    kept: list[str] = []
+    here: Path | None = cwd
+    words = iter(args)
+    for arg in words:
+        target = None
+        if arg in ("-C", "--directory"):
+            target = next(words, "")
+        elif arg.startswith("--directory="):
+            target = arg.split("=", 1)[1]
+        elif arg.startswith("-C"):
+            target = arg[2:]
+        if target is None:
+            kept.append(arg)
+        elif here is not None:
+            here = None if not target or "$" in target else (here / target).resolve()
+    return here, tuple(kept)
+
+
+def _runs_make_in_a_script(words: list[str]) -> bool:
+    """Whether WORDS run a shell on a `-c` script that calls make."""
+    if program_name(words[0]) not in SHELLS:
+        return False
+    args = [unquote(w) for w in words[1:]]
+    for flag, script in zip(args, args[1:]):
+        if re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", flag):
+            return any(
+                program_name(w[0]) in MAKE_PROGRAMS
+                for w in map(command_words, iter_nodes(parse(script), "command"))
+                if w
+            )
+    return False
+
+
+def _prefix_env(node) -> tuple[tuple[str, str], ...]:
+    """The `VAR=value` words written before the command NODE's name."""
+    env: list[tuple[str, str]] = []
+    for child in node.named_children:
+        if child.type != "variable_assignment":
+            continue
+        value = child.child_by_field_name("value")
+        env.append(
+            (
+                node_text(child.child_by_field_name("name")),
+                "" if value is None else unquote(node_text(value)),
+            )
+        )
+    return tuple(env)
+
+
+def _make_words(words: list[str]) -> tuple[list[str], list[str]] | None:
+    """The words from `make` on, and the `VAR=value` words of an `env` before
+    it, when WORDS run make by itself or behind a WRAPPERS program."""
+    if program_name(words[0]) in MAKE_PROGRAMS:
+        return words, []
+    if program_name(words[0]) not in WRAPPERS:
+        return None
+    for i, word in enumerate(words[1:], 1):
+        if program_name(word) in MAKE_PROGRAMS:
+            return words[i:], [w for w in words[1:i] if "=" in w]
+        if not WRAPPER_WORD.fullmatch(unquote(word)):
+            return None
+    return None
+
+
+def _runs_make_remotely(words: list[str]) -> bool:
+    """Whether WORDS run `make` in a container or on another host."""
+    return program_name(words[0]) in REMOTE and any(
+        program_name(w) in MAKE_PROGRAMS for w in words[1:]
+    )
 
 
 def make_calls(step: CiStep, repo: Path) -> tuple[list[MakeCall], list[int]]:
     """The `make` calls in STEP, and the lines of the calls that cannot be traced.
 
-    A `cd` with one plain argument moves the directory for the commands after it.
-    A `make` whose arguments hold an expansion, or that comes after a `cd` that
-    this tool cannot follow, is returned as a line that cannot be traced."""
-    cwd: Path | None = (repo / step.working_directory).resolve()
-    if "$" in step.working_directory:
-        cwd = None
+    A `cd` or `pushd` with one plain argument moves the directory for the
+    commands after it in the same shell, and `popd` moves it back. A move that
+    runs only on some paths (in a branch, a loop, a function or the background)
+    makes the directory unknown after it. A `make` is returned as a line that
+    cannot be traced when its directory is unknown or outside the checkout,
+    when it has an expansion or a CI template expression, or when a `bash -c`
+    script, a container or another host runs it."""
+    start = (
+        None
+        if step.working_directory is None
+        else (repo / step.working_directory).resolve()
+    )
+    moves: list[Move] = []
     calls: list[MakeCall] = []
     untraced: list[int] = []
-    for node in iter_nodes(parse(step.command), "command"):
+    for node in iter_nodes(parse(ci_shell_text(step.command)), "command"):
         words = command_words(node)
         if not words:
             continue
-        line = step.lines[min(node.start_point[0], len(step.lines) - 1)]
         name = program_name(words[0])
-        args = [unquote(w) for w in words[1:]]
-        if name == "cd":
-            plain = (
-                len(args) == 1
-                and not args[0].startswith(("~", "-"))
-                and "$" not in words[1]
-            )
-            cwd = (cwd / args[0]).resolve() if plain and cwd is not None else None
-        elif name in ("make", "gmake"):
-            if cwd is None or any(True for _ in iter_nodes(node, *EXPANSIONS)):
-                untraced.append(line)
-            else:
-                calls.append(MakeCall(step, cwd, tuple(args), line))
+        line = step.lines[min(node.start_point[0], len(step.lines) - 1)]
+        if name in DIR_COMMANDS:
+            moves.append(_move_of(node, name, words))
+            continue
+        if _runs_make_in_a_script(words) or _runs_make_remotely(words):
+            untraced.append(line)
+            continue
+        found = _make_words(words)
+        if found is None:
+            continue
+        make_words, env_words = found
+        stack: list[Path | None] = [start]
+        for move in moves:
+            if _contains(move.scope, node):
+                _apply(stack, move, node)
+        cwd, args = (
+            _fold_directory(stack[-1], tuple(unquote(w) for w in make_words[1:]))
+            if stack[-1] is not None
+            else (None, ())
+        )
+        if (
+            cwd is None
+            or not cwd.is_relative_to(repo.resolve())
+            or any(True for _ in iter_nodes(node, *EXPANSIONS))
+            or CI_PLACEHOLDER in node_text(node)
+        ):
+            untraced.append(line)
+            continue
+        env = step.env + _prefix_env(node)
+        env += tuple(tuple(unquote(w).split("=", 1)) for w in env_words)
+        calls.append(MakeCall(step, cwd, args, line, env))
     return calls, untraced
 
 
@@ -490,99 +852,214 @@ def gnu_make() -> str:
     raise TraceError("trace-ci needs GNU make 4.0 or later on PATH (for --trace)")
 
 
-def _make_env(path_prefix: Path | None = None) -> dict[str, str]:
-    """The environment for a dry run: no make flags from a parent make, and C
-    messages, which the trace parser reads."""
+def _make_env(
+    path_prefix: Path | None = None, ci_env: Sequence[tuple[str, str]] = ()
+) -> dict[str, str]:
+    """The environment for a dry run: the CI variables CI_ENV, no make flags from
+    a parent make, and C messages, which the trace parser reads."""
     env = {
         k: v
         for k, v in os.environ.items()
         if k not in ("MAKEFLAGS", "MFLAGS", "MAKELEVEL", "MAKEFILES", "GNUMAKEFLAGS")
     }
+    env.update(ci_env)
     env["LC_ALL"] = "C"
     if path_prefix is not None:
         env["PATH"] = f"{path_prefix}{os.pathsep}{env.get('PATH', '')}"
     return env
 
 
+# `--eval` reaches every sub-make through MAKEFLAGS, so each make prints this
+# line with its level as it starts, whether or not it prints its directory.
+LEVEL_MARK = "__cts_make_level__="
+
+
 def make_trace(
-    make: str, cwd: Path, args: Sequence[str], path_prefix: Path | None = None
+    make: str,
+    cwd: Path,
+    args: Sequence[str],
+    path_prefix: Path | None = None,
+    ci_env: Sequence[tuple[str, str]] = (),
 ) -> Trace:
     proc = subprocess.run(
-        [make, "--dry-run", "--trace", "-C", str(cwd), *args],
+        [
+            make,
+            "--dry-run",
+            "--trace",
+            # `-s` hides the directory lines of a sub-make, and `-w` shows them.
+            "--print-directory",
+            "-C",
+            str(cwd),
+            "--eval",
+            f"$(info {LEVEL_MARK}$(MAKELEVEL))",
+            *args,
+        ],
         capture_output=True,
         text=True,
-        env=_make_env(path_prefix),
+        env=_make_env(path_prefix, ci_env),
         check=False,
     )
-    return Trace(proc.returncode, tuple(parse_trace(proc.stdout, cwd)), proc.stderr)
+    commands, hidden = parse_trace(proc.stdout, cwd, *split_make_args(args))
+    return Trace(proc.returncode, tuple(commands), proc.stderr, hidden)
 
 
-def parse_trace(output: str, cwd: Path) -> list[Traced]:
-    """The commands in the stdout of `make --dry-run --trace`.
+def parse_trace(
+    output: str,
+    cwd: Path,
+    options: tuple[str, ...] = (),
+    goals: tuple[str, ...] = (),
+) -> tuple[list[Traced], bool]:
+    """The commands in the stdout of `make --dry-run --trace`, and whether a
+    sub-make hid its directory.
 
     GNU make names the FIRST RECIPE LINE of each rule that it runs, not the rule
-    header. A command that ends in `\\` goes on to the next line."""
-    dirs = [cwd]
+    header. A command that ends in `\\` goes on to the next line. A sub-make
+    prints its rules between `Entering directory` and `Leaving directory`, and
+    the parent's rule goes on after it, so each sub-make keeps its own frame.
+    The parent's last command is the one that started the sub-make, so it gives
+    the sub-make's arguments. A sub-make with `--no-print-directory` prints its
+    level mark but no `Entering directory` line, and that hides it."""
+    frames = [_Frame(cwd, 0, options, goals)]
     found: list[Traced] = []
-    where: tuple[Path, int] | None = None
-    index = 0
+    runs = 0
+    hidden = False
     pending: list[str] = []
+
+    def emit(text: str) -> None:
+        top = frames[-1]
+        found.append(
+            Traced(
+                *top.where,
+                top.index,
+                text,
+                top.cwd,
+                top.run,
+                top.level,
+                top.options,
+                top.goals,
+            )
+        )
+        top.index += 1
+        top.last, top.started = text, 0
+
     for raw in output.splitlines():
         if pending:
             pending.append(raw)
             if not raw.endswith("\\"):
-                found.append(Traced(*where, index, "\n".join(pending), dirs[-1]))
-                index, pending = index + 1, []
+                emit("\n".join(pending))
+                pending = []
             continue
         if m := ENTER.match(raw):
-            dirs.append(Path(m.group("dir")))
+            parent, level = frames[-1], int(m.group("level") or 0)
+            args = (parent.options, parent.goals)
+            if level > parent.level:
+                args = _sub_make_args(parent.last, parent.started, parent.options)
+                parent.started += 1
+            frames.append(_Frame(Path(m.group("dir")), level, *args))
+            continue
+        if raw.startswith(LEVEL_MARK):
+            hidden = hidden or int(raw[len(LEVEL_MARK) :]) != frames[-1].level
             continue
         if LEAVE.match(raw):
-            if len(dirs) > 1:
-                dirs.pop()
+            if len(frames) > 1:
+                frames.pop()
             continue
         if MAKE_MESSAGE.match(raw):
             continue
         if m := TRACE_RULE.match(raw):
+            top = frames[-1]
             path = Path(m.group("file"))
-            where = (
-                (path if path.is_absolute() else dirs[-1] / path).resolve(),
-                int(m.group("line")),
+            # The commands of a built-in rule are in no file of the repository.
+            top.where = (
+                None
+                if m.group("line") is None
+                else (
+                    (path if path.is_absolute() else top.cwd / path).resolve(),
+                    int(m.group("line")),
+                )
             )
-            index = 0
+            top.index, top.run, runs = 0, runs, runs + 1
             continue
-        if where is None:
+        if frames[-1].where is None:
             continue
         if raw.endswith("\\"):
             pending = [raw]
         else:
-            found.append(Traced(*where, index, raw, dirs[-1]))
-            index += 1
+            emit(raw)
     if pending:
         # The output ended inside a continued command. Keep what it printed.
-        found.append(Traced(*where, index, "\n".join(pending), dirs[-1]))
-    return found
+        emit("\n".join(pending))
+    return found, hidden
 
 
-def recipe_lines(text: str, first_line: int) -> list[RecipeLine]:
-    """The logical recipe lines of the rule whose first recipe line is FIRST_LINE."""
+@dataclass
+class _Frame:
+    """The state of one make level while `parse_trace` reads its output."""
+
+    cwd: Path
+    level: int
+    options: tuple[str, ...]
+    goals: tuple[str, ...]
+    where: tuple[Path, int] | None = None
+    index: int = 0
+    run: int = 0
+    # The last command, and how many sub-makes it started so far.
+    last: str = ""
+    started: int = 0
+
+
+def _sub_make_args(
+    text: str, n: int, inherited: tuple[str, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The options and goals of the Nth sub-make that the command TEXT starts,
+    from 0. A loop starts one make word more than once, so N past the last
+    make word reads the last. Make passes its command-line variables down, so
+    the sub-make also gets the `VAR=value` words of INHERITED. Its `-C` is left
+    out: the frame has its directory."""
+    variables = tuple(o for o in inherited if "=" in o and not o.startswith("-"))
+    makes = [
+        words
+        for words in map(command_words, iter_nodes(parse(text), "command"))
+        if words and program_name(words[0]) in MAKE_PROGRAMS
+    ]
+    if not makes:
+        return variables, ()
+    words = makes[min(n, len(makes) - 1)]
+    _, args = _fold_directory(Path("/"), tuple(unquote(w) for w in words[1:]))
+    options, goals = split_make_args(args)
+    return variables + options, goals
+
+
+# A conditional directive can sit between the lines of one recipe.
+CONDITIONAL = re.compile(r" *(?:ifdef|ifndef|ifeq|ifneq|else|endif)\b")
+
+
+def recipe_lines(
+    text: str, first_line: int, recipe_prefix: str = "\t"
+) -> list[RecipeLine]:
+    """The logical recipe lines of the rule whose first recipe line is FIRST_LINE.
+    A recipe line starts with RECIPE_PREFIX. Each branch of a conditional
+    counts, so a branch that make skips makes the count larger than what make
+    prints."""
     lines = text.splitlines()
     out: list[RecipeLine] = []
     i = first_line - 1
     while i < len(lines):
         line = lines[i]
-        if line.startswith("\t"):
+        if line.startswith(recipe_prefix):
             start = i
             while lines[i].endswith("\\") and i + 1 < len(lines):
                 i += 1
             prefix = (
-                re.match(r"[@+\-\s]*", line[1:])
+                re.match(r"[@+\-\s]*", line[len(recipe_prefix) :])
                 .group(0)
                 .replace(" ", "")
                 .replace("\t", "")
             )
-            out.append(RecipeLine(start + 1, i - start + 1, prefix))
-        elif line.strip() and not line.startswith("#"):
+            source = "\n".join(lines[start : i + 1])
+            runs = "+" in prefix or "$(MAKE)" in source or "${MAKE}" in source
+            out.append(RecipeLine(start + 1, i - start + 1, prefix, runs))
+        elif line.strip() and not line.startswith("#") and not CONDITIONAL.match(line):
             break
         i += 1
     return out
@@ -590,37 +1067,111 @@ def recipe_lines(text: str, first_line: int) -> list[RecipeLine]:
 
 @dataclass(frozen=True)
 class MakeShell:
-    """The shell that a make runs its recipe lines with."""
+    """The shell that a make runs its recipe lines with, and the character
+    that starts a recipe line (`.RECIPEPREFIX`, a tab by default)."""
 
     shell: str
     flags: str
     oneshell: bool
+    prefix: str = "\t"
 
 
-def make_shell(make: str, cwd: Path) -> MakeShell:
-    """SHELL, .SHELLFLAGS and .ONESHELL as the makefile in CWD sets them.
+PROBE_GOAL = ".cts-trace-probe"
+PROBE_SHELL, PROBE_FLAGS, PROBE_PREFIX = (
+    "__cts_shell__=",
+    "__cts_shellflags__=",
+    "__cts_recipeprefix__=",
+)
+# The make options whose value can be the next word, so that word is no goal.
+MAKE_VALUE_OPTIONS = frozenset(
+    {
+        "-f",
+        "-C",
+        "-I",
+        "-o",
+        "-W",
+        "--file",
+        "--makefile",
+        "--directory",
+        "--include-dir",
+        "--old-file",
+        "--assume-old",
+        "--what-if",
+        "--new-file",
+        "--assume-new",
+    }
+)
 
-    `--eval` runs before the makefiles are read, so it would show the defaults.
-    The database that `-p` prints shows the values after the makefiles."""
+
+def split_make_args(
+    args: Sequence[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """ARGS as (options, goals). The options include the variable assignments,
+    which choose the makefile and can set SHELL."""
+    options: list[str] = []
+    goals: list[str] = []
+    takes_value = False
+    for arg in args:
+        if takes_value or arg.startswith("-") or "=" in arg:
+            options.append(arg)
+            takes_value = arg in MAKE_VALUE_OPTIONS
+        else:
+            goals.append(arg)
+    return tuple(options), tuple(goals)
+
+
+def make_shell(
+    make: str,
+    cwd: Path,
+    options: Sequence[str] = (),
+    goals: Sequence[str] = (),
+    ci_env: Sequence[tuple[str, str]] = (),
+) -> MakeShell:
+    """SHELL, .SHELLFLAGS and .ONESHELL as make in CWD, with OPTIONS and the
+    environment CI_ENV, sets them for GOALS.
+
+    The rule that `--eval` adds prints the values when make expands its recipe,
+    which is after every makefile is read. So the values are the ones that a
+    recipe really gets, with each `=` reference expanded. MAKECMDGOALS is set to
+    GOALS, because a makefile can test it, and the probe is not the real goal.
+    `.ONESHELL` is a special target, and the database that `-p` prints names it."""
     proc = subprocess.run(
-        [make, "-p", "--dry-run", "-C", str(cwd), ".cts-trace-probe"],
+        [
+            make,
+            "-p",
+            "--dry-run",
+            "-C",
+            str(cwd),
+            *options,
+            f"MAKECMDGOALS={' '.join(goals)}",
+            "--eval",
+            f"{PROBE_GOAL}: ; @:$(info {PROBE_SHELL}$(SHELL))"
+            f"$(info {PROBE_FLAGS}$(.SHELLFLAGS))"
+            f"$(info {PROBE_PREFIX}$(.RECIPEPREFIX))",
+            PROBE_GOAL,
+        ],
         capture_output=True,
         text=True,
-        env=_make_env(),
+        env=_make_env(ci_env=ci_env),
         check=False,
     )
     values: dict[str, str] = {}
     oneshell = False
     for line in proc.stdout.splitlines():
-        m = re.match(r"^(?P<name>SHELL|\.SHELLFLAGS) :?= ?(?P<value>.*)$", line)
-        if m:
-            values[m.group("name")] = m.group("value")
+        for name in (PROBE_SHELL, PROBE_FLAGS, PROBE_PREFIX):
+            if line.startswith(name):
+                values[name] = line[len(name) :]
         oneshell = oneshell or line == ".ONESHELL:"
-    if "SHELL" not in values:
+    if proc.returncode != 0 or PROBE_SHELL not in values:
         raise TraceError(
-            f"`make -p` in {cwd} printed no SHELL value:\n{proc.stderr.strip()}"
+            f"make in {cwd} did not print its SHELL value:\n{proc.stderr.strip()}"
         )
-    return MakeShell(values["SHELL"], values.get(".SHELLFLAGS", "-c"), oneshell)
+    return MakeShell(
+        values[PROBE_SHELL],
+        values.get(PROBE_FLAGS) or "-c",
+        oneshell,
+        values.get(PROBE_PREFIX) or "\t",
+    )
 
 
 class ShellOptions(NamedTuple):
@@ -634,8 +1185,13 @@ class ShellOptions(NamedTuple):
 
 
 def shell_options(shell: str, flags: str) -> ShellOptions:
-    """The options of SHELL when it runs with FLAGS."""
+    """The options of SHELL when it runs with FLAGS. `env` and its options and
+    assignments are skipped, so `/usr/bin/env bash` reads as bash."""
     words = shlex.split(shell) + shlex.split(flags)
+    while len(words) > 1 and program_name(words[0]) == "env":
+        words = words[1:]
+        while len(words) > 1 and (words[0].startswith("-") or "=" in words[0]):
+            words = words[1:]
     interpreter = words[0]
     options: list[str] = []
     for word in words[1:]:
@@ -649,53 +1205,217 @@ def shell_options(shell: str, flags: str) -> ShellOptions:
     errexit = "errexit" in options or any(
         re.fullmatch(r"-[A-Za-z]*e[A-Za-z]*", o) for o in options
     )
-    pipefail = "pipefail" in options and program_name(interpreter) in (
-        "bash",
-        "zsh",
-        "ksh",
-    )
+    pipefail = "pipefail" in options and has_pipefail(interpreter)
     return ShellOptions(interpreter, options, errexit, pipefail)
 
 
+def has_pipefail(interpreter: str) -> bool:
+    """Whether INTERPRETER honours `pipefail`. dash, the usual `/bin/sh`, does not."""
+    return program_name(interpreter) in ("bash", "zsh", "ksh")
+
+
 def _cannot_fail(node) -> bool:
+    """A statement that sets the shell state, or that runs a command in NO_FAILURE.
+
+    `X=$(cmd)` takes the status of `cmd`, so it can fail. `export X=$(cmd)` takes
+    the status of `export`, which is the separate defect that SC2155 names."""
+    if node.type == "variable_assignment":
+        return not any(True for _ in iter_nodes(node, "command_substitution"))
+    if node.type == "declaration_command":
+        return True
     if node.type != "command":
         return False
     words = command_words(node)
-    return bool(words) and program_name(words[0]) in NO_FAILURE
+    if not words:
+        # Only assignments and redirections: `X=1` as a whole statement.
+        return True
+    return program_name(words[0]) in NO_FAILURE | {"set"}
+
+
+def _can_lose(node) -> bool:
+    """Whether NODE, as a statement, can end with a failed status that a later
+    statement hides. A compound statement ends with the status of the last
+    statement of the branch or the pass that ran. A `||` list handles the
+    failure of its left side: `a || rc=1`, `a || exit 1`. A failed condition
+    only picks a branch, so it is not a lost status."""
+    kind = node.type
+    if kind == "list":
+        return node.children[-2].type != "||" and any(
+            _can_lose(c) for c in node.named_children
+        )
+    if kind == "redirected_statement":
+        return _can_lose(node.named_children[0])
+    if kind == "pipeline":
+        return _can_lose(node.named_children[-1])
+    if kind in ("if_statement", "case_statement", "compound_statement", "subshell"):
+        branches = [node, *node.named_children] if kind == "if_statement" else [node]
+        if kind == "case_statement":
+            branches = [c for c in node.named_children if c.type == "case_item"]
+        return any(
+            _can_lose(body[-1])
+            for b in branches
+            if b.type in BODIES and (body := _body(b))
+        )
+    if kind in LOOPS:
+        body = next((c for c in node.named_children if c.type == "do_group"), None)
+        statements = _body(body) if body is not None else []
+        return bool(statements) and _can_lose(statements[-1])
+    if kind == "command":
+        words = command_words(node)
+        if words and program_name(words[0]) in ("exit", "return"):
+            return False
+    if kind in ("negated_command", "function_definition"):
+        return False
+    return not _cannot_fail(node)
+
+
+# The nodes whose statements run one after another. A loop's body is its
+# `do_group`. A function's body is a `compound_statement`.
+BODIES = frozenset(
+    {
+        "program",
+        "do_group",
+        "compound_statement",
+        "subshell",
+        "if_statement",
+        "elif_clause",
+        "else_clause",
+        "case_item",
+    }
+)
+LOOPS = frozenset({"for_statement", "c_style_for_statement", "while_statement"})
+
+
+def _body(node) -> list:
+    """The statements of NODE, one of BODIES, in order. The condition of an
+    `if` or an `elif`, its other clauses, and the patterns of a `case` item
+    are left out."""
+    children = node.children
+    if node.type == "case_item":
+        close = next((i for i, c in enumerate(children) if c.type == ")"), -1)
+        children = children[close + 1 :]
+    skip = {c.id for c in condition_parts(node)}
+    return [
+        c
+        for c in children
+        if c.is_named
+        and c.id not in skip
+        and c.type not in ("comment", "elif_clause", "else_clause")
+    ]
+
+
+def _set_changes(statement) -> dict[str, bool]:
+    """The `errexit` and `pipefail` changes that a top-level `set` STATEMENT
+    makes: `-e` and `-o NAME` turn an option on, `+e` and `+o NAME` turn it off."""
+    if statement.type != "command":
+        return {}
+    words = [unquote(w) for w in command_words(statement)]
+    if not words or words[0] != "set":
+        return {}
+    changes: dict[str, bool] = {}
+    for word, after in zip(words[1:], [*words[2:], ""]):
+        if re.fullmatch(r"[-+][A-Za-z]*e[A-Za-z]*", word):
+            changes["errexit"] = word[0] == "-"
+        if re.fullmatch(r"[-+][A-Za-z]*o", word) and after in ("errexit", "pipefail"):
+            changes[after] = word[0] == "-"
+    return changes
+
+
+# A `$?` read inside one of these nodes acts on the status of the statement before.
+STATUS_READERS = frozenset(
+    {"test_command", "binary_expression", "case_statement", "variable_assignment"}
+)
+
+
+def _reads_status(statement) -> bool:
+    """Whether STATEMENT acts on `$?`: tests it, compares it, branches on it,
+    saves it, or exits with it. `echo "done $?"` only prints it, and so does a
+    `$?` in the body of an `if`, so neither counts."""
+    for expansion in iter_nodes(statement, "simple_expansion"):
+        if node_text(expansion) != "$?":
+            continue
+        child, node = expansion, expansion.parent
+        while node is not None:
+            if node.type in STATUS_READERS:
+                return True
+            if node.type == "command":
+                words = command_words(node)
+                if words and program_name(words[0]) in ("test", "[", "exit", "return"):
+                    return True
+            if any(part.id == child.id for part in condition_parts(node)):
+                return True
+            if node.id == statement.id:
+                break
+            child, node = node, node.parent
+    return False
 
 
 class LostStatus(NamedTuple):
     """A command whose failure the shell does not report: its row in the
-    command, whether a `;` or a `|` loses it, and its text."""
+    command, whether a `;`, a `|` or a loop loses it, and its text."""
 
     row: int
     kind: str
     text: str
 
 
-def dropped_statuses(command: str, errexit: bool, pipefail: bool) -> list[LostStatus]:
+def dropped_statuses(
+    command: str, errexit: bool, pipefail: bool, interpreter: str = "bash"
+) -> list[LostStatus]:
     """Each command whose failure COMMAND does not report.
 
-    Without errexit, `a; b` reports only `b`. Without pipefail, `a | b` reports
-    only `b`. A statement that the next one checks through `$?` is reported."""
+    Without errexit, `a; b` reports only `b`, in any body: the top level, a
+    loop, a branch, a group or a function. A loop reports only its last pass,
+    so the last statement of its body is reported too. Without pipefail,
+    `a | b` reports only `b`. A statement whose status the next one acts on
+    through `$?`, or whose failure a `||` handles, is not reported. A top-level
+    `set` changes an option for the code after it: `-e` and `-o NAME` turn it
+    on, and `+e` and `+o NAME` turn it off. INTERPRETER says whether the
+    shell honours `pipefail`."""
     root = parse(command)
+    top = _body(root)
+    # The state of each option as each top-level statement starts.
+    state = {"errexit": errexit, "pipefail": pipefail}
+    states: list[dict[str, bool]] = []
+    for statement in top:
+        states.append(dict(state))
+        for option, on in _set_changes(statement).items():
+            if option == "errexit" or has_pipefail(interpreter):
+                state[option] = on
+
+    def option(node, name: str) -> bool:
+        """NAME's state for NODE: the state of the top-level statement it is in."""
+        return next(
+            states[i][name]
+            for i, s in enumerate(top)
+            if s.start_byte <= node.start_byte < s.end_byte
+        )
+
     found: list[LostStatus] = []
-    if not errexit:
-        statements = [c for c in root.named_children if c.type != "comment"]
+    for body in [root, *iter_nodes(root, *(BODIES - {"program"}))]:
+        statements = _body(body)
         for statement, after in zip(statements, statements[1:]):
-            if "$?" in node_text(after) or _cannot_fail(statement):
+            if option(statement, "errexit") or _reads_status(after):
                 continue
-            found.append(
-                LostStatus(statement.start_point[0], "sequence", node_text(statement))
-            )
-    if not pipefail:
-        for pipeline in iter_nodes(root, "pipeline"):
-            stages = [c for c in pipeline.named_children if c.type != "comment"]
-            for stage in stages[:-1]:
-                if not _cannot_fail(stage):
-                    found.append(
-                        LostStatus(stage.start_point[0], "pipe", node_text(stage))
+            if _can_lose(statement):
+                found.append(
+                    LostStatus(
+                        statement.start_point[0], "sequence", node_text(statement)
                     )
+                )
+    for loop in iter_nodes(root, *LOOPS):
+        body = next((c for c in loop.named_children if c.type == "do_group"), None)
+        statements = _body(body) if body is not None else []
+        if statements and not option(loop, "errexit") and _can_lose(statements[-1]):
+            last = statements[-1]
+            found.append(LostStatus(last.start_point[0], "loop", node_text(last)))
+    for pipeline in iter_nodes(root, "pipeline"):
+        if option(pipeline, "pipefail"):
+            continue
+        stages = [c for c in pipeline.named_children if c.type != "comment"]
+        for stage in stages[:-1]:
+            if not _cannot_fail(stage):
+                found.append(LostStatus(stage.start_point[0], "pipe", node_text(stage)))
     return found
 
 
@@ -763,7 +1483,8 @@ def _strip_make_refs(body: str) -> str:
 
 
 def fault_target(body: str) -> tuple[str, tuple[str, ...]] | None:
-    """(program, literal arguments) of the first command in a `$(shell …)` BODY.
+    """(program, literal arguments) of the first command in a `$(shell …)` BODY
+    that a stub on PATH can replace, so `cd $(DIR) && git ls-files` targets git.
 
     The stub fails a call only when all these literal arguments are in its argv,
     so `git rev-parse --short HEAD` fails and `git rev-parse --show-toplevel`
@@ -774,6 +1495,8 @@ def fault_target(body: str) -> tuple[str, tuple[str, ...]] | None:
             continue
         if MAKE_REF_PLACEHOLDER in words[0] or "$" in words[0]:
             return None
+        if program_name(words[0]) in SHELL_BUILTINS:
+            continue
         literals = tuple(
             unquote(w)
             for w in words[1:]
@@ -936,6 +1659,12 @@ def run_lints(synthetics: list[Synthetic], checks: list[Check]) -> list[TraceFin
                 "this file", "the command that CI expands here"
             )
             findings.append(TraceFinding(source, line, "lint", message))
+    # run_selection exits 1 both for a finding and for a lint that crashed, so a
+    # finding in one lint would hide the crash of another.
+    if "Traceback (most recent call last):" in output:
+        raise TraceError(
+            f"a content lint crashed on the commands that CI runs:\n{output}"
+        )
     if proc.returncode != 0 and not findings:
         raise TraceError(
             "the content lints failed, but trace-ci found no finding in their "
@@ -948,21 +1677,44 @@ def run_lints(synthetics: list[Synthetic], checks: list[Check]) -> list[TraceFin
 # Main
 # --------------------------------------------------------------------------- #
 def _annotated(repo: Path, finding: TraceFinding) -> bool:
+    """Whether a comment on the finding's line, or on the line above it,
+    accepts the finding."""
     path = repo / finding.path
     if not path.is_file():
         return False
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    near = lines[max(finding.line - 2, 0) : finding.line]
-    return any(ANNOTATION.search(line) for line in near)
+    comments = _comments(
+        finding.path, path.read_text(encoding="utf-8", errors="replace")
+    )
+    return any(
+        ANNOTATION.search(comments.get(n, "")) for n in (finding.line - 1, finding.line)
+    )
+
+
+def _comments(path: str, text: str) -> dict[int, str]:
+    """1-based line -> the comment text on that line of the file at PATH. A
+    marker in a string is data that a command handles, so only a comment can
+    accept a finding.
+
+    In a YAML file a comment is a YAML comment or a comment in a `run:` script.
+    In a makefile a recipe line goes to the shell, so the bash grammar finds
+    its comment. Make has no parser here, but its rule for any other line is
+    plain: an unescaped `#` starts a comment, even inside a `$(…)`."""
+    if path.endswith((".yml", ".yaml")):
+        return dict(enumerate(yaml_script_view(text), 1))
+    if "makefile" not in identify.tags_from_filename(path):
+        return comment_lines(text, path)
+    comments: dict[int, str] = {}
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.startswith("\t"):
+            comments[n] = shell_comments(line[1:]).get(1, "")
+        elif m := re.search(r"(?<!\\)#.*", line):
+            comments[n] = m.group(0)
+    return comments
 
 
 def _slug(text: str) -> str:
     """TEXT made safe for one part of a file name."""
     return re.sub(r"[^A-Za-z0-9_.-]", "_", text)
-
-
-def _rel(repo: Path, path: Path) -> str:
-    return os.path.relpath(path, repo)
 
 
 def _content_checks(selects: list[str], ignores: list[str]) -> list[Check]:
@@ -991,6 +1743,20 @@ def trace(
         ["git", "-C", str(repo), "ls-files"], capture_output=True, text=True, check=True
     ).stdout.splitlines()
     surfaces = discover(files)
+    untracked = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "--others", "--directory"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    if untracked:
+        notes.append(
+            f"{len(untracked)} paths are not tracked by git "
+            f"({', '.join(untracked[:3])}). make skips a rule whose target file "
+            "is up to date, and CI starts from a clean checkout, so a rule that "
+            "CI runs can be missing from this trace; trace a clean checkout to "
+            "see every rule"
+        )
     other = sorted(set(surfaces) - FOLLOWED - {"make", "dockerfile"})
     if other:
         listed = "; ".join(f"{k} ({', '.join(surfaces[k][:3])})" for k in other)
@@ -1026,32 +1792,9 @@ def trace(
     calls: list[MakeCall] = []
     for n, step in enumerate(steps):
         if step.lint:
-            body = [
-                BodyLine(t, step.source, step.lines[min(i, len(step.lines) - 1)])
-                for i, t in enumerate(step.command.splitlines())
-            ]
-            synthetics.append(
-                _shell_file(
-                    f"ci-steps/{n}-{_slug(step.job)}.sh",
-                    step.shell,
-                    "",
-                    body,
-                    (step.source, step.lines[0]),
-                )
+            findings += _step_findings(
+                step, f"ci-steps/{n}-{_slug(step.job)}.sh", synthetics
             )
-            options = shell_options(step.shell, "")
-            for row, kind, text in dropped_statuses(
-                step.command, options.errexit, options.pipefail
-            ):
-                findings.append(
-                    _drop_finding(
-                        step.source,
-                        step.lines[min(row, len(step.lines) - 1)],
-                        kind,
-                        text,
-                        step.shell,
-                    )
-                )
         found, untraced = make_calls(step, repo)
         calls += found
         for line in untraced:
@@ -1060,17 +1803,27 @@ def trace(
                     step.source,
                     line,
                     "untraced",
-                    "this `make` call has an expansion or follows a `cd` that trace-ci cannot resolve, so its commands are not checked",
+                    "this `make` call has an expansion or a CI template expression, runs in a directory outside the checkout, or follows a `cd` that trace-ci cannot resolve, so its commands are not checked",
                 )
             )
 
     baselines: dict[MakeCall, Trace] = {}
     reached_dirs: set[Path] = set()
     for call in calls:
-        result = make_trace(make, call.cwd, call.args)
+        result = make_trace(make, call.cwd, call.args, ci_env=call.env)
+        reached_dirs.update(_makefile_dirs(call))
+        if result.hidden:
+            findings.append(
+                TraceFinding(
+                    call.step.source,
+                    call.line,
+                    "untraced",
+                    f"`make {' '.join(call.args)}` runs a sub-make with `--no-print-directory`, so trace-ci cannot tell which makefile each command comes from, and its commands are not checked; remove `--no-print-directory` to trace it",
+                )
+            )
+            continue
         baselines[call] = result
-        reached_dirs.add(call.cwd)
-        reached_dirs.update(c.cwd for c in result.commands)
+        reached_dirs.update(c.makefile.parent for c in result.commands)
         if result.returncode != 0:
             last = (result.stderr.strip().splitlines() or [""])[-1]
             findings.append(
@@ -1082,63 +1835,7 @@ def trace(
                 )
             )
 
-    shells: dict[Path, MakeShell] = {}
-    seen: set[Traced] = set()
-    for call, result in baselines.items():
-        for command in result.commands:
-            if command in seen:
-                continue
-            seen.add(command)
-            if command.cwd not in shells:
-                shells[command.cwd] = make_shell(make, command.cwd)
-            shell = shells[command.cwd]
-            text = command.makefile.read_text(encoding="utf-8", errors="replace")
-            recipe = recipe_lines(text, command.first_line)
-            entry = (
-                recipe[command.index]
-                if command.index < len(recipe)
-                else RecipeLine(command.first_line, 1, "")
-            )
-            path = _rel(repo, command.makefile)
-            rows = command.text.splitlines()
-            body = [
-                BodyLine(t, path, entry.start + min(i, entry.count - 1))
-                for i, t in enumerate(rows)
-            ]
-            synthetics.append(
-                _shell_file(
-                    f"make/{len(synthetics)}-{_slug(path)}-L{entry.start}.sh",
-                    shell.shell,
-                    shell.flags,
-                    body,
-                    (path, entry.start),
-                )
-            )
-            if "-" in entry.prefix:
-                findings.append(
-                    TraceFinding(
-                        path,
-                        entry.start,
-                        "ignored-error",
-                        "this recipe line starts with `-`, so make ignores its exit status and CI passes when it fails; remove the `-`, or handle the failure in the command",
-                    )
-                )
-            if shell.oneshell:
-                continue
-            options = shell_options(shell.shell, shell.flags)
-            for row, kind, part in dropped_statuses(
-                command.text, options.errexit, options.pipefail
-            ):
-                findings.append(
-                    _drop_finding(
-                        path,
-                        entry.start + min(row, entry.count - 1),
-                        kind,
-                        part,
-                        f"{shell.shell} {shell.flags}",
-                    )
-                )
-
+    findings += _recipe_findings(repo, make, baselines, synthetics, notes)
     findings += run_lints(synthetics, checks)
     if inject:
         findings += _inject_faults(
@@ -1151,12 +1848,174 @@ def trace(
     return kept
 
 
+def _makefile_dirs(call: MakeCall) -> list[Path]:
+    """The directories of the makefiles that CALL reads: each `-f FILE`, or
+    the call's directory when it names none."""
+    files: list[str] = []
+    words = iter(call.args)
+    for arg in words:
+        if arg in ("-f", "--file", "--makefile"):
+            files.append(next(words, ""))
+        elif arg.startswith(("--file=", "--makefile=")):
+            files.append(arg.split("=", 1)[1])
+        elif arg.startswith("-f") and len(arg) > 2:
+            files.append(arg[2:])
+    return [(call.cwd / f).resolve().parent for f in files if f] or [call.cwd]
+
+
+def _step_findings(
+    step: CiStep, path: str, synthetics: list[Synthetic]
+) -> list[TraceFinding]:
+    """Write STEP out for the content lints, and return the statuses it loses."""
+    command = ci_shell_text(step.command)
+    body = [
+        BodyLine(t, step.source, step.lines[min(i, len(step.lines) - 1)])
+        for i, t in enumerate(command.splitlines())
+    ]
+    synthetics.append(
+        _shell_file(path, step.shell, "", body, (step.source, step.lines[0]))
+    )
+    options = shell_options(step.shell, "")
+    return [
+        _drop_finding(
+            step.source,
+            step.lines[min(row, len(step.lines) - 1)],
+            kind,
+            text,
+            step.shell,
+        )
+        for row, kind, text in dropped_statuses(
+            command, options.errexit, options.pipefail, options.interpreter
+        )
+    ]
+
+
+def _recipe_findings(
+    repo: Path,
+    make: str,
+    baselines: dict[MakeCall, Trace],
+    synthetics: list[Synthetic],
+    notes: list[str],
+) -> list[TraceFinding]:
+    """Write each traced recipe command out for the content lints, and return
+    the statuses that the recipe shell loses and the failures that make ignores.
+
+    A command maps to a recipe line by its place in the rule. When a rule run
+    printed more or fewer commands than the recipe has lines (a line that
+    expands to nothing, or a `define` that expands to several), the places do
+    not match, so its commands are reported at the first recipe line. A dry run
+    runs a `+` or `$(MAKE)` line, so its output mixes with the printed
+    commands: a rule with one is not checked when the counts do not match. Under `.ONESHELL` one shell
+    runs the whole recipe, so the rule is checked as one script."""
+    findings: list[TraceFinding] = []
+    shells: dict[tuple, MakeShell] = {}
+    rules: dict[tuple[Path, int], str] = {}
+    seen: set[tuple] = set()
+    for call, result in baselines.items():
+        runs: dict[int, list[Traced]] = {}
+        for command in result.commands:
+            runs.setdefault(command.run, []).append(command)
+        for group in runs.values():
+            first = group[0]
+            key = (first.cwd, first.options, first.goals, call.env)
+            if key not in shells:
+                shells[key] = make_shell(make, *key)
+            shell = shells[key]
+            if (tuple(group), shell) in seen:
+                continue
+            seen.add((tuple(group), shell))
+            path = os.path.relpath(first.makefile, repo)
+            recipe = recipe_lines(
+                first.makefile.read_text(encoding="utf-8", errors="replace"),
+                first.first_line,
+                shell.prefix,
+            )
+            rules[first.makefile, first.first_line] = shell.prefix
+            entries = recipe
+            if len(group) != len(recipe):
+                if any(e.runs for e in recipe):
+                    findings.append(
+                        TraceFinding(
+                            path,
+                            first.first_line,
+                            "untraced",
+                            "this rule has a `+` or `$(MAKE)` line, which a dry run runs, and the output of that line mixes with the commands that make prints, so trace-ci cannot tell them apart and does not check this rule",
+                        )
+                    )
+                    continue
+                notes.append(
+                    f"{path}:{first.first_line}: make printed {len(group)} "
+                    f"commands for a recipe of {len(recipe)} lines, so trace-ci "
+                    "reports this rule's findings at its first recipe line"
+                )
+                entries = [RecipeLine(first.first_line, 1, "")] * len(group)
+            units = [
+                [
+                    BodyLine(t, path, entry.start + min(i, entry.count - 1))
+                    for i, t in enumerate(command.text.splitlines())
+                ]
+                for command, entry in zip(group, entries)
+            ]
+            if shell.oneshell:
+                units = [[line for unit in units for line in unit]]
+            for unit in units:
+                findings += _unit_findings(path, shell, unit, synthetics)
+    for (makefile, first_line), recipe_prefix in sorted(rules.items()):
+        text = makefile.read_text(encoding="utf-8", errors="replace")
+        for entry in recipe_lines(text, first_line, recipe_prefix):
+            if "-" in entry.prefix:
+                findings.append(
+                    TraceFinding(
+                        os.path.relpath(makefile, repo),
+                        entry.start,
+                        "ignored-error",
+                        "this recipe line starts with `-`, so make ignores its exit status and CI passes when it fails; remove the `-`, or handle the failure in the command",
+                    )
+                )
+    return findings
+
+
+def _unit_findings(
+    path: str, shell: MakeShell, body: list[BodyLine], synthetics: list[Synthetic]
+) -> list[TraceFinding]:
+    """Write BODY, the script that one recipe shell runs, out for the content
+    lints, and return the statuses that the shell loses in it."""
+    start = body[0].line
+    synthetics.append(
+        _shell_file(
+            f"make/{len(synthetics)}-{_slug(path)}-L{start}.sh",
+            shell.shell,
+            shell.flags,
+            body,
+            (path, start),
+        )
+    )
+    options = shell_options(shell.shell, shell.flags)
+    return [
+        _drop_finding(
+            path,
+            body[min(row, len(body) - 1)].line,
+            kind,
+            part,
+            f"{shell.shell} {shell.flags}",
+        )
+        for row, kind, part in dropped_statuses(
+            "\n".join(line.text for line in body),
+            options.errexit,
+            options.pipefail,
+            options.interpreter,
+        )
+    ]
+
+
 def _drop_finding(
     path: str, line: int, kind: str, text: str, shell: str
 ) -> TraceFinding:
     snippet = " ".join(text.split())[:80]
     if kind == "pipe":
         why = f"this pipe stage can fail and CI does not see it, because `{shell}` has no pipefail: `{snippet}`"
+    elif kind == "loop":
+        why = f"this command can fail in a pass of the loop and CI does not see it, because `{shell}` has no errexit and the loop reports only its last pass: `{snippet}`"
     else:
         why = f"this command can fail and CI does not see it, because `{shell}` has no errexit and the next command sets the status: `{snippet}`"
     return TraceFinding(path, line, f"lost-status-{kind}", why)
@@ -1169,28 +2028,45 @@ def _inject_faults(
     baselines: dict[MakeCall, Trace],
     notes: list[str],
 ) -> list[TraceFinding]:
+    """Make each `$(shell …)` call fail, and report a call whose failure leaves
+    a CI call green with fewer commands or arguments.
+
+    A stub fails every call of its program whose argv holds its literals, so
+    two calls of one command fail together. They are made to fail once, and
+    the finding at the first call names the others, because the effect can
+    come from any of them."""
     findings: list[TraceFinding] = []
     skipped = unexercised = 0
+    sites = [
+        (mf, c, fault_target(c.body))
+        for mf in makefiles
+        for c in shell_calls((repo / mf).read_text(encoding="utf-8", errors="replace"))
+    ]
+    done: set[tuple[str, tuple[str, ...]]] = set()
     with tempfile.TemporaryDirectory(prefix="trace-ci-stubs-") as tmp:
-        for n, (makefile, call_site) in enumerate(
-            (mf, c)
-            for mf in makefiles
-            for c in shell_calls(
-                (repo / mf).read_text(encoding="utf-8", errors="replace")
-            )
-        ):
-            target = fault_target(call_site.body)
+        for n, (makefile, call_site, target) in enumerate(sites):
+            if target in done:
+                continue
             stub_dir, marker = Path(tmp) / str(n), Path(tmp) / f"{n}.fired"
             if target is None or not write_stub(stub_dir, *target, marker):
                 skipped += 1
                 continue
+            done.add(target)
+            also = [
+                f"{mf}:{c.line}"
+                for mf, c, t in sites
+                if c is not call_site
+                and t is not None
+                and t[0] == target[0]
+                and set(target[1]) <= set(t[1])
+            ]
             effects: list[str] = []
             fired = False
             for call, base in baselines.items():
                 if base.returncode != 0:
                     continue
                 marker.unlink(missing_ok=True)
-                faulted = make_trace(make, call.cwd, call.args, stub_dir)
+                faulted = make_trace(make, call.cwd, call.args, stub_dir, call.env)
                 if not marker.exists():
                     continue
                 fired = True
@@ -1232,6 +2108,11 @@ def _inject_faults(
                             if len(effects) > 3
                             else ""
                         )
+                        + (
+                            f". trace-ci made the same command fail at {', '.join(also)} too, so the effect can come from there"
+                            if also
+                            else ""
+                        )
                         + ". Stop on the failure: test `$(.SHELLSTATUS)` after the call, or `$(error …)` when the value is empty",
                     )
                 )
@@ -1256,21 +2137,13 @@ def _coverage(
     if not goal:
         return findings
     for makefile in makefiles:
-        if not identify.tags_from_filename(makefile) >= {
-            "makefile"
-        } or makefile.endswith(".mk"):
+        # An included `.mk` fragment has no goal of its own to run.
+        if makefile.endswith(".mk"):
             continue
         directory = (repo / makefile).parent.resolve()
         if directory in reached:
             continue
-        probe = subprocess.run(
-            [make, "--dry-run", "-C", str(directory), goal],
-            capture_output=True,
-            text=True,
-            env=_make_env(),
-            check=False,
-        )
-        if probe.returncode == 0:
+        if _has_goal(make, directory, goal):
             findings.append(
                 TraceFinding(
                     makefile,
@@ -1280,6 +2153,25 @@ def _coverage(
                 )
             )
     return findings
+
+
+def _has_goal(make: str, directory: Path, goal: str) -> bool:
+    """Whether the makefile in DIRECTORY has a rule for GOAL that a dry run can
+    reach. A file named GOAL lets make exit 0 with no rule, so the database
+    that `-p` prints must name GOAL as a target."""
+    probe = subprocess.run(
+        [make, "-p", "--dry-run", "-C", str(directory), goal],
+        capture_output=True,
+        text=True,
+        env=_make_env(),
+        check=False,
+    )
+    lines = probe.stdout.splitlines()
+    return probe.returncode == 0 and any(
+        re.match(rf"{re.escape(goal)}::?(?:\s|$)", line)
+        and (i == 0 or lines[i - 1] != "# Not a target:")
+        for i, line in enumerate(lines)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

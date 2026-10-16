@@ -461,7 +461,7 @@ The cost is one request for each 100 completed runs, plus one for each failing r
 It finds four more defects that no single file shows:
 
 - **A check that passes over nothing.** GNU make does not stop when a `$(shell …)` command fails; it uses the empty output. The tool makes each `$(shell …)` call fail, one at a time, and traces CI again. If `make` still exits 0 but runs fewer commands or fewer arguments, it reports the call. For example, `FILES := $(shell git ls-files)` feeds `pre-commit run --files $(FILES)`. When `git` fails, pre-commit gets no files, skips every hook, and exits 0.
-- **A failure that the recipe shell loses.** GNU make runs each recipe line with `/bin/sh -c`, which has no errexit and no pipefail. In `a; b` and `a | b`, CI sees only the status of `b`.
+- **A failure that the recipe shell loses.** GNU make runs each recipe line with `/bin/sh -c`, which has no errexit and no pipefail. In `a; b` and `a | b`, CI sees only the status of `b`. A loop such as `for d in $(DIRS); do $(MAKE) -C $$d; done` reports only its last pass. A failure that a `||` handles, as in `a || exit 1`, is not reported.
 - **A failure that make ignores.** A recipe line that starts with `-` cannot fail.
 - **A check that CI never runs.** A directory whose `Makefile` has a `check` goal, and that no CI step reaches, is reported. `--goal` changes the goal name.
 
@@ -471,7 +471,7 @@ trace-ci --repo path/to/repo --select tier:1 --select tier:2
 trace-ci --no-fault-injection --format json
 ```
 
-The tool follows CircleCI and GitHub Actions steps. It names the other CI files that it finds, such as `.gitlab-ci.yml`, and does not read them yet. It finds CI files with the `fileMatch` globs of the [SchemaStore catalog](https://www.schemastore.org/api/json/catalog.json), and it finds makefiles and Dockerfiles with `identify`. **Run it only on a tree that you trust as much as `make`:** a dry run still runs each `$(shell …)` call, and each recipe line that holds `$(MAKE)` or starts with `+`. To accept a finding, put `# trace-ci-ok: <reason>` on its line or on the line above it. For a directory that CI does not reach, put the comment on line 1 of its `Makefile`. It exits 1 when it finds anything, and 2 when it cannot trace (no GNU make 4.0 or later, or no CI file that it follows).
+The tool follows CircleCI and GitHub Actions steps. It names the other CI files that it finds, such as `.gitlab-ci.yml`, and does not read them yet. It finds CI files with the `fileMatch` globs of the [SchemaStore catalog](https://www.schemastore.org/api/json/catalog.json), and it finds makefiles and Dockerfiles with `identify`. **Run it only on a tree that you trust as much as `make`:** a dry run still runs each `$(shell …)` call, each recipe line that holds `$(MAKE)` or starts with `+`, and the recipes that remake an included makefile. Run it on a clean checkout, as CI does: make skips a rule whose target file is up to date, so a file from a local build can hide a rule. The tool gives make the variables that CI sets to a literal value, such as `CI=true` and the `environment:` or `env:` values of the job and the step. To accept a finding, put `# trace-ci-ok: <reason>` in a comment on its line or on the line above it. A marker in a string or a YAML value accepts nothing. For a directory that CI does not reach, put the comment on line 1 of its `Makefile`. It exits 1 when it finds anything, and 2 when it cannot trace (no GNU make 4.0 or later, or no CI file that it follows).
 
 ## Contributing
 

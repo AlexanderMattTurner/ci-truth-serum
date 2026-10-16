@@ -57,15 +57,15 @@ TEST_DIR = "tests/cts"
 # sub-shards that each mutate the whole module but run only a disjoint slice of
 # its mutants (see run-mutation-shard.sh's work_items partition). cosmic-ray
 # emits roughly one mutant per source line and each mutant costs ~1.2 s, so this
-# caps a shard at ~200 mutants ≈ ~4 min of exec + setup — comfortably under the
-# job's timeout. Line count is a cheap, drift-proof proxy computed at plan time,
+# caps a shard at ~210 mutants ≈ ~4 min of exec + setup — comfortably under the
+# job's 15-minute timeout. Line count is a cheap, drift-proof proxy computed at plan time,
 # exactly as agent-input-sanitizer's `splitEvery` slices its big files. Below the
 # cap a module is a single shard whose id is the bare module stem.
 #
 # The value also trades against MATRIX_JOB_LIMIT below: a smaller slice buys
-# wall-clock and spends matrix slots. At 150 the pack expanded to 257 shards and
-# crossed that limit, which produced no shard jobs at all.
-SPLIT_EVERY_LINES = 200
+# wall-clock and spends matrix slots. At 200 the pack expands to 257 shards,
+# over that limit, which produces no shard jobs at all; at 210 it is 245.
+SPLIT_EVERY_LINES = 210
 
 # GitHub runs at most 256 jobs from one matrix. Over that it starts NONE of them,
 # and the shard job is skipped rather than failed, so the aggregate step then
