@@ -421,11 +421,13 @@ def test_a_composite_action_that_calls_itself_is_refused(tmp_path: Path) -> None
 def test_a_local_action_without_a_definition_is_refused(
     uses: str, tmp_path: Path
 ) -> None:
-    (tmp_path.parent / "outside").mkdir(exist_ok=True)
-    (tmp_path.parent / "outside/action.yml").write_text("runs: {}\n")
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside/action.yml").write_text("runs: {}\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
     text = f"jobs:\n  j:\n    steps:\n    - uses: {uses}\n"
     with pytest.raises(mod.TraceError, match="w.yml:4: the local action"):
-        mod.workflow_steps(text, "w.yml", tmp_path, [])
+        mod.workflow_steps(text, "w.yml", repo, [])
 
 
 def _step(command: str) -> "mod.CiStep":
