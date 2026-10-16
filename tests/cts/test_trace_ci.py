@@ -660,51 +660,104 @@ def test_parse_trace_names_the_rule_each_make_runs_next(tmp_path: Path) -> None:
     assert follows == (mod.Follow(0, (tmp_path / "Makefile").resolve(), 2),)
 
 
-def test_parse_trace_records_each_sub_make_that_starts(tmp_path: Path) -> None:
+def test_parse_trace_records_the_directories_that_sub_makes_read(
+    tmp_path: Path,
+) -> None:
     mark = mod.LEVEL_MARK
+
+    def sub_make(name: str) -> str:
+        entered = tmp_path / name
+        return (
+            f"make[1]: Entering directory '{entered}'\n"
+            f"{mark}1\n"
+            f"make[1]: Leaving directory '{entered}'\n"
+        )
+
     output = (
         f"{mark}0\n"
         "Makefile:2: target 'check' does not exist\n"
         "make -C a -f ../x.mk check; make -C b check\n"
-        f"make[1]: Entering directory '{tmp_path / 'a'}'\n"
-        f"{mark}1\n"
-        f"make[1]: Leaving directory '{tmp_path / 'a'}'\n"
-        f"make[1]: Entering directory '{tmp_path / 'b'}'\n"
-        f"{mark}1\n"
-        f"make[1]: Leaving directory '{tmp_path / 'b'}'\n"
+        + sub_make("a")
+        + sub_make("b")
+        + "env -C c make check\n"
+        + sub_make("c")
     )
-    assert mod.parse_trace(output, tmp_path, ("V=1",)).sub_makes == (
-        mod.SubMake(tmp_path / "a", ("V=1", "--file=../x.mk")),
-        mod.SubMake(tmp_path / "b", ("V=1",)),
-    )
+    dirs = mod.parse_trace(output, tmp_path).sub_make_dirs
+    assert {d.resolve() for d in dirs} == {
+        tmp_path.resolve(),
+        (tmp_path / "b").resolve(),
+    }
 
 
 @pytest.mark.parametrize(
-    ("text", "expected"),
+    ("text", "entered", "expected"),
     [
         pytest.param(
-            "env FOO=1 make -C pkg -f ../x.mk check",
-            (("--file=../x.mk",), ("check",), "pkg"),
+            "env FOO=1 make -C pkg -f ../mk/x.mk check",
+            "pkg",
+            {"mk"},
             id="a wrapper hides no make word",
         ),
         pytest.param(
-            "env -C pkg make check",
-            ((), (), None),
-            id="a wrapper that moves the directory starts no make that is found",
+            "make -C a -C b check",
+            "a/b",
+            {"a/b"},
+            id="each -C moves on from the one before",
+        ),
+        pytest.param(
+            "make -C sub -f ../m/Makefile check && make -C b check",
+            "sub",
+            {"m"},
+            id="a make word that starts in another directory is not the one",
+        ),
+        pytest.param(
+            "make -C sub -f ../m1/Makefile check || make -C sub check",
+            "sub",
+            set(),
+            id="two make words in the directory count only what both read",
+        ),
+        pytest.param(
+            "make -C sub --version >/dev/null; make -C sub -f ../m/Makefile check",
+            "sub",
+            set(),
+            id="a make word that starts no sub-make still can be the one",
+        ),
+        pytest.param(
+            "env -C a make check; make -C b check",
+            "b",
+            set(),
+            id="a make word that trace-ci cannot follow can be the one",
+        ),
+        pytest.param(
+            "make -C $d check", "d", set(), id="a -C that is not plain leads nowhere"
+        ),
+        pytest.param(
+            "cd pkg && make check",
+            "pkg",
+            set(),
+            id="a cd before the make word is not followed",
         ),
     ],
 )
-def test_sub_make_args(
-    text: str,
-    expected: tuple[tuple[str, ...], tuple[str, ...], str | None],
-    tmp_path: Path,
+def test_sub_make_dirs(
+    text: str, entered: str, expected: set[str], tmp_path: Path
 ) -> None:
-    options, goals, start = expected
-    assert mod._sub_make_args(text, 0, (), tmp_path) == mod.SubMakeArgs(
-        options,
-        goals,
-        None if start is None else (tmp_path / start).resolve(),
-    )
+    dirs = mod._sub_make_dirs(text, tmp_path, tmp_path / entered)
+    assert {d.resolve() for d in dirs} == {(tmp_path / e).resolve() for e in expected}
+
+
+@pytest.mark.parametrize(
+    ("n", "expected"),
+    [
+        pytest.param(0, (("V=1", "--file=../x.mk"), ("check",)), id="the first"),
+        pytest.param(5, (("V=1",), ("lint",)), id="N past the last reads the last"),
+    ],
+)
+def test_sub_make_args(
+    n: int, expected: tuple[tuple[str, ...], tuple[str, ...]]
+) -> None:
+    text = "env FOO=1 make -C pkg -f ../x.mk check && make lint"
+    assert mod._sub_make_args(text, n, ("-k", "V=1")) == expected
 
 
 def test_recipe_lines_skip_a_line_that_prints_nothing() -> None:
@@ -1190,12 +1243,21 @@ def _config(command: str, job: str = "") -> str:
         ),
         pytest.param(
             {
-                "Makefile": f"check:\n{TAB}$(MAKE) --version && $(MAKE) -C sub -f ../x.mk check\n",
-                "sub/Makefile": f"check:\n{TAB}@true\n",
-                "x.mk": f"check:\n{TAB}@true\n",
+                "Makefile": f"check:\n{TAB}$(MAKE) --version >/dev/null && $(MAKE) -C sub -f ../x.mk check\n",
+                "sub/Makefile": "check:\n",
+                "x.mk": "check:\n",
             },
-            [("Makefile", 2, "untraced"), ("sub/Makefile", 1, "uncovered")],
+            [("sub/Makefile", 1, "uncovered")],
             id="a make that starts no sub-make gives its options to no sub-make",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}if false; then $(MAKE) -C sub -f ../m/Makefile check; else $(MAKE) -C sub check; fi\n",
+                "sub/Makefile": "check:\n",
+                "m/Makefile": "check:\n",
+            },
+            [("m/Makefile", 1, "uncovered"), ("sub/Makefile", 1, "uncovered")],
+            id="a make word that a branch skips is not credited",
         ),
         pytest.param(
             {

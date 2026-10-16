@@ -244,17 +244,9 @@ class Follow(NamedTuple):
     line: int
 
 
-class SubMake(NamedTuple):
-    """A sub-make that a dry run started, and whose make command trace-ci found
-    in the recipe line of its parent: its directory, and its options."""
-
-    cwd: Path
-    options: tuple[str, ...]
-
-
 @dataclass(frozen=True)
 class Trace:
-    """The result of one dry run. HIDDEN, FOLLOWS and SUB_MAKES are as
+    """The result of one dry run. HIDDEN, FOLLOWS and SUB_MAKE_DIRS are as
     `parse_trace` returns them."""
 
     returncode: int
@@ -262,7 +254,7 @@ class Trace:
     stderr: str
     hidden: str
     follows: tuple[Follow, ...]
-    sub_makes: tuple[SubMake, ...]
+    sub_make_dirs: frozenset[Path]
 
 
 @dataclass(frozen=True)
@@ -1281,11 +1273,11 @@ def make_trace(
         env=_make_env(path_prefix, ci_env),
         check=False,
     )
-    commands, hidden, follows, sub_makes = parse_trace(
+    commands, hidden, follows, sub_make_dirs = parse_trace(
         proc.stdout, cwd, parsed.options, parsed.goals
     )
     return Trace(
-        proc.returncode, tuple(commands), proc.stderr, hidden, follows, sub_makes
+        proc.returncode, tuple(commands), proc.stderr, hidden, follows, sub_make_dirs
     )
 
 
@@ -1298,8 +1290,8 @@ def parse_trace(
     """The commands in the stdout of `make --dry-run --trace`, HIDDEN, and
     FOLLOWS: for each rule run, the makefile and first recipe line of the rule
     that the same make ran next. HIDDEN says why trace-ci cannot tell which
-    make printed a command, or is "". SUB_MAKES has each sub-make that
-    started, also one that printed no command, when trace-ci found its make
+    make printed a command, or is "". SUB_MAKE_DIRS has the directories in
+    which a sub-make surely read a makefile, also a sub-make that printed no
     command.
 
     GNU make names the FIRST RECIPE LINE of each rule that it runs, not the rule
@@ -1320,7 +1312,7 @@ def parse_trace(
     frames = [_Frame(cwd, 0, options, goals)]
     found: list[Traced] = []
     follows: list[Follow] = []
-    sub_makes: list[SubMake] = []
+    sub_make_dirs: set[Path] = set()
     runs = 0
     hidden = ""
     pending: list[str] = []
@@ -1379,16 +1371,14 @@ def parse_trace(
             if level == top.level and parent.level < level:
                 # A new make, so the frame it entered as was not entered.
                 top.pairs -= 1
-                args = _sub_make_args(
-                    parent.last, parent.started, parent.options, parent.cwd
+                frames[-1] = _Frame(
+                    top.cwd,
+                    level,
+                    *_sub_make_args(parent.last, parent.started, parent.options),
                 )
-                frames[-1] = _Frame(top.cwd, level, args.options, args.goals)
                 parent.started += 1
                 marked = frames[-1]
-                # The options are this make's own only when their `-C` leads to
-                # the directory that it entered.
-                if args.start is not None and args.start.resolve() == top.cwd.resolve():
-                    sub_makes.append(SubMake(top.cwd, args.options))
+                sub_make_dirs |= _sub_make_dirs(parent.last, parent.cwd, top.cwd)
             if level != top.level:
                 hidden = hidden or HIDDEN_DIRECTORY
             continue
@@ -1433,7 +1423,7 @@ def parse_trace(
         emit("\n".join(pending))
     if any(f.pairs > 1 and f.bare_after for f in synced):
         hidden = hidden or HIDDEN_SYNC
-    return ParsedTrace(found, hidden, tuple(follows), tuple(sub_makes))
+    return ParsedTrace(found, hidden, tuple(follows), frozenset(sub_make_dirs))
 
 
 class ParsedTrace(NamedTuple):
@@ -1442,7 +1432,7 @@ class ParsedTrace(NamedTuple):
     commands: list[Traced]
     hidden: str
     follows: tuple[Follow, ...]
-    sub_makes: tuple[SubMake, ...]
+    sub_make_dirs: frozenset[Path]
 
 
 @dataclass(eq=False)
@@ -1465,41 +1455,55 @@ class _Frame:
     bare_after: bool = False
 
 
-class SubMakeArgs(NamedTuple):
-    """What `_sub_make_args` reads from the make command of a sub-make."""
-
-    options: tuple[str, ...]
-    goals: tuple[str, ...]
-    start: Path | None
-
-
-def _sub_make_args(
-    text: str, n: int, inherited: tuple[str, ...], cwd: Path
-) -> SubMakeArgs:
-    """The options, the goals and the start directory of the Nth sub-make that
-    the command TEXT starts in CWD, from 0. A loop starts one make word more
-    than once, so N past the last make word reads the last. Make passes its
-    command-line variables down, so the sub-make also gets the `VAR=value`
-    words of INHERITED. Its `-C` is left out of the options: the frame has its
-    directory. The start directory is None when TEXT starts no make, or when a
-    `-C` is not plain."""
-    variables = tuple(o for o in inherited if "=" in o and not o.startswith("-"))
-    launches = [
+def _launches(text: str) -> list[tuple[list[str], list[str]] | str | None]:
+    """How each command in the shell TEXT runs make, as `_launch` says."""
+    return [
         _launch(words)
         for words in map(command_words, iter_nodes(parse(text), "command"))
         if words
     ]
+
+
+def _sub_make_args(
+    text: str, n: int, inherited: tuple[str, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The options and goals of the Nth sub-make that the command TEXT starts,
+    from 0. A loop starts one make word more than once, so N past the last
+    make word reads the last. Make passes its command-line variables down, so
+    the sub-make also gets the `VAR=value` words of INHERITED. Its `-C` is left
+    out: the frame has its directory."""
+    variables = tuple(o for o in inherited if "=" in o and not o.startswith("-"))
     # A wrapper such as `env FOO=1 $(MAKE) -f x.mk` hides the make word, and
-    # its `-f` decides which directories the sub-make reaches and which shell
-    # it runs.
-    makes = [found[0] for found in launches if isinstance(found, tuple)]
+    # its `-f` decides which shell the sub-make runs.
+    makes = [found[0] for found in _launches(text) if isinstance(found, tuple)]
     if not makes:
-        return SubMakeArgs(variables, (), None)
+        return variables, ()
     words = makes[min(n, len(makes) - 1)]
     args = parse_make_args([unquote(w) for w in words[1:]])
-    return SubMakeArgs(
-        variables + args.options, args.goals, _fold_directory(cwd, args.directories)
-    )
+    return variables + args.options, args.goals
+
+
+def _sub_make_dirs(text: str, cwd: Path, entered: Path) -> set[Path]:
+    """The directories in which a sub-make surely reads a makefile. The command
+    TEXT started it in CWD, and it entered ENTERED.
+
+    The N that `_sub_make_args` takes cannot tell which make word started the
+    sub-make: a shell branch can skip a make word, and `$(MAKE) --version`
+    starts no sub-make. Each make word whose `-C` leads to ENTERED can be the
+    one, so only the directories that all of them read count. A make word that
+    trace-ci cannot follow can be the one too, and then none count."""
+    launches = _launches(text)
+    if UNTRACED in launches:
+        return set()
+    candidates = []
+    for found in launches:
+        if not isinstance(found, tuple):
+            continue
+        args = parse_make_args([unquote(w) for w in found[0][1:]])
+        start = _fold_directory(cwd, args.directories)
+        if start is not None and start.resolve() == entered.resolve():
+            candidates.append(set(_makefile_dirs(entered, args.options)))
+    return set.intersection(*candidates) if candidates else set()
 
 
 # A conditional directive can sit between the lines of one recipe.
@@ -2431,11 +2435,9 @@ def trace(
             continue
         baselines[call] = result
         reached_dirs.update(c.makefile.parent for c in result.commands)
-        # A sub-make reads the makefiles that its `-f` names, or the makefile
-        # in its directory. That is true also when it prints no command, or
+        # A sub-make reads its makefiles also when it prints no command, or
         # when its recipes come from an included file such as `mk/common.mk`.
-        for sub in result.sub_makes:
-            reached_dirs.update(_makefile_dirs(sub.cwd, sub.options))
+        reached_dirs |= result.sub_make_dirs
         if result.returncode != 0:
             last = (result.stderr.strip().splitlines() or [""])[-1]
             findings.append(
@@ -2470,8 +2472,7 @@ def _kept(repo: Path, findings: list[TraceFinding]) -> list[TraceFinding]:
 
 def _makefile_dirs(cwd: Path, args: Sequence[str]) -> list[Path]:
     """The directories of the makefiles that a make in CWD with ARGS reads:
-    each `-f FILE`, or CWD when it names none. ARGS can be the OPTIONS of a
-    `SubMake`."""
+    each `-f FILE`, or CWD when it names none."""
     files = parse_make_args(args).files
     return [(cwd / f).resolve().parent for f in files if f] or [cwd]
 
@@ -2629,11 +2630,7 @@ def _unfollowed_make(text: str) -> str:
     """Why trace-ci does not follow a make that the printed recipe command TEXT
     runs, or "" when TEXT runs no make. A dry run runs only a line that is
     written with `+` or `$(MAKE)`, so it printed this one and did not run it."""
-    found = [
-        _launch(words)
-        for words in map(command_words, iter_nodes(parse(text), "command"))
-        if words
-    ]
+    found = _launches(text)
     if any(
         isinstance(f, tuple)
         and not {"--version", "--help", "-v", "-h"}
