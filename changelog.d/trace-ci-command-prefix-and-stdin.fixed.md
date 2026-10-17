@@ -1,0 +1,2 @@
+- `trace-ci`: a `cd`, `pushd`, `popd` or `make` after `command` or `builtin` (`command cd sub`) now counts as that command. Before this fix, trace-ci did not follow the directory change, and it did not see the `make`. A `command -v` or `command -V` only prints a name, so it counts as no command.
+- `trace-ci`: each dry run of `make` now gets an empty input. Before this fix, a CI call with `-f -` made `make` read the input of trace-ci, so it could stop and wait at a terminal.

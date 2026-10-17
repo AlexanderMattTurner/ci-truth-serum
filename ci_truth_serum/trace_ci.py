@@ -807,6 +807,8 @@ GUARDS = frozenset(
 )
 BRANCH_CLAUSES = frozenset({"elif_clause", "else_clause", "case_item"})
 DIR_COMMANDS = frozenset({"cd", "pushd", "popd"})
+# The names that `builtin` can run and that trace-ci reads.
+BUILTIN_TARGETS = SHELL_BUILTINS | DIR_COMMANDS | {"builtin"}
 SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash"})
 MAKE_PROGRAMS = frozenset({"make", "gmake"})
 
@@ -1052,6 +1054,30 @@ def _prefix_env(node) -> tuple[tuple[str, str], ...]:
 UNTRACED = "untraced"
 
 
+def _unprefixed(words: list[str]) -> list[str]:
+    """The words of the command that WORDS runs, after each `command` or
+    `builtin` word before it: `command cd sub` moves to `sub`, as `cd sub` does.
+    The result is [] when WORDS runs nothing that trace-ci reads:
+    - `command -v` and `command -V` only print how the shell reads a name, and
+      an option that bash does not know fails the command, so only `-p` runs it;
+    - `builtin` runs only a shell builtin, so `builtin make` fails."""
+    while words and program_name(words[0]) in ("command", "builtin"):
+        name, words = program_name(words[0]), words[1:]
+        while words and unquote(words[0]).startswith("-") and unquote(words[0]) != "-":
+            option = unquote(words.pop(0))
+            if option == "--":
+                break
+            if name == "builtin" or set(option[1:]) - {"p"}:
+                return []
+        if (
+            name == "builtin"
+            and words
+            and program_name(words[0]) not in BUILTIN_TARGETS
+        ):
+            return []
+    return words
+
+
 def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
     """How the command WORDS runs make. The result is one of these:
     - the words from `make` on, and the `VAR=value` words of the wrappers
@@ -1064,6 +1090,9 @@ def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
     option can take the next word as its value, so when the words after that
     word launch a make, the make is UNTRACED and not lost. A `--` ends the
     options."""
+    words = _unprefixed(words)
+    if not words:
+        return None
     name = program_name(words[0])
     if name in MAKE_PROGRAMS:
         return words, []
@@ -1159,7 +1188,7 @@ def make_calls(step: CiStep, repo: Path) -> tuple[list[MakeCall], list[int]]:
     calls: list[MakeCall] = []
     untraced: list[int] = []
     for node in iter_nodes(parse(ci_shell_text(step.command)), "command"):
-        words = command_words(node)
+        words = _unprefixed(command_words(node))
         if not words:
             continue
         name = program_name(words[0])
@@ -1268,6 +1297,8 @@ def make_trace(
             # The last `-j` wins, so this one goes after the call's own.
             "--jobs=1",
         ],
+        # `-f -` reads the makefile from the input, and a CI job gives make none.
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         env=_make_env(path_prefix, ci_env),
@@ -1495,7 +1526,9 @@ def _sub_make_dirs(text: str, cwd: Path, entered: Path) -> set[Path]:
     TEXT has a make word that trace-ci cannot follow, or whose start directory
     or makefile it cannot tell. That make word can be the one too."""
     candidates = []
-    for words in map(command_words, iter_nodes(parse(text), "command")):
+    for words in map(
+        _unprefixed, map(command_words, iter_nodes(parse(text), "command"))
+    ):
         if not words:
             continue
         # A `cd` moves the start of the make words after it.
@@ -1748,6 +1781,7 @@ def make_shell(
             f"$(info {PROBE_PREFIX}$(.RECIPEPREFIX))",
             PROBE_GOAL,
         ],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         env=_make_env(ci_env=ci_env),
@@ -2847,6 +2881,7 @@ def _has_goal(make: str, directory: Path, goal: str) -> bool:
     that `-p` prints must name GOAL as a target."""
     probe = subprocess.run(
         [make, "-p", "--dry-run", "-C", str(directory), goal],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         env=_make_env(),
