@@ -2737,7 +2737,7 @@ def matrix_combinations(matrix: dict) -> list[dict]:
 
 
 def _render_matrix_value(value: object) -> str:
-    """Render one matrix value the way GitHub writes it into a check name.
+    """Render one matrix value for a check name, with a boolean as GitHub writes it.
 
     YAML reads `true` as a Python bool, and `str()` writes it as `True`. GitHub
     writes `true`, so a name with a boolean would never match the posted check.
