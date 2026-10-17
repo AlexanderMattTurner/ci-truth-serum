@@ -737,6 +737,24 @@ def test_parse_trace_records_the_directories_that_sub_makes_read(
             set(),
             id="a cd before the make word is not followed",
         ),
+        pytest.param(
+            "(cd sub && make -f ../m/Makefile check) || make -C sub check",
+            "sub",
+            set(),
+            id="a make word after a cd can be the one",
+        ),
+        pytest.param(
+            "make -C $d -f ../m/Makefile check; true || make -C sub check",
+            "sub",
+            set(),
+            id="a make word whose -C is not plain can be the one",
+        ),
+        pytest.param(
+            "make -C sub -f - check",
+            "sub",
+            set(),
+            id="a makefile from standard input is in no directory",
+        ),
     ],
 )
 def test_sub_make_dirs(
@@ -746,17 +764,29 @@ def test_sub_make_dirs(
     assert {d.resolve() for d in dirs} == {(tmp_path / e).resolve() for e in expected}
 
 
+WRAPPED = "env FOO=1 make -C pkg -f ../x.mk check && make lint"
+
+
 @pytest.mark.parametrize(
-    ("n", "expected"),
+    ("text", "n", "expected"),
     [
-        pytest.param(0, (("V=1", "--file=../x.mk"), ("check",)), id="the first"),
-        pytest.param(5, (("V=1",), ("lint",)), id="N past the last reads the last"),
+        pytest.param(
+            WRAPPED, 0, (("V=1", "--file=../x.mk"), ("check",)), id="the first"
+        ),
+        pytest.param(
+            WRAPPED, 5, (("V=1",), ("lint",)), id="N past the last reads the last"
+        ),
+        pytest.param(
+            "env -C pkg make check",
+            0,
+            (("V=1",), ()),
+            id="a make word that trace-ci cannot follow gives no options",
+        ),
     ],
 )
 def test_sub_make_args(
-    n: int, expected: tuple[tuple[str, ...], tuple[str, ...]]
+    text: str, n: int, expected: tuple[tuple[str, ...], tuple[str, ...]]
 ) -> None:
-    text = "env FOO=1 make -C pkg -f ../x.mk check && make lint"
     assert mod._sub_make_args(text, n, ("-k", "V=1")) == expected
 
 
@@ -1250,6 +1280,7 @@ def _config(command: str, job: str = "") -> str:
             [("sub/Makefile", 1, "uncovered")],
             id="a make that starts no sub-make gives its options to no sub-make",
         ),
+        # trace-ci cannot tell which branch ran, so it credits neither.
         pytest.param(
             {
                 "Makefile": f"check:\n{TAB}if false; then $(MAKE) -C sub -f ../m/Makefile check; else $(MAKE) -C sub check; fi\n",
@@ -1258,6 +1289,15 @@ def _config(command: str, job: str = "") -> str:
             },
             [("m/Makefile", 1, "uncovered"), ("sub/Makefile", 1, "uncovered")],
             id="a make word that a branch skips is not credited",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}(cd sub && $(MAKE) -f ../m/Makefile check) || $(MAKE) -C sub check\n",
+                "sub/Makefile": "check:\n",
+                "m/Makefile": "check:\n",
+            },
+            [("m/Makefile", 1, "uncovered"), ("sub/Makefile", 1, "uncovered")],
+            id="a make word after a cd is not credited, nor the make words with it",
         ),
         pytest.param(
             {

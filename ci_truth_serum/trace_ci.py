@@ -1291,7 +1291,7 @@ def parse_trace(
     FOLLOWS: for each rule run, the makefile and first recipe line of the rule
     that the same make ran next. HIDDEN says why trace-ci cannot tell which
     make printed a command, or is "". SUB_MAKE_DIRS has the directories in
-    which a sub-make surely read a makefile, also a sub-make that printed no
+    which a sub-make read a makefile, also when that sub-make printed no
     command.
 
     GNU make names the FIRST RECIPE LINE of each rule that it runs, not the rule
@@ -1470,8 +1470,9 @@ def _sub_make_args(
     """The options and goals of the Nth sub-make that the command TEXT starts,
     from 0. A loop starts one make word more than once, so N past the last
     make word reads the last. Make passes its command-line variables down, so
-    the sub-make also gets the `VAR=value` words of INHERITED. Its `-C` is left
-    out: the frame has its directory."""
+    the sub-make also gets the `VAR=value` words of INHERITED. The frame holds
+    the directory, so the options leave out the `-C`. N can name a make word
+    that a shell branch skips, so the options can be those of another make."""
     variables = tuple(o for o in inherited if "=" in o and not o.startswith("-"))
     # A wrapper such as `env FOO=1 $(MAKE) -f x.mk` hides the make word, and
     # its `-f` decides which shell the sub-make runs.
@@ -1484,24 +1485,32 @@ def _sub_make_args(
 
 
 def _sub_make_dirs(text: str, cwd: Path, entered: Path) -> set[Path]:
-    """The directories in which a sub-make surely reads a makefile. The command
-    TEXT started it in CWD, and it entered ENTERED.
+    """The directories in which a sub-make reads a makefile. The command TEXT
+    started it in CWD, and it entered ENTERED.
 
     The N that `_sub_make_args` takes cannot tell which make word started the
-    sub-make: a shell branch can skip a make word, and `$(MAKE) --version`
+    sub-make. A shell branch can skip a make word, and `$(MAKE) --version`
     starts no sub-make. Each make word whose `-C` leads to ENTERED can be the
-    one, so only the directories that all of them read count. A make word that
-    trace-ci cannot follow can be the one too, and then none count."""
-    launches = _launches(text)
-    if UNTRACED in launches:
-        return set()
+    one, so only the directories that all of them read count. None count when
+    TEXT has a make word that trace-ci cannot follow, or whose start directory
+    it cannot tell: that make word can be the one too."""
     candidates = []
-    for found in launches:
-        if not isinstance(found, tuple):
+    for words in map(command_words, iter_nodes(parse(text), "command")):
+        if not words:
+            continue
+        # A `cd` moves the start of the make words after it.
+        if program_name(words[0]) in DIR_COMMANDS:
+            return set()
+        found = _launch(words)
+        if found == UNTRACED:
+            return set()
+        if found is None:
             continue
         args = parse_make_args([unquote(w) for w in found[0][1:]])
         start = _fold_directory(cwd, args.directories)
-        if start is not None and start.resolve() == entered.resolve():
+        if start is None:
+            return set()
+        if start.resolve() == entered.resolve():
             candidates.append(set(_makefile_dirs(entered, args.options)))
     return set.intersection(*candidates) if candidates else set()
 
@@ -2472,9 +2481,12 @@ def _kept(repo: Path, findings: list[TraceFinding]) -> list[TraceFinding]:
 
 def _makefile_dirs(cwd: Path, args: Sequence[str]) -> list[Path]:
     """The directories of the makefiles that a make in CWD with ARGS reads:
-    each `-f FILE`, or CWD when it names none."""
+    each `-f FILE`, or CWD when it names none. A `-f -` reads standard input,
+    which is in no directory."""
     files = parse_make_args(args).files
-    return [(cwd / f).resolve().parent for f in files if f] or [cwd]
+    if not files:
+        return [cwd]
+    return [(cwd / f).resolve().parent for f in files if f not in ("", "-")]
 
 
 def _step_findings(
