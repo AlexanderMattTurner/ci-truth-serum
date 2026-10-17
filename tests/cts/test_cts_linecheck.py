@@ -1009,6 +1009,23 @@ def test_expand_name_ref_is_a_strict_subset_of_the_matrix_axes() -> None:
     assert lc.expand_name(name, matrix) == ["Build (amd64)", "Build (arm64)"]
 
 
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ([True, False], ["Test (false)", "Test (true)"]),
+        ([1, 0], ["Test (0)", "Test (1)"]),
+        (["True"], ["Test (True)"]),
+    ],
+)
+def test_expand_name_renders_values_as_github_does(
+    values: list, expected: list[str]
+) -> None:
+    # GitHub writes a YAML boolean as `true`; Python's str() writes `True`.
+    # The int and str cases pin that only a real bool is rewritten.
+    name = "Test (${{ matrix.flag }})"
+    assert lc.expand_name(name, {"flag": values}) == expected
+
+
 # ── required_check_contexts ──────────────────────────────────────────────────
 
 

@@ -1,0 +1,1 @@
+- `check-required-reporter` and `sync-required-checks` now write a boolean matrix value as `true` or `false` in a check name. Before this fix, they wrote `True` or `False`. A required check name with a boolean in it then did not match the name that GitHub posts.
