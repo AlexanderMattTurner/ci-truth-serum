@@ -52,6 +52,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     node_text,
     parse,
     program_name,
+    unprefixed,
     unquote,
 )
 from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -811,8 +812,6 @@ DIR_COMMANDS = BASH_DIR_COMMANDS | {"cd"}
 # The shells that have `builtin`, `pushd` and `popd`. POSIX names none of them,
 # and `sh` is bash on one runner and dash on another.
 BASH_SHELLS = frozenset({"bash", "zsh"})
-# The names that `builtin` can run and that trace-ci reads.
-BUILTIN_TARGETS = SHELL_BUILTINS | DIR_COMMANDS | {"builtin"}
 SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash"})
 MAKE_PROGRAMS = frozenset({"make", "gmake"})
 
@@ -1058,31 +1057,6 @@ def _prefix_env(node) -> tuple[tuple[str, str], ...]:
 UNTRACED = "untraced"
 
 
-def _unprefixed(words: list[str]) -> list[str]:
-    """The words of the command that WORDS runs, after each `command` or
-    `builtin` word before it: `command cd sub` moves to `sub`, as `cd sub` does.
-    The result is [] when WORDS runs nothing that trace-ci reads:
-    - `command -v` and `command -V` only print how the shell reads a name;
-    - bash fails `command` and `builtin` on an option that it does not know,
-      and `command -p` still runs the command;
-    - `builtin` runs only a shell builtin, so `builtin make` fails.
-
-    Only a shell reads a bare `command` or `builtin` word this way. A wrapper
-    runs a program with that name (`env command make`, `./builtin cd`), so the
-    words after a wrapper never come here."""
-    while words and unquote(words[0]) in ("command", "builtin"):
-        name, words = unquote(words[0]), words[1:]
-        while words and unquote(words[0]).startswith("-") and unquote(words[0]) != "-":
-            option = unquote(words.pop(0))
-            if option == "--":
-                break
-            if name == "builtin" or set(option[1:]) - {"p"}:
-                return []
-        if name == "builtin" and words and unquote(words[0]) not in BUILTIN_TARGETS:
-            return []
-    return words
-
-
 def _bash_only(raw: list[str], words: list[str]) -> bool:
     """Whether a shell that is not in BASH_SHELLS can fail the command RAW,
     which runs WORDS: a `builtin` word comes before WORDS, or WORDS is a
@@ -1176,7 +1150,7 @@ def _mentions_make(words: list[str]) -> bool:
         _launch(command) is not None
         for word in words
         for command in map(
-            _unprefixed,
+            unprefixed,
             map(command_words, iter_nodes(parse(unquote(word)), "command")),
         )
         if command
@@ -1206,7 +1180,7 @@ def make_calls(step: CiStep, repo: Path) -> tuple[list[MakeCall], list[int]]:
     untraced: list[int] = []
     for node in iter_nodes(parse(ci_shell_text(step.command)), "command"):
         raw = command_words(node)
-        words = _unprefixed(raw)
+        words = unprefixed(raw)
         if not words:
             continue
         name = program_name(words[0])
@@ -1515,7 +1489,7 @@ def _launches(text: str) -> list[tuple[list[str], list[str]] | str | None]:
     return [
         _launch(words)
         for words in map(
-            _unprefixed, map(command_words, iter_nodes(parse(text), "command"))
+            unprefixed, map(command_words, iter_nodes(parse(text), "command"))
         )
         if words
     ]
@@ -1554,7 +1528,7 @@ def _sub_make_dirs(text: str, cwd: Path, entered: Path) -> set[Path]:
     candidates = []
     for node in iter_nodes(parse(text), "command"):
         raw = command_words(node)
-        words = _unprefixed(raw)
+        words = unprefixed(raw)
         if not words:
             continue
         # A `cd` moves the start of the make words after it.

@@ -255,11 +255,76 @@ def node_text(node: Node) -> str:
 
 
 def unquote(raw: str) -> str:
-    """RAW with one layer of matching surrounding quotes removed (`'/dev/null'` →
-    `/dev/null`), so a quoted token compares equal to its bare spelling."""
+    """RAW after bash's quote removal, so a quoted token compares equal to its
+    bare spelling: `'/dev/null'`, `"/dev/null"`, `\\/dev/null` and `/dev/"null"`
+    all read `/dev/null`. An expansion keeps its text (`"$HOME"` reads `$HOME`).
+    RAW that is not one shell word (`a b`, `x=1`, `>&2`) loses only one layer
+    of matching surrounding quotes."""
+    word = _word(raw)
+    if word is not None:
+        return _quote_removed(word)
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
         return raw[1:-1]
     return raw
+
+
+# A separate cache from `parse`: one entry per word would evict the file trees
+# that the lints share there.
+@lru_cache(maxsize=4096)
+def _word(raw: str) -> Node | None:
+    """The node that spells RAW when the grammar reads RAW as one command word,
+    or None. The node text must be RAW itself, so RAW is not folded as `parse`
+    folds it. RAW that crashes the C parser, or that `parse` refuses, is None."""
+    if _SUPPLEMENTARY.search(raw) is not None or raw.count("|") > _MAX_PIPE_BYTES:
+        return None
+    root = _parser().parse(raw.encode("utf-8")).root_node
+    if root.has_error or root.named_child_count != 1:
+        return None
+    command = root.named_children[0]
+    if command.type != "command" or command.child_count != 1:
+        return None
+    name = command.children[0]
+    if (
+        name.type != "command_name"
+        or name.child_count != 1
+        or (name.start_byte, name.end_byte) != (0, len(raw.encode("utf-8")))
+    ):
+        return None
+    return name.children[0]
+
+
+# Outside quotes a backslash keeps the next character, and `\<newline>` is
+# removed. Inside double quotes it does so only before these characters.
+_BACKSLASH = re.compile(r"\\(?P<char>.)", re.DOTALL)
+_DOUBLE_QUOTED_BACKSLASH = re.compile(r'\\(?P<char>[$`"\\\n])')
+
+
+def _kept(match: re.Match[str]) -> str:
+    return "" if match["char"] == "\n" else match["char"]
+
+
+def _quote_removed(node: Node) -> str:
+    """The text of the word NODE after quote removal. A part that is not quoted
+    text, such as an expansion, keeps its text."""
+    text = node_text(node)
+    if node.type == "word":
+        return _BACKSLASH.sub(_kept, text)
+    if node.type == "raw_string":
+        return text[1:-1]
+    # The escapes of `$'…'` are not decoded here, so a word with one keeps its
+    # text and matches no bare spelling.
+    if node.type == "ansi_c_string" and "\\" not in text:
+        return text[2:-1]
+    if node.type == "string":
+        return "".join(
+            _DOUBLE_QUOTED_BACKSLASH.sub(_kept, node_text(child))
+            if child.type == "string_content"
+            else node_text(child)
+            for child in node.named_children
+        )
+    if node.type == "concatenation":
+        return "".join(map(_quote_removed, node.children))
+    return text
 
 
 class RedirectParts(NamedTuple):
@@ -312,22 +377,68 @@ def program_name(word: str) -> str:
     return unquote(word).rsplit("/", 1)[-1]
 
 
-# Programs that only name the command after them (`which docker`), and the flags
-# that make `command` a query too. `command -p docker` still RUNS docker.
+# Programs that only name the command after them (`which docker`).
 _LOOKUP_PROGRAMS = frozenset({"type", "which", "hash", "whereis"})
-_COMMAND_QUERY_FLAGS = frozenset({"-v", "-V"})
+# The builtins of bash 5.2, from `compgen -b`. `builtin` runs only these.
+BASH_BUILTINS = frozenset(
+    {".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd"}
+    | {"command", "compgen", "complete", "compopt", "continue", "declare"}
+    | {"dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export"}
+    | {"false", "fc", "fg", "getopts", "hash", "help", "history", "jobs"}
+    | {"kill", "let", "local", "logout", "mapfile", "popd", "printf", "pushd"}
+    | {"pwd", "read", "readarray", "readonly", "return", "set", "shift"}
+    | {"shopt", "source", "suspend", "test", "times", "trap", "true", "type"}
+    | {"typeset", "ulimit", "umask", "unalias", "unset", "wait"}
+)
+
+
+def _prefix_options(words: Sequence[str]) -> tuple[list[str], list[str]]:
+    """The options after WORDS[0], and the words after those options. A `--`
+    ends the options, and a `-` alone is not one."""
+    options: list[str] = []
+    rest = list(words[1:])
+    while rest and unquote(rest[0]).startswith("-") and unquote(rest[0]) != "-":
+        option = unquote(rest.pop(0))
+        if option == "--":
+            break
+        options.append(option)
+    return options, rest
 
 
 def is_lookup(words: Sequence[str]) -> bool:
-    """Whether WORDS[0] names the words after it without running them."""
+    """Whether WORDS[0] names the words after it without running them. A
+    `command` is a lookup when an option before its command holds `v` or `V`
+    (`command -pv docker`). `command -p docker` still RUNS docker."""
     if not words:
         return False
     name = program_name(words[0])
     if name in _LOOKUP_PROGRAMS:
         return True
-    return name == "command" and any(
-        unquote(word) in _COMMAND_QUERY_FLAGS for word in words[1:]
-    )
+    options = _prefix_options(words)[0] if name == "command" else []
+    return any({"v", "V"} & set(option[1:]) for option in options)
+
+
+def unprefixed(words: Sequence[str]) -> list[str]:
+    """The words of the command that WORDS runs, after each `command` or
+    `builtin` word before it: `command cd sub` runs `cd sub`. The result is []
+    when WORDS runs nothing:
+    - `command -v` and `command -V` only print how the shell reads a name;
+    - bash fails `command` and `builtin` on an option that it does not know,
+      and `command -p` still runs the command;
+    - `builtin` runs only a shell builtin, so `builtin make` fails.
+
+    Only a shell reads a bare `command` or `builtin` word this way. A wrapper
+    runs a program with that name (`env command make`, `./builtin cd`), so call
+    this on the words of a shell command, never on the words after a wrapper."""
+    rest = list(words)
+    while rest and unquote(rest[0]) in ("command", "builtin"):
+        name = unquote(rest[0])
+        options, rest = _prefix_options(rest)
+        if any(name == "builtin" or set(o[1:]) - {"p"} for o in options):
+            return []
+        if name == "builtin" and rest and unquote(rest[0]) not in BASH_BUILTINS:
+            return []
+    return rest
 
 
 def command_name(node: Node) -> str | None:

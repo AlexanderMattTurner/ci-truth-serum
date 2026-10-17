@@ -80,6 +80,7 @@ def test_a_gnu_only_flag_is_flagged(label: str, src: str) -> None:
         "sort -rn nums",
         "command -v sort",  # a lookup, so sort never runs
         "command -v grep",
+        "command -x grep -P x f",  # bash fails the unknown option, so grep never runs
         "env --help",
         'sha256sum "$file"',
         'sha256sum -c "$sums"',  # the list is a file operand

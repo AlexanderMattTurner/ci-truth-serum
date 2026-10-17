@@ -38,6 +38,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     node_text,
     parse,
     program_name,
+    unprefixed,
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -214,11 +215,7 @@ def _unwrapped(name: str, words: list[str]) -> tuple[str, list[str]]:
     name and no row reads it.
     """
     if name == "command":
-        rest = list(words)
-        while rest and rest[0].startswith("-"):
-            if "v" in rest[0][1:].lower():
-                return name, words
-            rest.pop(0)
+        rest = unprefixed([name, *words])
         return (program_name(rest[0]), rest[1:]) if rest else (name, words)
     if name != "env" or "--help" in words or "--version" in words:
         return name, words

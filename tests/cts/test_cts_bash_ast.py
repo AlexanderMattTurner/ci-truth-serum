@@ -184,9 +184,27 @@ def test_node_text_decodes_multibyte_source() -> None:
         ("'/dev/null\"", "'/dev/null\""),
         ('"', '"'),
         ("", ""),
+        # Bash removes every quote of a word, not only a surrounding pair.
+        ("\\make", "make"),
+        ('ma"ke"', "make"),
+        ("/dev/'null'", "/dev/null"),
+        ('"a\\"b"', 'a"b'),
+        ('"\\make"', "\\make"),
+        ("m\\ ake", "m ake"),
+        ("$'make'", "make"),
+        # An expansion keeps its text.
+        ('"$HOME/x"', "$HOME/x"),
+        ('"a$(b)c"', "a$(b)c"),
+        # The escapes of `$'…'` are not decoded.
+        ("$'\\x6d'", "$'\\x6d'"),
+        # Text that is not one word loses one surrounding pair at most.
+        ("a b", "a b"),
+        ("'x=1'", "x=1"),
+        ('FOO="a b"', 'FOO="a b"'),
+        (">&2", ">&2"),
     ],
 )
-def test_unquote_removes_exactly_one_matched_pair(raw: str, expected: str) -> None:
+def test_unquote_removes_the_quotes_of_one_word(raw: str, expected: str) -> None:
     assert bash_ast.unquote(raw) == expected
 
 
@@ -270,6 +288,7 @@ def test_command_words_of_a_prefix_only_command() -> None:
         ("timeout", "timeout"),
         ("/usr/bin/timeout", "timeout"),
         ('"/bin/docker"', "docker"),
+        ("\\make", "make"),
     ],
 )
 def test_program_name_strips_quotes_and_directories(word: str, expected: str) -> None:
@@ -287,12 +306,45 @@ def test_program_name_strips_quotes_and_directories(word: str, expected: str) ->
         # `command -p` searches the default PATH and still runs the program.
         (["command", "-p", "docker"], False),
         (["command", "docker"], False),
+        (["command", "-pv", "docker"], True),
+        # A `-v` after the command is an option of that command.
+        (["command", "docker", "run", "-v", "x:y"], False),
+        (["command", "--", "-v"], False),
         (["docker", "exec"], False),
         ([], False),
     ],
 )
 def test_is_lookup_answers_only_for_a_query(words: list[str], expected: bool) -> None:
     assert bash_ast.is_lookup(words) is expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("command cd sub", "cd sub"),
+        ("builtin cd sub", "cd sub"),
+        ("command -p make check", "make check"),
+        ("command -- builtin -- cd sub", "cd sub"),
+        ("make check", "make check"),
+        # A path names a program, not the shell builtin.
+        ("./builtin cd sub", "./builtin cd sub"),
+        ("/usr/bin/command make", "/usr/bin/command make"),
+        # These run nothing: a lookup, an unknown option, or a `builtin`
+        # before a name that is not a shell builtin.
+        ("command -v make", ""),
+        ("command -pV make", ""),
+        ("command -x make", ""),
+        ("builtin make check", ""),
+        ("builtin -x cd sub", ""),
+        # A quoted prefix is still the builtin.
+        ("\\command cd sub", "cd sub"),
+        ("command", ""),
+    ],
+)
+def test_unprefixed_reads_the_command_that_command_and_builtin_run(
+    command: str, expected: str
+) -> None:
+    assert bash_ast.unprefixed(command.split()) == expected.split()
 
 
 def _condition_texts(script: str, *statements: str) -> list[str]:
