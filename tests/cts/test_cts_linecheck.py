@@ -970,6 +970,80 @@ def test_matrix_multi_axis_exclude_then_include_extends_every_match() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, ""),
+        (True, "true"),
+        (False, "false"),
+        (1.0, "1"),
+        (-0.0, "0"),
+        (3.5, "3.5"),
+        (1e100, "1e+100"),
+        (7, "7"),
+        (10**400, "1" + "0" * 400),
+        ("x", "x"),
+        ([1], None),
+        ({"a": 1}, None),
+    ],
+)
+def test_github_string(value: object, expected: str | None) -> None:
+    assert lc.github_string(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "equal"),
+    [
+        (True, 1, False),
+        (False, 0, False),
+        (True, True, True),
+        (1, 1.0, True),
+        ("1", 1, False),
+        ([True], [1], False),
+        ([1, 2], [1, 2], True),
+        ([1], [1, 2], False),
+        ({"a": True}, {"a": 1}, False),
+        ({"a": [1]}, {"a": [1.0]}, True),
+        ({"a": 1}, {"b": 1}, False),
+        ([], {}, False),
+    ],
+)
+def test_matrix_value_equal_keeps_booleans_apart_from_numbers(
+    left: object, right: object, equal: bool
+) -> None:
+    assert lc.matrix_value_equal(left, right) is equal
+    assert lc.matrix_value_equal(right, left) is equal
+
+
+def test_matrix_include_number_does_not_extend_a_boolean_combo() -> None:
+    # Python's `True == 1` would extend the `flag: true` combo and overwrite
+    # its value with 1. GitHub keeps them apart and appends a new combo.
+    assert lc.matrix_combinations(
+        {"flag": [True, False], "include": [{"flag": 1, "x": "y"}]}
+    ) == [{"flag": True}, {"flag": False}, {"flag": 1, "x": "y"}]
+
+
+def test_matrix_include_integer_extends_an_equal_float_combo() -> None:
+    assert lc.matrix_combinations(
+        {"v": [1.0, 2.0], "include": [{"v": 1, "x": "y"}]}
+    ) == [
+        {"v": 1, "x": "y"},
+        {"v": 2.0},
+    ]
+
+
+def test_matrix_value_equal_survives_a_self_referencing_anchor() -> None:
+    loop: list = []
+    loop.append(loop)
+    assert lc.matrix_value_equal(loop, loop) is True
+
+
+def test_matrix_exclude_number_does_not_drop_a_boolean_combo() -> None:
+    assert lc.matrix_combinations({"flag": [True, 1], "exclude": [{"flag": 1}]}) == [
+        {"flag": True}
+    ]
+
+
 def test_expand_name_without_refs_is_identity() -> None:
     assert lc.expand_name("Static check", {}) == ["Static check"]
 
@@ -1017,13 +1091,14 @@ def test_expand_name_ref_is_a_strict_subset_of_the_matrix_axes() -> None:
         (["True"], ["Test (True)"]),
         ([True, 1], ["Test (1)", "Test (true)"]),
         ([None], ["Test ()"]),
+        ([1.0, 3.5], ["Test (1)", "Test (3.5)"]),
     ],
 )
-def test_expand_name_renders_booleans_and_null_as_github_does(
+def test_expand_name_renders_values_as_github_does(
     values: list, expected: list[str]
 ) -> None:
-    # GitHub writes a YAML boolean as `true` and a null as an empty string;
-    # Python's str() writes `True` and `None`.
+    # GitHub writes a YAML boolean as `true`, a null as an empty string, and
+    # 1.0 as `1`; Python's str() writes `True`, `None`, and `1.0`.
     # The int and str cases pin that only a real bool is rewritten, and the
     # mixed axis pins that `True` and `1` stay two distinct names.
     name = "Test (${{ matrix.flag }})"
