@@ -2736,6 +2736,21 @@ def matrix_combinations(matrix: dict) -> list[dict]:
     return combos
 
 
+def _render_matrix_value(value: object) -> str:
+    """Render one matrix value for a check name, with a boolean or a null as
+    GitHub writes it.
+
+    YAML reads `true` as a Python bool, and `str()` writes it as `True`. GitHub
+    writes `true`. YAML reads a bare key as None, and GitHub writes it as an
+    empty string. Either mismatch gives a name that never matches the posted check.
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    return str(value)
+
+
 def expand_name(name: str, matrix: dict) -> list[str]:
     """Resolve a job's `name:` into every concrete check context it produces,
     substituting `${{ matrix.X }}` across the job's matrix."""
@@ -2747,7 +2762,11 @@ def expand_name(name: str, matrix: dict) -> list[str]:
     for combo in matrix_combinations(matrix):
         if not refs <= combo.keys():
             continue
-        resolved.append(MATRIX_REF.sub(lambda m, c=combo: str(c[m.group("key")]), name))
+        resolved.append(
+            MATRIX_REF.sub(
+                lambda m, c=combo: _render_matrix_value(c[m.group("key")]), name
+            )
+        )
     return sorted(set(resolved))
 
 
