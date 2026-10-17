@@ -489,6 +489,9 @@ def test_make_calls_name_a_call_they_cannot_resolve(
         "env -S 'make check'",
         "env -iS'make check'",
         "env --split-string='timeout 60 make' check",
+        # The makefile comes from the input of the step.
+        "gen-makefile | make -f - check",
+        "make --file=- check <<'EOF'\ncheck: ; @:\nEOF",
     ],
 )
 def test_make_calls_name_a_call_they_cannot_place(command: str, tmp_path: Path) -> None:
@@ -550,6 +553,7 @@ def test_make_calls_keep_a_directory_change_in_its_own_shell(
         ("uv run --index-url https://x/simple make check", ("check",), {}),
         ("uv run -C k=v --no-group dev make check", ("check",), {}),
         ("env - make check", ("check",), {}),
+        ("timeout 5 command make check", ("check",), {}),
     ],
 )
 def test_make_calls_read_a_wrapper_and_the_variables_before_make(
@@ -630,8 +634,7 @@ def test_unprefixed_reads_the_command_that_command_and_builtin_run(
 
 
 def test_trace_reads_no_makefile_from_its_own_input(tmp_path: Path) -> None:
-    """A CI job gives `make -f -` no input, so the dry run must not read the
-    input of trace-ci."""
+    """A dry run must not read the input of trace-ci."""
     read, write = os.pipe()
     os.write(write, b"check:\n\techo from-stdin\n")
     os.close(write)

@@ -1058,8 +1058,9 @@ def _unprefixed(words: list[str]) -> list[str]:
     """The words of the command that WORDS runs, after each `command` or
     `builtin` word before it: `command cd sub` moves to `sub`, as `cd sub` does.
     The result is [] when WORDS runs nothing that trace-ci reads:
-    - `command -v` and `command -V` only print how the shell reads a name, and
-      an option that bash does not know fails the command, so only `-p` runs it;
+    - `command -v` and `command -V` only print how the shell reads a name;
+    - bash fails `command` and `builtin` on an option that it does not know,
+      and `command -p` still runs the command;
     - `builtin` runs only a shell builtin, so `builtin make` fails."""
     while words and program_name(words[0]) in ("command", "builtin"):
         name, words = program_name(words[0]), words[1:]
@@ -1216,6 +1217,7 @@ def make_calls(step: CiStep, repo: Path) -> tuple[list[MakeCall], list[int]]:
             or not cwd.is_relative_to(repo.resolve())
             or any(True for _ in iter_nodes(node, *EXPANSIONS))
             or CI_PLACEHOLDER in node_text(node)
+            or "-" in args.files
         ):
             untraced.append(line)
             continue
@@ -1297,7 +1299,8 @@ def make_trace(
             # The last `-j` wins, so this one goes after the call's own.
             "--jobs=1",
         ],
-        # `-f -` reads the makefile from the input, and a CI job gives make none.
+        # A `$(MAKE) -f -` or a `$(shell cat)` reads the input. With the input
+        # of trace-ci, that make can wait at a terminal.
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -2457,7 +2460,7 @@ def trace(
                     step.source,
                     line,
                     "untraced",
-                    f"this `make` call has an expansion or a CI template expression, runs in a directory outside the checkout, follows a `cd` that trace-ci cannot resolve, or runs {ELSEWHERE_TEXT}, so its commands are not checked",
+                    f"this `make` call has an expansion or a CI template expression, reads its makefile from its input (`-f -`), runs in a directory outside the checkout, follows a `cd` that trace-ci cannot resolve, or runs {ELSEWHERE_TEXT}, so its commands are not checked",
                 )
             )
 
