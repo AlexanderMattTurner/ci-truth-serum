@@ -2697,6 +2697,34 @@ def _matrix_entries(value: object) -> list[dict]:
     return [entry for entry in value if isinstance(entry, dict)]
 
 
+def github_string(value: object) -> str | None:
+    """VALUE cast to a string the way GitHub casts it. A null becomes an empty
+    string, a boolean `true`/`false`, and a whole number drops its `.0`. An array
+    or an object gets None, because this reader does not model that cast."""
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (int, float, str)):
+        return str(value)
+    return None
+
+
+def matrix_value_equal(left: object, right: object) -> bool:
+    """GitHub's equality between two matrix values. Python's `==` says
+    `True == 1`, but GitHub keeps a boolean apart from a number, so a boolean
+    equals only a boolean. Arrays and objects compare item by item."""
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(
+            matrix_value_equal(left[k], right[k]) for k in left
+        )
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(map(matrix_value_equal, left, right))
+    return isinstance(left, bool) == isinstance(right, bool) and left == right
+
+
 def matrix_combinations(matrix: dict) -> list[dict]:
     """Expand a job's `strategy.matrix` into the list of variable combinations
     GitHub schedules — the Cartesian product of the axis lists, then `exclude`
@@ -2716,7 +2744,11 @@ def matrix_combinations(matrix: dict) -> list[dict]:
         combos = [{}]
 
     for ex in _matrix_entries(matrix.get("exclude")):
-        combos = [c for c in combos if not all(c.get(k) == v for k, v in ex.items())]
+        combos = [
+            c
+            for c in combos
+            if not all(matrix_value_equal(c.get(k), v) for k, v in ex.items())
+        ]
 
     includes = _matrix_entries(matrix.get("include"))
     if not axes:
@@ -2726,7 +2758,9 @@ def matrix_combinations(matrix: dict) -> list[dict]:
 
     for inc in includes:
         extendable = [
-            c for c in combos if all(c.get(k) == v for k, v in inc.items() if k in axes)
+            c
+            for c in combos
+            if all(matrix_value_equal(c.get(k), v) for k, v in inc.items() if k in axes)
         ]
         if extendable:
             for c in extendable:
@@ -2737,18 +2771,10 @@ def matrix_combinations(matrix: dict) -> list[dict]:
 
 
 def _render_matrix_value(value: object) -> str:
-    """Render one matrix value for a check name, with a boolean or a null as
-    GitHub writes it.
-
-    YAML reads `true` as a Python bool, and `str()` writes it as `True`. GitHub
-    writes `true`. YAML reads a bare key as None, and GitHub writes it as an
-    empty string. Either mismatch gives a name that never matches the posted check.
-    """
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if value is None:
-        return ""
-    return str(value)
+    """Render one matrix value for a check name as GitHub writes it. A name built
+    with `str()` instead (`True`, `None`, `1.0`) never matches the posted check."""
+    text = github_string(value)
+    return str(value) if text is None else text
 
 
 def expand_name(name: str, matrix: dict) -> list[str]:

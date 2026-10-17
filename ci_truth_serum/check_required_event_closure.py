@@ -56,6 +56,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _marked_jobs,
     annotated_near,
     declared_events,
+    github_string,
     unwrap_expression,
     workflow_triggers,
     yaml_comment_view,
@@ -286,20 +287,6 @@ def _to_number(value: object) -> float:
     return float("nan")
 
 
-def _to_string(value: object) -> str | None:
-    """VALUE cast the way GitHub casts a function's string argument. An array
-    or an object gets None, because this reader does not model that cast."""
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(int(value)) if float(value).is_integer() else str(value)
-    if isinstance(value, str):
-        return value
-    return None
-
-
 def _loose_equal(left: object, right: object) -> bool:
     """GitHub's ``==``. Two strings compare without regard to case. Two values
     of different types compare as numbers, so ``null == ''`` is true. An array
@@ -330,7 +317,7 @@ def _string_call(name: str, args: list, env: dict) -> object:
         return _UNKNOWN
     if name == "contains" and isinstance(hay, list):
         return any(_loose_equal(item, needle) for item in hay)
-    hay_text, needle_text = _to_string(hay), _to_string(needle)
+    hay_text, needle_text = github_string(hay), github_string(needle)
     if hay_text is None or needle_text is None:
         return _UNKNOWN
     hay_text, needle_text = hay_text.casefold(), needle_text.casefold()

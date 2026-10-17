@@ -1272,6 +1272,12 @@ MATRIX_JOB_WITH_WIDER_TWIN = MATRIX_JOB_WITH_NARROWER_TWIN.replace(
     '        py: ["3.11"]\n', '        py: ["3.11", "3.12", "3.13"]\n'
 )
 
+# The two matrices are equal under Python's `True == 1`, but the sibling posts
+# `Test (1)` where the marked job registers `Test (true)`.
+MATRIX_JOB_WITH_NUMBER_FOR_BOOLEAN_TWIN = MATRIX_JOB_WITH_NARROWER_TWIN.replace(
+    '        py: ["3.11", "3.12"]\n', "        py: [true]\n"
+).replace('        py: ["3.11"]\n', "        py: [1]\n")
+
 MATRIX_JOB_WITH_DYNAMIC_TWIN = """\
 name: x
 on:
@@ -1310,6 +1316,14 @@ def test_uses_twin_does_not_satisfy(tmp_path):
 def test_twin_over_a_narrower_matrix_does_not_satisfy(tmp_path):
     # The sibling posts Test (3.11) only, so Test (3.12) never reports.
     found = crr.check_file(_write(tmp_path, "wf.yaml", MATRIX_JOB_WITH_NARROWER_TWIN))
+    assert len(found) == 1
+    assert "'test'" in found[0][1]
+
+
+def test_twin_with_a_number_for_a_boolean_does_not_satisfy(tmp_path):
+    found = crr.check_file(
+        _write(tmp_path, "wf.yaml", MATRIX_JOB_WITH_NUMBER_FOR_BOOLEAN_TWIN)
+    )
     assert len(found) == 1
     assert "'test'" in found[0][1]
 

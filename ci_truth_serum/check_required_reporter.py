@@ -113,6 +113,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_fail_closed_twin,
     expand_name,
     job_needs,
+    matrix_value_equal,
     unwrap_expression,
     MATRIX_REF,
     workflow_files as _workflow_files,
@@ -412,7 +413,7 @@ def _covering_sibling(jobs: dict, cfg: dict, template: str) -> bool:
         if _name_template(str(name), sibling) != template:
             continue
         matrix = _job_matrix(sibling)
-        if matrix == _job_matrix(cfg):
+        if matrix_value_equal(matrix, _job_matrix(cfg)):
             return True
         if wanted and wanted <= set(expand_name(template, matrix)):
             return True
