@@ -806,7 +806,11 @@ GUARDS = frozenset(
     }
 )
 BRANCH_CLAUSES = frozenset({"elif_clause", "else_clause", "case_item"})
-DIR_COMMANDS = frozenset({"cd", "pushd", "popd"})
+BASH_DIR_COMMANDS = frozenset({"pushd", "popd"})
+DIR_COMMANDS = BASH_DIR_COMMANDS | {"cd"}
+# The shells that have `builtin`, `pushd` and `popd`. POSIX names none of them,
+# and `sh` is bash on one runner and dash on another.
+BASH_SHELLS = frozenset({"bash", "zsh"})
 # The names that `builtin` can run and that trace-ci reads.
 BUILTIN_TARGETS = SHELL_BUILTINS | DIR_COMMANDS | {"builtin"}
 SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash"})
@@ -1079,6 +1083,15 @@ def _unprefixed(words: list[str]) -> list[str]:
     return words
 
 
+def _bash_only(raw: list[str], words: list[str]) -> bool:
+    """Whether a shell that is not in BASH_SHELLS can fail the command RAW,
+    which runs WORDS: a `builtin` word comes before WORDS, or WORDS is a
+    `pushd` or a `popd`."""
+    prefix = raw[: len(raw) - len(words)]
+    builtin = "builtin" in map(unquote, prefix)
+    return builtin or program_name(words[0]) in BASH_DIR_COMMANDS
+
+
 def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
     """How the command WORDS runs make. The result is one of these:
     - the words from `make` on, and the `VAR=value` words of the wrappers
@@ -1176,31 +1189,39 @@ def make_calls(step: CiStep, repo: Path) -> tuple[list[MakeCall], list[int]]:
     A `cd` or `pushd` with one plain argument moves the directory for the
     commands after it in the same shell, and `popd` moves it back. A move that
     runs only on some paths (in a branch, a loop, a function or the background)
-    makes the directory unknown after it. A `make` is returned as a line that
-    cannot be traced when its directory is unknown or outside the checkout,
-    when it has an expansion or a CI template expression, or when `_launch`
-    finds that trace-ci cannot follow it."""
+    makes the directory unknown after it. A shell outside BASH_SHELLS can fail
+    a `pushd`, a `popd` or a `builtin` command, so the directory after one is
+    unknown too, and a make after `builtin` cannot be traced. A `make` is
+    returned as a line that cannot be traced when its directory is unknown or
+    outside the checkout, when it has an expansion or a CI template expression,
+    or when `_launch` finds that trace-ci cannot follow it."""
     start = (
         None
         if step.working_directory is None
         else (repo / step.working_directory).resolve()
     )
+    bash = _shell_name(step.shell) in BASH_SHELLS
     moves: list[Move] = []
     calls: list[MakeCall] = []
     untraced: list[int] = []
     for node in iter_nodes(parse(ci_shell_text(step.command)), "command"):
-        words = _unprefixed(command_words(node))
+        raw = command_words(node)
+        words = _unprefixed(raw)
         if not words:
             continue
         name = program_name(words[0])
         line = step.lines[min(node.start_point[0], len(step.lines) - 1)]
+        unknown = not bash and _bash_only(raw, words)
         if name in DIR_COMMANDS:
-            moves.append(_move_of(node, name, words))
+            # A bare `cd` moves to a directory that trace-ci cannot tell.
+            moves.append(
+                _move_of(node, "cd", ["cd"]) if unknown else _move_of(node, name, words)
+            )
             continue
         found = _launch(words)
         if found is None:
             continue
-        if found == UNTRACED:
+        if found == UNTRACED or unknown:
             untraced.append(line)
             continue
         make_words, env_words = found
@@ -1531,16 +1552,18 @@ def _sub_make_dirs(text: str, cwd: Path, entered: Path) -> set[Path]:
     TEXT has a make word that trace-ci cannot follow, or whose start directory
     or makefile it cannot tell. That make word can be the one too."""
     candidates = []
-    for words in map(
-        _unprefixed, map(command_words, iter_nodes(parse(text), "command"))
-    ):
+    for node in iter_nodes(parse(text), "command"):
+        raw = command_words(node)
+        words = _unprefixed(raw)
         if not words:
             continue
         # A `cd` moves the start of the make words after it.
         if program_name(words[0]) in DIR_COMMANDS:
             return set()
         found = _launch(words)
-        if found == UNTRACED:
+        # The recipe shell is the SHELL of the makefile, often `/bin/sh`, and a
+        # make after `builtin` can fail there.
+        if found == UNTRACED or (found is not None and _bash_only(raw, words)):
             return set()
         if found is None:
             continue
@@ -1835,7 +1858,12 @@ def _shell_words(shell: str) -> list[str]:
 def posix_shell(shell: str) -> bool:
     """Whether SHELL is a POSIX shell, which the bash grammar can read.
     PowerShell and `cmd.exe` are not."""
-    return program_name(_shell_words(shell)[0]).removesuffix(".exe") in SHELLS
+    return _shell_name(shell) in SHELLS
+
+
+def _shell_name(shell: str) -> str:
+    """The program name of the interpreter of SHELL: `bash` for `/bin/bash -e`."""
+    return program_name(_shell_words(shell)[0]).removesuffix(".exe")
 
 
 def shell_options(shell: str, flags: str) -> ShellOptions:

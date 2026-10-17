@@ -431,9 +431,9 @@ def test_a_local_action_without_a_definition_is_refused(
         mod.workflow_steps(text, "w.yml", repo, [])
 
 
-def _step(command: str) -> "mod.CiStep":
+def _step(command: str, shell: str = "/bin/bash") -> "mod.CiStep":
     lines = tuple(range(1, len(command.splitlines()) + 1))
-    return mod.CiStep("c.yml", "j", "/bin/bash", command, lines, "", True)
+    return mod.CiStep("c.yml", "j", shell, command, lines, "", True)
 
 
 def test_make_calls_follow_a_plain_cd(tmp_path: Path) -> None:
@@ -489,6 +489,7 @@ def test_make_calls_name_a_call_they_cannot_resolve(
         "env -S 'make check'",
         "env -iS'make check'",
         "env --split-string='timeout 60 make' check",
+        'bash -c "command make check"',
         # The makefile comes from the input of the step.
         "gen-makefile | make -f - check",
         "make --file=- check <<'EOF'\ncheck: ; @:\nEOF",
@@ -583,6 +584,31 @@ def test_make_calls_read_a_wrapper_and_the_variables_before_make(
 )
 def test_a_make_package_name_is_not_a_call(command: str, tmp_path: Path) -> None:
     assert mod.make_calls(_step(command), tmp_path) == ([], [])
+
+
+@pytest.mark.parametrize(
+    ("shell", "command", "dirs", "untraced"),
+    [
+        # `sh` can be dash, which has no `builtin`, `pushd` or `popd`.
+        ("sh -e {0}", "builtin cd sub\nmake check", [], [2]),
+        ("sh -e {0}", "pushd sub\nmake check", [], [2]),
+        ("sh -e {0}", "cd sub\npushd x\npopd\nmake check", [], [4]),
+        ("sh -e {0}", "builtin exec make check", [], [1]),
+        ("sh -e {0}", "(builtin cd x)\nmake check", ["."], []),
+        # `command` is POSIX.
+        ("sh -e {0}", "command cd sub\nmake check", ["sub"], []),
+        ("zsh {0}", "pushd sub\nmake check", ["sub"], []),
+        ("/usr/bin/env bash -e {0}", "builtin cd sub\nmake check", ["sub"], []),
+    ],
+)
+def test_make_calls_follow_a_bash_command_only_in_bash(
+    shell: str, command: str, dirs: list[str], untraced: list[int], tmp_path: Path
+) -> None:
+    calls, lines = mod.make_calls(_step(command, shell), tmp_path)
+    assert ([c.cwd for c in calls], lines) == (
+        [(tmp_path / d).resolve() for d in dirs],
+        untraced,
+    )
 
 
 @pytest.mark.parametrize(
@@ -817,6 +843,12 @@ def test_parse_trace_records_the_directories_that_sub_makes_read(
             "sub",
             set(),
             id="a make word after a command cd can be the one",
+        ),
+        pytest.param(
+            "builtin exec make -C sub check",
+            "sub",
+            set(),
+            id="a make word after builtin can fail in the recipe shell",
         ),
         pytest.param(
             "make -C $d -f ../m/Makefile check || make -C sub check",
