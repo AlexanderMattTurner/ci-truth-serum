@@ -38,6 +38,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     node_text,
     parse,
     program_name,
+    unprefixed,
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -207,31 +208,39 @@ GNU_ROWS = (
 _ENV_VALUE_FLAGS = frozenset({"-u", "-C", "-S", "--unset", "--chdir", "--split-string"})
 
 
-def _unwrapped(name: str, words: list[str]) -> tuple[str, list[str]]:
-    """The program NAME really runs, past a `command` or `env` prefix that forwards.
-
-    `command -v grep` and `env --help` print and run nothing, so each keeps its own
-    name and no row reads it.
-    """
-    if name == "command":
-        rest = list(words)
-        while rest and rest[0].startswith("-"):
-            if "v" in rest[0][1:].lower():
-                return name, words
-            rest.pop(0)
-        return (program_name(rest[0]), rest[1:]) if rest else (name, words)
-    if name != "env" or "--help" in words or "--version" in words:
-        return name, words
+def _env_command(words: list[str]) -> list[str]:
+    """The words of the command that `env` runs, from the raw WORDS after `env`:
+    its options and `NAME=value` words are skipped."""
     rest = list(words)
     while rest:
-        word = rest[0]
+        word = unquote(rest[0])
         if word in _ENV_VALUE_FLAGS:
             rest = rest[2:]
         elif word.startswith("-") or "=" in word:
             rest.pop(0)
         else:
             break
-    return (program_name(rest[0]), rest[1:]) if rest else (name, words)
+    return rest
+
+
+def _unwrapped(words: list[str]) -> tuple[str, list[str]]:
+    """The program the command WORDS really runs, past a `command` or `env`
+    prefix that forwards, and that program's operands after quote removal.
+
+    `command -v grep` and `env --help` print and run nothing, so each keeps its own
+    name and no row reads it. Quote removal runs once on each raw word, so
+    `command 'gr\\ep'` runs `gr\\ep` and never `grep`.
+    """
+    name = program_name(words[0])
+    operands = [unquote(word) for word in words[1:]]
+    rest: list[str] = []
+    if name == "command":
+        rest = unprefixed(words)
+    elif name == "env" and not {"--help", "--version"} & set(operands):
+        rest = _env_command(words[1:])
+    if not rest:
+        return name, operands
+    return program_name(rest[0]), [unquote(word) for word in rest[1:]]
 
 
 def _span(node: Node) -> tuple[int, int]:
@@ -247,10 +256,7 @@ def _invocations(root: Node) -> list[_Invocation]:
         words = command_words(command)
         if not words:
             continue
-        run, operands = _unwrapped(
-            program_name(words[0]), [unquote(word) for word in words[1:]]
-        )
-        found.append(_Invocation(command, run, operands))
+        found.append(_Invocation(command, *_unwrapped(words)))
     return found
 
 
