@@ -1061,20 +1061,20 @@ def _unprefixed(words: list[str]) -> list[str]:
     - `command -v` and `command -V` only print how the shell reads a name;
     - bash fails `command` and `builtin` on an option that it does not know,
       and `command -p` still runs the command;
-    - `builtin` runs only a shell builtin, so `builtin make` fails."""
-    while words and program_name(words[0]) in ("command", "builtin"):
-        name, words = program_name(words[0]), words[1:]
+    - `builtin` runs only a shell builtin, so `builtin make` fails.
+
+    Only a shell reads a bare `command` or `builtin` word this way. A wrapper
+    runs a program with that name (`env command make`, `./builtin cd`), so the
+    words after a wrapper never come here."""
+    while words and unquote(words[0]) in ("command", "builtin"):
+        name, words = unquote(words[0]), words[1:]
         while words and unquote(words[0]).startswith("-") and unquote(words[0]) != "-":
             option = unquote(words.pop(0))
             if option == "--":
                 break
             if name == "builtin" or set(option[1:]) - {"p"}:
                 return []
-        if (
-            name == "builtin"
-            and words
-            and program_name(words[0]) not in BUILTIN_TARGETS
-        ):
+        if name == "builtin" and words and unquote(words[0]) not in BUILTIN_TARGETS:
             return []
     return words
 
@@ -1091,9 +1091,6 @@ def _launch(words: list[str]) -> tuple[list[str], list[str]] | str | None:
     option can take the next word as its value, so when the words after that
     word launch a make, the make is UNTRACED and not lost. A `--` ends the
     options."""
-    words = _unprefixed(words)
-    if not words:
-        return None
     name = program_name(words[0])
     if name in MAKE_PROGRAMS:
         return words, []
@@ -1165,7 +1162,10 @@ def _mentions_make(words: list[str]) -> bool:
     return any(
         _launch(command) is not None
         for word in words
-        for command in map(command_words, iter_nodes(parse(unquote(word)), "command"))
+        for command in map(
+            _unprefixed,
+            map(command_words, iter_nodes(parse(unquote(word)), "command")),
+        )
         if command
     )
 
@@ -1493,7 +1493,9 @@ def _launches(text: str) -> list[tuple[list[str], list[str]] | str | None]:
     """How each command in the shell TEXT runs make, as `_launch` says."""
     return [
         _launch(words)
-        for words in map(command_words, iter_nodes(parse(text), "command"))
+        for words in map(
+            _unprefixed, map(command_words, iter_nodes(parse(text), "command"))
+        )
         if words
     ]
 

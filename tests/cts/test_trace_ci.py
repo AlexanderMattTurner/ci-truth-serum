@@ -553,7 +553,6 @@ def test_make_calls_keep_a_directory_change_in_its_own_shell(
         ("uv run --index-url https://x/simple make check", ("check",), {}),
         ("uv run -C k=v --no-group dev make check", ("check",), {}),
         ("env - make check", ("check",), {}),
-        ("timeout 5 command make check", ("check",), {}),
     ],
 )
 def test_make_calls_read_a_wrapper_and_the_variables_before_make(
@@ -583,6 +582,21 @@ def test_make_calls_read_a_wrapper_and_the_variables_before_make(
     ],
 )
 def test_a_make_package_name_is_not_a_call(command: str, tmp_path: Path) -> None:
+    assert mod.make_calls(_step(command), tmp_path) == ([], [])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "timeout 5 command make check",
+        "env command make check",
+        "sudo command make check",
+        "exec command make check",
+    ],
+)
+def test_a_wrapper_runs_no_shell_builtin(command: str, tmp_path: Path) -> None:
+    """A wrapper runs a program named `command`, and a runner has none, so the
+    make after it never runs."""
     assert mod.make_calls(_step(command), tmp_path) == ([], [])
 
 
@@ -617,6 +631,9 @@ check:
         ("command -p make check", "make check"),
         ("command -- builtin -- cd sub", "cd sub"),
         ("make check", "make check"),
+        # A path names a program, not the shell builtin.
+        ("./builtin cd sub", "./builtin cd sub"),
+        ("/usr/bin/command make", "/usr/bin/command make"),
         # These run nothing: a lookup, an unknown option, or a `builtin`
         # before a name that is not a shell builtin.
         ("command -v make", ""),
