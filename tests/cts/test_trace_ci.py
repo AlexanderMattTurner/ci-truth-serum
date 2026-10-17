@@ -744,7 +744,7 @@ def test_parse_trace_records_the_directories_that_sub_makes_read(
             id="a make word after a cd can be the one",
         ),
         pytest.param(
-            "make -C $d -f ../m/Makefile check; true || make -C sub check",
+            "make -C $d -f ../m/Makefile check || make -C sub check",
             "sub",
             set(),
             id="a make word whose -C is not plain can be the one",
@@ -754,6 +754,18 @@ def test_parse_trace_records_the_directories_that_sub_makes_read(
             "sub",
             set(),
             id="a makefile from standard input is in no directory",
+        ),
+        pytest.param(
+            "make -C sub -f a.mk -f - check",
+            "sub",
+            {"sub"},
+            id="standard input takes away no other -f",
+        ),
+        pytest.param(
+            'make -C sub -f "$MK" check',
+            "sub",
+            set(),
+            id="a -f that is not plain names no directory",
         ),
     ],
 )

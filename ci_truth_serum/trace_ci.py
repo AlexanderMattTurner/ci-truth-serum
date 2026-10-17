@@ -1493,7 +1493,7 @@ def _sub_make_dirs(text: str, cwd: Path, entered: Path) -> set[Path]:
     starts no sub-make. Each make word whose `-C` leads to ENTERED can be the
     one, so only the directories that all of them read count. None count when
     TEXT has a make word that trace-ci cannot follow, or whose start directory
-    it cannot tell: that make word can be the one too."""
+    or makefile it cannot tell. That make word can be the one too."""
     candidates = []
     for words in map(command_words, iter_nodes(parse(text), "command")):
         if not words:
@@ -1508,7 +1508,7 @@ def _sub_make_dirs(text: str, cwd: Path, entered: Path) -> set[Path]:
             continue
         args = parse_make_args([unquote(w) for w in found[0][1:]])
         start = _fold_directory(cwd, args.directories)
-        if start is None:
+        if start is None or any("$" in f for f in args.files):
             return set()
         if start.resolve() == entered.resolve():
             candidates.append(set(_makefile_dirs(entered, args.options)))
@@ -2482,7 +2482,7 @@ def _kept(repo: Path, findings: list[TraceFinding]) -> list[TraceFinding]:
 def _makefile_dirs(cwd: Path, args: Sequence[str]) -> list[Path]:
     """The directories of the makefiles that a make in CWD with ARGS reads:
     each `-f FILE`, or CWD when it names none. A `-f -` reads standard input,
-    which is in no directory."""
+    which is in no directory, and make rejects a `-f ''`."""
     files = parse_make_args(args).files
     if not files:
         return [cwd]
