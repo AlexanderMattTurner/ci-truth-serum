@@ -81,6 +81,7 @@ def test_a_gnu_only_flag_is_flagged(label: str, src: str) -> None:
         "command -v sort",  # a lookup, so sort never runs
         "command -v grep",
         "command -x grep -P x f",  # bash fails the unknown option, so grep never runs
+        "command 'gr\\ep' -P x f",  # quote removal runs once, so this runs `gr\ep`
         "env --help",
         'sha256sum "$file"',
         'sha256sum -c "$sums"',  # the list is a file operand

@@ -258,8 +258,8 @@ def unquote(raw: str) -> str:
     """RAW after bash's quote removal, so a quoted token compares equal to its
     bare spelling: `'/dev/null'`, `"/dev/null"`, `\\/dev/null` and `/dev/"null"`
     all read `/dev/null`. An expansion keeps its text (`"$HOME"` reads `$HOME`).
-    RAW that is not one shell word (`a b`, `x=1`, `>&2`) loses only one layer
-    of matching surrounding quotes."""
+    RAW that is not one shell word (`a b`, `>&2`) loses only one layer of
+    matching surrounding quotes."""
     word = _word(raw)
     if word is not None:
         return _quote_removed(word)
@@ -272,25 +272,23 @@ def unquote(raw: str) -> str:
 # that the lints share there.
 @lru_cache(maxsize=4096)
 def _word(raw: str) -> Node | None:
-    """The node that spells RAW when the grammar reads RAW as one command word,
-    or None. The node text must be RAW itself, so RAW is not folded as `parse`
-    folds it. RAW that crashes the C parser, or that `parse` refuses, is None."""
+    """The node that spells RAW when the grammar reads RAW as one argument word,
+    or None. RAW is parsed after `: `, so `x=1` and `while` read as arguments,
+    not as an assignment or a keyword. The node text must be RAW itself, so RAW
+    is not folded as `parse` folds it. RAW that crashes the C parser, or that
+    `parse` refuses, is None."""
     if _SUPPLEMENTARY.search(raw) is not None or raw.count("|") > _MAX_PIPE_BYTES:
         return None
-    root = _parser().parse(raw.encode("utf-8")).root_node
+    root = _parser().parse(f": {raw}".encode("utf-8")).root_node
     if root.has_error or root.named_child_count != 1:
         return None
     command = root.named_children[0]
-    if command.type != "command" or command.child_count != 1:
+    if command.type != "command" or command.child_count != 2:
         return None
-    name = command.children[0]
-    if (
-        name.type != "command_name"
-        or name.child_count != 1
-        or (name.start_byte, name.end_byte) != (0, len(raw.encode("utf-8")))
-    ):
+    argument = command.children[1]
+    if (argument.start_byte, argument.end_byte) != (2, 2 + len(raw.encode("utf-8"))):
         return None
-    return name.children[0]
+    return argument
 
 
 # Outside quotes a backslash keeps the next character, and `\<newline>` is
@@ -316,21 +314,38 @@ def _quote_removed(node: Node) -> str:
     if node.type == "ansi_c_string" and "\\" not in text:
         return text[2:-1]
     if node.type == "string":
-        return "".join(
-            _DOUBLE_QUOTED_BACKSLASH.sub(_kept, node_text(child))
-            if child.type == "string_content"
-            else node_text(child)
-            for child in node.named_children
-        )
+        return _string_removed(node)
     if node.type == "concatenation":
         return "".join(map(_quote_removed, node.children))
     return text
 
 
+def _string_removed(node: Node) -> str:
+    """The text of the `"…"` string NODE after quote removal. The grammar
+    leaves a newline and a lone `$` out of every child, so the literal text is
+    read from the gaps between the expansions, never from the children."""
+    raw = node.text or b""
+    base = node.start_byte
+    pieces = []
+    start = 1
+    for child in node.named_children:
+        if child.type != "string_content":
+            pieces.append(_literal(raw[start : child.start_byte - base]))
+            pieces.append(node_text(child))
+            start = child.end_byte - base
+    pieces.append(_literal(raw[start:-1]))
+    return "".join(pieces)
+
+
+def _literal(text: bytes) -> str:
+    """TEXT, a run of double-quoted literal text, after quote removal."""
+    return _DOUBLE_QUOTED_BACKSLASH.sub(_kept, text.decode("utf-8", "replace"))
+
+
 class RedirectParts(NamedTuple):
     """A `file_redirect`'s pieces: the descriptor it points (None for the
-    operator's default), the operator token, and the destination with one layer
-    of quotes removed ("" when the redirect names none)."""
+    operator's default), the operator token, and the destination after quote
+    removal ("" when the redirect names none)."""
 
     descriptor: "str | None"
     operator: str

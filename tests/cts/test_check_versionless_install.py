@@ -159,6 +159,7 @@ def test_install_joined_onto_a_message_is_still_a_command() -> None:
 
 def test_install_run_through_an_interpreter_string_is_flagged() -> None:
     assert mod.violations('bash -c "pip install ruff"\n') == [1]
+    assert mod.violations('bash -c "echo a\npip install ruff"\n') == [2]
 
 
 def test_install_quoted_directly_after_a_message_command_is_not_run() -> None:

@@ -192,15 +192,26 @@ def test_node_text_decodes_multibyte_source() -> None:
         ('"\\make"', "\\make"),
         ("m\\ ake", "m ake"),
         ("$'make'", "make"),
+        # A double-quoted newline, space or lone `$` is literal text.
+        ('"a\nb"', "a\nb"),
+        ('" "', " "),
+        ('"^done$"', "^done$"),
+        ('"$"', "$"),
+        ('"a\\\nb"', "ab"),
+        # A word that reads as an assignment or a keyword is still one word.
+        ('x="1"', "x=1"),
+        ('--x="a b"', "--x=a b"),
+        ('FOO="a b"', "FOO=a b"),
+        ("while", "while"),
         # An expansion keeps its text.
         ('"$HOME/x"', "$HOME/x"),
+        ('"$x\n$y"', "$x\n$y"),
         ('"a$(b)c"', "a$(b)c"),
         # The escapes of `$'…'` are not decoded.
         ("$'\\x6d'", "$'\\x6d'"),
         # Text that is not one word loses one surrounding pair at most.
         ("a b", "a b"),
         ("'x=1'", "x=1"),
-        ('FOO="a b"', 'FOO="a b"'),
         (">&2", ">&2"),
     ],
 )
