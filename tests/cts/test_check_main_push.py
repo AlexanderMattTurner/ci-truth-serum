@@ -48,6 +48,8 @@ mod = load_hook("check_main_push.py", "check_main_push")
         # Inside a substitution, a condition, or a pipeline it still runs.
         'out="$(git push origin HEAD:main 2>&1)"',
         "if ! git push origin main; then exit 1; fi",
+        # A `-v` after the program is git's own option, so this is no lookup.
+        "command git push -v origin HEAD:main",
     ],
 )
 def test_fires_on_a_push_to_a_protected_branch(text: str) -> None:

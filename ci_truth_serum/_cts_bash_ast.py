@@ -260,6 +260,9 @@ def unquote(raw: str) -> str:
     all read `/dev/null`. An expansion keeps its text (`"$HOME"` reads `$HOME`).
     RAW that is not one shell word (`a b`, `>&2`) loses only one layer of
     matching surrounding quotes."""
+    # A word with no quote and no backslash is its own value, so it needs no parse.
+    if not any(char in raw for char in "\"'\\"):
+        return raw
     word = _word(raw)
     if word is not None:
         return _quote_removed(word)

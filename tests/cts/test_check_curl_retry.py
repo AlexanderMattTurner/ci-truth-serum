@@ -55,6 +55,8 @@ _WIDENED = "--retry 3 --retry-all-errors"
         # `--retry-delay` alone starts no retry: it only shapes a ladder
         # `--retry` would begin, so the download is still single-shot.
         'curl -fsSL --retry-delay 2 --retry-max-time 60 "$u" -o "$f"',
+        # A `-v` after the program is curl's own option, so this is no lookup.
+        'command curl -v -fsSL "$u" -o "$f"',
     ],
 )
 def test_fires_on_single_shot_output_curl(line: str) -> None:
