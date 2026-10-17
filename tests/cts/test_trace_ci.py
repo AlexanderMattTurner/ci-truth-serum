@@ -640,7 +640,7 @@ def test_parse_trace_skips_the_commands_of_a_builtin_rule(tmp_path: Path) -> Non
         "<builtin>: update target 'prog' due to: prog.c\n"
         "cc prog.c -o prog\n"
     )
-    commands, hidden, follows = mod.parse_trace(output, tmp_path)
+    commands, hidden, follows, _ = mod.parse_trace(output, tmp_path)
     assert [(c.first_line, c.text) for c in commands] == [(3, "echo one")]
     assert not hidden
     assert follows == ()
@@ -656,8 +656,150 @@ def test_parse_trace_names_the_rule_each_make_runs_next(tmp_path: Path) -> None:
         "checking now\n"
         "Makefile:2: update target 'check' due to: lint\n"
     )
-    _, _, follows = mod.parse_trace(output, tmp_path)
+    follows = mod.parse_trace(output, tmp_path).follows
     assert follows == (mod.Follow(0, (tmp_path / "Makefile").resolve(), 2),)
+
+
+def test_parse_trace_records_the_directories_that_sub_makes_read(
+    tmp_path: Path,
+) -> None:
+    mark = mod.LEVEL_MARK
+
+    def sub_make(name: str) -> str:
+        entered = tmp_path / name
+        return (
+            f"make[1]: Entering directory '{entered}'\n"
+            f"{mark}1\n"
+            f"make[1]: Leaving directory '{entered}'\n"
+        )
+
+    output = (
+        f"{mark}0\n"
+        "Makefile:2: target 'check' does not exist\n"
+        "make -C a -f ../x.mk check; make -C b check\n"
+        + sub_make("a")
+        + sub_make("b")
+        + "env -C c make check\n"
+        + sub_make("c")
+    )
+    dirs = mod.parse_trace(output, tmp_path).sub_make_dirs
+    assert {d.resolve() for d in dirs} == {
+        tmp_path.resolve(),
+        (tmp_path / "b").resolve(),
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "entered", "expected"),
+    [
+        pytest.param(
+            "env FOO=1 make -C pkg -f ../mk/x.mk check",
+            "pkg",
+            {"mk"},
+            id="a wrapper hides no make word",
+        ),
+        pytest.param(
+            "make -C a -C b check",
+            "a/b",
+            {"a/b"},
+            id="each -C moves on from the one before",
+        ),
+        pytest.param(
+            "make -C sub -f ../m/Makefile check && make -C b check",
+            "sub",
+            {"m"},
+            id="a make word that starts in another directory is not the one",
+        ),
+        pytest.param(
+            "make -C sub -f ../m1/Makefile check || make -C sub check",
+            "sub",
+            set(),
+            id="two make words in the directory count only what both read",
+        ),
+        pytest.param(
+            "make -C sub --version >/dev/null; make -C sub -f ../m/Makefile check",
+            "sub",
+            set(),
+            id="a make word that starts no sub-make still can be the one",
+        ),
+        pytest.param(
+            "env -C a make check; make -C b check",
+            "b",
+            set(),
+            id="a make word that trace-ci cannot follow can be the one",
+        ),
+        pytest.param(
+            "make -C $d check", "d", set(), id="a -C that is not plain leads nowhere"
+        ),
+        pytest.param(
+            "cd pkg && make check",
+            "pkg",
+            set(),
+            id="a cd before the make word is not followed",
+        ),
+        pytest.param(
+            "(cd sub && make -f ../m/Makefile check) || make -C sub check",
+            "sub",
+            set(),
+            id="a make word after a cd can be the one",
+        ),
+        pytest.param(
+            "make -C $d -f ../m/Makefile check || make -C sub check",
+            "sub",
+            set(),
+            id="a make word whose -C is not plain can be the one",
+        ),
+        pytest.param(
+            "make -C sub -f - check",
+            "sub",
+            set(),
+            id="a makefile from standard input is in no directory",
+        ),
+        pytest.param(
+            "make -C sub -f a.mk -f - check",
+            "sub",
+            {"sub"},
+            id="standard input takes away no other -f",
+        ),
+        pytest.param(
+            'make -C sub -f "$MK" check',
+            "sub",
+            set(),
+            id="a -f that is not plain names no directory",
+        ),
+    ],
+)
+def test_sub_make_dirs(
+    text: str, entered: str, expected: set[str], tmp_path: Path
+) -> None:
+    dirs = mod._sub_make_dirs(text, tmp_path, tmp_path / entered)
+    assert {d.resolve() for d in dirs} == {(tmp_path / e).resolve() for e in expected}
+
+
+WRAPPED = "env FOO=1 make -C pkg -f ../x.mk check && make lint"
+
+
+@pytest.mark.parametrize(
+    ("text", "n", "expected"),
+    [
+        pytest.param(
+            WRAPPED, 0, (("V=1", "--file=../x.mk"), ("check",)), id="the first"
+        ),
+        pytest.param(
+            WRAPPED, 5, (("V=1",), ("lint",)), id="N past the last reads the last"
+        ),
+        pytest.param(
+            "env -C pkg make check",
+            0,
+            (("V=1",), ()),
+            id="a make word that trace-ci cannot follow gives no options",
+        ),
+    ],
+)
+def test_sub_make_args(
+    text: str, n: int, expected: tuple[tuple[str, ...], tuple[str, ...]]
+) -> None:
+    assert mod._sub_make_args(text, n, ("-k", "V=1")) == expected
 
 
 def test_recipe_lines_skip_a_line_that_prints_nothing() -> None:
@@ -1094,6 +1236,80 @@ def _config(command: str, job: str = "") -> str:
             },
             [("Makefile", 1, "uncovered")],
             id="make -f reaches the makefile's directory and not its own",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}$(MAKE) -C pkg check\n",
+                "pkg/Makefile": "include ../mk/common.mk\n",
+                "mk/common.mk": f"check:\n{TAB}@true\n",
+            },
+            [],
+            id="a sub-make whose recipes come from an included file reaches its directory",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}$(MAKE) -C pkg -f ../other/Makefile check\n",
+                "pkg/Makefile": f"check:\n{TAB}@true\n",
+                "other/Makefile": "include ../mk/common.mk\n",
+                "mk/common.mk": f"check:\n{TAB}@true\n",
+            },
+            [("pkg/Makefile", 1, "uncovered")],
+            id="a sub-make reads its -f in its -C directory and not its own makefile",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}env FOO=1 $(MAKE) -C pkg -f ../mk/common.mk check\n",
+                "pkg/Makefile": f"check:\n{TAB}@true\n",
+                "mk/common.mk": f"check:\n{TAB}@true\n",
+            },
+            [("pkg/Makefile", 1, "uncovered")],
+            id="a sub-make behind a wrapper reads its -f and not its own makefile",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}$(MAKE) -C pkg check\n",
+                "pkg/Makefile": "check:\n",
+            },
+            [],
+            id="a sub-make that prints no command reaches its directory",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}env -C a $(MAKE) -f ../mk/x.mk check && $(MAKE) -C b check\n",
+                "a/Makefile": f"check:\n{TAB}@true\n",
+                "b/Makefile": f"check:\n{TAB}@true\n",
+                "mk/x.mk": f"check:\n{TAB}@true\n",
+            },
+            [("a/Makefile", 1, "uncovered")],
+            id="a sub-make whose make command is not found takes no other make's -f",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}$(MAKE) --version >/dev/null && $(MAKE) -C sub -f ../x.mk check\n",
+                "sub/Makefile": "check:\n",
+                "x.mk": "check:\n",
+            },
+            [("sub/Makefile", 1, "uncovered")],
+            id="a make that starts no sub-make gives its options to no sub-make",
+        ),
+        # trace-ci cannot tell which branch ran, so it credits neither.
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}if false; then $(MAKE) -C sub -f ../m/Makefile check; else $(MAKE) -C sub check; fi\n",
+                "sub/Makefile": "check:\n",
+                "m/Makefile": "check:\n",
+            },
+            [("m/Makefile", 1, "uncovered"), ("sub/Makefile", 1, "uncovered")],
+            id="a make word that a branch skips is not credited",
+        ),
+        pytest.param(
+            {
+                "Makefile": f"check:\n{TAB}(cd sub && $(MAKE) -f ../m/Makefile check) || $(MAKE) -C sub check\n",
+                "sub/Makefile": "check:\n",
+                "m/Makefile": "check:\n",
+            },
+            [("m/Makefile", 1, "uncovered"), ("sub/Makefile", 1, "uncovered")],
+            id="a make word after a cd is not credited, nor the make words with it",
         ),
         pytest.param(
             {
