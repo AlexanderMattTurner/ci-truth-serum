@@ -2699,13 +2699,15 @@ def _matrix_entries(value: object) -> list[dict]:
 
 def github_string(value: object) -> str | None:
     """VALUE cast to a string the way GitHub casts it. A null becomes an empty
-    string, a boolean `true`/`false`, and a whole number drops its `.0`. An array
-    or an object gets None, because this reader does not model that cast."""
+    string, a boolean `true`/`false`, and a whole number drops its `.0`. A large
+    float keeps its exponent (`1e+100`), as GitHub writes large numbers in
+    exponential form. An array or an object gets None, because this reader does
+    not model that cast."""
     if value is None:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, float) and value.is_integer():
+    if isinstance(value, float) and value.is_integer() and "e" not in repr(value):
         return str(int(value))
     if isinstance(value, (int, float, str)):
         return str(value)

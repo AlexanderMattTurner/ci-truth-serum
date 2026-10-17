@@ -979,6 +979,7 @@ def test_matrix_multi_axis_exclude_then_include_extends_every_match() -> None:
         (1.0, "1"),
         (-0.0, "0"),
         (3.5, "3.5"),
+        (1e100, "1e+100"),
         (7, "7"),
         (10**400, "1" + "0" * 400),
         ("x", "x"),
