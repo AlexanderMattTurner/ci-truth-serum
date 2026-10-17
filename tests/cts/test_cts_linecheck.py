@@ -1016,12 +1016,14 @@ def test_expand_name_ref_is_a_strict_subset_of_the_matrix_axes() -> None:
         ([1, 0], ["Test (0)", "Test (1)"]),
         (["True"], ["Test (True)"]),
         ([True, 1], ["Test (1)", "Test (true)"]),
+        ([None], ["Test ()"]),
     ],
 )
-def test_expand_name_renders_booleans_as_github_does(
+def test_expand_name_renders_booleans_and_null_as_github_does(
     values: list, expected: list[str]
 ) -> None:
-    # GitHub writes a YAML boolean as `true`; Python's str() writes `True`.
+    # GitHub writes a YAML boolean as `true` and a null as an empty string;
+    # Python's str() writes `True` and `None`.
     # The int and str cases pin that only a real bool is rewritten, and the
     # mixed axis pins that `True` and `1` stay two distinct names.
     name = "Test (${{ matrix.flag }})"

@@ -2737,13 +2737,17 @@ def matrix_combinations(matrix: dict) -> list[dict]:
 
 
 def _render_matrix_value(value: object) -> str:
-    """Render one matrix value for a check name, with a boolean as GitHub writes it.
+    """Render one matrix value for a check name, with a boolean or a null as
+    GitHub writes it.
 
     YAML reads `true` as a Python bool, and `str()` writes it as `True`. GitHub
-    writes `true`, so a name with a boolean would never match the posted check.
+    writes `true`. YAML reads a bare key as None, and GitHub writes it as an
+    empty string. Either mismatch gives a name that never matches the posted check.
     """
     if isinstance(value, bool):
         return "true" if value else "false"
+    if value is None:
+        return ""
     return str(value)
 
 
