@@ -2716,6 +2716,8 @@ def matrix_value_equal(left: object, right: object) -> bool:
     """GitHub's equality between two matrix values. Python's `==` says
     `True == 1`, but GitHub keeps a boolean apart from a number, so a boolean
     equals only a boolean. Arrays and objects compare item by item."""
+    if left is right:  # a self-referencing YAML anchor would recurse forever
+        return True
     if isinstance(left, dict) and isinstance(right, dict):
         return left.keys() == right.keys() and all(
             matrix_value_equal(left[k], right[k]) for k in left

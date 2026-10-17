@@ -971,6 +971,26 @@ def test_matrix_multi_axis_exclude_then_include_extends_every_match() -> None:
 
 
 @pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, ""),
+        (True, "true"),
+        (False, "false"),
+        (1.0, "1"),
+        (-0.0, "0"),
+        (3.5, "3.5"),
+        (7, "7"),
+        (10**400, "1" + "0" * 400),
+        ("x", "x"),
+        ([1], None),
+        ({"a": 1}, None),
+    ],
+)
+def test_github_string(value: object, expected: str | None) -> None:
+    assert lc.github_string(value) == expected
+
+
+@pytest.mark.parametrize(
     ("left", "right", "equal"),
     [
         (True, 1, False),
@@ -1000,6 +1020,21 @@ def test_matrix_include_number_does_not_extend_a_boolean_combo() -> None:
     assert lc.matrix_combinations(
         {"flag": [True, False], "include": [{"flag": 1, "x": "y"}]}
     ) == [{"flag": True}, {"flag": False}, {"flag": 1, "x": "y"}]
+
+
+def test_matrix_include_integer_extends_an_equal_float_combo() -> None:
+    assert lc.matrix_combinations(
+        {"v": [1.0, 2.0], "include": [{"v": 1, "x": "y"}]}
+    ) == [
+        {"v": 1, "x": "y"},
+        {"v": 2.0},
+    ]
+
+
+def test_matrix_value_equal_survives_a_self_referencing_anchor() -> None:
+    loop: list = []
+    loop.append(loop)
+    assert lc.matrix_value_equal(loop, loop) is True
 
 
 def test_matrix_exclude_number_does_not_drop_a_boolean_combo() -> None:

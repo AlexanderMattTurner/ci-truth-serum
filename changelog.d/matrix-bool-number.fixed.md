@@ -1,2 +1,3 @@
-- `check-required-reporter` and `sync-required-checks` now keep a boolean matrix value apart from a number, as GitHub does. Before this fix, `include: [{flag: 1}]` matched the `flag: true` job and changed its value to `1`. An `exclude` entry with `1` also removed the `true` job, and a sibling job over `[1]` counted as a reporter for a job over `[true]`.
+- `check-required-reporter` and `sync-required-checks` now keep a boolean matrix value apart from a number, as GitHub does. Before this fix, `include: [{flag: 1}]` matched the `flag: true` job and changed its value to `1`. An `exclude` entry with `1` also removed the `true` job.
+- `check-required-reporter` no longer counts a sibling job over `[1]` as the reporter for a job over `[true]`. The sibling posts `Test (1)`, but the ruleset waits for `Test (true)`.
 - `check-required-reporter` and `sync-required-checks` now write a whole-number float such as `1.0` as `1` in a check name, as GitHub does.
