@@ -208,7 +208,7 @@ def _command_name(node) -> str | None:
 
 
 def _argument_words(node) -> list[str]:
-    """NODE's argument text, one entry per argument, one layer of quotes removed.
+    """NODE's argument text, one entry per argument, after quote removal.
 
     Only the `command`'s argument children are read, so a redirect (`2>/dev/null`) and
     an environment prefix (`LC_ALL=C`) never reach a caller looking for an option."""

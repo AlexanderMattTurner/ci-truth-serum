@@ -30,6 +30,8 @@ _BAD = 'mv "$cfg.tmp" "$cfg"\n'
         'mv "$f.tmp" "$f"',
         'mv "$f.seed-tmp" "$f"',
         'mv "$dest.part" "$dest"',
+        # a `-v` after the program is mv's own option, so this is no lookup
+        'command mv -v "$f.tmp" "$f"',
         # quoting does not change which path is renamed onto which
         "mv $f.tmp $f",
         'mv "${cfg}.tmp" "${cfg}"',

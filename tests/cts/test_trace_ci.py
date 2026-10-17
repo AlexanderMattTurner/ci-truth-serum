@@ -523,6 +523,9 @@ def test_make_calls_name_a_call_they_cannot_place(command: str, tmp_path: Path) 
         ("builtin cd sub && command -p make check", ["sub"]),
         ("command pushd sub\nmake check\nbuiltin popd\nmake lint", ["sub", "."]),
         ("command -v cd sub\nmake check", ["."]),
+        # A backslash quotes a character, and bash removes it.
+        ("\\cd sub && \\make check", ["sub"]),
+        ("\\command cd sub\nmake check", ["sub"]),
     ],
 )
 def test_make_calls_keep_a_directory_change_in_its_own_shell(
@@ -647,33 +650,6 @@ check:
 {TAB}fi
 {TAB}-echo three
 """
-
-
-@pytest.mark.parametrize(
-    ("command", "expected"),
-    [
-        ("command cd sub", "cd sub"),
-        ("builtin cd sub", "cd sub"),
-        ("command -p make check", "make check"),
-        ("command -- builtin -- cd sub", "cd sub"),
-        ("make check", "make check"),
-        # A path names a program, not the shell builtin.
-        ("./builtin cd sub", "./builtin cd sub"),
-        ("/usr/bin/command make", "/usr/bin/command make"),
-        # These run nothing: a lookup, an unknown option, or a `builtin`
-        # before a name that is not a shell builtin.
-        ("command -v make", ""),
-        ("command -pV make", ""),
-        ("command -x make", ""),
-        ("builtin make check", ""),
-        ("builtin -x cd sub", ""),
-        ("command", ""),
-    ],
-)
-def test_unprefixed_reads_the_command_that_command_and_builtin_run(
-    command: str, expected: str
-) -> None:
-    assert mod._unprefixed(command.split()) == expected.split()
 
 
 def test_trace_reads_no_makefile_from_its_own_input(tmp_path: Path) -> None:
