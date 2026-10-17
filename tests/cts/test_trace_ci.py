@@ -8,6 +8,7 @@ skipped without them would report a green it did not earn.
 """
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -430,9 +431,9 @@ def test_a_local_action_without_a_definition_is_refused(
         mod.workflow_steps(text, "w.yml", repo, [])
 
 
-def _step(command: str) -> "mod.CiStep":
+def _step(command: str, shell: str = "/bin/bash") -> "mod.CiStep":
     lines = tuple(range(1, len(command.splitlines()) + 1))
-    return mod.CiStep("c.yml", "j", "/bin/bash", command, lines, "", True)
+    return mod.CiStep("c.yml", "j", shell, command, lines, "", True)
 
 
 def test_make_calls_follow_a_plain_cd(tmp_path: Path) -> None:
@@ -488,6 +489,10 @@ def test_make_calls_name_a_call_they_cannot_resolve(
         "env -S 'make check'",
         "env -iS'make check'",
         "env --split-string='timeout 60 make' check",
+        'bash -c "command make check"',
+        # The makefile comes from the input of the step.
+        "gen-makefile | make -f - check",
+        "make --file=- check <<'EOF'\ncheck: ; @:\nEOF",
     ],
 )
 def test_make_calls_name_a_call_they_cannot_place(command: str, tmp_path: Path) -> None:
@@ -513,6 +518,11 @@ def test_make_calls_name_a_call_they_cannot_place(command: str, tmp_path: Path) 
         ("case $X in a) cd sub; make a;; b) make b;; esac", ["sub", "."]),
         # Make reads grouped short options as getopt does.
         ("make -sC sub check\nmake check -Csub -C x", ["sub", "sub/x"]),
+        # `command` and `builtin` run the word after them.
+        ("command cd sub\nmake check", ["sub"]),
+        ("builtin cd sub && command -p make check", ["sub"]),
+        ("command pushd sub\nmake check\nbuiltin popd\nmake lint", ["sub", "."]),
+        ("command -v cd sub\nmake check", ["."]),
     ],
 )
 def test_make_calls_keep_a_directory_change_in_its_own_shell(
@@ -576,6 +586,46 @@ def test_a_make_package_name_is_not_a_call(command: str, tmp_path: Path) -> None
     assert mod.make_calls(_step(command), tmp_path) == ([], [])
 
 
+@pytest.mark.parametrize(
+    ("shell", "command", "dirs", "untraced"),
+    [
+        # `sh` can be dash, which has no `builtin`, `pushd` or `popd`.
+        ("sh -e {0}", "builtin cd sub\nmake check", [], [2]),
+        ("sh -e {0}", "pushd sub\nmake check", [], [2]),
+        ("sh -e {0}", "cd sub\npushd x\npopd\nmake check", [], [4]),
+        ("sh -e {0}", "builtin exec make check", [], [1]),
+        ("sh -e {0}", "(builtin cd x)\nmake check", ["."], []),
+        # `command` is POSIX.
+        ("sh -e {0}", "command cd sub\nmake check", ["sub"], []),
+        ("zsh {0}", "pushd sub\nmake check", ["sub"], []),
+        ("/usr/bin/env bash -e {0}", "builtin cd sub\nmake check", ["sub"], []),
+    ],
+)
+def test_make_calls_follow_a_bash_command_only_in_bash(
+    shell: str, command: str, dirs: list[str], untraced: list[int], tmp_path: Path
+) -> None:
+    calls, lines = mod.make_calls(_step(command, shell), tmp_path)
+    assert ([c.cwd for c in calls], lines) == (
+        [(tmp_path / d).resolve() for d in dirs],
+        untraced,
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "timeout 5 command make check",
+        "env command make check",
+        "sudo command make check",
+        "exec command make check",
+    ],
+)
+def test_a_wrapper_runs_no_shell_builtin(command: str, tmp_path: Path) -> None:
+    """A wrapper runs a program named `command`, and a runner has none, so the
+    make after it never runs."""
+    assert mod.make_calls(_step(command), tmp_path) == ([], [])
+
+
 def test_a_heredoc_that_appends_to_a_file_is_no_ci_expression() -> None:
     assert mod.ci_shell_text("cat <<EOF >> out\nx\nEOF") == "cat <<EOF >> out\nx\nEOF"
 
@@ -597,6 +647,51 @@ check:
 {TAB}fi
 {TAB}-echo three
 """
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("command cd sub", "cd sub"),
+        ("builtin cd sub", "cd sub"),
+        ("command -p make check", "make check"),
+        ("command -- builtin -- cd sub", "cd sub"),
+        ("make check", "make check"),
+        # A path names a program, not the shell builtin.
+        ("./builtin cd sub", "./builtin cd sub"),
+        ("/usr/bin/command make", "/usr/bin/command make"),
+        # These run nothing: a lookup, an unknown option, or a `builtin`
+        # before a name that is not a shell builtin.
+        ("command -v make", ""),
+        ("command -pV make", ""),
+        ("command -x make", ""),
+        ("builtin make check", ""),
+        ("builtin -x cd sub", ""),
+        ("command", ""),
+    ],
+)
+def test_unprefixed_reads_the_command_that_command_and_builtin_run(
+    command: str, expected: str
+) -> None:
+    assert mod._unprefixed(command.split()) == expected.split()
+
+
+def test_trace_reads_no_makefile_from_its_own_input(tmp_path: Path) -> None:
+    """A dry run must not read the input of trace-ci."""
+    read, write = os.pipe()
+    os.write(write, b"check:\n\techo from-stdin\n")
+    os.close(write)
+    saved = os.dup(0)
+    os.dup2(read, 0)
+    try:
+        result = mod.make_trace(mod.gnu_make(), tmp_path, ["-f", "-", "check"])
+    finally:
+        os.dup2(saved, 0)
+        os.close(saved)
+        os.close(read)
+    assert result.returncode != 0
+    assert result.commands == ()
+    assert "No rule to make target 'check'" in result.stderr
 
 
 def test_trace_names_the_first_recipe_line_and_maps_each_command(
@@ -742,6 +837,18 @@ def test_parse_trace_records_the_directories_that_sub_makes_read(
             "sub",
             set(),
             id="a make word after a cd can be the one",
+        ),
+        pytest.param(
+            "(command cd sub && make -f ../m/Makefile check) || make -C sub check",
+            "sub",
+            set(),
+            id="a make word after a command cd can be the one",
+        ),
+        pytest.param(
+            "builtin exec make -C sub check",
+            "sub",
+            set(),
+            id="a make word after builtin can fail in the recipe shell",
         ),
         pytest.param(
             "make -C $d -f ../m/Makefile check || make -C sub check",
