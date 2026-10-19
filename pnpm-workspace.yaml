@@ -1,0 +1,4 @@
+overrides:
+  tmp: ">=0.2.6"
+  ajv: ">=8.18.0"
+  smol-toml: ">=1.8.1"
