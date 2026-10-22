@@ -416,7 +416,7 @@ def test_find_branch_ruleset_single(monkeypatch):
         "github_request",
         lambda *a, **k: [{"id": 7, "target": "branch"}, {"id": 8, "target": "tag"}],
     )
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 7
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS) == 7
 
 
 def test_find_branch_ruleset_ambiguous_fails_loud(monkeypatch):
@@ -427,7 +427,7 @@ def test_find_branch_ruleset_ambiguous_fails_loud(monkeypatch):
         [_rule("deletion", 7), _rule("deletion", 9)],
     )
     with pytest.raises(SystemExit, match="found 2"):
-        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+        mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
 
 
 def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
@@ -441,10 +441,12 @@ def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
             {"id": 8, "target": "branch", "source_type": "Repository"},
         ],
     )
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 8
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS) == 8
     # A read must gate the same ruleset an apply would write, so the repo-owned
     # one wins here too — the wider branch list is only a fallback.
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=False) == 8
+    assert (
+        mod.find_branch_ruleset("o/r", "tok", need_write=False, rule_type=CHECKS) == 8
+    )
 
 
 def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
@@ -457,7 +459,7 @@ def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
             {"id": 6, "target": "branch", "source_type": "Repository"},
         ],
     )
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 6
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS) == 6
 
 
 def test_find_branch_ruleset_lone_org_ruleset_fails_loud(monkeypatch):
@@ -473,7 +475,7 @@ def test_find_branch_ruleset_lone_org_ruleset_fails_loud(monkeypatch):
         lambda *a, **k: [{"id": 6, "target": "branch", "source_type": "Organization"}],
     )
     with pytest.raises(SystemExit) as excinfo:
-        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+        mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
     message = str(excinfo.value)
     assert "1 branch ruleset(s), 0 of them repo-owned" in message
     assert "organization-owned" in message.lower()
@@ -489,7 +491,9 @@ def test_find_branch_ruleset_lone_org_ruleset_reads_when_no_write(monkeypatch):
         "github_request",
         lambda *a, **k: [{"id": 6, "target": "branch", "source_type": "Organization"}],
     )
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=False) == 6
+    assert (
+        mod.find_branch_ruleset("o/r", "tok", need_write=False, rule_type=CHECKS) == 6
+    )
 
 
 def test_find_branch_ruleset_no_branch_ruleset_at_all(monkeypatch):
@@ -499,7 +503,7 @@ def test_find_branch_ruleset_no_branch_ruleset_at_all(monkeypatch):
         mod, "github_request", lambda *a, **k: [{"id": 5, "target": "tag"}]
     )
     with pytest.raises(SystemExit) as excinfo:
-        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+        mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
     assert "organization-owned" not in str(excinfo.value).lower()
     assert "found 0 branch ruleset(s)" in str(excinfo.value)
 
@@ -515,7 +519,7 @@ def test_find_branch_ruleset_no_repository_source_still_ambiguous(monkeypatch):
         ],
     )
     with pytest.raises(SystemExit, match="found 2 branch ruleset\\(s\\), 0"):
-        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+        mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
 
 
 def test_find_branch_ruleset_two_repository_source_still_ambiguous(monkeypatch):
@@ -529,11 +533,14 @@ def test_find_branch_ruleset_two_repository_source_still_ambiguous(monkeypatch):
         [_rule("required_status_checks", 7), _rule("required_status_checks", 9)],
     )
     with pytest.raises(SystemExit) as excinfo:
-        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+        mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
     assert "2 of them repo-owned (source_type=Repository), 2 of those in force" in (
         str(excinfo.value)
     )
     assert "--ruleset-id" in str(excinfo.value)
+
+
+CHECKS = "required_status_checks"
 
 
 def _rule(rule_type, ruleset_id, source="Repository"):
@@ -594,20 +601,29 @@ def test_find_branch_ruleset_picks_the_one_governing_the_default_branch(
     monkeypatch, need_write
 ):
     _route(monkeypatch, LIVE_LISTING, LIVE_MAIN_RULES)
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=need_write) == 17962702
+    assert (
+        mod.find_branch_ruleset("o/r", "tok", need_write=need_write, rule_type=CHECKS)
+        == 17962702
+    )
 
 
-def test_find_branch_ruleset_prefers_the_one_requiring_checks(monkeypatch):
-    # Both govern main; only one carries the rule this tool keeps in sync.
+@pytest.mark.parametrize("rule_type", ["required_status_checks", "merge_queue"])
+def test_find_branch_ruleset_prefers_the_one_carrying_the_callers_rule(
+    monkeypatch, rule_type
+):
+    # Both govern main; each carries a rule a different caller acts on, so the
+    # caller's own rule type decides, and the other caller gets the other one.
     _route(
         monkeypatch,
         [
             {"id": 7, "target": "branch", "source_type": "Repository"},
             {"id": 9, "target": "branch", "source_type": "Repository"},
         ],
-        [_rule("non_fast_forward", 7), _rule("required_status_checks", 9)],
+        [_rule("merge_queue", 7), _rule("required_status_checks", 9)],
     )
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 9
+    want = {"merge_queue": 7, "required_status_checks": 9}[rule_type]
+    found = mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=rule_type)
+    assert found == want
 
 
 def test_find_branch_ruleset_none_governing_the_default_branch_fails_loud(
@@ -619,20 +635,26 @@ def test_find_branch_ruleset_none_governing_the_default_branch_fails_loud(
         [_rule("deletion", 18360957, "Organization")],
     )
     with pytest.raises(SystemExit, match="0 of those in force on the default"):
-        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+        mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
 
 
 def test_find_branch_ruleset_reads_every_page_of_rules(monkeypatch):
     # 100 org rules fill page 1; the repo-owned ruleset only appears on page 2.
     filler = [_rule("deletion", 18360957, "Organization")] * 100
     seen = _route(monkeypatch, LIVE_LISTING, [*filler, _rule("deletion", 17962702)])
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 17962702
+    assert (
+        mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
+        == 17962702
+    )
     assert sum("page=" in url for url in seen) == 2
 
 
 def test_find_branch_ruleset_encodes_a_default_branch_with_a_slash(monkeypatch):
     seen = _route(monkeypatch, LIVE_LISTING, LIVE_MAIN_RULES, default="release/v1")
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 17962702
+    assert (
+        mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
+        == 17962702
+    )
     assert any("/rules/branches/release%2Fv1?" in url for url in seen)
 
 
@@ -641,7 +663,7 @@ def test_find_branch_ruleset_single_candidate_makes_one_read(monkeypatch):
     seen = _route(
         monkeypatch, [{"id": 7, "target": "branch", "source_type": "Repository"}], []
     )
-    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 7
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS) == 7
     assert seen == [f"{mod.API_ROOT}/repos/o/r/rulesets"]
 
 

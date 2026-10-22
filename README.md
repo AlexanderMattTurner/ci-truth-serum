@@ -390,7 +390,7 @@ The mutation path needs a token in `GH_TOKEN` or `GITHUB_TOKEN` with `administra
 
 ### Apply: keep a merge queue able to merge
 
-`sync-merge-queue` reads the merge queue rule of the same branch ruleset. A merge queue stops merging when two of its parameters change, and nothing turns red: GitHub builds each group, watches every check pass, and merges none of them. The script repairs those two parameters and leaves every other parameter as a human set it.
+`sync-merge-queue` finds its branch ruleset the same way, but when several are in force on the default branch it uses the one that carries the merge queue rule. A merge queue stops merging when two of its parameters change, and nothing turns red: GitHub builds each group, watches every check pass, and merges none of them. The script repairs those two parameters and leaves every other parameter as a human set it.
 
 - `grouping_strategy` is pinned to `ALLGREEN`. Under `HEADGREEN` an entry merges on another entry's build, so an untested change reaches the branch. Pass `--allow-headgreen` for a repo whose checks re-test the whole group.
 - `max_entries_to_merge` and `max_entries_to_build` must be above zero. A zero lets a group hold no entry at merge time. The repair writes `1`, and any positive size survives.

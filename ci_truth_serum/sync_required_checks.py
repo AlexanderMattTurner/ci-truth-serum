@@ -87,7 +87,9 @@ def github_request(method: str, url: str, token: str, body: dict | None = None) 
     return json.loads(payload) if payload else {}
 
 
-def find_branch_ruleset(repo: str, token: str, *, need_write: bool) -> int:
+def find_branch_ruleset(
+    repo: str, token: str, *, need_write: bool, rule_type: str
+) -> int:
     """The id of the one branch ruleset to act on, or fail loud naming why not.
 
     A repo can be covered by more than one branch ruleset targeting `main` — its
@@ -100,7 +102,8 @@ def find_branch_ruleset(repo: str, token: str, *, need_write: bool) -> int:
     reads (a `--check` drift gate) may use an org-owned ruleset, and a caller
     that writes may not. A listing that omits `source_type` is treated as
     repo-owned, which is what a repository-only listing returns. When the pool
-    still holds several, `_governing_default_branch` narrows it.
+    still holds several, `_governing_default_branch` narrows it, preferring the
+    one that carries `rule_type`: the rule the caller reads and writes.
     """
     rulesets = github_request("GET", f"{API_ROOT}/repos/{repo}/rulesets", token)
     branch = [r for r in rulesets if r.get("target") == "branch"]
@@ -116,7 +119,7 @@ def find_branch_ruleset(repo: str, token: str, *, need_write: bool) -> int:
         "repo-owned (source_type=Repository)"
     )
     if len(candidates) > 1:
-        candidates = _governing_default_branch(repo, token, candidates)
+        candidates = _governing_default_branch(repo, token, candidates, rule_type)
         counts += f", {len(candidates)} of those in force on the default branch"
     if len(candidates) == 1:
         return candidates[0]["id"]
@@ -151,7 +154,7 @@ def _rules_in_force(repo: str, token: str, branch: str) -> list[dict]:
 
 
 def _governing_default_branch(
-    repo: str, token: str, candidates: list[dict]
+    repo: str, token: str, candidates: list[dict], rule_type: str
 ) -> list[dict]:
     """Narrow several branch rulesets to the ones in force on the default branch.
 
@@ -160,18 +163,16 @@ def _governing_default_branch(
     required checks belong to the one on the default branch. GitHub's
     rules-for-a-branch endpoint names the ruleset behind each rule in force, so
     it answers which candidates govern that branch. When several still do, the
-    one that already requires status checks is the one this tool keeps in sync.
+    one that carries the caller's `rule_type` is the one it acts on.
     An empty result stays empty, so the caller fails loud rather than guess.
     """
     default = github_request("GET", f"{API_ROOT}/repos/{repo}", token)["default_branch"]
     rules = _rules_in_force(repo, token, default)
     governing = {rule["ruleset_id"] for rule in rules}
     on_default = [c for c in candidates if c["id"] in governing]
-    requiring = {
-        rule["ruleset_id"] for rule in rules if rule["type"] == "required_status_checks"
-    }
-    with_checks = [c for c in on_default if c["id"] in requiring]
-    return with_checks if len(with_checks) == 1 else on_default
+    carrying = {rule["ruleset_id"] for rule in rules if rule["type"] == rule_type}
+    with_rule = [c for c in on_default if c["id"] in carrying]
+    return with_rule if len(with_rule) == 1 else on_default
 
 
 def _find_checks_rule(ruleset: dict) -> dict | None:
@@ -276,7 +277,10 @@ def main(argv: list[str] | None = None) -> int:
 
     want = desired_contexts(args.workflows_dir)
     ruleset_id = args.ruleset_id or find_branch_ruleset(
-        args.repo, token, need_write=not args.check
+        args.repo,
+        token,
+        need_write=not args.check,
+        rule_type="required_status_checks",
     )
     ruleset = github_request(
         "GET", f"{API_ROOT}/repos/{args.repo}/rulesets/{ruleset_id}", token
