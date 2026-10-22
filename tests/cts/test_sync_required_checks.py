@@ -411,10 +411,10 @@ def test_github_request_read_failure_reports_without_blaming_the_grant(
 
 
 def test_find_branch_ruleset_single(monkeypatch):
-    monkeypatch.setattr(
-        mod,
-        "github_request",
-        lambda *a, **k: [{"id": 7, "target": "branch"}, {"id": 8, "target": "tag"}],
+    _route(
+        monkeypatch,
+        [{"id": 7, "target": "branch"}, {"id": 8, "target": "tag"}],
+        [_rule("deletion", 7)],
     )
     assert mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS) == 7
 
@@ -433,13 +433,13 @@ def test_find_branch_ruleset_ambiguous_fails_loud(monkeypatch):
 def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
     # Repo-level ruleset + inherited org-level ruleset both target `main`; only
     # the Repository-source one is writable through the repo PATCH endpoint.
-    monkeypatch.setattr(
-        mod,
-        "github_request",
-        lambda *a, **k: [
+    _route(
+        monkeypatch,
+        [
             {"id": 7, "target": "branch", "source_type": "Organization"},
             {"id": 8, "target": "branch", "source_type": "Repository"},
         ],
+        [_rule("deletion", 7, "Organization"), _rule("deletion", 8)],
     )
     assert mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS) == 8
     # A read must gate the same ruleset an apply would write, so the repo-owned
@@ -451,13 +451,13 @@ def test_find_branch_ruleset_narrows_to_repository_source(monkeypatch):
 
 def test_find_branch_ruleset_ignores_non_branch_targets(monkeypatch):
     # A tag ruleset alongside a single branch ruleset must not be counted.
-    monkeypatch.setattr(
-        mod,
-        "github_request",
-        lambda *a, **k: [
+    _route(
+        monkeypatch,
+        [
             {"id": 5, "target": "tag", "source_type": "Repository"},
             {"id": 6, "target": "branch", "source_type": "Repository"},
         ],
+        [_rule("deletion", 6)],
     )
     assert mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS) == 6
 
@@ -486,10 +486,10 @@ def test_find_branch_ruleset_lone_org_ruleset_fails_loud(monkeypatch):
 
 def test_find_branch_ruleset_lone_org_ruleset_reads_when_no_write(monkeypatch):
     """`--check` writes nothing, so an org-owned ruleset is a fine read target."""
-    monkeypatch.setattr(
-        mod,
-        "github_request",
-        lambda *a, **k: [{"id": 6, "target": "branch", "source_type": "Organization"}],
+    _route(
+        monkeypatch,
+        [{"id": 6, "target": "branch", "source_type": "Organization"}],
+        [_rule("deletion", 6, "Organization")],
     )
     assert (
         mod.find_branch_ruleset("o/r", "tok", need_write=False, rule_type=CHECKS) == 6
@@ -534,7 +534,7 @@ def test_find_branch_ruleset_two_repository_source_still_ambiguous(monkeypatch):
     )
     with pytest.raises(SystemExit) as excinfo:
         mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
-    assert "2 of them repo-owned (source_type=Repository), 2 of those in force" in (
+    assert "2 of them repo-owned (source_type=Repository), 2 left after matching" in (
         str(excinfo.value)
     )
     assert "--ruleset-id" in str(excinfo.value)
@@ -634,7 +634,7 @@ def test_find_branch_ruleset_none_governing_the_default_branch_fails_loud(
         LIVE_LISTING,
         [_rule("deletion", 18360957, "Organization")],
     )
-    with pytest.raises(SystemExit, match="0 of those in force on the default"):
+    with pytest.raises(SystemExit, match="0 left after matching the default"):
         mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
 
 
@@ -658,13 +658,46 @@ def test_find_branch_ruleset_encodes_a_default_branch_with_a_slash(monkeypatch):
     assert any("/rules/branches/release%2Fv1?" in url for url in seen)
 
 
-def test_find_branch_ruleset_single_candidate_makes_one_read(monkeypatch):
-    # Narrowing runs only on ambiguity, so the common case costs one request.
-    seen = _route(
-        monkeypatch, [{"id": 7, "target": "branch", "source_type": "Repository"}], []
+def test_find_branch_ruleset_lone_ruleset_on_another_branch_fails_loud(monkeypatch):
+    # The live repo without its main ruleset: the only repo-owned one locks
+    # plugin-dist. Writing main's rule onto it would leave main ungated.
+    _route(
+        monkeypatch,
+        [
+            {"id": 18360957, "target": "branch", "source_type": "Organization"},
+            {"id": 25037184, "target": "branch", "source_type": "Repository"},
+        ],
+        [_rule("deletion", 18360957, "Organization")],
+    )
+    with pytest.raises(SystemExit, match="0 left after matching the default"):
+        mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS)
+
+
+def test_find_branch_ruleset_keeps_a_ruleset_that_is_not_enforced(monkeypatch):
+    # GitHub lists active rules only, so it cannot place a disabled ruleset on a
+    # branch. Keep it; the caller reports the enforcement.
+    _route(
+        monkeypatch,
+        [{"id": 7, "target": "branch", "enforcement": "disabled"}],
+        [],
     )
     assert mod.find_branch_ruleset("o/r", "tok", need_write=True, rule_type=CHECKS) == 7
-    assert seen == [f"{mod.API_ROOT}/repos/o/r/rulesets"]
+
+
+def test_find_branch_ruleset_narrows_the_read_fallback_pool(monkeypatch):
+    # --check with nothing repo-owned falls back to every branch ruleset, and
+    # that pool is narrowed to main as well.
+    _route(
+        monkeypatch,
+        [
+            {"id": 7, "target": "branch", "source_type": "Organization"},
+            {"id": 9, "target": "branch", "source_type": "Organization"},
+        ],
+        [_rule("deletion", 9, "Organization")],
+    )
+    assert (
+        mod.find_branch_ruleset("o/r", "tok", need_write=False, rule_type=CHECKS) == 9
+    )
 
 
 # ─── apply_contexts ──────────────────────────────────────────────────────────
@@ -750,6 +783,10 @@ def _run_main(monkeypatch, argv, get_ruleset, env_token="tok", put_sink=None):
     def fake_request(method, url, token, body=None):
         if url.endswith("/rulesets"):
             return [{"id": 42, "target": "branch"}]
+        if url.endswith("/repos/o/r"):
+            return {"default_branch": "main"}
+        if "/rules/branches/main?" in url:
+            return [_rule("deletion", 42)]
         if method == "PUT":
             if put_sink is not None:
                 put_sink.append(body)

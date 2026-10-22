@@ -246,7 +246,20 @@ class FakeGitHub:
                 self.stored["rules"] = json.loads(json.dumps(body["rules"]))
             return {}
         if url.endswith("/rulesets"):
-            return [{"id": 42, "target": "branch", "source_type": "Repository"}]
+            return [
+                {
+                    "id": 42,
+                    "target": "branch",
+                    "source_type": "Repository",
+                    "enforcement": self.stored["enforcement"],
+                }
+            ]
+        if url.endswith("/repos/o/r"):
+            return {**self.settings, "default_branch": "main"}
+        if "/rules/branches/main?" in url:
+            # GitHub lists only the rules of an active ruleset here.
+            active = self.stored["enforcement"] == "active"
+            return [{**r, "ruleset_id": 42} for r in self.stored["rules"]] * active
         if "/rulesets/" in url and "history" in url:
             return [{"updated_at": "2026-08-09T17:00:00Z", "actor": {"id": 7}}]
         if "/rulesets/" in url:

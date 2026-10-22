@@ -101,9 +101,10 @@ def find_branch_ruleset(
     under-scoped token. So `need_write` picks the pool: a caller that only
     reads (a `--check` drift gate) may use an org-owned ruleset, and a caller
     that writes may not. A listing that omits `source_type` is treated as
-    repo-owned, which is what a repository-only listing returns. When the pool
-    still holds several, `_governing_default_branch` narrows it, preferring the
-    one that carries `rule_type`: the rule the caller reads and writes.
+    repo-owned, which is what a repository-only listing returns. Then
+    `_governing_default_branch` drops each candidate that guards another branch
+    and, among several, prefers the one that carries `rule_type`: the rule the
+    caller reads and writes.
     """
     rulesets = github_request("GET", f"{API_ROOT}/repos/{repo}/rulesets", token)
     branch = [r for r in rulesets if r.get("target") == "branch"]
@@ -118,9 +119,9 @@ def find_branch_ruleset(
         f"found {len(branch)} branch ruleset(s), {len(repo_owned)} of them "
         "repo-owned (source_type=Repository)"
     )
-    if len(candidates) > 1:
+    if candidates:
         candidates = _governing_default_branch(repo, token, candidates, rule_type)
-        counts += f", {len(candidates)} of those in force on the default branch"
+        counts += f", {len(candidates)} left after matching the default branch"
     if len(candidates) == 1:
         return candidates[0]["id"]
     # --ruleset-id names one of several candidates. It is no remedy when the
@@ -156,20 +157,27 @@ def _rules_in_force(repo: str, token: str, branch: str) -> list[dict]:
 def _governing_default_branch(
     repo: str, token: str, candidates: list[dict], rule_type: str
 ) -> list[dict]:
-    """Narrow several branch rulesets to the ones in force on the default branch.
+    """Narrow branch rulesets to the ones that can govern the default branch.
 
     A repo can own several branch rulesets that guard different branches: one
-    protects `main`, and another locks a release or install branch. Its
-    required checks belong to the one on the default branch. GitHub's
-    rules-for-a-branch endpoint names the ruleset behind each rule in force, so
-    it answers which candidates govern that branch. When several still do, the
-    one that carries the caller's `rule_type` is the one it acts on.
-    An empty result stays empty, so the caller fails loud rather than guess.
+    protects `main`, and another locks a release or install branch. The rule a
+    caller syncs belongs to the one on the default branch, and writing it onto
+    the other leaves `main` ungated with no error. GitHub's rules-for-a-branch
+    endpoint names the ruleset behind each rule in force, so it answers which
+    candidates govern that branch. It lists ACTIVE rules only, so a candidate
+    that is not enforced is kept: GitHub cannot say which branch it targets,
+    and the caller reports its enforcement. When several remain, the one that
+    carries the caller's `rule_type` is the one it acts on. An empty result
+    stays empty, so the caller fails loud rather than guess.
     """
     default = github_request("GET", f"{API_ROOT}/repos/{repo}", token)["default_branch"]
     rules = _rules_in_force(repo, token, default)
     governing = {rule["ruleset_id"] for rule in rules}
-    on_default = [c for c in candidates if c["id"] in governing]
+    on_default = [
+        c
+        for c in candidates
+        if c["id"] in governing or c.get("enforcement", "active") != "active"
+    ]
     carrying = {rule["ruleset_id"] for rule in rules if rule["type"] == rule_type}
     with_rule = [c for c in on_default if c["id"] in carrying]
     return with_rule if len(with_rule) == 1 else on_default
