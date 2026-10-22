@@ -386,7 +386,7 @@ sync-required-checks --repo owner/name --check
 GH_TOKEN=<token-with-administration:write> sync-required-checks --repo owner/name
 ```
 
-The mutation path needs a token in `GH_TOKEN` or `GITHUB_TOKEN` with `administration: write`. It reads the marker from the same scoped lines that the lint classifies, so the gate and the apply step can never disagree. Pass `--ruleset-id` if the repo has more than one branch ruleset.
+The mutation path needs a token in `GH_TOKEN` or `GITHUB_TOKEN` with `administration: write`. It reads the marker from the same scoped lines that the lint classifies, so the gate and the apply step can never disagree. When the repo has more than one branch ruleset, the tool uses the one in force on the default branch. If several are in force there, it uses the one that requires status checks. Pass `--ruleset-id` if that still leaves more than one.
 
 ### Apply: keep a merge queue able to merge
 

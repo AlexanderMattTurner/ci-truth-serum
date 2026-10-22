@@ -14,6 +14,7 @@ import io
 import json
 import textwrap
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import pytest
@@ -419,10 +420,11 @@ def test_find_branch_ruleset_single(monkeypatch):
 
 
 def test_find_branch_ruleset_ambiguous_fails_loud(monkeypatch):
-    monkeypatch.setattr(
-        mod,
-        "github_request",
-        lambda *a, **k: [{"id": 7, "target": "branch"}, {"id": 9, "target": "branch"}],
+    # Both govern main and neither requires checks yet, so nothing narrows them.
+    _route(
+        monkeypatch,
+        [{"id": 7, "target": "branch"}, {"id": 9, "target": "branch"}],
+        [_rule("deletion", 7), _rule("deletion", 9)],
     )
     with pytest.raises(SystemExit, match="found 2"):
         mod.find_branch_ruleset("o/r", "tok", need_write=True)
@@ -517,17 +519,130 @@ def test_find_branch_ruleset_no_repository_source_still_ambiguous(monkeypatch):
 
 
 def test_find_branch_ruleset_two_repository_source_still_ambiguous(monkeypatch):
-    # More than one repo-owned branch ruleset → narrowing can't disambiguate.
-    monkeypatch.setattr(
-        mod,
-        "github_request",
-        lambda *a, **k: [
+    # Two repo-owned rulesets both require checks on main: nothing can choose.
+    _route(
+        monkeypatch,
+        [
             {"id": 7, "target": "branch", "source_type": "Repository"},
             {"id": 9, "target": "branch", "source_type": "Repository"},
         ],
+        [_rule("required_status_checks", 7), _rule("required_status_checks", 9)],
     )
-    with pytest.raises(SystemExit, match="2 of them repo-owned"):
+    with pytest.raises(SystemExit) as excinfo:
         mod.find_branch_ruleset("o/r", "tok", need_write=True)
+    assert "2 of them repo-owned (source_type=Repository), 2 of those in force" in (
+        str(excinfo.value)
+    )
+    assert "--ruleset-id" in str(excinfo.value)
+
+
+def _rule(rule_type, ruleset_id, source="Repository"):
+    """One entry of GET /repos/{repo}/rules/branches/{branch}."""
+    return {
+        "type": rule_type,
+        "ruleset_id": ruleset_id,
+        "ruleset_source_type": source,
+    }
+
+
+def _route(monkeypatch, listing, rules, default="main"):
+    """Stub github_request with the three reads discovery makes; return the URLs.
+
+    `rules` is the rules-in-force list for `default`, served 100 per page as
+    GitHub does. Any other URL fails the test, so a read the code should not
+    make cannot pass by accident.
+    """
+    seen = []
+    branch_path = f"/repos/o/r/rules/branches/{urllib.parse.quote(default, safe='')}?"
+
+    def fake(method, url, token, body=None):
+        assert method == "GET", url
+        seen.append(url)
+        path = url.removeprefix(mod.API_ROOT)
+        if path == "/repos/o/r/rulesets":
+            return listing
+        if path == "/repos/o/r":
+            return {"default_branch": default}
+        assert path.startswith(branch_path), url
+        query = urllib.parse.parse_qs(path.split("?", 1)[1])
+        assert query["per_page"] == ["100"], url
+        page = int(query["page"][0])
+        return rules[(page - 1) * 100 : page * 100]
+
+    monkeypatch.setattr(mod, "github_request", fake)
+    return seen
+
+
+# The live shape that motivated narrowing: the repo owns a ruleset protecting
+# main (17962702) and one locking an install branch (25037184), and inherits an
+# org ruleset (18360957). Only the first and the org one govern main.
+LIVE_LISTING = [
+    {"id": 18360957, "target": "branch", "source_type": "Organization"},
+    {"id": 17962702, "target": "branch", "source_type": "Repository"},
+    {"id": 25037184, "target": "branch", "source_type": "Repository"},
+]
+LIVE_MAIN_RULES = [
+    _rule("deletion", 17962702),
+    _rule("required_status_checks", 17962702),
+    _rule("deletion", 18360957, "Organization"),
+    _rule("non_fast_forward", 18360957, "Organization"),
+]
+
+
+@pytest.mark.parametrize("need_write", [True, False])
+def test_find_branch_ruleset_picks_the_one_governing_the_default_branch(
+    monkeypatch, need_write
+):
+    _route(monkeypatch, LIVE_LISTING, LIVE_MAIN_RULES)
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=need_write) == 17962702
+
+
+def test_find_branch_ruleset_prefers_the_one_requiring_checks(monkeypatch):
+    # Both govern main; only one carries the rule this tool keeps in sync.
+    _route(
+        monkeypatch,
+        [
+            {"id": 7, "target": "branch", "source_type": "Repository"},
+            {"id": 9, "target": "branch", "source_type": "Repository"},
+        ],
+        [_rule("non_fast_forward", 7), _rule("required_status_checks", 9)],
+    )
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 9
+
+
+def test_find_branch_ruleset_none_governing_the_default_branch_fails_loud(
+    monkeypatch,
+):
+    _route(
+        monkeypatch,
+        LIVE_LISTING,
+        [_rule("deletion", 18360957, "Organization")],
+    )
+    with pytest.raises(SystemExit, match="0 of those in force on the default"):
+        mod.find_branch_ruleset("o/r", "tok", need_write=True)
+
+
+def test_find_branch_ruleset_reads_every_page_of_rules(monkeypatch):
+    # 100 org rules fill page 1; the repo-owned ruleset only appears on page 2.
+    filler = [_rule("deletion", 18360957, "Organization")] * 100
+    seen = _route(monkeypatch, LIVE_LISTING, [*filler, _rule("deletion", 17962702)])
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 17962702
+    assert sum("page=" in url for url in seen) == 2
+
+
+def test_find_branch_ruleset_encodes_a_default_branch_with_a_slash(monkeypatch):
+    seen = _route(monkeypatch, LIVE_LISTING, LIVE_MAIN_RULES, default="release/v1")
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 17962702
+    assert any("/rules/branches/release%2Fv1?" in url for url in seen)
+
+
+def test_find_branch_ruleset_single_candidate_makes_one_read(monkeypatch):
+    # Narrowing runs only on ambiguity, so the common case costs one request.
+    seen = _route(
+        monkeypatch, [{"id": 7, "target": "branch", "source_type": "Repository"}], []
+    )
+    assert mod.find_branch_ruleset("o/r", "tok", need_write=True) == 7
+    assert seen == [f"{mod.API_ROOT}/repos/o/r/rulesets"]
 
 
 # ─── apply_contexts ──────────────────────────────────────────────────────────
