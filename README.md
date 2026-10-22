@@ -386,11 +386,11 @@ sync-required-checks --repo owner/name --check
 GH_TOKEN=<token-with-administration:write> sync-required-checks --repo owner/name
 ```
 
-The mutation path needs a token in `GH_TOKEN` or `GITHUB_TOKEN` with `administration: write`. It reads the marker from the same scoped lines that the lint classifies, so the gate and the apply step can never disagree. Pass `--ruleset-id` if the repo has more than one branch ruleset.
+The mutation path needs a token in `GH_TOKEN` or `GITHUB_TOKEN` with `administration: write`. It reads the marker from the same scoped lines that the lint classifies, so the gate and the apply step can never disagree. The tool uses the branch ruleset in force on the default branch, and refuses a ruleset that guards only another branch. If several are in force there, it uses the one that requires status checks. Pass `--ruleset-id` if that still leaves more than one.
 
 ### Apply: keep a merge queue able to merge
 
-`sync-merge-queue` reads the merge queue rule of the same branch ruleset. A merge queue stops merging when two of its parameters change, and nothing turns red: GitHub builds each group, watches every check pass, and merges none of them. The script repairs those two parameters and leaves every other parameter as a human set it.
+`sync-merge-queue` finds its branch ruleset the same way, but when several are in force on the default branch it uses the one that carries the merge queue rule. A merge queue stops merging when two of its parameters change, and nothing turns red: GitHub builds each group, watches every check pass, and merges none of them. The script repairs those two parameters and leaves every other parameter as a human set it.
 
 - `grouping_strategy` is pinned to `ALLGREEN`. Under `HEADGREEN` an entry merges on another entry's build, so an untested change reaches the branch. Pass `--allow-headgreen` for a repo whose checks re-test the whole group.
 - `max_entries_to_merge` and `max_entries_to_build` must be above zero. A zero lets a group hold no entry at merge time. The repair writes `1`, and any positive size survives.

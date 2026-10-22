@@ -246,7 +246,20 @@ class FakeGitHub:
                 self.stored["rules"] = json.loads(json.dumps(body["rules"]))
             return {}
         if url.endswith("/rulesets"):
-            return [{"id": 42, "target": "branch", "source_type": "Repository"}]
+            return [
+                {
+                    "id": 42,
+                    "target": "branch",
+                    "source_type": "Repository",
+                    "enforcement": self.stored["enforcement"],
+                }
+            ]
+        if url.endswith("/repos/o/r"):
+            return {**self.settings, "default_branch": "main"}
+        if "/rules/branches/main?" in url:
+            # GitHub lists only the rules of an active ruleset here.
+            active = self.stored["enforcement"] == "active"
+            return [{**r, "ruleset_id": 42} for r in self.stored["rules"]] * active
         if "/rulesets/" in url and "history" in url:
             return [{"updated_at": "2026-08-09T17:00:00Z", "actor": {"id": 7}}]
         if "/rulesets/" in url:
@@ -318,6 +331,33 @@ def test_main_on_a_working_queue_writes_nothing(monkeypatch, capsys):
     assert "merge queue rule can merge" in out
     assert "last edit 2026-08-09T17:00:00Z" in out  # the invisible edit is logged
     assert fake.puts == []
+
+
+class TwoRulesetGitHub(FakeGitHub):
+    """Two repo-owned rulesets govern main: 42 carries the queue, 43 the checks."""
+
+    def request(self, method, url, token, body=None):
+        if url.endswith("/rulesets"):
+            return [
+                {"id": 43, "target": "branch", "source_type": "Repository"},
+                {"id": 42, "target": "branch", "source_type": "Repository"},
+            ]
+        if "/rules/branches/main?" in url:
+            return [
+                {"type": "required_status_checks", "ruleset_id": 43},
+                {"type": "merge_queue", "ruleset_id": 42},
+            ]
+        if url.endswith("/repos/o/r"):
+            return {**self.settings, "default_branch": "main"}
+        assert "/rulesets/43" not in url, "read the status-check ruleset"
+        return super().request(method, url, token, body)
+
+
+def test_main_picks_the_ruleset_that_carries_the_queue(monkeypatch, capsys):
+    fake = TwoRulesetGitHub(ruleset({**HEALTHY, "max_entries_to_merge": 0}))
+    run_main(monkeypatch, fake, ["--repo", "o/r"])
+    assert "carries no merge queue rule" not in capsys.readouterr().out
+    assert fake.stored["rules"][1]["parameters"]["max_entries_to_merge"] == 1
 
 
 def test_main_repairs_the_incident_and_reads_it_back(monkeypatch, capsys):
