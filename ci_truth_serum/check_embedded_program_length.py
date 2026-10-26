@@ -51,6 +51,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_source_checks,
     is_yaml_source,
     yaml_marker_comments,
+    source_lines,
 )
 from check_inline_run_length import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _check_script as _inline_run_report,
@@ -274,7 +275,7 @@ def _violations(text: str, limits: Limits, depth: int) -> list[int]:
     The opt-out is read from real shell comments only, so a program that
     quotes the marker in its own text cannot exempt itself.
     """
-    lines = text.split("\n")
+    lines = source_lines(text)
     view = shell_comments(text)
     return sorted(
         start
@@ -295,7 +296,7 @@ def workflow_violations(text: str, limits: Limits = Limits()) -> list[int]:
     value that `check-inline-run-length` reports is skipped: extracting it to a
     shell file moves its programs under this check.
     """
-    lines = text.split("\n")
+    lines = source_lines(text)
     # Every `run:` value, whatever its shell, and the markers from the SAME
     # scripts, so each step this can flag is a step that can carry its opt-out.
     scalars = yaml_run_scalars(text)

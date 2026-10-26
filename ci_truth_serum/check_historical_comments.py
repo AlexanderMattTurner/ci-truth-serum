@@ -42,6 +42,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_source_checks,
+    source_lines,
 )
 
 # The banned phrases, one per member so the test can drive a case from each (a
@@ -71,14 +72,17 @@ _MARKER_RE = re.compile(
 _ALLOW = "allow-history"
 
 
-def violations(text: str, comments: dict[int, str] | None = None) -> list[int]:
+def violations(
+    text: str, comments: dict[int, str] | None = None, path: str = ""
+) -> list[int]:
     """1-based line numbers whose comment narrates history without an
     ``# allow-history:`` annotation.
 
     COMMENTS maps 1-based line -> comment body, from ``comment_lines`` — omitting
     it applies the text delimiter scan to the whole file, which only the caller's
-    path can improve on."""
-    physical = text.split("\n")
+    path can improve on. PATH numbers the lines as its language does
+    (``source_lines``), which is how ``comment_lines`` numbered COMMENTS."""
+    physical = source_lines(text, path)
     if comments is None:
         comments = text_comments(text)
     hits: list[int] = []
@@ -95,7 +99,7 @@ def violations(text: str, comments: dict[int, str] | None = None) -> list[int]:
 def main(argv: list[str]) -> int:
     return run_source_checks(
         argv,
-        lambda text, path: violations(text, comment_lines(text, path)),
+        lambda text, path: violations(text, comment_lines(text, path), path),
         "historical narration in a comment — describe the current code, not how "
         "it changed, or annotate `# allow-history: <reason>`.",
     )

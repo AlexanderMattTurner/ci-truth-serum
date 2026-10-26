@@ -285,3 +285,33 @@ def test_a_template_slot_is_no_reason() -> None:
     assert not lc.annotated("# example-ok: n/a", "example-ok")
     # Non-vacuity: prose that merely contains a slot is a reason.
     assert lc.annotated("# example-ok: <x> is vendored", "example-ok")
+
+
+# ── a lone `\r` must not slide the window off the comment map ────────────
+# Each grammar numbers lines its own way: tree-sitter counts `\n`, Python's
+# `ast` also counts `\r`. A window built from `str.splitlines()` counts both
+# and `\v`, `\f` and U+2028 too, so the comment block above a finding was read
+# one line off, and a real marker two lines up cleared nothing.
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        (
+            "check_exit_suppression",
+            "#!/bin/bash\n: a\rb\n# allow-exit-suppress: wraps onto\n"
+            "# a second comment line\ncmd || true\n",
+        ),
+        (
+            "check_global_stdio_swap",
+            "import sys\nx = 1\ry = 2\n# allow-stdio-swap: wraps onto\n"
+            "# a second comment line\nsys.stdout = None\n",
+        ),
+    ],
+)
+def test_a_lone_carriage_return_keeps_the_marker_on_its_line(
+    name: str, text: str
+) -> None:
+    check = load_hook(f"{name}.py", f"{name}_for_lone_cr")
+    assert check.violations(text) == []
+    # Non-vacuity: the same file without the marker is a finding.
+    unmarked = text.replace(check.OPT_OUT, "no-such-marker")
+    assert check.violations(unmarked) != []

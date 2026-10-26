@@ -60,6 +60,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_line_checks,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -144,7 +145,7 @@ def _operator(list_node) -> str | None:
 def violations(text: str) -> list[int]:
     """1-based line numbers of `&&`/`||` guards whose bare `return`/`exit` forwards
     a constant status (and that carry no opt-out annotation)."""
-    physical = text.splitlines()
+    physical = source_lines(text)
     said = shell_comments(text)
     hits: list[int] = []
     for list_node in iter_nodes(parse(text), "list"):

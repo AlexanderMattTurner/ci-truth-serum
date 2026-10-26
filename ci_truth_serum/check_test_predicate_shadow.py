@@ -61,6 +61,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     tracked_shell_files,
     refuse_unparseable,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -228,7 +229,7 @@ def find_shadowed(test_paths: list[str], predicates: dict[str, str]) -> list[Sha
         text = _read(path)
         if text is None:
             continue
-        lines = text.splitlines()
+        lines = source_lines(text)
         said = shell_comments(text)
         for name, lineno in function_definitions(text):
             if name not in predicates or annotated_near(

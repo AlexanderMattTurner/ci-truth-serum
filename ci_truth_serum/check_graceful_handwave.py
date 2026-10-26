@@ -47,6 +47,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     is_prose_path,
+    source_lines,
 )
 
 _WORD_RE = re.compile(r"\bgraceful(?:ly)?\b", re.IGNORECASE)
@@ -64,7 +65,7 @@ MESSAGE = (
 
 
 def violations(
-    text: str, prose: bool, comments: dict[int, str] | None = None
+    text: str, prose: bool, comments: dict[int, str] | None = None, path: str = ""
 ) -> list[int]:
     """1-based line numbers where the word appears un-annotated.
 
@@ -74,7 +75,7 @@ def violations(
     COMMENTS maps 1-based line -> comment body, from ``comment_lines`` — omitting
     it applies the text delimiter scan to the whole file, which only the caller's
     path can improve on. It is unused in PROSE mode, where every line counts."""
-    lines = text.split("\n")
+    lines = source_lines(text, path)
     if comments is None:
         comments = text_comments(text)
     # In PROSE mode the whole line is narration, so it is also the marker
@@ -109,7 +110,7 @@ def main(argv: list[str]) -> int:
         if force_prose and _DOC_ALLOW.search(text):
             continue
         prose = force_prose or is_prose_path(path)
-        for lineno in violations(text, prose, comment_lines(text, path)):
+        for lineno in violations(text, prose, comment_lines(text, path), path):
             print(f"{path}:{lineno}: {MESSAGE}", file=sys.stderr)
             status = 1
     return status

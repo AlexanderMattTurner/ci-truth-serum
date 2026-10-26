@@ -48,6 +48,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
     annotated_near,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -212,7 +213,7 @@ def _command_words(command, arrays: dict[str, list[str]]) -> list[str]:
 
 def violations(text: str) -> list[int]:
     """1-based line numbers in TEXT that suppress stderr on a launch/build."""
-    lines = text.split("\n")
+    lines = source_lines(text)
     said = shell_comments(text)
     root = parse(text)
     arrays = _array_values(root)  # collected file-wide (two-pass)

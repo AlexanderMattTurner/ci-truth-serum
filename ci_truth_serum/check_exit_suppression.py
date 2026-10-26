@@ -98,6 +98,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_line_checks,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -560,7 +561,7 @@ def violations(text: str, producer_only: bool = False) -> list[int]:
     definition lives in a comment (accepted on any physical line of the flagged
     suppression, or the line directly above it). See `_suppression_spans` for
     PRODUCER_ONLY."""
-    raw = text.splitlines()
+    raw = source_lines(text)
     said = shell_comments(text)
     # One finding per line, carrying the WIDEST span that starts there: two
     # suppressions can begin on the same row (`a || true; b || true`), a line

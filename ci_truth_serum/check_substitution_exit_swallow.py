@@ -52,6 +52,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
     annotated_near,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -158,7 +159,7 @@ def violations(text: str) -> list[int]:
 
     The finding is anchored on the PRODUCER, which is the command whose status is
     lost and the line a reader writes the annotation on."""
-    lines = text.split("\n")
+    lines = source_lines(text)
     said = shell_comments(text)
     root = parse(text)
     hits = set()

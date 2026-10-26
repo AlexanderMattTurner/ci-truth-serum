@@ -55,8 +55,9 @@ from _cts_linecheck import (
     is_python_source,
     run_file_cli,
     run_source_checks,
+    source_lines,
 )  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_ast import lines, name_of, re_bindings, re_call_target, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import name_of, re_bindings, re_call_target, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_comments import marker_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-replacement-expansion"
@@ -290,11 +291,12 @@ def violations(text: str, path: str) -> list[int]:
     rule slides the annotation lookup onto the wrong line.
     """
     if is_js_source(path):
-        hits, physical = _js_violations(text, path), text.split("\n")
+        hits = _js_violations(text, path)
     elif is_python_source(path):
-        hits, physical = _py_violations(text), lines(text)
+        hits = _py_violations(text)
     else:
         return []
+    physical = source_lines(text, path)
     said = marker_comments(text, path)
     return sorted(
         lineno

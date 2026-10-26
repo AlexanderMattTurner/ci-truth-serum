@@ -96,6 +96,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     workflow_files,
     yaml_marker_comments,
     is_checkout_step,
+    source_lines,
 )
 from check_relative_imports import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     require_specifiers,
@@ -595,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             total += 1
             continue
-        lines = text.split("\n")
+        lines = source_lines(text)
         said = yaml_marker_comments(text)
         for execution in found:
             if _excused(lines, said, execution):

@@ -56,6 +56,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
     annotated_near,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -239,7 +240,7 @@ def _window(create, statements: list) -> list:
 def violations(text: str) -> list[int]:
     """1-based line numbers in TEXT of unguarded secret creates that are tightened
     by a nearby later chmod, without a ``# secret-perms-ok:`` opt-out."""
-    lines = text.split("\n")
+    lines = source_lines(text)
     said = shell_comments(text)
     root = parse(text)
     statements = [child for child in root.children if child.type != "comment"]

@@ -43,6 +43,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_message_checks,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -428,7 +429,7 @@ def violations(text: str, rules: Sequence[str] = RULE_SETS) -> list[tuple[int, s
     hits = _gnu_hits(root) if BSD in rules else []
     if BASH32 in rules and not checks_bash_version(root):
         hits += _bash4_hits(root)
-    lines = text.split("\n")
+    lines = source_lines(text)
     said = shell_comments(text)
     return sorted(
         {

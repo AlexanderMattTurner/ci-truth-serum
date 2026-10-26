@@ -65,6 +65,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_message_checks,
     per_run_script,
     annotated_near,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -451,7 +452,7 @@ def _opted_out(
 
 def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for every merged-then-parsed capture in TEXT."""
-    physical = text.splitlines()
+    physical = source_lines(text)
     said = shell_comments(text)
     root = parse(text)
 

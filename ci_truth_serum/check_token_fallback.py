@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _cts_linecheck import annotated_near  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import annotated_near, source_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import strip_yaml_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import yaml_marker_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -68,8 +68,8 @@ def violations(text: str) -> list[int]:
     and tell a `#`-led line apart. The COMMENTS say what each of those lines
     holds, so a `#` inside a quoted scalar opts nobody out.
     """
-    lines = text.splitlines()
-    code = strip_yaml_comments(text).splitlines()
+    lines = source_lines(text)
+    code = source_lines(strip_yaml_comments(text))
     comments = yaml_marker_comments(text)
     hits: list[int] = []
     for idx, (line, bare) in enumerate(zip(lines, code, strict=True)):

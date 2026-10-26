@@ -43,6 +43,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     step_span_ends,
     workflow_files,
     yaml_marker_comments,
+    source_lines,
 )
 
 JsonObject = dict[str, Any]
@@ -201,7 +202,7 @@ def analyze(doc: object, text: str, expander: Expander) -> list[tuple[int, str]]
     two or more upload families in one workflow DOC parsed from TEXT."""
     if not isinstance(doc, dict):
         return []
-    lines = text.splitlines()
+    lines = source_lines(text)
     blocks = _job_blocks(text)
     families: set[str] = set()
     downloads: list[Download] = []

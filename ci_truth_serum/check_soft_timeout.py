@@ -64,6 +64,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_line_checks,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -220,7 +221,7 @@ def violations(text: str, root: Node | None = None) -> list[int]:
     flag to, and the line the annotation goes on.
     """
     root = parse(text) if root is None else root
-    lines = text.split("\n")
+    lines = source_lines(text)
     said = shell_comments(text)
     hits = set()
     for command in iter_nodes(root, "command"):

@@ -54,6 +54,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_message_checks,
     per_run_script,
     is_workflow_path,
+    source_lines,
 )
 from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     lines as py_lines,
@@ -127,7 +128,7 @@ def violations(text: str, *, truncating: frozenset[str] = _TRUNCATING) -> list[i
     (reported at its first line), a call written in a comment is a `comment`
     node, and one written inside a message string or a heredoc body is that
     string or body rather than a command."""
-    raw = text.splitlines()
+    raw = source_lines(text)
     said = shell_comments(text)
     return [
         start

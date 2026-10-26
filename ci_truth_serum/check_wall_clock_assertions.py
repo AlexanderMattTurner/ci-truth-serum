@@ -43,7 +43,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_linecheck import annotated_near, is_python_source, is_test_path, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (
+    annotated_near,
+    is_python_source,
+    is_test_path,
+    run_file_cli,
+    source_lines,
+)  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import lines, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_comments import js_comments, py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -455,7 +461,7 @@ def _js_violations(source: str, path: str) -> list[int]:
     whose callee names `assert` — a bounded poll's own comparison
     (`if (Date.now() - start > timeoutMs)`) reaches no assert call."""
     root = parse(source, path)
-    physical = source.split("\n")
+    physical = source_lines(source, path)
     said = js_comments(source, path)
     hits: set[int] = set()
     for scope, inherited in _js_scopes(root):

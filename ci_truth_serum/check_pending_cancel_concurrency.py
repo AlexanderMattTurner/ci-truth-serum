@@ -122,6 +122,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     workflow_files,
     yaml_comment_view,
     yaml_marker_comments,
+    source_lines,
 )
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
@@ -333,7 +334,7 @@ def _workflow_misfire_violations(text: str, doc: dict) -> list[tuple[int | None,
     if not triggers or not all(group_is_per_run_on(group, t) for t in triggers):
         return []
     line = concurrency_line(text)
-    lines = text.splitlines()
+    lines = source_lines(text)
     window = _top_level_block(lines, line)
     if annotated_near(
         lines,

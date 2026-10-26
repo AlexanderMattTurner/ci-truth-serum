@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _cts_py_ast import lines as python_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
@@ -271,7 +272,7 @@ def _calling_module_facts(path: Path) -> Facts | None:
     text, tree = source
 
     own = _top_level_defs(tree)
-    lines = text.splitlines()
+    lines = python_lines(text)
     said = py_comments(text)
     imports: list[Alias] = []
     bound: set[str] = set()

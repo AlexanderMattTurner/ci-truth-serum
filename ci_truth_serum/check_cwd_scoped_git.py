@@ -39,7 +39,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
-from _cts_py_ast import parse_whole, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, parse_whole, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "cwd-git-ok"
@@ -191,7 +191,7 @@ def violations(text: str, read_only: frozenset[str] = READ_ONLY) -> list[int]:
         tree = parse_whole(text)
     except SyntaxError:
         return []
-    physical = text.splitlines()
+    physical = lines(text)
     said = py_comments(text)
     hits = []
     for node in walk(tree):

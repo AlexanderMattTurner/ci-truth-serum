@@ -53,6 +53,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     LineLoader,
     annotated_near,
     workflow_files,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -134,7 +135,7 @@ def violations(text: str, agent_actions: tuple[str, ...]) -> list[tuple[int, str
                 continue
             run = step.get("run")
             if downstream and isinstance(run, str):
-                run_lines = run.split("\n")
+                run_lines = source_lines(run)
                 said = shell_comments(run)
                 step_line = step.get("__line__", 1)
                 for lineno, code in bare_python_words(run):

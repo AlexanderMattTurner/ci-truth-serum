@@ -97,10 +97,10 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     MESSAGE_PREFIX,
     container_block_end,
     step_span_ends,
-    yaml_comment_view,
     workflow_files,
     _job_blocks,
     yaml_marker_comments,
+    source_lines,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -370,7 +370,7 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
     if not isinstance(doc, dict):
         return []
 
-    lines = yaml_comment_view(text)
+    lines = source_lines(text)
     said = yaml_marker_comments(text)
     blocks = _job_blocks(text)
     violations: list[tuple[int, str]] = []

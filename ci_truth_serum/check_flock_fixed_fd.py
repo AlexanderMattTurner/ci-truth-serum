@@ -95,6 +95,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_line_checks,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -319,7 +320,7 @@ def violations(
     the `flock` word, which is the line the annotation goes on.
     """
     root = parse(text) if root is None else root
-    lines = text.split("\n")
+    lines = source_lines(text)
     said = shell_comments(text)
     opened = _exec_descriptors(root) if exec_exempts else set()
     hits = set()

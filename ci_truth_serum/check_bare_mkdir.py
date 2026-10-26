@@ -56,6 +56,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_line_checks,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -185,7 +186,7 @@ def violations(text: str) -> list[int]:
     """1-based line numbers of unexempted bare `mkdir -p` invocations —
     a `mkdir -p` whose directory is verified nearby (`_verified_nearby`) is not
     one."""
-    physical = text.splitlines()
+    physical = source_lines(text)
     said = shell_comments(text)
     hits: set[int] = set()
     for command_node in iter_nodes(parse(text), "command"):

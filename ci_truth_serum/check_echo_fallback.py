@@ -70,6 +70,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_line_checks,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -212,7 +213,7 @@ def violations(text: str) -> list[int]:
     on. The raw physical lines are kept for the `# echo-fallback-ok:` opt-out,
     which by definition lives in a comment (accepted on any physical line of the
     flagged construct, or the line directly above it)."""
-    raw = text.splitlines()
+    raw = source_lines(text)
     said = shell_comments(text)
     # One finding per line, carrying the WIDEST span that starts there: two
     # fallbacks can begin on the same row, and a line reported twice would be a

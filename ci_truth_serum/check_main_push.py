@@ -41,6 +41,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     yaml_run_script,
     is_workflow_path,
     yaml_marker_comments,
+    source_lines,
 )
 
 OPT_OUT = "main-push-ok"
@@ -221,7 +222,7 @@ def violations(
 ) -> list[int]:
     """1-based start lines of the pushes in shell TEXT that land on BRANCHES."""
     return _unexcused(
-        _pushes(text, branches, gits), text.splitlines(), shell_comments(text)
+        _pushes(text, branches, gits), source_lines(text), shell_comments(text)
     )
 
 
@@ -246,7 +247,7 @@ def workflow_violations(
         )
         for start, end in _pushes(script, branches, gits).items():
             spans[start] = max(spans.get(start, end), end)
-    return _unexcused(spans, text.splitlines(), yaml_marker_comments(text, scalars))
+    return _unexcused(spans, source_lines(text), yaml_marker_comments(text, scalars))
 
 
 def main(argv: list[str]) -> int:

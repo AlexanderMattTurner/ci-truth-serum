@@ -44,8 +44,8 @@ inside it — never in the `run:` script. The script is a YAML string value, and
 foreign language gives this check no grammar to tell that language's comments
 from its data. Honouring the marker anywhere in the script text would let
 `console.log("// allow-runner-var-foreign-shell: …")` turn the check off, which
-is a fail-open. `yaml_comment_view` blanks everything PyYAML does not report as
-a comment, so what suppresses a finding is what GitHub parses as a comment.
+is a fail-open. `yaml_marker_comments` keeps only a real YAML comment and a
+comment in a bash script, and a flagged step's script is never bash.
 
 WHY THIS PARSES YAML BUT SCANS THE SCRIPT AS TEXT. The two questions have
 different answers. "What is this step's shell?" is structural — a `shell:` key
@@ -81,9 +81,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     shell_program,
     step_span_ends,
     workflow_files as _workflow_files,
-    yaml_comment_view,
     _job_blocks,
     yaml_marker_comments,
+    source_lines,
 )
 
 REPO_ROOT = Path.cwd()
@@ -190,11 +190,12 @@ def analyze(doc: object, text: str) -> list[tuple[int, str]]:
     """Every violation in one parsed document, as (step's 1-based line, message).
 
     TEXT is the file's own source. The opt-out lookup reads it through
-    `yaml_comment_view`, so only a real YAML comment can suppress a finding.
+    `yaml_marker_comments`, which gives back nothing from a script that is not
+    bash, so on a flagged step only a real YAML comment suppresses a finding.
     """
     if not isinstance(doc, dict):
         return []
-    lines = yaml_comment_view(text)
+    lines = source_lines(text)
     said = yaml_marker_comments(text)
     last_line = max(len(lines), 1)
     blocks = _job_blocks(text)

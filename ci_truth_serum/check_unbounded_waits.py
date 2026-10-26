@@ -74,6 +74,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_line_checks,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -228,7 +229,7 @@ def violations(
     """1-based line numbers where `git` runs a literal remote subcommand, or a
     loop condition runs `<tool> exec`, with no bound in front, absent an
     `# allow-unbounded:` annotation."""
-    physical = text.splitlines()
+    physical = source_lines(text)
     said = shell_comments(text)
     hits: list[int] = []
     root = parse(text)

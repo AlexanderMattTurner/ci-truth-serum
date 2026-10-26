@@ -107,9 +107,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_shell_source,
     unparseable_shell_reason,
     is_workflow_path,
+    source_lines,
 )
 from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    lines as py_lines,
     name_of,
     trees,
 )
@@ -767,7 +767,7 @@ def violations(
     else:
         return []
 
-    physical = py_lines(text) if kind == "python" else text.split("\n")
+    physical = source_lines(text, path)
     # A marker sits in a real comment of the file's language: a `#` inside a
     # quoted scalar or a string literal is a value the program handles.
     said = marker_comments(text, path)

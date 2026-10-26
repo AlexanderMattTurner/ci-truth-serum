@@ -38,6 +38,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_fastyaml import SafeLoader, compose, safe_load, scan  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines as python_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # Lines whose first word only prints text — a command quoted inside them is an
 # example or hint, not executed code. Shared by the stderr- and download-pinning
@@ -692,6 +693,25 @@ def is_prose_path(path: str) -> bool:
     lint or to none.
     """
     return bool(_PROSE_SUFFIX.search(path))
+
+
+def source_lines(text: str, path: str = "") -> list[str]:
+    """TEXT's physical lines, numbered the way the grammar of PATH numbers them.
+
+    PROBLEM CLASS — two numberings of one file's lines. A finding's line comes
+    from a grammar, and the window that looks for its opt-out indexes this list,
+    so the two must count line breaks alike or a marker lands one line off.
+
+      * Python counts `\\r\\n`, `\\r` and `\\n`, as `ast` does
+        (``_cts_py_ast.lines`` owns that rule).
+      * Every other language here counts `\\n` alone, as tree-sitter and the
+        ``_cts_comments`` readers do. PATH may be empty for those.
+
+    `str.splitlines` is neither: it also breaks on `\\r`, `\\v`, `\\f` and
+    U+2028, so a window built from it slides off the comment map on a file that
+    holds one.
+    """
+    return python_lines(text) if is_python_source(path) else text.split("\n")
 
 
 def is_yaml_source(path: str) -> bool:

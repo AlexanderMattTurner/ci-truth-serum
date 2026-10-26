@@ -18,10 +18,12 @@ shell, tree-sitter-{javascript,typescript} for JS/TS, and PyYAML's scanner plus
 the bash grammar for YAML. Judging the PROSE inside the comment stays each
 lint's own regex; English has no grammar here to parse.
 
-Line numbers are 1-based physical lines counted by ``\\n`` — the numbering every
-grammar here reports, and what a caller must enumerate with (``str.splitlines``
-also breaks on ``\\v``, ``\\f`` and U+2028, which no parser here treats as a line
-break, so counting with it slides every later line number off by the difference).
+Line numbers are 1-based physical lines numbered the way the grammar numbers
+them, and a caller enumerates with ``_cts_linecheck.source_lines(text, path)``:
+``\\n`` alone for every language here except Python, which also breaks on
+``\\r`` as ``ast`` does. ``str.splitlines`` also breaks on ``\\v``, ``\\f`` and
+U+2028, which no parser here treats as a line break, so counting with it slides
+every later line number off by the difference.
 """
 
 import io
@@ -45,6 +47,7 @@ from _cts_js_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     is_js_source,
     parse as _parse_js,
 )
+from _cts_py_ast import lines as python_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     comment_body,
     is_python_source,
@@ -116,16 +119,19 @@ def _python_comment_items(source: str) -> tuple[tuple[int, str], ...]:
 def py_comments(source: str) -> dict[int, str]:
     """``python_comments`` for Python SOURCE that may not tokenize.
 
-    Lines are counted by `\\n`, as every reader in this module counts them
-    (see the module docstring); a lone `\\r` is not a line break here. A file
-    that does not tokenize (a syntax error, a half-written edit) falls back to
-    ``text_comments`` rather than reporting no comments at all: "no findings"
-    on an unparseable file is the false green this pack exists to catch.
+    Lines are numbered the way the Python grammar numbers them, which is
+    ``source_lines(source, path)`` for a Python PATH: a `\\r` is a line break
+    too. So a comment's line is the line `ast` reports for the code beside it.
+    A file that does not tokenize (a syntax error, a half-written edit) falls
+    back to ``text_comments`` rather than reporting no comments at all: "no
+    findings" on an unparseable file is the false green this pack exists to
+    catch.
     """
+    normalized = "\n".join(python_lines(source))
     try:
-        return python_comments(source)
+        return python_comments(normalized)
     except (tokenize.TokenError, SyntaxError):
-        return text_comments(source)
+        return text_comments(normalized)
 
 
 def shell_comments(script: str) -> dict[int, str]:

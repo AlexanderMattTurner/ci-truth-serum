@@ -87,6 +87,7 @@ from _cts_comments import (
 from _cts_linecheck import (  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
+    source_lines,
     tracked_shell_files,
 )
 
@@ -349,7 +350,7 @@ def violations(
     known = set(functions) | defined_functions(text, root)
     if not known:
         return []
-    lines = text.split("\n")
+    lines = source_lines(text)
     said = shell_comments(text)
     hits = set()
     for substitution in iter_nodes(root, "command_substitution"):

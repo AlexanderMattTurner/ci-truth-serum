@@ -82,6 +82,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_message_checks,
     per_run_script,
+    source_lines,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -368,7 +369,7 @@ def violations(text: str) -> list[int]:
     string. The raw physical lines are kept for the `# pin-exempt:` opt-out, which
     by definition lives in a comment (accepted on any physical line of the flagged
     command, or the line directly above it)."""
-    raw = text.splitlines()
+    raw = source_lines(text)
     said = shell_comments(text)
     # One finding per line, carrying the WIDEST span that starts there: two commands
     # can begin on the same row (`pip install a; pip install b`, or a `bash -c`

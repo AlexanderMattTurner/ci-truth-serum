@@ -63,6 +63,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     is_test_path,
     run_file_cli,
+    source_lines,
 )
 
 OPT_OUT = "allow-positional-git-argv"
@@ -184,7 +185,7 @@ def violations(
 ) -> list[int]:
     """1-based line numbers that index into git's argv positionally, unannotated."""
     comments = comment_lines(text, path)
-    physical = text.splitlines()
+    physical = source_lines(text, path)
     code = _code_view(physical, comments)
     starts = _string_starts(text)
     positional_test = _positional_test_re(subcommands)

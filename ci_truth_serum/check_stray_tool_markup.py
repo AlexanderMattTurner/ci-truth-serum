@@ -44,6 +44,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_prose_path,
     run_file_cli,
     run_source_checks,
+    source_lines,
 )
 from _cts_comments import marker_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -66,7 +67,7 @@ def violations(text: str, path: str) -> list[int]:
     """1-based line numbers that are entirely a stray tool-call tag, outside any
     fenced code block and without an ``allow-stray-markup`` annotation on the line
     directly above. PATH names the language, which says where a marker may sit."""
-    lines = text.splitlines()
+    lines = source_lines(text, path)
     said = marker_comments(text, path, prose=is_prose_path(path))
     hits: list[int] = []
     in_fence = False
