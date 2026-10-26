@@ -454,14 +454,28 @@ jobs:
         run: bash .github/scripts/install-input-sanitizer.sh
 
       - name: Fetch and sanitize the untrusted PR diff
+        id: prepare
         if: steps.threads.outputs.has_threads == 'true' || steps.bodyhold.outputs.has_body_hold == 'true'
         env:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
         run: bash .github/scripts/prepare-pr-review-input.sh
 
+      # Over the size cap the script writes no diff.txt and sets oversized=true.
+      # The judge, its cost tally and the resolve step below all skip on that
+      # output, and this step makes the skip visible: a judge that read a
+      # missing diff would answer about nothing.
+      - name: Report that the diff is too large to judge
+        if: steps.prepare.outputs.oversized == 'true'
+        env:
+          DIFF_LINES: ${{ steps.prepare.outputs.diff_lines }}
+        run: |
+          msg="The thread resolver did not run: the diff is ${DIFF_LINES} lines, over the size limit. Resolve each addressed thread by hand."
+          echo "::notice title=Thread resolver skipped::${msg}"
+          echo "${msg}" >>"$GITHUB_STEP_SUMMARY"
+
       - name: Judge which threads (and any body hold) are addressed (Claude Haiku)
         id: haiku
-        if: steps.threads.outputs.has_threads == 'true' || steps.bodyhold.outputs.has_body_hold == 'true'
+        if: steps.prepare.outputs.oversized == 'false'
         uses: ./.github/actions/claude-run
         with:
           oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -496,7 +510,7 @@ jobs:
             sanitizer report: ${{ runner.temp }}/pr-input/sanitizer-report.txt
 
       - name: Tally this Haiku run's cost onto the review footnote
-        if: steps.threads.outputs.has_threads == 'true' || steps.bodyhold.outputs.has_body_hold == 'true'
+        if: steps.prepare.outputs.oversized == 'false'
         # Runs on every Haiku pass (even one that resolves nothing), so the
         # footnote's running Haiku cost stays current. Independent of the
         # resolve step below.
@@ -505,7 +519,7 @@ jobs:
         run: bash .github/scripts/append-haiku-cost.sh
 
       - name: Resolve the threads Haiku judged addressed
-        if: steps.threads.outputs.has_threads == 'true'
+        if: steps.threads.outputs.has_threads == 'true' && steps.prepare.outputs.oversized == 'false'
         env:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
           # resolveReviewThread is not available to the Actions GITHUB_TOKEN — it
