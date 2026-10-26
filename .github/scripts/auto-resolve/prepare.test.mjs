@@ -146,8 +146,11 @@ function runPrepare(work, extraEnv = {}, { mergiraf = "cannot-solve" } = {}) {
     `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${ghLog}"\nexit 0\n`,
   );
   chmodSync(ghPath, 0o755);
+  // prepare runs MERGIRAF_BIN, and the test names the stub's path there, so a
+  // real mergiraf elsewhere on the host PATH is never the one it finds. Without
+  // this, "absent" passes on a runner that has installed the real binary.
+  const mergirafPath = join(ghBin, "mergiraf");
   if (mergiraf !== "absent") {
-    const mergirafPath = join(ghBin, "mergiraf");
     // "solves" emits the conflicted file with the marker lines stripped, which
     // is a marker-free result and so counts as a full solve.
     const bodies = {
@@ -172,6 +175,7 @@ function runPrepare(work, extraEnv = {}, { mergiraf = "cannot-solve" } = {}) {
         GITHUB_TOKEN: "x",
         GITHUB_OUTPUT: outFile,
         PATH: `${ghBin}:${process.env.PATH ?? ""}`,
+        MERGIRAF_BIN: mergirafPath,
         ...extraEnv,
       },
     });
