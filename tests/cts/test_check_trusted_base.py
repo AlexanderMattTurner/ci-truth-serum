@@ -609,3 +609,18 @@ def test_optout_text_a_step_prints_does_not_suppress(tmp_path):
     assert len(tb.check_file(_write(tmp_path, printed, "p.yaml"))) == 1
     # Non-vacuity: a real shell comment in the same position suppresses.
     assert tb.check_file(_write(tmp_path, commented, "c.yaml")) == []
+
+
+def test_an_escaped_marker_in_a_double_quoted_run_does_not_suppress(tmp_path):
+    """`"echo ok\\n# trusted-base-ok: …"` holds the marker only after YAML
+    decodes `\\n`, and no exact source offset maps back to it, so it clears
+    nothing. The author writes the marker in a real YAML comment instead."""
+    body = (
+        "on:\n  pull_request:\n"
+        "permissions:\n  contents: write\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n" + _HEAD_CHECKOUT
+    )
+    escaped = body + '      - run: "true\\n# trusted-base-ok: base copy only"\n'
+    commented = "# trusted-base-ok: base copy only\n" + body
+    assert len(tb.check_file(_write(tmp_path, escaped, "e.yaml"))) == 1
+    assert tb.check_file(_write(tmp_path, commented, "c.yaml")) == []

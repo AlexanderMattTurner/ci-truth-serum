@@ -2715,41 +2715,66 @@ def yaml_run_scalars(text: str) -> list[RunScalar]:
     indicator, and a quoted scalar carries its quotes. ``yaml_run_script``
     hands a caller the same span with that YAML blanked out.
 
-    Takes a whole file or one indented block. Raises ``yaml.YAMLError`` on a
-    text PyYAML cannot compose; each caller picks the safe direction for what
-    it reads.
+    Only the places GitHub executes are read: `jobs.<id>.steps[*].run` in a
+    workflow and `runs.steps[*].run` in a composite action. A `run` key
+    anywhere else (an `env:` entry, a `with:` input) is data. A step reached
+    through a YAML alias is judged once per job that holds it, with that job's
+    shell, so the same node can appear twice under two shells.
+
+    Takes a whole file or one indented fragment of one: a job block (a mapping
+    of job id to job), one job body, a list of steps, or a single step. Raises
+    ``yaml.YAMLError`` on a text PyYAML cannot compose; each caller picks the
+    safe direction for what it reads.
     """
     found: list[RunScalar] = []
-    seen: set[int] = set()
 
-    def walk(node: object, shell: str) -> None:
-        if id(node) in seen:
+    def steps(job: object, shell: str) -> None:
+        if not isinstance(job, yaml.MappingNode):
             return
-        seen.add(id(node))
-        if isinstance(node, yaml.SequenceNode):
-            for item in node.value:
-                walk(item, shell)
-            return
-        if not isinstance(node, yaml.MappingNode):
-            return
-        shell = _defaults_shell(node) or shell
-        run = _mapping_get(node, _SCRIPT_KEY)
+        shell = _defaults_shell(job) or shell
+        listed = _mapping_get(job, "steps")
+        for step in listed.value if isinstance(listed, yaml.SequenceNode) else ():
+            one_step(step, shell)
+
+    def one_step(step: object, shell: str) -> None:
+        run = (
+            _mapping_get(step, _SCRIPT_KEY)
+            if isinstance(step, yaml.MappingNode)
+            else None
+        )
         if isinstance(run, yaml.ScalarNode):
             found.append(
                 RunScalar(
                     run.start_mark.index,
                     run.end_mark.index,
                     run.style,
-                    node.start_mark.line + 1,
+                    step.start_mark.line + 1,
                     run.value,
-                    _scalar_value(_mapping_get(node, "shell")) or shell,
+                    _scalar_value(_mapping_get(step, "shell")) or shell,
                 )
             )
-        for _key, value in node.value:
-            walk(value, shell)
 
-    walk(compose(text), "bash")
-    return sorted(found, key=lambda scalar: scalar.start)
+    def jobs(mapping: object, shell: str) -> None:
+        for _key, job in mapping.value if isinstance(mapping, yaml.MappingNode) else ():
+            steps(job, shell)
+
+    root = compose(text)
+    if isinstance(root, yaml.SequenceNode):  # a fragment: a list of steps
+        for step in root.value:
+            one_step(step, "bash")
+    elif isinstance(root, yaml.MappingNode):
+        shell = _defaults_shell(root) or "bash"
+        if _mapping_get(root, "jobs") is not None:  # a workflow
+            jobs(_mapping_get(root, "jobs"), shell)
+        elif _mapping_get(root, "runs") is not None:  # a composite action
+            steps(_mapping_get(root, "runs"), shell)
+        elif _mapping_get(root, "steps") is not None:  # a fragment: one job body
+            steps(root, "bash")
+        elif _mapping_get(root, _SCRIPT_KEY) is not None:  # a fragment: one step
+            one_step(root, shell)
+        else:  # a fragment: a job block, job id to job
+            jobs(root, shell)
+    return sorted(found, key=lambda scalar: (scalar.start, scalar.shell))
 
 
 def bash_run_scripts(text: str) -> list[RunScalar]:
@@ -2812,7 +2837,9 @@ def _yaml_script_text(text: str) -> str:
 
     Column offsets and line numbers survive, like ``yaml_comment_view``'s. Errs
     CLOSED like it too: a text PyYAML cannot compose keeps its YAML comments
-    and loses every script comment, so a suppression is lost, never invented.
+    and loses every script comment, and so does a script whose source text and
+    decoded value hold different comments. A suppression is lost, never
+    invented.
 
     This view says which SURFACES may carry a marker. It says nothing about
     which findings that marker clears — that scope is each check's own contract,
@@ -2831,7 +2858,16 @@ def _yaml_script_text(text: str) -> str:
         scripts = []
     for scalar in scripts:
         script = yaml_run_script(text, scalar)
-        for start, end in comment_spans(script):
+        spans = comment_spans(script)
+        # The source spans are exact only when the source text holds the same
+        # comments as the value YAML decodes, which is what bash runs. An escape
+        # (`"a\n# x"`) or a folded line makes the two differ, and no exact map
+        # back to source exists, so that script gives back nothing: a marker is
+        # lost, never invented.
+        decoded = [scalar.value[a:b].strip() for a, b in comment_spans(scalar.value)]
+        if [script[a:b].strip() for a, b in spans] != decoded:
+            continue
+        for start, end in spans:
             out[scalar.start + start : scalar.start + end] = script[start:end]
     return "".join(out)
 

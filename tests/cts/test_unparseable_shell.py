@@ -231,3 +231,33 @@ def test_a_workflow_that_will_not_parse_is_refused(
     path = _workflow(tmp_path, _STEP + "  b: [unclosed\n")
     assert check.main([str(path)]) == 1
     assert "could not read this file as YAML" in capsys.readouterr().err
+
+
+def test_a_run_key_that_github_never_executes_is_not_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`env: {run: …}` is a value a step reads, not a command it runs."""
+    check = load_hook("check_versionless_install.py", "versionless_for_env_run")
+    text = (
+        "jobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      run: pip install requests\n"
+        "    steps:\n      - run: echo ok\n"
+    )
+    assert check.main([str(_workflow(tmp_path, text))]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_an_aliased_step_in_a_bash_job_is_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    check = load_hook("check_versionless_install.py", "versionless_for_alias")
+    text = (
+        "jobs:\n"
+        "  a:\n    runs-on: windows-latest\n"
+        "    defaults:\n      run:\n        shell: pwsh\n"
+        "    steps:\n      - &install\n        run: pip install requests\n"
+        "  b:\n    runs-on: ubuntu-latest\n    steps:\n      - *install\n"
+    )
+    path = _workflow(tmp_path, text)
+    assert check.main([str(path)]) == 1
+    assert f"{path}:" in capsys.readouterr().err
