@@ -1,9 +1,7 @@
 overrides:
   # GHSA-r7fv-28h4-cvq7, GHSA-gfr2-rv44-r23c: markdown-it quadratic-complexity DoS via markdownlint-cli2
-  markdown-it: ">=15.0.3"
+  markdown-it: "^15.0.3"
   # GHSA-r4xh-jqrq-34v2: smol-toml quadratic-time parse via markdownlint-cli2
-  smol-toml: ">=1.8.1"
-  # GHSA-2g4f-4pwh-qvx6: ajv ReDoS via @stryker-mutator/core
-  ajv: ">=8.18.0"
+  smol-toml: "^1.8.1"
   # GHSA-q8mj-m7cp-5q26, GHSA-x5fp-wj9c-mxmx, GHSA-4mjr-xmp4-gh2g: qs DoS/bypass via @stryker-mutator/core>typed-rest-client
-  qs: ">=6.16.0"
+  qs: "^6.16.0"
