@@ -194,7 +194,7 @@ These checks are about shell scripts, Python, tests, and docs rather than CI rep
 
 ## Usage
 
-Start here enables Tier 1 through one aggregate id. This section is the full menu: every check by name, the tag selectors, and the three checks that sit outside every tier.
+Start here enables Tier 1 through one aggregate id. This section is the full menu: every check by name, the tag selectors, and the four checks that sit outside every tier.
 
 ### Enable specific checks
 
@@ -330,7 +330,7 @@ The tag vocabulary is closed. These are the values:
 
 A tag is not a file type. The files a check reads come from its own `types:`, so there is no `shell` or `python` tag to restate them.
 
-The three checks that sit in no aggregate carry no tag either, so no selector reaches them. `check-absolute-symlinks`, `check-lockstep-pins`, and `check-env-symmetry` stay standalone ids.
+The four checks that sit in no aggregate carry no tag either, so no selector reaches them. `check-absolute-symlinks`, `check-lockstep-pins`, `check-env-symmetry`, and `check-bash32-portability` stay standalone ids.
 
 ### Scope one check to specific paths
 

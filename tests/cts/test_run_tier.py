@@ -50,8 +50,9 @@ PREFIX_TIER = {
 # Hooks intentionally left out of every aggregate, each enabled on its own:
 # `check-absolute-symlinks` (a language:script shell hook, not a Python module),
 # `check-lockstep-pins` (config-driven; hard-errors without per-repo `--pair`
-# args), and `check-env-symmetry` (a whole-tree scan needing a per-project
-# `--prefix` arg no aggregate can supply).
+# args), `check-env-symmetry` (a whole-tree scan needing a per-project
+# `--prefix` arg no aggregate can supply), and `check-bash32-portability`
+# (judges every file it gets, so it needs the consumer's own `files:`).
 UNAGGREGATED = {
     "check-absolute-symlinks",
     "check-lockstep-pins",
