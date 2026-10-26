@@ -39,10 +39,23 @@ if [[ -z "${_COMMIT_STATUS_MARK_SOURCED:-}" ]]; then
       echo "commit_status_mark_set: usage: commit_status_mark_set REPO SHA CONTEXT DESCRIPTION" >&2
       return 2
     fi
-    retry gh api --method POST "repos/$1/statuses/$2" \
+    # Best-effort means the action goes on, never that the failure is silent:
+    # gh's own error goes to the log as a warning, so a token that lost
+    # `statuses: write` shows up instead of every head re-running each window.
+    local err rc
+    err="$(mktemp)"
+    if retry gh api --method POST "repos/$1/statuses/$2" \
       -f "state=success" \
       -f "context=$3" \
-      -f "description=$4" >/dev/null || true
+      -f "description=$4" >/dev/null 2>"$err"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    if ((rc != 0)); then
+      echo "::warning::could not set commit status '$3' on $2 (exit ${rc}): $(tr '\n' ' ' <"$err")"
+    fi
+    rm -f "$err"
   }
 
   # commit_status_mark_release REPO SHA CONTEXT DESCRIPTION — cancel the mark on
