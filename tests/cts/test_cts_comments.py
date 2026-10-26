@@ -190,3 +190,14 @@ def test_python_comments_hands_each_caller_its_own_map() -> None:
     first = comments.python_comments(source)
     first[99] = "added"
     assert comments.python_comments(source) == {1: "# one", 2: "# two"}
+
+
+def test_yaml_comments_falls_back_on_a_workflow_that_scans_but_will_not_compose() -> (
+    None
+):
+    """An undefined alias scans and fails only at compose time. The reader of
+    what a line says must still answer, not crash, and not report nothing."""
+    assert comments.yaml_comments("a: *nope  # hi\nrun: x  # y\n") == {
+        1: "# hi",
+        2: "# y",
+    }

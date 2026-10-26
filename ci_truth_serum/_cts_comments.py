@@ -31,6 +31,7 @@ from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
 
+import yaml
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -198,12 +199,16 @@ def yaml_comments(text: str) -> dict[int, str]:
     """
     if not yaml_scannable(text):
         return text_comments(text)
+    try:
+        scalars = yaml_run_scalars(text)
+    except yaml.YAMLError:
+        return text_comments(text)  # scans, but will not compose: same fallback
     fragments = [
         (lineno, body)
         for lineno, line in enumerate(yaml_comment_text(text).split("\n"), 1)
         if (body := comment_body(line)) is not None
     ]
-    for scalar in yaml_run_scalars(text):
+    for scalar in scalars:
         offset = text.count("\n", 0, scalar.start)
         fragments += [
             (offset + lineno, comment)
