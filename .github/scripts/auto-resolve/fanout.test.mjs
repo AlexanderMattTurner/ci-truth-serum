@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "fanout.sh");
-const GATE = join(HERE, "..", "check-claude-execution.sh");
+const GATE = join(HERE, "..", "..", "actions", "claude-run", "check-claude-execution.sh");
 
 const ARG_SEP = "\n<<<ARG>>>\n";
 const slug = (p) => p.replace(/[^A-Za-z0-9]/g, "_");

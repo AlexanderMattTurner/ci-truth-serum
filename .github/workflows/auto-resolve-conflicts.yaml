@@ -435,8 +435,8 @@ jobs:
         env:
           EXECUTION_FILE: ${{ steps.resolve_llm.outputs.execution_file }}
           CONTEXT: Claude conflict resolution
-          RESOLVER_DIR: ${{ steps.resolver.outputs.dir }}
-        run: bash "${RESOLVER_DIR}/check-claude-execution.sh"
+          RESOLVER_BASE: ${{ steps.resolver.outputs.base }}
+        run: bash "${RESOLVER_BASE}/.github/actions/claude-run/check-claude-execution.sh"
 
       - name: Release the attempt when the run spent nothing
         # POSITION IS LOAD-BEARING: this reads `steps.resolve_llm`, and a
