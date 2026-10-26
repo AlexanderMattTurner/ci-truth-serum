@@ -75,6 +75,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-unbounded"
 
@@ -228,6 +229,7 @@ def violations(
     loop condition runs `<tool> exec`, with no bound in front, absent an
     `# allow-unbounded:` annotation."""
     physical = text.splitlines()
+    said = shell_comments(text)
     hits: list[int] = []
     root = parse(text)
     in_loop_condition = {node.id for node in condition_commands(root, _LOOPS)}
@@ -245,7 +247,7 @@ def violations(
             continue
         lineno = command.start_point[0] + 1
         end_line = command.end_point[0] + 1
-        if annotated_near(physical, lineno, OPT_OUT, span_end=end_line):
+        if annotated_near(physical, lineno, OPT_OUT, span_end=end_line, comments=said):
             continue
         hits.append(lineno)
     return sorted(set(hits))

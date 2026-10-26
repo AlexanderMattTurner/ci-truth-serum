@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import annotated_near, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import lines, name_of, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-stdio-swap"
 
@@ -125,11 +126,13 @@ def _swap_lines(tree: ast.Module) -> list[int]:
 def violations(text: str) -> list[int]:
     """1-based line numbers in TEXT that swap a global stream without an opt-out."""
     physical = lines(text)
+    said = py_comments(text)
     hits = {line for tree in trees(text) for line in _swap_lines(tree)}
     return sorted(
         lineno
         for lineno in hits
-        if lineno <= len(physical) and not annotated_near(physical, lineno, OPT_OUT)
+        if lineno <= len(physical)
+        and not annotated_near(physical, lineno, OPT_OUT, comments=said)
     )
 
 

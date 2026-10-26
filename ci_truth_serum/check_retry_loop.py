@@ -45,6 +45,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_source_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "retry-loop-ok"
 
@@ -299,11 +300,14 @@ def violations(text: str, wrappers: frozenset[str] = frozenset()) -> list[int]:
     """1-based start lines of the counted attempt-and-sleep loops in TEXT that
     no `# retry-loop-ok:` annotation exempts."""
     physical = text.splitlines()
+    said = shell_comments(text)
     hits: list[int] = []
     for loop in _loops(text):
         if not _hand_rolled_retry(loop, wrappers):
             continue
-        if annotated_near(physical, loop.line, OPT_OUT, span_end=loop.line):
+        if annotated_near(
+            physical, loop.line, OPT_OUT, span_end=loop.line, comments=said
+        ):
             continue
         hits.append(loop.line)
     return sorted(hits)

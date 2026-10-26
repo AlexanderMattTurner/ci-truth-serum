@@ -616,15 +616,14 @@ def test_yaml_comment_view_errs_closed_on_untokenizable_text() -> None:
     assert [line.strip() for line in lc.yaml_comment_view(broken)] == ["", ""]
 
 
-def test_annotated_near_rejects_a_misaligned_comment_list() -> None:
-    """The window's line numbers index both lists. A list of the wrong length
-    reads a neighbouring line, and a marker found one line off still
-    suppresses — so the mismatch raises rather than deciding quietly."""
-    lines = ["# tok: why", "a: 1", "b: 2"]
-    with pytest.raises(ValueError, match="reads the wrong line's comment"):
-        lc.annotated_near(lines, 2, "tok", comments=lines[:2])
-    # Non-vacuity: the aligned call decides, so the raise is about the length.
-    assert lc.annotated_near(lines, 2, "tok", comments=lines) is True
+def test_annotated_near_reads_only_the_comments_it_is_given() -> None:
+    """The window's line numbers index the COMMENTS mapping, and a line it leaves
+    out says nothing. A raw line that carries a marker inside a string is that
+    case: the marker is data, so it suppresses nothing."""
+    lines = ['echo "write # tok: why"', "cmd"]
+    assert lc.annotated_near(lines, 2, "tok", comments={}) is False
+    # Non-vacuity: the same line, reported as a comment, suppresses.
+    assert lc.annotated_near(lines, 2, "tok", comments={1: "# tok: why"}) is True
 
 
 # ── yaml_script_view / yaml_run_scalars / is_yaml_source ─────────────────────
@@ -638,7 +637,44 @@ def test_yaml_script_view_keeps_a_block_scalar_body() -> None:
     text = 'a:\n  name: "# tok: fake"\n  run: |\n    echo hi  # tok: real\n'
     shown = lc.yaml_script_view(text)
     assert shown[1].strip() == "", "a quoted scalar is a value, not a marker"
-    assert shown[3].strip() == "echo hi  # tok: real"
+    assert shown[3].strip() == "# tok: real"
+
+
+def test_yaml_script_view_keeps_only_the_comments_of_a_run_script() -> None:
+    """A script prints and greps marker text all day. The string a command
+    prints is a value, so it is no marker; the script's own comment is one."""
+    text = (
+        "a:\n  run: |\n"
+        '    echo "annotate with # tok: <reason>"\n'
+        "    make  # tok: vendored\n"
+    )
+    shown = [line.strip() for line in lc.yaml_script_view(text)]
+    assert shown == ["", "", "", "# tok: vendored"]
+
+
+def test_yaml_script_view_gives_nothing_back_from_a_non_bash_script() -> None:
+    """The bash grammar cannot say where a `pwsh` script's comments are.
+    Non-vacuity: the same step under bash keeps its comment."""
+    step = "a:\n  run: |\n    make  # tok: vendored\n"
+    assert lc.yaml_script_view(step + "  shell: pwsh\n")[2].strip() == ""
+    assert lc.yaml_script_view(step + "  shell: bash\n")[2].strip() == "# tok: vendored"
+
+
+@pytest.mark.parametrize(
+    ("uses", "expected"),
+    [
+        ("actions/checkout@v4", True),
+        ("actions/checkout@0123456789abcdef0123456789abcdef01234567", True),
+        ("actions/checkout", True),
+        ("./.github/actions/checkout-cache", False),
+        ("actions/checkout-cache@v1", False),
+        ("my/actions/checkout@v1", False),
+        (None, False),
+    ],
+)
+def test_is_checkout_uses(uses: object, expected: bool) -> None:
+    assert lc.is_checkout_uses(uses) is expected
+    assert lc.is_checkout_step({"uses": uses}) is expected
 
 
 def test_yaml_script_view_keeps_a_quoted_one_line_run() -> None:
@@ -1329,7 +1365,7 @@ def test_the_stand_alone_token_still_matches_in_both_forms() -> None:
     )
     # The reason-required form's right edge is the literal `:`, so a token
     # followed directly by its colon is unaffected by the tail lookahead.
-    assert lc.annotated("jobs:  # allow-unbounded:x", "allow-unbounded")
+    assert lc.annotated("jobs:  # allow-unbounded:bounded", "allow-unbounded")
     # The left edge is an alternation, not a lookbehind, because `<!--` and `//`
     # end in characters a lookbehind would reject — a token abutting its own
     # introducer must still match.

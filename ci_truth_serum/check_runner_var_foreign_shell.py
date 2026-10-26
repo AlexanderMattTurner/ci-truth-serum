@@ -83,6 +83,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     workflow_files as _workflow_files,
     yaml_comment_view,
     _job_blocks,
+    yaml_marker_comments,
 )
 
 REPO_ROOT = Path.cwd()
@@ -194,6 +195,7 @@ def analyze(doc: object, text: str) -> list[tuple[int, str]]:
     if not isinstance(doc, dict):
         return []
     lines = yaml_comment_view(text)
+    said = yaml_marker_comments(text)
     last_line = max(len(lines), 1)
     blocks = _job_blocks(text)
 
@@ -223,7 +225,9 @@ def analyze(doc: object, text: str) -> list[tuple[int, str]]:
             step_line = step.get("__line__")
             if not isinstance(step_line, int):
                 step_line = 1
-            if annotated_near(lines, step_line, ALLOW, span_end=ends.get(step_line)):
+            if annotated_near(
+                lines, step_line, ALLOW, span_end=ends.get(step_line), comments=said
+            ):
                 continue
             found.append((step_line, _message(label, shell.strip(), names)))
     return sorted(found)

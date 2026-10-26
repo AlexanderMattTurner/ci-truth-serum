@@ -45,6 +45,7 @@ from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong
 from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import annotated_near, is_python_source, is_test_path, run_file_cli  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import lines, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import js_comments, py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-wall-clock"
 
@@ -279,6 +280,7 @@ def _scopes(
 def _py_violations(source: str, scalers: frozenset[str]) -> list[int]:
     """1-based lines in SOURCE of every unexempted wall-clock assertion."""
     physical = lines(source)
+    said = py_comments(source)
     hits: set[int] = set()
     for tree in trees(source):
         returns = _duration_returns(tree)
@@ -289,7 +291,11 @@ def _py_violations(source: str, scalers: frozenset[str]) -> list[int]:
                     isinstance(node, ast.Assert)
                     and _offends(node, names, returns, scalers)
                     and not annotated_near(
-                        physical, node.lineno, OPT_OUT, span_end=node.end_lineno
+                        physical,
+                        node.lineno,
+                        OPT_OUT,
+                        span_end=node.end_lineno,
+                        comments=said,
                     )
                 ):
                     hits.add(node.lineno)
@@ -450,6 +456,7 @@ def _js_violations(source: str, path: str) -> list[int]:
     (`if (Date.now() - start > timeoutMs)`) reaches no assert call."""
     root = parse(source, path)
     physical = source.split("\n")
+    said = js_comments(source, path)
     hits: set[int] = set()
     for scope, inherited in _js_scopes(root):
         names = _js_names_in(scope, inherited)
@@ -463,6 +470,7 @@ def _js_violations(source: str, path: str) -> list[int]:
                     call.start_point[0] + 1,
                     OPT_OUT,
                     span_end=call.end_point[0] + 1,
+                    comments=said,
                 ):
                     hits.add(call.start_point[0] + 1)
     return sorted(h for h in hits if h <= len(physical))

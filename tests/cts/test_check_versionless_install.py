@@ -261,12 +261,13 @@ def test_main_ignores_non_workflow_yaml(tmp_path, capsys) -> None:
     assert capsys.readouterr().err == ""
 
 
-def test_main_skips_an_unparseable_workflow(tmp_path, capsys) -> None:
+def test_main_refuses_an_unparseable_workflow(tmp_path, capsys) -> None:
+    """No `run:` script in a broken workflow was read, so its result is no pass."""
     workflow = tmp_path / ".github" / "workflows" / "broken.yaml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text("jobs: [unclosed\n", encoding="utf-8")
-    assert mod.main([str(workflow)]) == 0
-    assert capsys.readouterr().err == ""
+    assert mod.main([str(workflow)]) == 1
+    assert "could not read this file as YAML" in capsys.readouterr().err
 
 
 def test_main_skips_a_vanished_path(tmp_path, capsys) -> None:

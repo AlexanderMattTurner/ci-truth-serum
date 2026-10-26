@@ -44,12 +44,14 @@ from _cts_js_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     is_js_source,
     parse as _parse_js,
 )
+from _cts_py_ast import LINE_ENDING  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     comment_body,
     is_python_source,
     is_shell_source,
     is_yaml_source,
     yaml_comment_text,
+    yaml_marker_comments,
     yaml_run_scalars,
     yaml_run_script,
     yaml_scannable,
@@ -109,6 +111,22 @@ def _python_comment_items(source: str) -> tuple[tuple[int, str], ...]:
             if token.type == tokenize.COMMENT
         }.items()
     )
+
+
+def py_comments(source: str) -> dict[int, str]:
+    """``python_comments`` for Python SOURCE that may not tokenize.
+
+    Line endings are normalized first, as ``_cts_py_ast`` normalizes them, so a
+    line number here is the line number a parsed tree reports. A file that does
+    not tokenize (a syntax error, a half-written edit) falls back to
+    ``text_comments`` rather than reporting no comments at all: "no findings"
+    on an unparseable file is the false green this pack exists to catch.
+    """
+    normalized = LINE_ENDING.sub("\n", source)
+    try:
+        return python_comments(normalized)
+    except (tokenize.TokenError, SyntaxError):
+        return text_comments(normalized)
 
 
 def shell_comments(script: str) -> dict[int, str]:
@@ -214,6 +232,29 @@ def text_comments(text: str) -> dict[int, str]:
     }
 
 
+def marker_comments(text: str, path: str, *, prose: bool = False) -> dict[int, str]:
+    """1-based line -> where an opt-out marker may sit on that line of PATH.
+
+    PROBLEM CLASS — which text may carry an opt-out. The answer differs from
+    ``comment_lines`` in two places, and a lint that took the wrong one either
+    honoured a marker a command prints or lost one an author wrote:
+
+      * a workflow takes ``yaml_marker_comments``: a real YAML comment, or a
+        real comment in a script GitHub hands to bash. A `#` inside a quoted
+        value, or inside a `pwsh` script, is not a marker;
+      * a PROSE document (Markdown, rst) takes the whole line. It has no
+        comment grammar here, and the `<!-- … -->` form an author writes is no
+        comment to ``comment_body``.
+
+    Every other language takes ``comment_lines``.
+    """
+    if prose:
+        return dict(enumerate(text.split("\n"), 1))
+    if is_yaml_source(path):
+        return yaml_marker_comments(text)
+    return comment_lines(text, path)
+
+
 def comment_lines(text: str, path: str) -> dict[int, str]:
     """1-based line -> the comment text on that line, using the grammar PATH's
     language provides and falling back to ``text_comments`` when it has none.
@@ -224,10 +265,7 @@ def comment_lines(text: str, path: str) -> dict[int, str]:
     tooling owns the syntax error itself.
     """
     if is_python_source(path):
-        try:
-            return python_comments(text)
-        except (tokenize.TokenError, SyntaxError):
-            return text_comments(text)
+        return py_comments(text)
     if is_shell_source(path, text.split("\n", 1)[0]):
         return shell_comments(text)
     if is_js_source(path):

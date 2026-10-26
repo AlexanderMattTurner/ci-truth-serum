@@ -75,7 +75,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
-    PathologicalInputError,
     command_arguments,
     iter_nodes,
     node_text,
@@ -85,7 +84,9 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
+    run_message_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "pin-exempt"
 EMPTY_OPT_OUT = "empty-download-ok"
@@ -584,6 +585,7 @@ def violations(text: str) -> list[tuple[int, str]]:
     (accepted on any physical line of the flagged command, or the line directly
     above it)."""
     raw = text.splitlines()
+    said = shell_comments(text)
     downloads, verified = _findings(parse(text))
     # One finding per line, carrying the WIDEST span that starts there: two
     # downloads can begin on the same row (`curl -o a x; curl -o b y`, or a
@@ -609,13 +611,15 @@ def violations(text: str) -> list[tuple[int, str]]:
             limit = min(limit, starts[index + 1] - 1)
         if any(start <= line <= limit for line in verified):
             continue  # a real checksum/signature makes both arms moot
-        if not annotated_near(raw, start, OPT_OUT, span_end=download.last_line):
+        if not annotated_near(
+            raw, start, OPT_OUT, span_end=download.last_line, comments=said
+        ):
             hits.append((start, MESSAGE))
             continue
         # The annotation may sit anywhere between the download and the run it
         # excuses — the same range a real `[[ -s FILE ]]` guard would occupy.
         if download.exec_line is not None and not annotated_near(
-            raw, start, EMPTY_OPT_OUT, span_end=download.exec_line
+            raw, start, EMPTY_OPT_OUT, span_end=download.exec_line, comments=said
         ):
             hits.append(
                 (start, _empty_download_message(download.target, download.exec_line))
@@ -624,23 +628,7 @@ def violations(text: str) -> list[tuple[int, str]]:
 
 
 def main(argv: list[str]) -> int:
-    status = 0
-    for arg in argv:
-        try:
-            hits = violations(Path(arg).read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError):
-            continue  # a deleted/renamed path pre-commit may still list
-        except PathologicalInputError as err:
-            # A shape the grammar cannot parse safely fails the check LOUDLY (the
-            # same posture as check_untrusted_exec): skipping it would false-green
-            # exactly the input an adversary controls.
-            print(f"{arg}: {err}", file=sys.stderr)
-            status = 1
-            continue
-        for lineno, message in hits:
-            print(f"{arg}:{lineno}: {message}", file=sys.stderr)
-            status = 1
-    return status
+    return run_message_checks(argv, lambda text, _path: violations(text))
 
 
 if __name__ == "__main__":

@@ -94,6 +94,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # A sourced bash library carries no shebang and declares `# shellcheck shell=bash`. By
 # convention such a lib is sourced into strict-mode callers and must NOT re-set shell
@@ -364,6 +365,7 @@ def _scan(text: str, root) -> list[int]:
     if start is None:
         return []
     physical = text.splitlines()
+    said = shell_comments(text)
     hits: set[int] = set()
     for pipeline in iter_nodes(root, "pipeline"):
         # A pipeline that runs before pipefail is enabled returns the reader's own
@@ -387,6 +389,7 @@ def _scan(text: str, root) -> list[int]:
             pipeline.start_point[0] + 1,
             _ALLOW,
             span_end=pipeline.end_point[0] + 1,
+            comments=said,
         ):
             continue
         hits.add(reader.start_point[0] + 1)

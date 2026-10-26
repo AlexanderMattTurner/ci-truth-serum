@@ -1,0 +1,2 @@
+- `check-gh-slurp-jq`, `check-truncating-pr-json`, `check-secret-file-perms`, `check-stderr-suppression`, `check-substitution-exit-swallow`, `check-stderr-merge-parse` and `trace-ci` now accept an opt-out marker in the comment block directly above the command, as the other lints do.
+- `check-workflow-refs` now reads a `.mdx` file as prose, as `check-graceful-handwave` does.

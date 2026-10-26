@@ -43,6 +43,7 @@ from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     trees,
     walk,
 )
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "toolchain-skip-ok"
 
@@ -118,6 +119,7 @@ def violations(text: str) -> list[int]:
     """1-based line numbers of skipif/importorskip calls whose condition does
     binary discovery without a CI guard."""
     physical = lines(text)
+    said = py_comments(text)
     # Each flagged call's own last line: a reason written beside the condition it
     # excuses lives inside this span, which is where authors put it.
     _ends = {
@@ -131,7 +133,9 @@ def violations(text: str) -> list[int]:
         lineno
         for lineno in hits
         if lineno <= len(physical)
-        and not annotated_near(physical, lineno, OPT_OUT, span_end=_ends.get(lineno))
+        and not annotated_near(
+            physical, lineno, OPT_OUT, span_end=_ends.get(lineno), comments=said
+        )
     )
 
 

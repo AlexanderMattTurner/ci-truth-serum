@@ -106,7 +106,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_python_source,
     is_shell_source,
     unparseable_shell_reason,
-    yaml_comment_text,
+    is_workflow_path,
 )
 from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     lines as py_lines,
@@ -114,6 +114,7 @@ from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     trees,
 )
 from _cts_fastyaml import compose, safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import marker_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-conclusion-subset"
 
@@ -142,7 +143,6 @@ CONFIG_KEY = "extra"
 _CONCLUSION = re.compile(r"conclusion", re.IGNORECASE)
 
 # The workflow and composite-action files whose scalars carry GitHub expressions.
-_WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 
 
 class ConfigError(ValueError):
@@ -706,12 +706,6 @@ def python_groups(source: str) -> list[Group]:
 # ── driving one file ─────────────────────────────────────────────────────
 
 
-def is_workflow_path(path: str) -> bool:
-    """True when PATH names a workflow or composite action, whose scalars carry
-    GitHub expressions."""
-    return bool(_WORKFLOW_PATH.search(path.replace("\\", "/")))
-
-
 def is_config_path(path: str, config_path: Path) -> bool:
     """True when PATH is the repository's override file."""
     return path.replace("\\", "/") == str(config_path).replace("\\", "/")
@@ -774,10 +768,9 @@ def violations(
         return []
 
     physical = py_lines(text) if kind == "python" else text.split("\n")
-    # On a workflow the marker must sit in a real YAML comment: a `#` inside a
-    # quoted scalar is a value the step's author writes. `yaml_comment_text` is
-    # split the same way `physical` is, so the two lists index alike.
-    said = yaml_comment_text(text).split("\n") if kind == "workflow" else None
+    # A marker sits in a real comment of the file's language: a `#` inside a
+    # quoted scalar or a string literal is a value the program handles.
+    said = marker_comments(text, path)
     found = []
     for group in groups:
         missing = missing_from(group, required)

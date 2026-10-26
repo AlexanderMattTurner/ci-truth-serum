@@ -34,6 +34,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "case-default-ok"
 
@@ -66,12 +67,13 @@ def violations(text: str) -> list[int]:
     """1-based line numbers of `case` statements with no bare `*)` default arm
     (and without an opt-out annotation)."""
     physical = text.splitlines()
+    said = shell_comments(text)
     hits: list[int] = []
     for case_node in iter_nodes(parse(text), "case_statement"):
         if _has_default_arm(case_node):
             continue
         lineno = case_node.start_point[0] + 1
-        if annotated_near(physical, lineno, OPT_OUT):
+        if annotated_near(physical, lineno, OPT_OUT, comments=said):
             continue
         hits.append(lineno)
     return sorted(hits)

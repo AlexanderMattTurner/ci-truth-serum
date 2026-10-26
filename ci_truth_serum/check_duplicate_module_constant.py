@@ -35,8 +35,8 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
-from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import trees  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-duplicate-constant"
 
@@ -81,21 +81,12 @@ def _value_reads_name(stmt: ast.stmt, name: str) -> bool:
     return any(isinstance(n, ast.Name) and n.id == name for n in ast.walk(value))
 
 
-def _line_at(lines: list[str], lineno: int) -> str:
-    """LINES's 1-based LINENO, or "" out of range. A named lookup rather than
-    an inline ``lines[lineno - 1]`` at each call site, so the opt-out check
-    below reads one line at a time with no neighbour-reaching arithmetic."""
-    return lines[lineno - 1] if 0 < lineno <= len(lines) else ""
-
-
-def _suppressed(stmt: ast.stmt, lines: list[str]) -> bool:
-    """True when OPT_OUT annotates a line the offending STATEMENT ITSELF
-    spans — never the line above, which would usually be the unrelated FIRST
-    binding this duplicate shadows."""
+def _suppressed(stmt: ast.stmt, said: dict[int, str]) -> bool:
+    """True when OPT_OUT annotates a real comment on a line the offending
+    STATEMENT ITSELF spans — never the line above, which would usually be the
+    unrelated FIRST binding this duplicate shadows."""
     end = stmt.end_lineno or stmt.lineno
-    return any(
-        annotated(_line_at(lines, n), OPT_OUT) for n in range(stmt.lineno, end + 1)
-    )
+    return any(annotated(said.get(n, ""), OPT_OUT) for n in range(stmt.lineno, end + 1))
 
 
 def violations(text: str) -> list[int]:
@@ -107,7 +98,7 @@ def violations(text: str) -> list[int]:
     findings" — the false green this pack refuses to produce for source it
     was actually handed.
     """
-    lines = py_lines(text)
+    said = py_comments(text)
     seen: set[str] = set()
     hits: set[int] = set()
     for tree in trees(text):
@@ -118,7 +109,7 @@ def violations(text: str) -> list[int]:
                     continue
                 # A re-binding: shadow unless it reads the prior value
                 # (accumulation) or carries an explicit opt-out.
-                if _value_reads_name(stmt, name) or _suppressed(stmt, lines):
+                if _value_reads_name(stmt, name) or _suppressed(stmt, said):
                     continue
                 hits.add(stmt.lineno)
     return sorted(hits)

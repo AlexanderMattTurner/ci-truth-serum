@@ -55,7 +55,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_name,
     command_words,
     iter_nodes,
@@ -68,6 +67,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "env-arith-ok"
 
@@ -162,6 +162,7 @@ def violations(text: str) -> list[int]:
     root = parse(text)
     assigned = _assigned_lines(root)
     physical = text.splitlines()
+    said = shell_comments(text)
     hits: set[int] = set()
     for arith in iter_nodes(root, "arithmetic_expansion"):
         lineno = arith.start_point[0] + 1
@@ -173,24 +174,15 @@ def violations(text: str) -> list[int]:
             for var in iter_nodes(arith, "variable_name")
         )
         if external and not annotated_near(
-            physical, lineno, OPT_OUT, span_end=end_line
+            physical, lineno, OPT_OUT, span_end=end_line, comments=said
         ):
             hits.add(lineno)
     return sorted(hits)
 
 
 def main(argv: list[str]) -> int:
-    """Run the detector one path at a time, so a file the grammar refuses to
-    parse fails LOUDLY (naming the path, exit 1) instead of silently vanishing
-    from the scan, while every other path is still checked."""
-    status = 0
-    for path in argv:
-        try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    """Run the detector over ARGV, refusing by name a file it cannot read."""
+    return run_line_checks(argv, violations, MESSAGE)
 
 
 if __name__ == "__main__":

@@ -81,6 +81,9 @@ from _cts_bash_ast import (  # pylint: disable=wrong-import-position
     parse,
     unquote,
 )
+from _cts_comments import (
+    shell_comments,  # noqa: E402,I001  # pylint: disable=wrong-import-position
+)
 from _cts_linecheck import (  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
@@ -347,13 +350,14 @@ def violations(
     if not known:
         return []
     lines = text.split("\n")
+    said = shell_comments(text)
     hits = set()
     for substitution in iter_nodes(root, "command_substitution"):
         callee = _callee(substitution)
         if callee is None or _literal_name(callee) not in known:
             continue
         lineno = substitution.start_point[0] + 1
-        if not annotated_near(lines, lineno, OPT_OUT):
+        if not annotated_near(lines, lineno, OPT_OUT, comments=said):
             hits.add(lineno)
     return sorted(hits)
 

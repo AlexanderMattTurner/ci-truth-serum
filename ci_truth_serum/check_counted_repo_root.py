@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import annotated_near, run_file_cli, run_line_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import lines, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-counted-root"
 
@@ -64,11 +65,14 @@ def violations(text: str) -> list[int]:
     on any line the subscript spans.
     """
     physical = lines(text)
+    said = py_comments(text)
     hits = {
         node.lineno
         for tree in trees(text)
         for node in _counted_roots(tree)
-        if not annotated_near(physical, node.lineno, OPT_OUT, span_end=node.end_lineno)
+        if not annotated_near(
+            physical, node.lineno, OPT_OUT, span_end=node.end_lineno, comments=said
+        )
     }
     return sorted(hits)
 

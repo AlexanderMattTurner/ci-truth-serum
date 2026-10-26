@@ -84,6 +84,7 @@ from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
+    is_prose_path,
 )
 
 # The workflow lints anchor discovery at the repo being scanned. pre-commit runs
@@ -132,7 +133,6 @@ _NON_WORKFLOW_BASENAMES = frozenset(
 # The changelog surfaces whose text is an audit record, skipped whole.
 _CHANGELOG_RE = re.compile(r"(?:^|/)(?:CHANGELOG\.md|changelog\.d/)")
 _ALLOW = "allow-workflow-ref"
-_PROSE_SUFFIXES = frozenset({".md", ".markdown", ".rst"})
 
 MESSAGE = (
     "cites a workflow that does not exist under .github/workflows/ — the file "
@@ -220,7 +220,7 @@ def violations(
         comments = text_comments(text)
     # LINES still shapes the window — which lines are blank, which hold only a
     # comment — and SAID is what each of those lines says.
-    said = None if prose else [comments.get(n, "") for n in range(1, len(lines) + 1)]
+    said = dict(enumerate(lines, 1)) if prose else comments
     hits: list[tuple[int, str]] = []
     in_fence = False
     for lineno, raw in enumerate(lines, 1):
@@ -254,7 +254,7 @@ def main(argv: list[str]) -> int:
             text = Path(path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-        prose = Path(path).suffix.lower() in _PROSE_SUFFIXES
+        prose = is_prose_path(path)
         in_dot_github = bool(_DOT_GITHUB.search(path.replace("\\", "/")))
         for lineno, cited in violations(
             text, prose, workflows, tracked, in_dot_github, comment_lines(text, path)

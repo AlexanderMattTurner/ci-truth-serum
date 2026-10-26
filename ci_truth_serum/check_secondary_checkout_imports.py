@@ -94,6 +94,8 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     LineLoader,
     annotated_near,
     workflow_files,
+    yaml_marker_comments,
+    is_checkout_step,
 )
 from check_relative_imports import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     require_specifiers,
@@ -295,7 +297,7 @@ def _secondary_checkouts(steps: list[JsonObject]) -> list[tuple[str, int]]:
     literal directory. An expression or another repository is skipped."""
     found = []
     for step in steps:
-        if not str(step.get("uses") or "").startswith("actions/checkout"):
+        if not is_checkout_step(step):
             continue
         with_inputs = step.get("with") or {}
         path = with_inputs.get("path")
@@ -554,9 +556,9 @@ def bare_imports(
     return sorted((line, spec) for line, spec in imported if is_bare(spec, runner))
 
 
-def _excused(lines: list[str], execution: Execution) -> bool:
+def _excused(lines: list[str], said: dict[int, str], execution: Execution) -> bool:
     return any(
-        annotated_near(lines, lineno, OPT_OUT)
+        annotated_near(lines, lineno, OPT_OUT, comments=said)
         for lineno in (execution.line, execution.checkout_line)
         if lineno <= len(lines)
     )
@@ -594,8 +596,9 @@ def main(argv: list[str] | None = None) -> int:
             total += 1
             continue
         lines = text.split("\n")
+        said = yaml_marker_comments(text)
         for execution in found:
-            if _excused(lines, execution):
+            if _excused(lines, said, execution):
                 continue
             # The shell hop parses a tracked script with the same grammar. One
             # past its size bound, and one the grammar cannot read, each fail

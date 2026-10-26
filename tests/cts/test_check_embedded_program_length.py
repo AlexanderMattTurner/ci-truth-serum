@@ -7,6 +7,7 @@ assertion is on which lines it reports, never on the text of the check.
 from pathlib import Path
 
 import pytest
+import yaml
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -398,7 +399,7 @@ def test_a_marker_quoted_by_the_program_in_a_run_value_does_not_opt_out() -> Non
     source = (
         "jobs:\n  a:\n    steps:\n"
         "      - run: |\n"
-        f"          python3 -c '# allow-inline-program: x; {MINIFIED}'\n"
+        f"          python3 -c '# allow-inline-program: generated; {MINIFIED}'\n"
     )
     assert mod.workflow_violations(source) == [5]
 
@@ -436,7 +437,7 @@ def test_a_run_block_opted_out_of_inline_run_length_is_judged_here() -> None:
 
 
 def test_an_unscannable_workflow_refuses_rather_than_passing() -> None:
-    with pytest.raises(mod.UnscannableWorkflowError):
+    with pytest.raises(yaml.YAMLError):
         mod.workflow_violations('jobs:\n  a: "unterminated\n')
 
 
@@ -494,7 +495,7 @@ def test_main_refuses_an_unscannable_workflow_loudly(
         tmp_path / ".github" / "workflows" / "x.yml", 'a: "unterminated\n'
     )
     assert mod.main([workflow]) == 1
-    assert "the YAML scanner cannot read this workflow" in capsys.readouterr().err
+    assert "could not read this file as YAML" in capsys.readouterr().err
 
 
 def test_main_refuses_a_shell_file_the_grammar_cannot_read(
@@ -545,6 +546,6 @@ def test_violations_never_crash_and_report_real_lines(text: str) -> None:
 def test_workflow_violations_report_real_lines_or_refuse(text: str) -> None:
     try:
         result = mod.workflow_violations(text, _SMALL)
-    except mod.UnscannableWorkflowError:
+    except yaml.YAMLError:
         return
     assert all(1 <= line <= max(len(text.split("\n")), 1) for line in result)

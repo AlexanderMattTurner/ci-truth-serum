@@ -577,6 +577,34 @@ _NOT_LINE_BOUNDARY = re.compile(
 )
 
 
+def comment_spans(script: str) -> list[tuple[int, int]]:
+    """(start, end) CHARACTER offsets in SCRIPT of every bash ``comment`` node,
+    in source order.
+
+    PROBLEM CLASS — where does a shell comment start and end, as offsets a
+    caller can slice with. tree-sitter reports UTF-8 BYTE offsets into the
+    astral-folded text ``parse`` lexed, so every caller that blanks or keeps a
+    comment by position must map them back. One mapping, here.
+    """
+    # `parse` folds supplementary-plane chars to U+FFFD before lexing, so the
+    # tree's byte offsets index the NEUTRALIZED string, not `script`. The fold
+    # is one-char-for-one-char, so character index i in it is index i in
+    # `script`. Comments never nest, so with the spans sorted one forward pass
+    # decodes each byte gap exactly once.
+    safe = _neutralize_supplementary(script)
+    encoded = safe.encode("utf-8")
+    spans: list[tuple[int, int]] = []
+    byte = char = 0
+    for start_byte, end_byte in sorted(
+        (n.start_byte, n.end_byte) for n in iter_nodes(parse(safe), "comment")
+    ):
+        start = char + len(encoded[byte:start_byte].decode("utf-8"))
+        end = start + len(encoded[start_byte:end_byte].decode("utf-8"))
+        spans.append((start, end))
+        byte, char = end_byte, end
+    return spans
+
+
 def strip_comments(script: str) -> str:
     """SCRIPT with every bash ``comment`` node blanked to spaces, leaving every
     line-boundary character in place so ``strip_comments(script).splitlines()`` is
@@ -586,28 +614,11 @@ def strip_comments(script: str) -> str:
     ``#`` comment — and, because the grammar (not a naive ``#`` split) decides what
     a comment is, a ``#`` inside a quoted string or word (``curl -o "a#b" url``) is
     correctly left as code."""
-    # `parse` folds supplementary-plane chars to U+FFFD before lexing, so the
-    # tree's byte offsets index the NEUTRALIZED string, not `script`. Map them
-    # against that same string; the fold is one-char-for-one-char, so character
-    # index i in it is character index i in `script` and blanking `script[i]` below
-    # stays correct.
-    safe = _neutralize_supplementary(script)
-    spans = sorted(
-        (n.start_byte, n.end_byte) for n in iter_nodes(parse(safe), "comment")
-    )
-    if not spans:
-        return script
-    # tree-sitter reports byte offsets; map them to character indices so blanking
-    # respects multibyte Unicode boundaries. Comments never nest, so with the spans
-    # sorted one forward pass decodes each byte gap exactly once.
-    encoded = safe.encode("utf-8")
     pieces: list[str] = []
-    byte = char = 0
-    for start_byte, end_byte in spans:
-        start = char + len(encoded[byte:start_byte].decode("utf-8"))
-        end = start + len(encoded[start_byte:end_byte].decode("utf-8"))
+    char = 0
+    for start, end in comment_spans(script):
         pieces.append(script[char:start])
         pieces.append(_NOT_LINE_BOUNDARY.sub(" ", script[start:end]))
-        byte, char = end_byte, end
+        char = end
     pieces.append(script[char:])
     return "".join(pieces)

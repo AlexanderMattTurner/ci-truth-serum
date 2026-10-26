@@ -23,12 +23,15 @@ parameterised check stays inside its tier instead of being skipped and re-listed
 as its own hook. Repeat the flag to pass several; ``--wrapper=retry_cmd`` is one
 token, so a flag and its value need one ``--check-arg``.
 
-Three hooks are intentionally NOT aggregated, each enabled on its own:
-``check-absolute-symlinks`` is a ``language: script`` shell hook, not a Python
-module, so it cannot run inside this Python aggregate; ``check-lockstep-pins``
-and ``check-env-symmetry`` scan the whole tree and take no file list, and every
-value they compare is per-repo, so a tier that carried them would carry one
-repo's configuration for every consumer. The contract test in
+Four hooks are not aggregated. A consumer enables each one on its own:
+
+  * ``check-absolute-symlinks`` is a ``language: script`` shell hook, not a
+    Python module, so it cannot run inside this Python aggregate.
+  * ``check-lockstep-pins`` and ``check-env-symmetry`` scan the whole tree and
+    take no file list. Every value they compare is per-repo, so a tier that
+    carried them would carry one repo's configuration for every consumer.
+  * ``check-bash32-portability`` judges every file it gets, so it needs the
+    consumer's own ``files:`` naming the scripts that run on macOS. The contract test in
 ``tests/cts/test_run_tier.py`` asserts the registry stays in sync with
 ``.pre-commit-hooks.yaml`` so a newly added hook can't silently escape its tier.
 
@@ -53,6 +56,7 @@ from typing import NamedTuple, TextIO
 from identify import identify
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _cts_linecheck import is_workflow_path  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     COMMENTED_CODE,
     DOCKERFILE,
@@ -77,9 +81,6 @@ from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 _COMMENT_TAGS = frozenset({"shell", "python", "javascript", "ts"})
 _PROSE_TAGS = frozenset({"markdown", "rst"})
 
-# The workflow/composite-action files a SHELL_OR_WORKFLOW_YAML lint scans for
-# inline `run:` blocks (matching the standalone hook's own path routing).
-_WORKFLOW_YAML = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 # check_conclusion_coverage's repository override. It is not a consumer, but a
 # commit that widens the declared set changes no consumer at all, so the check
 # has to SEE the file to know it must re-verify the tree.
@@ -98,9 +99,7 @@ def matches(path: str, kind: str) -> bool:
     if kind == SHELL_OR_DOCKERFILE:
         return "shell" in tags or "dockerfile" in tags
     if kind == SHELL_OR_WORKFLOW_YAML:
-        return "shell" in tags or bool(
-            "yaml" in tags and _WORKFLOW_YAML.search(path.replace("\\", "/"))
-        )
+        return "shell" in tags or ("yaml" in tags and is_workflow_path(path))
     if kind == MARKDOWN:
         return "markdown" in tags
     if kind == COMMENTED_CODE:
@@ -113,10 +112,7 @@ def matches(path: str, kind: str) -> bool:
         normalized = path.replace("\\", "/")
         return bool(tags & {"shell", "python"}) or bool(
             "yaml" in tags
-            and (
-                _WORKFLOW_YAML.search(normalized)
-                or _CONCLUSION_CONFIG.search(normalized)
-            )
+            and (is_workflow_path(path) or _CONCLUSION_CONFIG.search(normalized))
         )
     if kind == JS_OR_PYTHON:
         return bool(tags & {"python", "javascript", "jsx", "ts", "tsx"})

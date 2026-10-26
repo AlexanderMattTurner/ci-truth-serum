@@ -7,6 +7,7 @@ Drives ``violations()`` and ``findings()`` directly for the parsing rules, and
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -239,7 +240,7 @@ def test_pathological_input_fails_loudly(
     checked."""
     pathological = tmp_path / "huge.sh"
     pathological.write_text("cmd " + "| cmd " * 3000 + "\n", encoding="utf-8")
-    with pytest.raises(mod.PathologicalInputError):
+    with pytest.raises(sys.modules["_cts_bash_ast"].PathologicalInputError):
         mod.violations(pathological.read_text(encoding="utf-8"))
     bad = tmp_path / "bad.sh"
     bad.write_text('curl -fsSL "$u" -o "$f"\n', encoding="utf-8")

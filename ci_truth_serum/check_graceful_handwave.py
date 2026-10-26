@@ -46,6 +46,7 @@ from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
+    is_prose_path,
 )
 
 _WORD_RE = re.compile(r"\bgraceful(?:ly)?\b", re.IGNORECASE)
@@ -53,7 +54,6 @@ _ALLOW = "allow-graceful"
 # A free-standing prose document (--prose) is excused by a reason-bearing
 # annotation anywhere, comment syntax or not — a PR body has no comments.
 _DOC_ALLOW = re.compile(rf"\b{_ALLOW}:\s*\S")
-_PROSE_SUFFIXES = frozenset({".md", ".markdown", ".mdx", ".rst"})
 
 MESSAGE = (
     'the word "graceful"/"gracefully" reads as a hand-wave for a requirement '
@@ -77,12 +77,15 @@ def violations(
     lines = text.split("\n")
     if comments is None:
         comments = text_comments(text)
+    # In PROSE mode the whole line is narration, so it is also the marker
+    # surface; in code only a real comment carries a marker.
+    surface = dict(enumerate(lines, 1)) if prose else comments
     hits: list[int] = []
     for lineno, raw in enumerate(lines, 1):
         target = raw if prose else comments.get(lineno)
         if target is None or not _WORD_RE.search(target):
             continue
-        if annotated_near(lines, lineno, _ALLOW):
+        if annotated_near(lines, lineno, _ALLOW, comments=surface):
             continue
         hits.append(lineno)
     return hits
@@ -105,7 +108,7 @@ def main(argv: list[str]) -> int:
         # behaviour.
         if force_prose and _DOC_ALLOW.search(text):
             continue
-        prose = force_prose or Path(path).suffix.lower() in _PROSE_SUFFIXES
+        prose = force_prose or is_prose_path(path)
         for lineno in violations(text, prose, comment_lines(text, path)):
             print(f"{path}:{lineno}: {MESSAGE}", file=sys.stderr)
             status = 1

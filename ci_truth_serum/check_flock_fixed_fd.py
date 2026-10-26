@@ -84,7 +84,6 @@ from tree_sitter import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
-    PathologicalInputError,
     is_lookup,
     iter_nodes,
     node_text,
@@ -97,6 +96,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-fixed-fd"
 
@@ -320,6 +320,7 @@ def violations(
     """
     root = parse(text) if root is None else root
     lines = text.split("\n")
+    said = shell_comments(text)
     opened = _exec_descriptors(root) if exec_exempts else set()
     hits = set()
     for command in iter_nodes(root, "command"):
@@ -335,15 +336,17 @@ def violations(
         if not _FD.match(descriptor) or (descriptor in opened and not closed):
             continue
         hits.add(words[position].start_point[0] + 1)
-    return sorted(line for line in hits if not annotated_near(lines, line, OPT_OUT))
+    return sorted(
+        line for line in hits if not annotated_near(lines, line, OPT_OUT, comments=said)
+    )
 
 
 def main(argv: list[str]) -> int:
     """Run the detector over the files in ARGV.
 
-    One path runs at a time, so a file the grammar refuses fails LOUDLY. The
-    run names the path and exits 1, and every other path is still checked. An
-    empty file list exits 2, because a pass over nothing is not a clean pass.
+    A file the grammar refuses fails LOUDLY by name, and every other path is
+    still checked. An empty file list exits 2, because a pass over nothing is
+    not a clean pass.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -373,14 +376,7 @@ def main(argv: list[str]) -> int:
             text, wrappers=wrappers, exec_exempts=not args.no_exec_exemption
         )
 
-    status = 0
-    for path in args.files:
-        try:
-            status = max(status, run_line_checks([path], find, MESSAGE))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    return run_line_checks(args.files, find, MESSAGE)
 
 
 if __name__ == "__main__":

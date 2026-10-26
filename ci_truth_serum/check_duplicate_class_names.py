@@ -40,6 +40,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     unparseable_python_reason,
 )
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-duplicate-class"
 
@@ -77,7 +78,7 @@ def _annotated_header_rows(source: str) -> set[int]:
     tells them apart.
     """
     marker = annotation_re(OPT_OUT)
-    lines = source.splitlines()
+    said = py_comments(source)
     annotated: set[int] = set()
     start: int | None = None
     depth = 0
@@ -94,7 +95,7 @@ def _annotated_header_rows(source: str) -> set[int]:
             depth -= 1
         elif token.string == ":" and depth == 0:
             close = token.start[0]
-            if any(marker.search(line) for line in lines[start - 1 : close]):
+            if any(marker.search(said.get(n, "")) for n in range(start, close + 1)):
                 annotated.add(start)
             start = None
     return annotated

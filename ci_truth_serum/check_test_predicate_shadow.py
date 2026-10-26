@@ -60,7 +60,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_test_path,
     run_file_cli,
     tracked_shell_files,
+    refuse_unparseable,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "predicate-shadow-ok"
 
@@ -227,8 +229,11 @@ def find_shadowed(test_paths: list[str], predicates: dict[str, str]) -> list[Sha
         if text is None:
             continue
         lines = text.splitlines()
+        said = shell_comments(text)
         for name, lineno in function_definitions(text):
-            if name not in predicates or annotated_near(lines, lineno, OPT_OUT):
+            if name not in predicates or annotated_near(
+                lines, lineno, OPT_OUT, comments=said
+            ):
                 continue
             hits.append(Shadow(path, lineno, name, predicates[name]))
     return sorted(hits)
@@ -262,8 +267,10 @@ def main(argv: list[str]) -> int:
     test_paths, production = scan_targets(argv)
     if not test_paths:
         return 0  # nothing test-side in view can violate
-    predicates = production_predicates(production)
-    status = 0
+    refused = refuse_unparseable([*test_paths, *production])
+    predicates = production_predicates([p for p in production if p not in refused])
+    test_paths = [path for path in test_paths if path not in refused]
+    status = 1 if refused else 0
     for path, lineno, name, source in find_shadowed(test_paths, predicates):
         print(
             f"{path}:{lineno}: {name}() redefines the pure predicate shipped at "

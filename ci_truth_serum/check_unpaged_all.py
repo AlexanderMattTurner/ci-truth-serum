@@ -63,6 +63,7 @@ from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disabl
 from _cts_linecheck import annotated_near, is_python_source  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import run_file_cli, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import lines, name_of, trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import marker_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-unpaged-all"
 
@@ -305,10 +306,12 @@ def violations(text: str, path: str) -> list[int]:
         hits, physical = _py_violations(text), lines(text)
     else:
         return []
+    said = marker_comments(text, path)
     return sorted(
         lineno
         for lineno in set(hits)
-        if lineno <= len(physical) and not annotated_near(physical, lineno, OPT_OUT)
+        if lineno <= len(physical)
+        and not annotated_near(physical, lineno, OPT_OUT, comments=said)
     )
 
 

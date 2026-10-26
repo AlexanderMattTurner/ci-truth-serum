@@ -45,6 +45,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 )
 from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import parse_whole, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-sleep"
 
@@ -139,6 +140,7 @@ def violations(text: str) -> list[int]:
     """1-based lines of every unexempted sleep-before-assertion in one module."""
     tree = parse_whole(text)
     physical = py_lines(text)
+    said = py_comments(text)
     constants = _numeric_constants(tree)
     hits: dict[int, int] = {}
 
@@ -157,7 +159,7 @@ def violations(text: str) -> list[int]:
     return sorted(
         start
         for start, end in hits.items()
-        if not annotated_near(physical, start, OPT_OUT, span_end=end)
+        if not annotated_near(physical, start, OPT_OUT, span_end=end, comments=said)
     )
 
 

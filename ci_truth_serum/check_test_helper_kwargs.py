@@ -37,6 +37,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
 )
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 ALLOW = "allow-helper-kwargs"
 DEFAULT_HELPER_PACKAGES = ("tests",)
@@ -210,9 +211,9 @@ def _mismatches(call: CallSite, sig: Sig) -> list[str]:
     return problems
 
 
-def _suppressed(node: ast.Call, lines: list[str]) -> bool:
+def _suppressed(node: ast.Call, lines: list[str], said: dict[int, str]) -> bool:
     end = getattr(node, "end_lineno", None) or node.lineno
-    return annotated_near(lines, node.lineno, ALLOW, span_end=end)
+    return annotated_near(lines, node.lineno, ALLOW, span_end=end, comments=said)
 
 
 def _read_source(path: Path) -> tuple[str, ast.Module] | None:
@@ -271,6 +272,7 @@ def _calling_module_facts(path: Path) -> Facts | None:
 
     own = _top_level_defs(tree)
     lines = text.splitlines()
+    said = py_comments(text)
     imports: list[Alias] = []
     bound: set[str] = set()
     calls: list[CallSite] = []
@@ -280,7 +282,7 @@ def _calling_module_facts(path: Path) -> Facts | None:
             if isinstance(node.ctx, ast.Store):
                 bound.add(node.id)
         elif isinstance(node, ast.Call):
-            if not isinstance(node.func, ast.Name) or _suppressed(node, lines):
+            if not isinstance(node.func, ast.Name) or _suppressed(node, lines, said):
                 continue
             calls.append(
                 CallSite(

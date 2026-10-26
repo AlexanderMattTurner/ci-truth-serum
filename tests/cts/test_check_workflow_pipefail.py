@@ -195,7 +195,10 @@ def test_check_script_safe_when_pipefail_present():
     assert cwp._check_script("a | b", "bash", "loc") == []  # shell has pipefail
     assert cwp._check_script("set -o pipefail\na | b", "sh", "loc") == []  # command
     assert cwp._check_script("set -euo pipefail\na | b", "sh", "loc") == []  # bundle
-    assert cwp._check_script("a | b  # allow-no-pipefail: x", "sh", "loc") == []
+    assert (
+        cwp._check_script("a | b  # allow-no-pipefail: bounded input", "sh", "loc")
+        == []
+    )
 
 
 def test_check_script_comment_mention_of_pipefail_does_not_whitelist():

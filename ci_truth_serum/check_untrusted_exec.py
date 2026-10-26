@@ -75,6 +75,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _job_blocks,
     workflow_files as _workflow_files,
     yaml_script_view,
+    is_checkout_uses,
 )
 
 REPO_ROOT = Path.cwd()
@@ -111,7 +112,6 @@ _SECRET_REF = re.compile(r"secrets\.(?P<name>\w+)")
 # a read-scoped one in a job env is noise, not a finding.
 _DEFAULT_TOKEN = "GITHUB_TOKEN"
 
-_CHECKOUT_ACTION = re.compile(r"^actions/checkout(?:[@/]|$)")
 
 # Package managers whose subcommand runs a script body out of the workspace
 # manifest. `npx`/`pnpx`/`bunx` take a bin name directly (resolved from the
@@ -449,7 +449,7 @@ def job_checks_out_untrusted(cfg: dict) -> bool:
     for step in _steps(cfg):
         uses = step.get("uses")
         with_block = step.get("with")
-        if not isinstance(uses, str) or not _CHECKOUT_ACTION.match(uses.strip()):
+        if not is_checkout_uses(uses):
             continue
         if not isinstance(with_block, dict):
             continue
@@ -466,7 +466,7 @@ def _own_checkout(step: dict) -> tuple[str, str] | None:
     request's. A `path:` this lint cannot resolve makes the step unknown, so it
     declines rather than guesses."""
     uses = step.get("uses")
-    if not isinstance(uses, str) or not _CHECKOUT_ACTION.match(uses.strip()):
+    if not is_checkout_uses(uses):
         return None
     with_block = step.get("with") if isinstance(step.get("with"), dict) else {}
     repository = str(with_block.get("repository") or "")

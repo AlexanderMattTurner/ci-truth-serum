@@ -100,6 +100,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     yaml_comment_view,
     workflow_files,
     _job_blocks,
+    yaml_marker_comments,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -370,6 +371,7 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         return []
 
     lines = yaml_comment_view(text)
+    said = yaml_marker_comments(text)
     blocks = _job_blocks(text)
     violations: list[tuple[int, str]] = []
     for name, container in _containers(doc):
@@ -379,7 +381,7 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         key_line = blocks.get(name, (1, ""))[0]
         block_end = container_block_end(blocks, name, max(len(lines), 1))
         ends = step_span_ends(steps, block_end)
-        violations += _check_steps(steps, container, name, lines, ends, key_line)
+        violations += _check_steps(steps, container, name, lines, said, ends, key_line)
     return violations
 
 
@@ -388,6 +390,7 @@ def _check_steps(
     container: dict,
     name: str,
     lines: list[str],
+    said: dict[int, str],
     ends: dict[int, int],
     key_line: int,
 ) -> list[tuple[int, str]]:
@@ -415,7 +418,7 @@ def _check_steps(
         gate = next(((c, w) for c, w in gates if gated_on_failure(c)), None)
         if gate is None:
             continue
-        if annotated_near(lines, line, OPT_OUT, span_end=ends.get(line)):
+        if annotated_near(lines, line, OPT_OUT, span_end=ends.get(line), comments=said):
             continue
         found.append((line, MESSAGE.format(where=gate[1], what=work)))
     return found

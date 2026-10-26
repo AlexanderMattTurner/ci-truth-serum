@@ -86,7 +86,7 @@ def violations(text: str, comments: dict[int, str] | None = None) -> list[int]:
         body = comments.get(lineno)
         if body is None or not _MARKER_RE.search(body):
             continue
-        if annotated_near(physical, lineno, _ALLOW):
+        if annotated_near(physical, lineno, _ALLOW, comments=comments):
             continue
         hits.append(lineno)
     return hits

@@ -1000,7 +1000,7 @@ def test_a_job_annotation_does_not_suppress_the_workflow_level_arm(tmp_path):
 def test_an_annotation_in_a_quoted_group_does_not_suppress_the_workflow_arm(tmp_path):
     group = (
         "\"w-${{ github.event_name == 'push' && '' || github.run_id }} "
-        '# inert-group-ok: x"'
+        '# inert-group-ok: deliberate"'
     )
     body = _workflow_group(PUSH, group)
     assert "never serialized" in _only(pc.check_file(_write(tmp_path, body)))

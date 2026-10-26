@@ -197,7 +197,7 @@ def violations(
         # A whole `case … esac` on one line leaves no window open below it.
         if _CASE_END.search(line):
             in_case = False
-        if annotated_near(physical, lineno, OPT_OUT):
+        if annotated_near(physical, lineno, OPT_OUT, comments=comments):
             continue
         if _ANCHORED_COMMAND_LINE.search(line) or positional_test.search(line):
             hits.append(lineno)

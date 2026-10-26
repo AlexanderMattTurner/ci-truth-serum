@@ -589,3 +589,23 @@ def test_own_workflows_are_clean(monkeypatch):
     for path in tb.workflow_files():
         offenders += [f"{path.name}: {msg}" for _, msg in tb.check_file(path)]
     assert offenders == [], offenders
+
+
+def test_optout_text_a_step_prints_does_not_suppress(tmp_path):
+    """A `run:` script prints marker text, and that string is a value the
+    command handles. Only the script's own comment is a marker."""
+    body = (
+        "on:\n  pull_request:\n"
+        "permissions:\n  contents: write\n"
+        "jobs:\n  build:\n    runs-on: ubuntu-latest\n" + _HEAD_CHECKOUT
+    )
+    printed = body + (
+        '      - run: echo "to accept, annotate the workflow with '
+        '# trusted-base-ok: <reason>"\n'
+    )
+    commented = (
+        body + "      - run: |\n          true  # trusted-base-ok: base copy only\n"
+    )
+    assert len(tb.check_file(_write(tmp_path, printed, "p.yaml"))) == 1
+    # Non-vacuity: a real shell comment in the same position suppresses.
+    assert tb.check_file(_write(tmp_path, commented, "c.yaml")) == []

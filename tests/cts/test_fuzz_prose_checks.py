@@ -146,8 +146,8 @@ def test_doc_line_refs_violations_no_crash_and_shape(text: str) -> None:
 
 @given(_texts())
 def test_stray_markup_violations_no_crash_and_valid_lines(text: str) -> None:
-    hits = stray_markup.violations(text)
-    assert hits == stray_markup.violations(text)  # deterministic
+    hits = stray_markup.violations(text, "notes.md")
+    assert hits == stray_markup.violations(text, "notes.md")  # deterministic
     _assert_line_numbers_valid(hits, text.splitlines())
 
 

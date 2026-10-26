@@ -29,7 +29,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
@@ -37,7 +37,7 @@ from typing import NamedTuple
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _cts_fastyaml import SafeLoader, safe_load, scan  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_fastyaml import SafeLoader, compose, safe_load, scan  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # Lines whose first word only prints text — a command quoted inside them is an
 # example or hint, not executed code. Shared by the stderr- and download-pinning
@@ -124,30 +124,62 @@ _LINE_BOUNDARY = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 _TOKEN_EDGE = r"[\w-]"
 
 
+class AnnotationMatcher(NamedTuple):
+    """The comment-scoped matcher for one annotation TOKEN (see ``annotation_re``).
+
+    A compiled pattern alone cannot judge the REASON, because the placeholder
+    test normalizes it first (``is_placeholder_reason``). So ``search`` walks the
+    pattern's matches and returns the first one that states a reason. A caller
+    uses it exactly like a ``re.Pattern``: a truthy match, or None.
+    """
+
+    pattern: "re.Pattern[str]"
+    require_reason: bool
+
+    def search(self, text: str) -> "re.Match[str] | None":
+        """The first annotation in TEXT that satisfies this token's contract."""
+        for match in self.pattern.finditer(text):
+            if not self.require_reason or not is_placeholder_reason(
+                match.group("reason")
+            ):
+                return match
+        return None
+
+
 # Memoized: a check asks for its token's matcher once per line it judges, and
 # building the pattern string each time cost more than the search it served.
 @lru_cache(maxsize=None)
-def annotation_re(token: str, require_reason: bool = True) -> "re.Pattern[str]":
-    """The compiled matcher for an opt-out/annotation TOKEN on one line.
+def annotation_re(token: str, require_reason: bool = True) -> AnnotationMatcher:
+    """The matcher for an opt-out/annotation TOKEN on one line.
 
     Comment-scoped: the token must follow a comment introducer. With
-    REQUIRE_REASON (the default), the token must also carry `: <non-empty
-    reason>` ON THE SAME LINE — a bare marker states nothing and does not
-    suppress. Either way the token must stand ALONE: a longer slug that merely
-    contains it, at either end, is a DIFFERENT annotation and never satisfies
-    this one. Every hook that recognizes a per-line annotation builds its matcher
-    here; the meta-test in tests/cts/test_annotation_predicates.py bans the bare
+    REQUIRE_REASON (the default), the token must also carry `: <reason>` ON THE
+    SAME LINE, and that reason must state something: a bare marker, and a
+    placeholder such as the literal `<reason>` every error message prints, or
+    `n/a`, states nothing and does not suppress (``is_placeholder_reason``).
+    Either way the token must stand ALONE: a longer slug that merely contains
+    it, at either end, is a DIFFERENT annotation and never satisfies this one.
+    Every hook that recognizes a per-line annotation builds its matcher here;
+    the meta-test in tests/cts/test_annotation_predicates.py bans the bare
     `token in line` substring predicate this replaces."""
     same_line = f"[^{_LINE_BOUNDARY_CLASS}]"
     # With a reason required, the literal `:` already supplies the right edge (it
     # is not a `[\w-]` character); without one, a lookahead has to supply it.
-    tail = rf":{same_line}*?[^\s]" if require_reason else rf"(?!{_TOKEN_EDGE})"
+    tail = (
+        rf":(?P<reason>{same_line}*)"
+        if require_reason
+        else rf"(?!{_TOKEN_EDGE})(?P<reason>)"
+    )
     # The left edge, spelled as an alternation rather than a lookbehind, because
     # `<!--` and `//` END in characters a lookbehind would reject: the token may
     # either follow the comment introducer directly (`<!--allow-x:`) or follow
-    # same-line text whose last character is not part of a token.
-    lead = rf"(?:{same_line}*[^{_LINE_BOUNDARY_CLASS}\w-])?"
-    return re.compile(rf"{_COMMENT_INTRO}{lead}{re.escape(token)}{tail}")
+    # same-line text whose last character is not part of a token. Lazy, so the
+    # FIRST token on a line is tried first and its reason runs to the line's end.
+    lead = rf"(?:{same_line}*?[^{_LINE_BOUNDARY_CLASS}\w-])?"
+    return AnnotationMatcher(
+        re.compile(rf"{_COMMENT_INTRO}{lead}{re.escape(token)}{tail}"),
+        require_reason,
+    )
 
 
 def annotated(line: str, token: str, require_reason: bool = True) -> bool:
@@ -221,34 +253,30 @@ def annotated_near(
     lines: list[str],
     lineno: int,
     token: str,
+    *,
+    comments: "Mapping[int, str]",
     require_reason: bool = True,
     span_end: int | None = None,
-    comments: list[str] | None = None,
 ) -> bool:
     """True when TOKEN annotates the construct at 1-based LINENO (see
     ``annotation_window``, which owns the placement rule).
 
+    PROBLEM CLASS — an opt-out read from raw source lines. A `#` on a raw line
+    may sit inside a string a command prints, a heredoc body, a URL fragment or
+    a quoted YAML value, so `echo "to opt out, write # <token>: why"` on the line
+    above a finding cleared it. COMMENTS is therefore REQUIRED: there is no
+    raw-line fallback for a caller to reach.
+
     LINES shapes the window, because that is a question about the source as
     written: which lines are blank, and which carry only a comment.
 
-    COMMENTS, when given, is the text each of those lines SAYS. Pass
-    ``yaml_comment_view(text)`` for a workflow, so a `#` inside a quoted scalar
-    stays content and marks nothing. It must index the same way LINES does —
-    same length, same 1-based numbering — because the window's line numbers read
-    both. Omit it only for a language whose LINES are already comment-scoped.
-
-    A length mismatch raises. It would otherwise read a neighbouring line's
-    comment, and a marker found one line off still suppresses the finding.
+    COMMENTS maps each 1-based line to the comment text that line SAYS, as the
+    language's own grammar reports it — ``_cts_comments.comment_lines`` (or
+    ``shell_comments`` / ``py_comments`` for a text with no path), and
+    ``yaml_marker_comments`` for a workflow. A line it leaves out says nothing.
     """
-    if comments is not None and len(comments) != len(lines):
-        raise ValueError(
-            f"comments has {len(comments)} lines and lines has {len(lines)} — "
-            "the window's line numbers read both, so a shorter or longer list "
-            "reads the wrong line's comment and silently suppresses a finding"
-        )
-    said = lines if comments is None else comments
     return any(
-        annotated(said[n - 1], token, require_reason)
+        annotated(comments.get(n, ""), token, require_reason)
         for n in annotation_window(lines, lineno, span_end)
     )
 
@@ -448,45 +476,48 @@ def run_source_checks(
     """Drive a line-oriented lint over ARGV.
 
     For each readable path, FIND_VIOLATIONS(text, path) returns the 1-based line
-    numbers that violate. Each hit prints ``<path>:<lineno>: <message>`` to stderr; an
-    unreadable path (OSError / UnicodeDecodeError) is skipped. Returns 1 if any
-    path produced a hit, else 0.
-
-    This skip is a deliberate, narrow recovery action, not a silent-pass-on-bad-
-    input escape hatch: ARGV here is pre-commit's own file list, already filtered
-    to committed files of the right type (shell/python/Dockerfile) via ``identify``
-    before this ever runs, so a read failure means the path vanished (a rename/
-    delete race) or was mis-tagged as text (stray binary bytes) — not that this
-    lint is blessing bad shell/Python/Dockerfile content as clean. That's the
-    opposite of the YAML workflow lints (``check_workflow_pipefail`` &c.), whose
-    one argument *is* the exact artifact under test: an unparseable workflow
-    there is reported as a violation, since "no findings" would be a false-green
-    on the very file being verified.
-
-    A shell file the GRAMMAR cannot read gets that same treatment, and for the
-    same reason: `unparseable_shell_reason` says the detector never saw the
-    constructs it matches on, so its empty result is not a pass. Reporting it
-    here rather than raising keeps one unparsed line from failing a whole
-    pre-commit run with a traceback, while still refusing to call the file clean.
+    numbers that violate. Each hit prints ``<path>:<lineno>: <message>`` to
+    stderr. Returns 1 if any path produced a hit or a refusal, else 0.
+    ``run_message_checks`` owns the read loop and its reasoning.
     """
-    status = 0
-    for path in argv:
-        try:
-            with open(path, encoding="utf-8") as handle:
-                text = handle.read()
-        except (OSError, UnicodeDecodeError):
-            continue
-        reason = unparseable_shell_reason(path, text) or unparseable_python_reason(
-            path, text
+    return run_message_checks(
+        argv,
+        lambda text, path: [(n, message) for n in find_violations(text, path)],
+    )
+
+
+def _refusals() -> tuple[type[BaseException], ...]:
+    """The errors that say a file could not be READ, so its result is no pass.
+
+    Two kinds, and both mean the detector never saw the constructs it matches
+    on:
+
+      * ``yaml.YAMLError`` — a workflow PyYAML cannot compose, so no `run:`
+        script in it was checked;
+      * ``_cts_bash_ast.PathologicalInputError`` — a shell input the grammar
+        refuses to parse, because parsing it could exhaust memory.
+
+    The bash module is looked up, never imported: a check that never loaded it
+    cannot have raised its error, and an import here would put
+    `tree_sitter_bash` in every check's environment. Python evaluates an
+    `except` clause's expression only when an error reaches it, so the lookup
+    sees the module the detector loaded.
+    """
+    bash = sys.modules.get("_cts_bash_ast")
+    if bash is None:
+        return (yaml.YAMLError,)
+    return (yaml.YAMLError, bash.PathologicalInputError)
+
+
+def _refusal_message(err: BaseException) -> str:
+    """The line a refusal prints for ERR (see ``_refusals``)."""
+    if isinstance(err, yaml.YAMLError):
+        first = str(err).partition("\n")[0]
+        return (
+            f"could not read this file as YAML ({first}), so no `run:` script "
+            "in it was checked. Fix the YAML syntax and run the check again."
         )
-        if reason is not None:
-            print(f"{path}: {reason}", file=sys.stderr)
-            status = 1
-            continue
-        for lineno in find_violations(text, path):
-            print(f"{path}:{lineno}: {message}", file=sys.stderr)
-            status = 1
-    return status
+    return str(err)
 
 
 def run_message_checks(
@@ -495,22 +526,66 @@ def run_message_checks(
 ) -> int:
     """Drive a lint that gives each hit its OWN message over ARGV.
 
-    The sibling of `run_source_checks`, for a lint that reports more than one
-    kind of defect. FIND_VIOLATIONS(text, path) returns (1-based line, message)
-    pairs. Each one prints ``<path>:<lineno>: <message>``. Everything else —
-    which read failures are skipped and why, and the refusal an unparseable
-    file earns — follows `run_source_checks`, whose docstring carries the
-    reasoning.
+    PROBLEM CLASS — a hand-written read loop per check. Each one re-decided
+    which read failures to skip, and most of them forgot the refusal an
+    unreadable file earns, so a file the grammar could not parse reported as
+    clean. This is the one loop; ``run_source_checks`` and ``run_line_checks``
+    are its single-message forms.
+
+    FIND_VIOLATIONS(text, path) returns (1-based line, message) pairs. Each one
+    prints ``<path>:<lineno>: <message>``. Returns 1 if any path produced a hit
+    or a refusal, else 0.
+
+    An unreadable path (OSError / UnicodeDecodeError) is skipped. That is a
+    deliberate, narrow recovery action: ARGV is pre-commit's own file list,
+    already filtered to committed files of the right type, so a read failure
+    means the path vanished (a rename/delete race) or was mis-tagged as text.
+
+    A file that WAS read but could not be PARSED is the opposite case, and it
+    is refused rather than skipped: `unparseable_shell_reason`,
+    `unparseable_python_reason` and ``_refusals`` each say the detector never
+    saw the constructs it matches on, so its empty result is not a pass. A
+    refusal names the path and exits 1, and every other path is still checked.
 
     A caller with several messages must use THIS, not one `run_source_checks`
-    pass per message. A pass per message reads each file again, prints an
-    unparseable-file refusal once per pass, groups the hits by message instead
-    of by line, and — the reason this exists — reports nothing at all for a
-    defect kind the caller forgot to give a pass. Here every hit carries its
-    message already, so a new kind is reported by construction.
+    pass per message: a pass per message reports nothing at all for a defect
+    kind the caller forgot to give a pass.
     """
     status = 0
     for path in argv:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            reason = unparseable_shell_reason(path, text) or unparseable_python_reason(
+                path, text
+            )
+            found = [] if reason is not None else find_violations(text, path)
+        except _refusals() as err:
+            reason = _refusal_message(err)
+        if reason is not None:
+            print(f"{path}: {reason}", file=sys.stderr)
+            status = 1
+            continue
+        for lineno, message in found:
+            print(f"{path}:{lineno}: {message}", file=sys.stderr)
+            status = 1
+    return status
+
+
+def refuse_unparseable(paths: Iterable[str]) -> set[str]:
+    """The PATHS a cross-file lint must not read, each refusal printed.
+
+    ``run_message_checks`` refuses an unparseable file per path. A lint that
+    reads several files to reach ONE verdict (a definition here, a reference
+    there) cannot use that loop, so it asks this first and leaves the refused
+    paths out: a file the grammar could not read contributes no definitions
+    and no references, and the verdict built without it is not a pass.
+    """
+    refused: set[str] = set()
+    for path in paths:
         try:
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
@@ -521,12 +596,49 @@ def run_message_checks(
         )
         if reason is not None:
             print(f"{path}: {reason}", file=sys.stderr)
-            status = 1
-            continue
-        for lineno, message in find_violations(text, path):
-            print(f"{path}:{lineno}: {message}", file=sys.stderr)
-            status = 1
-    return status
+            refused.add(path)
+    return refused
+
+
+def is_workflow_path(path: str) -> bool:
+    """True when PATH names a workflow or a composite action under `.github/`.
+
+    PROBLEM CLASS — which YAML files hold `run:` scripts GitHub executes. Seven
+    modules held their own copy of this pattern; one definition, so a shell
+    check and the tier runner agree on which files they read.
+    """
+    return bool(_WORKFLOW_PATH.search(path.replace("\\", "/")))
+
+
+_WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
+
+
+def per_run_script(
+    find_violations: Callable[[str, str], list[tuple[int, str]]],
+) -> Callable[[str, str], list[tuple[int, str]]]:
+    """Adapt a SHELL detector so it also reads a workflow's bash `run:` scripts.
+
+    A workflow PATH is read as its bash scripts (``bash_run_scripts``), and each
+    hit is reported at the line of the step that holds the script, once per
+    message. Any other YAML file holds no shell, so it yields nothing. Every
+    other path goes to FIND_VIOLATIONS whole. A workflow that will not compose
+    raises ``yaml.YAMLError``, which the drivers above report as a refusal.
+    """
+
+    def detect(text: str, path: str) -> list[tuple[int, str]]:
+        if is_workflow_path(path):
+            return sorted(
+                {
+                    (scalar.line, message)
+                    for scalar in bash_run_scripts(text)
+                    for _line, message in find_violations(scalar.value, path)
+                }
+            )
+        if is_yaml_source(path):
+            return []
+        return find_violations(text, path)
+
+    return detect
 
 
 # A path that names a test file: a tests/ (or __tests__/, specs/) directory
@@ -554,6 +666,20 @@ _SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
 _SHELL_SHEBANG = re.compile(r"^#!.*\b(?:bash|sh)\b")
 _PYTHON_SUFFIX = re.compile(r"\.pyi?$")
 _YAML_SUFFIX = re.compile(r"\.ya?ml$")
+
+
+# Markdown and reStructuredText: a document whose every line is narration.
+_PROSE_SUFFIX = re.compile(r"\.(?:md|markdown|mdx|rst)$", re.IGNORECASE)
+
+
+def is_prose_path(path: str) -> bool:
+    """True when PATH names a prose document (Markdown or reStructuredText).
+
+    PROBLEM CLASS — two lints kept their own list of prose suffixes, and the
+    lists disagreed on `.mdx`. One definition, so a document is prose to every
+    lint or to none.
+    """
+    return bool(_PROSE_SUFFIX.search(path))
 
 
 def is_yaml_source(path: str) -> bool:
@@ -726,6 +852,27 @@ def notifier_matcher(extra_patterns: Iterable[str] = ()) -> "re.Pattern[str]":
     )
 
 
+# `actions/checkout`, pinned (`@<sha>`), on a branch, or a sub-path of it. A
+# local action whose path merely CONTAINS the name (`./.github/actions/
+# checkout-cache`) is another action.
+_CHECKOUT_ACTION = re.compile(r"^actions/checkout(?:[@/]|$)")
+
+
+def is_checkout_uses(uses: object) -> bool:
+    """True when a step's `uses:` value USES names `actions/checkout`.
+
+    PROBLEM CLASS — five checks asked "is this step the checkout action" five
+    ways, and one substring test also matched `./.github/actions/checkout-cache`.
+    One definition, so every check agrees on which step fetched the code.
+    """
+    return isinstance(uses, str) and bool(_CHECKOUT_ACTION.match(uses.strip()))
+
+
+def is_checkout_step(step: object) -> bool:
+    """True when STEP, a parsed workflow step, runs `actions/checkout`."""
+    return isinstance(step, dict) and is_checkout_uses(step.get("uses"))
+
+
 def step_text(step: dict) -> str:
     """The fields of a workflow step that can name a notification sink."""
     return " ".join(str(step.get(key, "")) for key in ("uses", "name", "run"))
@@ -819,8 +966,19 @@ MARKER_PLACEHOLDERS = frozenset(
 )
 
 
+# A template SLOT copied out of a message: `<reason>`, `<why>`, `<what actually
+# happens>`. Every error in this pack prints its opt-out with such a slot, so an
+# author who pastes the message verbatim — or a script that echoes it — writes a
+# marker that names no reason at all. Trailing non-word characters are allowed,
+# because the slot is usually followed by a comment closer or a quote.
+_TEMPLATE_SLOT = re.compile(r"\s*<[^<>]*>[\W_]*")
+
+
 def is_placeholder_reason(reason: str) -> bool:
-    """True when REASON is a negative placeholder rather than a stated reason."""
+    """True when REASON is a negative placeholder or a template slot rather
+    than a stated reason."""
+    if _TEMPLATE_SLOT.fullmatch(reason):
+        return True
     normalized = re.sub(r"[^a-z0-9]+", " ", reason.lower()).strip()
     return normalized in MARKER_PLACEHOLDERS
 
@@ -2489,52 +2647,118 @@ _SCRIPT_KEY = "run"
 
 
 class RunScalar(NamedTuple):
-    """One `run:` value: where it sits in the file, and how it is written."""
+    """One `run:` value: where it sits, how it is written, and what runs it."""
 
     start: int
     end: int
     style: str | None
+    # The 1-based line of the mapping that holds the `run:` key — the step.
+    line: int
+    # The script as YAML decodes it, which is what GitHub writes to disk.
+    value: str
+    # The `shell:` that applies, at whichever scope sets it, or GitHub's
+    # runner default `bash` when none does.
+    shell: str
+
+    @property
+    def is_bash(self) -> bool:
+        """True when the bash grammar reads this script as its own language.
+
+        A `pwsh`, `python` or `cmd` step is another language, and a `${{ }}`
+        shell hides which one, so neither is bash. A check that reads such a
+        script as bash invents findings, and one that reads a `#` in it as a
+        marker suppresses them.
+        """
+        return shell_program(self.shell) in READABLE_SHELLS
+
+
+def _scalar_value(node: object) -> str | None:
+    return node.value if isinstance(node, yaml.ScalarNode) else None
+
+
+def _mapping_get(node: yaml.MappingNode, key: str) -> object:
+    return next((v for k, v in node.value if _scalar_value(k) == key), None)
+
+
+def _defaults_shell(node: yaml.MappingNode) -> str | None:
+    """The `defaults.run.shell` NODE sets, or None."""
+    defaults = _mapping_get(node, "defaults")
+    run = (
+        _mapping_get(defaults, "run")
+        if isinstance(defaults, yaml.MappingNode)
+        else None
+    )
+    return (
+        _scalar_value(_mapping_get(run, "shell"))
+        if isinstance(run, yaml.MappingNode)
+        else None
+    )
 
 
 def yaml_run_scalars(text: str) -> list[RunScalar]:
     """Every `run:` VALUE in TEXT, in the order it is written.
 
+    PROBLEM CLASS — two answers to "which scripts does this workflow hand to
+    bash". Each shell check that read workflows held its own walk over
+    `jobs.*.steps`, swallowed a YAML error into "no scripts", and read every
+    `run:` as bash whatever `shell:` said. This is the one walk.
+
     The question is which scalar GitHub hands to a shell, and the KEY answers
-    it. Scalar STYLE does not: it was the first spelling of this function and it
-    was wrong both ways. `run: 'git diff  # <token>: why'` is a script written
-    as a quoted scalar, and a style test lost the marker in it; `description: |`
-    and `if: >` are prose and an expression written as block scalars, and a
-    style test read a marker out of both. A `defaults.run:` holds a MAPPING, so
-    it has no scalar value and needs no special case.
+    it. Scalar STYLE does not: `run: 'git diff  # <token>: why'` is a script
+    written as a quoted scalar, and `description: |` is prose written as a
+    block scalar. A `defaults.run:` holds a MAPPING, so it has no scalar value
+    and needs no special case. The shell resolves as GitHub resolves it: the
+    step's own `shell:`, then the nearest enclosing `defaults.run.shell`.
 
     A span covers the whole value TOKEN, so it holds the YAML that writes the
     scalar as well as the script: a block scalar opens at the `|` or `>`
-    indicator, and a quoted scalar carries its quotes. A caller that slices TEXT
-    therefore keeps the file's own line and column numbering, and
-    ``yaml_run_script`` hands it the same span with that YAML blanked out.
+    indicator, and a quoted scalar carries its quotes. ``yaml_run_script``
+    hands a caller the same span with that YAML blanked out.
 
-    Returns nothing for a text PyYAML cannot tokenize, which keeps
-    ``yaml_script_view`` erring closed on one.
+    Takes a whole file or one indented block. Raises ``yaml.YAMLError`` on a
+    text PyYAML cannot compose; each caller picks the safe direction for what
+    it reads.
     """
     found: list[RunScalar] = []
-    key: str | None = None
-    expecting_key = False
-    try:
-        tokens = list(scan(text))
-    except yaml.YAMLError:
-        return []
-    for token in tokens:
-        if isinstance(token, yaml.tokens.KeyToken):
-            expecting_key = True
-        elif isinstance(token, yaml.tokens.ScalarToken):
-            if expecting_key:
-                key = token.value
-            elif key == _SCRIPT_KEY:
-                found.append(
-                    RunScalar(token.start_mark.index, token.end_mark.index, token.style)
+    seen: set[int] = set()
+
+    def walk(node: object, shell: str) -> None:
+        if id(node) in seen:
+            return
+        seen.add(id(node))
+        if isinstance(node, yaml.SequenceNode):
+            for item in node.value:
+                walk(item, shell)
+            return
+        if not isinstance(node, yaml.MappingNode):
+            return
+        shell = _defaults_shell(node) or shell
+        run = _mapping_get(node, _SCRIPT_KEY)
+        if isinstance(run, yaml.ScalarNode):
+            found.append(
+                RunScalar(
+                    run.start_mark.index,
+                    run.end_mark.index,
+                    run.style,
+                    node.start_mark.line + 1,
+                    run.value,
+                    _scalar_value(_mapping_get(node, "shell")) or shell,
                 )
-            expecting_key = False
-    return found
+            )
+        for _key, value in node.value:
+            walk(value, shell)
+
+    walk(compose(text), "bash")
+    return sorted(found, key=lambda scalar: scalar.start)
+
+
+def bash_run_scripts(text: str) -> list[RunScalar]:
+    """The `run:` values in TEXT that GitHub hands to bash (``RunScalar.is_bash``).
+
+    Raises ``yaml.YAMLError`` like ``yaml_run_scalars``. A shell check over a
+    workflow reports that as a refusal: a file it could not read is not clean.
+    """
+    return [scalar for scalar in yaml_run_scalars(text) if scalar.is_bash]
 
 
 def yaml_run_script(text: str, scalar: RunScalar) -> str:
@@ -2563,15 +2787,32 @@ def yaml_run_script(text: str, scalar: RunScalar) -> str:
 def yaml_script_view(text: str) -> list[str]:
     """TEXT's lines holding every place a workflow may carry an opt-out marker.
 
+    See ``_yaml_script_text``, which builds the view before it is split.
+    """
+    return _yaml_script_text(text).splitlines()
+
+
+def _yaml_script_text(text: str) -> str:
+    """``yaml_script_view``'s result before it is split into lines.
+
     Two places, because a workflow holds two languages:
 
       * a real YAML comment, which ``yaml_comment_view`` finds. A `#` inside any
         other value is content the workflow's author writes, so it is blanked;
-      * a `run:` value, whatever style it is written in. GitHub hands that value
-        to a shell, where a `#` opens the script's own comment, and an author
-        writes the marker there beside the line it is about.
+      * a real SHELL comment inside a `run:` value that GitHub hands to bash.
+        The bash grammar decides where each comment starts and ends, so an
+        author writes the marker beside the line it is about.
 
-    Column offsets and line numbers survive, like ``yaml_comment_view``'s.
+    Only the comment bytes come back from a `run:` value, never its code. A
+    script prints and greps marker text all day — `echo "annotate with #
+    <token>: <reason>"` — and that string is a value a command handles. Reading
+    it as a marker let the advice a step prints switch the check off. A step
+    whose `shell:` is not bash gives back nothing: the bash grammar cannot say
+    where its comments are.
+
+    Column offsets and line numbers survive, like ``yaml_comment_view``'s. Errs
+    CLOSED like it too: a text PyYAML cannot compose keeps its YAML comments
+    and loses every script comment, so a suppression is lost, never invented.
 
     This view says which SURFACES may carry a marker. It says nothing about
     which findings that marker clears — that scope is each check's own contract,
@@ -2579,10 +2820,34 @@ def yaml_script_view(text: str) -> list[str]:
     for the comment view to narrow a scope: a real YAML comment at the top of a
     file is exactly as wide as a script comment in it.
     """
+    # Imported here for the reason `unparseable_shell_reason` gives: most
+    # checks that load this module never read a workflow script.
+    from _cts_bash_ast import comment_spans  # pylint: disable=import-outside-toplevel
+
     out = list(yaml_comment_text(text))
-    for scalar in yaml_run_scalars(text):
-        out[scalar.start : scalar.end] = text[scalar.start : scalar.end]
-    return "".join(out).splitlines()
+    try:
+        scripts = bash_run_scripts(text)
+    except yaml.YAMLError:
+        scripts = []
+    for scalar in scripts:
+        script = yaml_run_script(text, scalar)
+        for start, end in comment_spans(script):
+            out[scalar.start + start : scalar.start + end] = script[start:end]
+    return "".join(out)
+
+
+def yaml_marker_comments(text: str) -> dict[int, str]:
+    """1-based line -> the marker surface on that line of a workflow TEXT.
+
+    ``yaml_script_view`` as the mapping ``annotated_near`` reads, numbered by
+    `\\n` as a parser numbers lines. A blank line carries nothing, so it is
+    left out.
+    """
+    return {
+        n: line
+        for n, line in enumerate(_yaml_script_text(text).split("\n"), 1)
+        if line.strip()
+    }
 
 
 def default_run_shell(*scopes: object) -> str | None:

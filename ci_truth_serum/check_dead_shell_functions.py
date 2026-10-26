@@ -54,6 +54,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_shell_source,
     is_test_path,
     run_file_cli,
+    refuse_unparseable,
 )
 
 # Names that are entrypoints or dynamically dispatched by the shell itself, so
@@ -240,9 +241,11 @@ def main(argv: list[str]) -> int:
         )
         return 2
     repo_root = Path(args.repo_root) if args.repo_root else Path(_default_repo_root())
-    dead = find_dead(args.files, repo_root, frozenset(args.always_live))
+    refused = refuse_unparseable(args.files)
+    readable = [path for path in args.files if path not in refused]
+    dead = find_dead(readable, repo_root, frozenset(args.always_live))
     if not dead:
-        return 0
+        return 1 if refused else 0
     for rel, name, lineno in dead:
         print(
             f"{rel}:{lineno}: `{name}` is referenced only from its own "

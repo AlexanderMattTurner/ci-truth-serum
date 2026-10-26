@@ -53,7 +53,6 @@ from tree_sitter import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
-    PathologicalInputError,
     iter_nodes,
     node_text,
     parse,
@@ -66,6 +65,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-soft-timeout"
 
@@ -221,6 +221,7 @@ def violations(text: str, root: Node | None = None) -> list[int]:
     """
     root = parse(text) if root is None else root
     lines = text.split("\n")
+    said = shell_comments(text)
     hits = set()
     for command in iter_nodes(root, "command"):
         names = [node_text(word) for word in _word_nodes(command)]
@@ -233,22 +234,14 @@ def violations(text: str, root: Node | None = None) -> list[int]:
         hits.update(word.start_point[0] + 1 for word in _soft_bounds(command, True))
     for array in iter_nodes(root, "array"):
         hits.update(word.start_point[0] + 1 for word in _soft_bounds(array, False))
-    return sorted(line for line in hits if not annotated_near(lines, line, OPT_OUT))
+    return sorted(
+        line for line in hits if not annotated_near(lines, line, OPT_OUT, comments=said)
+    )
 
 
 def main(argv: list[str]) -> int:
-    """Run the detector over ARGV through the shared read/report loop, one path at
-    a time so a file the grammar refuses to parse safely fails LOUDLY (naming the
-    path, exit 1) instead of being silently skipped, while every remaining path is
-    still checked."""
-    status = 0
-    for path in argv:
-        try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    """Run the detector over ARGV, refusing by name a file it cannot read."""
+    return run_line_checks(argv, violations, MESSAGE)
 
 
 if __name__ == "__main__":

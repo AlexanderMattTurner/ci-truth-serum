@@ -121,6 +121,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     valid_twin_names,
     workflow_files,
     yaml_comment_view,
+    yaml_marker_comments,
 )
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
@@ -337,7 +338,11 @@ def _workflow_misfire_violations(
     lines = text.splitlines()
     window = _top_level_block(lines, line)
     if annotated_near(
-        lines, line, INERT_OPT_OUT, span_end=window.stop, comments=comment_lines
+        lines,
+        line,
+        INERT_OPT_OUT,
+        span_end=window.stop,
+        comments=yaml_marker_comments(text),
     ):
         return []
     message = _MISFIRE_MESSAGE.format(

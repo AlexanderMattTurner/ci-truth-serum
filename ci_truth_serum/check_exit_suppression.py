@@ -87,7 +87,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
-    PathologicalInputError,
     command_name,
     command_words,
     iter_nodes,
@@ -100,6 +99,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-exit-suppress"
 
@@ -561,6 +561,7 @@ def violations(text: str, producer_only: bool = False) -> list[int]:
     suppression, or the line directly above it). See `_suppression_spans` for
     PRODUCER_ONLY."""
     raw = text.splitlines()
+    said = shell_comments(text)
     # One finding per line, carrying the WIDEST span that starts there: two
     # suppressions can begin on the same row (`a || true; b || true`), a line
     # reported twice would be a duplicate finding, and the wider span gives the
@@ -570,17 +571,14 @@ def violations(text: str, producer_only: bool = False) -> list[int]:
         widest[start] = max(widest.get(start, end), end)
     hits = []
     for start, end in sorted(widest.items()):
-        if annotated_near(raw, start, OPT_OUT, span_end=end):
+        if annotated_near(raw, start, OPT_OUT, span_end=end, comments=said):
             continue
         hits.append(start)
     return hits
 
 
 def main(argv: list[str]) -> int:
-    """Run the detector over ARGV through the shared read/report loop, one path at a
-    time so a file the grammar refuses to parse safely fails LOUDLY (naming the
-    path, exit 1 — the same posture as check_untrusted_exec) instead of being
-    silently skipped, while every remaining path is still checked.
+    """Run the detector over ARGV, refusing by name a file it cannot read.
 
     `--producer-only` restricts the run to the captured-producer class (see
     `violations`) — for a consumer that wants that rule alone over a tree wider
@@ -588,19 +586,7 @@ def main(argv: list[str]) -> int:
     uncaptured rule's findings there too."""
     producer_only = "--producer-only" in argv
     paths = [a for a in argv if a != "--producer-only"]
-    status = 0
-    for path in paths:
-        try:
-            status = max(
-                status,
-                run_line_checks(
-                    [path], lambda text: violations(text, producer_only), MESSAGE
-                ),
-            )
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    return run_line_checks(paths, lambda text: violations(text, producer_only), MESSAGE)
 
 
 if __name__ == "__main__":

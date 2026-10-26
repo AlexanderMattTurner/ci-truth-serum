@@ -32,7 +32,6 @@ from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_words,
     iter_nodes,
     node_text,
@@ -45,6 +44,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_message_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "bash32-portability-ok"
 BSD = "bsd"
@@ -429,11 +429,14 @@ def violations(text: str, rules: Sequence[str] = RULE_SETS) -> list[tuple[int, s
     if BASH32 in rules and not checks_bash_version(root):
         hits += _bash4_hits(root)
     lines = text.split("\n")
+    said = shell_comments(text)
     return sorted(
         {
             (hit.line, hit.message)
             for hit in hits
-            if not annotated_near(lines, hit.line, OPT_OUT, span_end=hit.end_line)
+            if not annotated_near(
+                lines, hit.line, OPT_OUT, span_end=hit.end_line, comments=said
+            )
         }
     )
 
@@ -458,17 +461,7 @@ def main(argv: list[str]) -> int:
         )
         return 2
     rules = (args.only,) if args.only else RULE_SETS
-    status = 0
-    for path in args.files:
-        try:
-            status = max(
-                status,
-                run_message_checks([path], lambda text, _path: violations(text, rules)),
-            )
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    return run_message_checks(args.files, lambda text, _path: violations(text, rules))
 
 
 if __name__ == "__main__":

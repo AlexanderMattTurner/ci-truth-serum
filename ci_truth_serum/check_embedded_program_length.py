@@ -26,13 +26,11 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 
-import yaml
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
-    PathologicalInputError,
     command_name,
     command_words,
     iter_nodes,
@@ -43,15 +41,16 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 )
 from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     shell_comments,
-    yaml_comments,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
-    run_line_checks,
     yaml_run_scalars,
     yaml_run_script,
-    yaml_scannable,
+    is_workflow_path,
+    run_source_checks,
+    is_yaml_source,
+    yaml_marker_comments,
 )
 from check_inline_run_length import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _check_script as _inline_run_report,
@@ -99,8 +98,6 @@ WRAPPER_VALUE_OPTIONS = {
 _ENV_BINDING = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
 # The paths whose YAML holds `run:` values that GitHub hands to a shell.
-_WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
-
 # How deep to read a generated shell script inside a heredoc body.
 _MAX_SHELL_DEPTH = 1
 
@@ -111,10 +108,6 @@ class Limits(NamedTuple):
     lines: int = DEFAULT_MAX_LINES
     chars: int = DEFAULT_MAX_CHARS
     wrappers: frozenset[str] = TRANSPARENT_PREFIXES
-
-
-class UnscannableWorkflowError(ValueError):
-    """The YAML scanner cannot read a workflow, so its `run:` values are unknown."""
 
 
 def significant_lines(program: str) -> int:
@@ -275,11 +268,6 @@ def _sites(script: str, limits: Limits, depth: int) -> Iterator[tuple[int, int]]
             yield span
 
 
-def _comment_view(comments: dict[int, str], count: int) -> list[str]:
-    """COMMENTS as one entry per line of a COUNT-line text, blank where none."""
-    return [comments.get(line, "") for line in range(1, count + 1)]
-
-
 def _violations(text: str, limits: Limits, depth: int) -> list[int]:
     """1-based lines of TEXT that run a long program with no opt-out.
 
@@ -287,7 +275,7 @@ def _violations(text: str, limits: Limits, depth: int) -> list[int]:
     quotes the marker in its own text cannot exempt itself.
     """
     lines = text.split("\n")
-    view = _comment_view(shell_comments(text), len(lines))
+    view = shell_comments(text)
     return sorted(
         start
         for start, end in _sites(text, limits, depth)
@@ -307,17 +295,11 @@ def workflow_violations(text: str, limits: Limits = Limits()) -> list[int]:
     value that `check-inline-run-length` reports is skipped: extracting it to a
     shell file moves its programs under this check.
     """
-    if not yaml_scannable(text):
-        raise UnscannableWorkflowError(
-            "the YAML scanner cannot read this workflow, so no `run:` value "
-            "was checked. Fix the YAML syntax and run the check again."
-        )
     lines = text.split("\n")
-    view = _comment_view(yaml_comments(text), len(lines))
+    view = yaml_marker_comments(text)
     hits: list[int] = []
     for scalar in yaml_run_scalars(text):
-        value = yaml.compose(text[scalar.start : scalar.end])
-        if isinstance(value, yaml.ScalarNode) and _inline_run_report(value.value, ""):
+        if _inline_run_report(scalar.value, ""):
             continue
         offset = text.count("\n", 0, scalar.start)
         for start, end in _sites(yaml_run_script(text, scalar), limits, 0):
@@ -327,18 +309,8 @@ def workflow_violations(text: str, limits: Limits = Limits()) -> list[int]:
     return sorted(hits)
 
 
-def _detector(path: str, limits: Limits):
-    """The detector for PATH, or None when PATH is YAML that holds no `run:`."""
-    normal = path.replace("\\", "/")
-    if _WORKFLOW_PATH.search(normal):
-        return lambda text: workflow_violations(text, limits)
-    if normal.endswith((".yaml", ".yml")):
-        return None
-    return lambda text: violations(text, limits)
-
-
 def main(argv: list[str]) -> int:
-    """Check each path in ARGV. A file the grammar or the YAML scanner cannot
+    """Check each path in ARGV. A file the grammar or the YAML parser cannot
     read fails loudly with its path, and the other paths are still checked."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("--max-lines", type=int, default=DEFAULT_MAX_LINES)
@@ -362,17 +334,15 @@ def main(argv: list[str]) -> int:
         "unchecked. Move it to its own file and run that file. Or annotate "
         f"`# {OPT_OUT}: <reason>`."
     )
-    status = 0
-    for path in args.files:
-        detector = _detector(path, limits)
-        if detector is None:
-            continue
-        try:
-            status = max(status, run_line_checks([path], detector, message))
-        except (PathologicalInputError, UnscannableWorkflowError) as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+
+    def find(text: str, path: str) -> list[int]:
+        if is_workflow_path(path):
+            return workflow_violations(text, limits)
+        if is_yaml_source(path):
+            return []  # YAML that holds no `run:` GitHub executes
+        return violations(text, limits)
+
+    return run_source_checks(args.files, find, message)
 
 
 if __name__ == "__main__":

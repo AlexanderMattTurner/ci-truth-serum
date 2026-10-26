@@ -51,7 +51,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_name,
     command_words,
     iter_nodes,
@@ -62,6 +61,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-bare-return"
 
@@ -145,6 +145,7 @@ def violations(text: str) -> list[int]:
     """1-based line numbers of `&&`/`||` guards whose bare `return`/`exit` forwards
     a constant status (and that carry no opt-out annotation)."""
     physical = text.splitlines()
+    said = shell_comments(text)
     hits: list[int] = []
     for list_node in iter_nodes(parse(text), "list"):
         left, right = _operands(list_node)
@@ -160,7 +161,11 @@ def violations(text: str) -> list[int]:
         # annotation window has to cover the whole construct — otherwise the
         # opt-out cannot be written on the line the `return` is on.
         if annotated_near(
-            physical, lineno, OPT_OUT, span_end=list_node.end_point[0] + 1
+            physical,
+            lineno,
+            OPT_OUT,
+            span_end=list_node.end_point[0] + 1,
+            comments=said,
         ):
             continue
         hits.append(lineno)
@@ -168,18 +173,8 @@ def violations(text: str) -> list[int]:
 
 
 def main(argv: list[str]) -> int:
-    """Run the detector over ARGV through the shared read/report loop, one path at
-    a time so a file the grammar refuses to parse safely fails LOUDLY (naming the
-    path, exit 1) instead of being silently skipped, while every remaining path is
-    still checked."""
-    status = 0
-    for path in argv:
-        try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    """Run the detector over ARGV, refusing by name a file it cannot read."""
+    return run_line_checks(argv, violations, MESSAGE)
 
 
 if __name__ == "__main__":

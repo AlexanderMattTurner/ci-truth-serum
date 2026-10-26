@@ -48,15 +48,11 @@ Invoked by pre-commit with the staged shell files as arguments; a
 block scanned instead (reported at the step's line).
 """
 
-import re
 import sys
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     in_condition,
     iter_nodes,
     node_text,
@@ -64,10 +60,13 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     redirect_parts,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    LineLoader,
     annotated,
     run_file_cli,
+    run_message_checks,
+    per_run_script,
+    annotated_near,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "stderr-merge-ok"
 
@@ -86,8 +85,6 @@ _COMPARE_OPS = frozenset(
 )
 # How far after the capture a use still refers to the merged value in practice.
 _WINDOW = 10
-
-_WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 
 MESSAGE_INLINE = (
     "`2>&1` merges stderr into a stream that is then piped into a parser — any "
@@ -441,17 +438,21 @@ def _governing_assignment(assignments: list, read):
     return governing
 
 
-def _opted_out(physical: list[str], rows: tuple[int, int]) -> bool:
-    """Opt-out marker on any physical line of the flagged statement (ROWS,
-    0-based and inclusive) or on the line directly above it."""
+def _opted_out(
+    physical: list[str], said: dict[int, str], rows: tuple[int, int]
+) -> bool:
+    """Opt-out marker on the flagged statement (ROWS, 0-based and inclusive),
+    placed where ``annotation_window`` allows."""
     first, last = rows
-    window = range(max(first - 1, 0), min(last + 1, len(physical)))
-    return any(annotated(physical[row], OPT_OUT) for row in window)
+    return annotated_near(
+        physical, first + 1, OPT_OUT, span_end=last + 1, comments=said
+    )
 
 
 def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for every merged-then-parsed capture in TEXT."""
     physical = text.splitlines()
+    said = shell_comments(text)
     root = parse(text)
 
     # Rule (a): the substitution's own value is merged and then parsed.
@@ -465,7 +466,7 @@ def violations(text: str) -> list[tuple[int, str]]:
         # One finding per line: two such substitutions can open on the same row,
         # and reporting the row twice is a duplicate, not a second defect.
         inline[row] = inline.get(row, False) or not _opted_out(
-            physical, _statement_rows(subst)
+            physical, said, _statement_rows(subst)
         )
 
     # Rule (b): a merged capture whose value is later read as data. Each variable
@@ -498,8 +499,8 @@ def violations(text: str) -> list[tuple[int, str]]:
         assigned_at = governing.start_point[0]
         if row - assigned_at > _WINDOW:
             continue
-        opted = _opted_out(physical, _statement_rows(node)) or annotated(
-            physical[assigned_at], OPT_OUT
+        opted = _opted_out(physical, said, _statement_rows(node)) or annotated(
+            said.get(assigned_at + 1, ""), OPT_OUT
         )
         later[(row, name)] = later.get((row, name), False) or not opted
 
@@ -508,62 +509,10 @@ def violations(text: str) -> list[tuple[int, str]]:
     return sorted(found, key=lambda entry: entry[0])
 
 
-def _run_scripts(path: Path) -> list[tuple[int, str]]:
-    """(step line, script) for every inline `run:` block in a workflow or
-    composite-action file. An unparseable file yields no scripts — YAML syntax
-    is actionlint's job, and the shell files this lint owns are its argv."""
-    try:
-        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=LineLoader)
-    except yaml.YAMLError:
-        return []
-    if not isinstance(doc, dict):
-        return []
-    scripts: list[tuple[int, str]] = []
-    containers = []
-    jobs = doc.get("jobs")
-    if isinstance(jobs, dict):
-        containers += [j for j in jobs.values() if isinstance(j, dict)]
-    runs = doc.get("runs")
-    if isinstance(runs, dict):
-        containers.append(runs)
-    for container in containers:
-        steps = container.get("steps")
-        if not isinstance(steps, list):
-            continue
-        for step in steps:
-            if isinstance(step, dict) and isinstance(step.get("run"), str):
-                scripts.append((step.get("__line__", 1), step["run"]))
-    return scripts
-
-
 def main(argv: list[str]) -> int:
-    status = 0
-    for arg in argv:
-        path = Path(arg)
-        try:
-            if _WORKFLOW_PATH.search(arg.replace("\\", "/")):
-                hits = [
-                    (step_line, message)
-                    for step_line, script in _run_scripts(path)
-                    for _line, message in violations(script)
-                ]
-            elif arg.endswith((".yaml", ".yml")):
-                continue  # a non-workflow YAML file is not shell
-            else:
-                hits = violations(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError):
-            continue  # a deleted/renamed path pre-commit may still list
-        except PathologicalInputError as err:
-            # A shape the grammar cannot parse safely fails the check LOUDLY (the
-            # same posture as check_untrusted_exec): skipping it would false-green
-            # exactly the input an adversary controls.
-            print(f"{arg}: {err}", file=sys.stderr)
-            status = 1
-            continue
-        for lineno, message in hits:
-            print(f"{arg}:{lineno}: {message}", file=sys.stderr)
-            status = 1
-    return status
+    return run_message_checks(
+        argv, per_run_script(lambda text, _path: violations(text))
+    )
 
 
 if __name__ == "__main__":

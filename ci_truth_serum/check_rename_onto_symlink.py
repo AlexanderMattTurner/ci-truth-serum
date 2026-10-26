@@ -29,7 +29,6 @@ from tree_sitter import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
-    PathologicalInputError,
     is_lookup,
     iter_nodes,
     node_text,
@@ -42,6 +41,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-rename-onto-symlink"
 
@@ -161,6 +161,7 @@ def violations(text: str, root: Node | None = None) -> list[int]:
     """
     root = parse(text) if root is None else root
     lines = text.split("\n")
+    said = shell_comments(text)
     hits = {
         command.start_point[0] + 1
         for command in iter_nodes(root, "command")
@@ -170,22 +171,15 @@ def violations(text: str, root: Node | None = None) -> list[int]:
             command.start_point[0] + 1,
             OPT_OUT,
             span_end=command.end_point[0] + 1,
+            comments=said,
         )
     }
     return sorted(hits)
 
 
 def main(argv: list[str]) -> int:
-    """Run the detector over ARGV one path at a time. A file the grammar refuses
-    fails loudly (path named, exit 1), and every other path is still checked."""
-    status = 0
-    for path in argv:
-        try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    """Run the detector over ARGV, refusing by name a file it cannot read."""
+    return run_line_checks(argv, violations, MESSAGE)
 
 
 if __name__ == "__main__":
