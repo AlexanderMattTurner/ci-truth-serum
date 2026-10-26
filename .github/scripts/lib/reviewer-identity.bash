@@ -2,6 +2,12 @@
 # Contract: sourced into strict-mode (set -euo pipefail) callers; do not re-set shell options.
 #
 # WHO the automated reviewer is, and how to recognize its work — in ONE place.
+#
+# PROBLEM CLASS — is this review, thread or comment the automated reviewer's,
+# when REST and GraphQL spell a bot's login two ways. The template-owned
+# lib/reviewer-login.bash answers the same question for review-gate.sh, which
+# template-sync delivers; this file is the sibling every script local to this
+# repo reads, because it must source nothing (below).
 # Every gate, sweep and resolver that reads a PR's reviews or review threads
 # answers the same two questions: is this node authored by the reviewer, and is
 # it a REAL review rather than one GitHub synthesized. A second spelling of
@@ -17,9 +23,10 @@
 #
 # Consumers: review-findings-gate.sh, auto-approve-skipped-pr.sh,
 # approve-if-reviewer-hold-clear.sh, detect-reviewer-body-hold.sh,
-# fetch-unresolved-review-threads.sh, lib/pr-reviews.bash,
+# fetch-unresolved-review-threads.sh, append-haiku-cost.sh, lib/pr-reviews.bash,
 # lib/review-threads.bash. The three middle scripts reach it by sourcing one of
-# the two libs; auto-approve-skipped-pr.sh sources it directly.
+# the two libs; auto-approve-skipped-pr.sh and append-haiku-cost.sh source it
+# directly.
 
 REVIEWER_LOGIN="${REVIEWER_LOGIN:-github-actions[bot]}"
 
