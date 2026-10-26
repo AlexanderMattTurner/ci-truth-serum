@@ -151,6 +151,12 @@ def _make_repo(
     libdir = repo / "bin" / "lib"
     libdir.mkdir(parents=True)
     shutil.copy2(REPO_ROOT / "bin" / "lib" / "release-model-call.bash", libdir)
+    # The model-call lib sources the shared OAuth ladder for its credential order.
+    (scripts / "lib").mkdir()
+    shutil.copy2(
+        REPO_ROOT / ".github" / "scripts" / "lib" / "claude-oauth-ladder.bash",
+        scripts / "lib",
+    )
 
     (repo / "scripts").mkdir()
     shutil.copy2(REPO_ROOT / "scripts" / "assemble-changelog.mjs", repo / "scripts")
