@@ -45,7 +45,6 @@ from _cts_js_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     is_js_source,
     parse as _parse_js,
 )
-from _cts_py_ast import LINE_ENDING  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     comment_body,
     is_python_source,
@@ -117,17 +116,16 @@ def _python_comment_items(source: str) -> tuple[tuple[int, str], ...]:
 def py_comments(source: str) -> dict[int, str]:
     """``python_comments`` for Python SOURCE that may not tokenize.
 
-    Line endings are normalized first, as ``_cts_py_ast`` normalizes them, so a
-    line number here is the line number a parsed tree reports. A file that does
-    not tokenize (a syntax error, a half-written edit) falls back to
+    Lines are counted by `\\n`, as every reader in this module counts them
+    (see the module docstring); a lone `\\r` is not a line break here. A file
+    that does not tokenize (a syntax error, a half-written edit) falls back to
     ``text_comments`` rather than reporting no comments at all: "no findings"
     on an unparseable file is the false green this pack exists to catch.
     """
-    normalized = LINE_ENDING.sub("\n", source)
     try:
-        return python_comments(normalized)
+        return python_comments(source)
     except (tokenize.TokenError, SyntaxError):
-        return text_comments(normalized)
+        return text_comments(source)
 
 
 def shell_comments(script: str) -> dict[int, str]:

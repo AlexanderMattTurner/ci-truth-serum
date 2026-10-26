@@ -236,13 +236,17 @@ def workflow_violations(
     opt-out is read from a real YAML comment or a real script comment.
     """
     spans: dict[int, int] = {}
-    for scalar in yaml_run_scalars(text):
+    # Every `run:` value, whatever its shell: a push from a `pwsh` step lands on
+    # main too. The markers come from the SAME scripts, so each step this can
+    # flag is a step that can carry its opt-out.
+    scalars = yaml_run_scalars(text)
+    for scalar in scalars:
         script = "\n" * text.count("\n", 0, scalar.start) + yaml_run_script(
             text, scalar
         )
         for start, end in _pushes(script, branches, gits).items():
             spans[start] = max(spans.get(start, end), end)
-    return _unexcused(spans, text.splitlines(), yaml_marker_comments(text))
+    return _unexcused(spans, text.splitlines(), yaml_marker_comments(text, scalars))
 
 
 def main(argv: list[str]) -> int:

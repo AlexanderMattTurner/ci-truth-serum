@@ -296,9 +296,12 @@ def workflow_violations(text: str, limits: Limits = Limits()) -> list[int]:
     shell file moves its programs under this check.
     """
     lines = text.split("\n")
-    view = yaml_marker_comments(text)
+    # Every `run:` value, whatever its shell, and the markers from the SAME
+    # scripts, so each step this can flag is a step that can carry its opt-out.
+    scalars = yaml_run_scalars(text)
+    view = yaml_marker_comments(text, scalars)
     hits: list[int] = []
-    for scalar in yaml_run_scalars(text):
+    for scalar in scalars:
         if _inline_run_report(scalar.value, ""):
             continue
         offset = text.count("\n", 0, scalar.start)

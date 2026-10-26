@@ -16,7 +16,7 @@ transitively through each ``violations()``:
 
 import string
 
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from tests._helpers import load_hook
@@ -83,6 +83,10 @@ def _sources(draw) -> str:
 
 
 @given(_sources(), _PATHS)
+# A lone `\r` is not a line break to these readers; normalizing it in the
+# Python fallback slid every later line number past the `\n` count.
+@example(source="[\n\r0\n// line\n/* block */", path="a.py")
+@example(source="[\n\r0\n// line", path="a.py")
 def test_comment_lines_never_crashes_and_reports_real_lines(
     source: str, path: str
 ) -> None:

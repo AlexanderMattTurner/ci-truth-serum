@@ -187,8 +187,13 @@ def test_the_dead_function_check_refuses_an_unparseable_file(
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     script = tmp_path / "x.sh"
     script.write_text(f"#!/bin/bash\n{COLLAPSE_TRIGGER}{VIOLATION}", encoding="utf-8")
-    assert check.main(["--repo-root", str(tmp_path), str(script)]) == 1
-    assert "could not parse this file" in capsys.readouterr().err
+    # The grammar refuses this one outright: too many pipes to parse safely.
+    huge = tmp_path / "huge.sh"
+    huge.write_text("#!/bin/bash\ncmd " + "| cmd " * 3000 + "\n", encoding="utf-8")
+    assert check.main(["--repo-root", str(tmp_path), str(huge), str(script)]) == 1
+    err = capsys.readouterr().err
+    assert "pipe bytes" in err, "the pathological file must be refused, not crash"
+    assert "could not parse this file" in err, "the next path is still checked"
 
 
 # ── a workflow's `run:` scripts: one reader, which honours `shell:` ──────────

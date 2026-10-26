@@ -319,9 +319,7 @@ def _inert_slot_violations(
     return violations
 
 
-def _workflow_misfire_violations(
-    text: str, doc: dict, comment_lines: list[str]
-) -> list[tuple[int | None, str]]:
+def _workflow_misfire_violations(text: str, doc: dict) -> list[tuple[int | None, str]]:
     """The finding for a workflow-level group whose run-id escape picks the run
     id on every trigger the workflow declares, or an empty list.
 
@@ -408,7 +406,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     blocks = _job_blocks(text)
     comment_lines = yaml_comment_view(text)
     violations = _inert_slot_violations(doc, jobs, blocks, comment_lines)
-    violations += _workflow_misfire_violations(text, doc, comment_lines)
+    violations += _workflow_misfire_violations(text, doc)
 
     storm = _storm_types(doc)
     if not storm:

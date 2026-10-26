@@ -520,6 +520,21 @@ def _refusal_message(err: BaseException) -> str:
     return str(err)
 
 
+def _unreadable_reason(path: str, text: str) -> str | None:
+    """The refusal message when PATH's TEXT cannot be parsed, else None.
+
+    Every kind a refusal takes, in one place: shell the bash grammar cannot
+    read, Python this interpreter cannot parse, and the errors ``_refusals``
+    names, which the bash grammar raises on a pathological input.
+    """
+    try:
+        return unparseable_shell_reason(path, text) or unparseable_python_reason(
+            path, text
+        )
+    except _refusals() as err:
+        return _refusal_message(err)
+
+
 def run_message_checks(
     argv: list[str],
     find_violations: Callable[[str, str], list[tuple[int, str]]],
@@ -558,13 +573,12 @@ def run_message_checks(
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
             continue
-        try:
-            reason = unparseable_shell_reason(path, text) or unparseable_python_reason(
-                path, text
-            )
-            found = [] if reason is not None else find_violations(text, path)
-        except _refusals() as err:
-            reason = _refusal_message(err)
+        reason = _unreadable_reason(path, text)
+        if reason is None:
+            try:
+                found = find_violations(text, path)
+            except _refusals() as err:
+                reason = _refusal_message(err)
         if reason is not None:
             print(f"{path}: {reason}", file=sys.stderr)
             status = 1
@@ -591,9 +605,7 @@ def refuse_unparseable(paths: Iterable[str]) -> set[str]:
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
             continue
-        reason = unparseable_shell_reason(path, text) or unparseable_python_reason(
-            path, text
-        )
+        reason = _unreadable_reason(path, text)
         if reason is not None:
             print(f"{path}: {reason}", file=sys.stderr)
             refused.add(path)
@@ -2817,7 +2829,7 @@ def yaml_script_view(text: str) -> list[str]:
     return _yaml_script_text(text).splitlines()
 
 
-def _yaml_script_text(text: str) -> str:
+def _yaml_script_text(text: str, scripts: "list[RunScalar] | None" = None) -> str:
     """``yaml_script_view``'s result before it is split into lines.
 
     Two places, because a workflow holds two languages:
@@ -2852,10 +2864,11 @@ def _yaml_script_text(text: str) -> str:
     from _cts_bash_ast import comment_spans  # pylint: disable=import-outside-toplevel
 
     out = list(yaml_comment_text(text))
-    try:
-        scripts = bash_run_scripts(text)
-    except yaml.YAMLError:
-        scripts = []
+    if scripts is None:
+        try:
+            scripts = bash_run_scripts(text)
+        except yaml.YAMLError:
+            scripts = []
     for scalar in scripts:
         script = yaml_run_script(text, scalar)
         spans = comment_spans(script)
@@ -2872,16 +2885,23 @@ def _yaml_script_text(text: str) -> str:
     return "".join(out)
 
 
-def yaml_marker_comments(text: str) -> dict[int, str]:
+def yaml_marker_comments(
+    text: str, scripts: "list[RunScalar] | None" = None
+) -> dict[int, str]:
     """1-based line -> the marker surface on that line of a workflow TEXT.
 
     ``yaml_script_view`` as the mapping ``annotated_near`` reads, numbered by
     `\\n` as a parser numbers lines. A blank line carries nothing, so it is
     left out.
+
+    SCRIPTS names the `run:` values whose comments count, and defaults to the
+    bash steps. A check that reports findings in some other set of scripts
+    passes that same list, so every step it can flag is a step that can carry
+    its opt-out.
     """
     return {
         n: line
-        for n, line in enumerate(_yaml_script_text(text).split("\n"), 1)
+        for n, line in enumerate(_yaml_script_text(text, scripts).split("\n"), 1)
         if line.strip()
     }
 

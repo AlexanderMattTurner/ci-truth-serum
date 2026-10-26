@@ -549,3 +549,12 @@ def test_workflow_violations_report_real_lines_or_refuse(text: str) -> None:
     except yaml.YAMLError:
         return
     assert all(1 <= line <= max(len(text.split("\n")), 1) for line in result)
+
+
+def test_a_flagged_pwsh_step_can_carry_its_opt_out() -> None:
+    """Findings come from every `run:` value, so the markers must too."""
+    body = "print(1); print(2); print(3)"
+    step = "steps:\n  - shell: pwsh\n    run: |\n      python3 -c '{}'{}\n"
+    assert mod.workflow_violations(step.format(body, ""), _SMALL) == [4]
+    marked = step.format(body, f"  # {mod.OPT_OUT}: generated upstream")
+    assert mod.workflow_violations(marked, _SMALL) == []
