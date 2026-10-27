@@ -285,10 +285,17 @@
 
 - id: check-uncached-download
   name: "opinionated: require a cache in any job that downloads a pinned tool"
-  description: A job that installs a version-pinned tool with no cache re-downloads identical bytes on every run, and a slow registry turns that cost into a job timeout GitHub reports as "cancelled".
+  description: A job that downloads a pinned tool with no cache that holds it gets the same bytes on every run. A slow registry turns that cost into a job timeout, and GitHub reports it as "cancelled". The check follows the repo scripts that a step runs.
   entry: python -m ci_truth_serum.check_uncached_download
   language: python
-  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
   types: [yaml]

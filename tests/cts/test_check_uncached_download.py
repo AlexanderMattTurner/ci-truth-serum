@@ -338,3 +338,1010 @@ def test_an_unparseable_composite_action_is_reported(tmp_path, monkeypatch):
     findings = uc.check_file(path)
     assert len(findings) == 1
     assert "could not parse" in findings[0][1]
+
+
+# ── followed scripts ─────────────────────────────────────────────────────────
+
+PINNED = "https://example.com/v2.7.0/tool"
+DIGEST = "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b"
+
+
+def _tree(root: Path, files: dict[str, str]) -> None:
+    for name, text in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def _step_line(path: Path, line: int) -> str:
+    return path.read_text(encoding="utf-8").splitlines()[line - 1].strip()
+
+
+LIB = f'fetch_pinned() {{ curl -fsSLo "$1" "$2"; }}\nfetch_pinned tool {PINNED}\n'
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'source "$(dirname "$0")/lib.bash"',
+        'source "${BASH_SOURCE[0]%/*}/lib.bash"',
+        'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n. "$HERE/lib.bash"',
+        '# shellcheck source=lib.bash\nsource "$LIBDIR/lib.bash"',
+        "source scripts/lib.bash",
+        'source "$(git rev-parse --show-toplevel)/scripts/lib.bash"',
+    ],
+    ids=["dirname-0", "bash-source", "cd-pwd", "directive", "literal", "toplevel"],
+)
+def test_a_fetch_in_a_sourced_library_function_fires_at_the_step(rooted, source):
+    """The step runs a script, the script sources a library, and the
+    library calls a function that wraps curl with a pinned URL."""
+    _tree(rooted, {"scripts/fetch.sh": source + "\n", "scripts/lib.bash": LIB})
+    path = _write(rooted, _job(_run("bash scripts/fetch.sh")))
+    findings = uc.check_file(path)
+    assert len(findings) == 1, findings
+    line, message = findings[0]
+    assert _step_line(path, line) == "- name: install"
+    assert f"{PINNED} in scripts/lib.bash" in message
+
+
+def test_a_function_called_from_the_entry_script_resolves_into_the_library(rooted):
+    """The call sits in the entry script, the definition in the library: the
+    URL is an argument at the call site, and the curl is in the body."""
+    _tree(
+        rooted,
+        {
+            "scripts/fetch.sh": f'source scripts/lib.bash\nfetch_pinned tool "{PINNED}"\n',
+            "scripts/lib.bash": 'fetch_pinned() { curl -fsSLo "$1" "$2"; }\n',
+        },
+    )
+    path = _write(rooted, _job(_run("bash scripts/fetch.sh")))
+    assert [PINNED in m for m in _messages(path)] == [True]
+
+
+@pytest.mark.parametrize(
+    ("files", "run"),
+    [
+        (
+            {"scripts/lib.bash": f'fetch_pinned() {{ curl -fsSLo t "{PINNED}"; }}\n'},
+            "source scripts/lib.bash",
+        ),
+        (
+            {
+                "scripts/fetch.sh": (
+                    f"cat > doc.txt <<'EOF'\ncurl -fsSLo tool {PINNED}\nEOF\n"
+                )
+            },
+            "bash scripts/fetch.sh",
+        ),
+        ({}, "bash scripts/missing.sh"),
+        (
+            {"scripts/fetch.sh": f"curl -fsSLo t {PINNED}\n"},
+            'bash "$UNRESOLVABLE/fetch.sh"',
+        ),
+    ],
+    ids=["defined-never-called", "heredoc-body", "missing-script", "unresolvable"],
+)
+def test_what_the_walk_does_not_run_is_not_judged(rooted, files, run):
+    """A function nobody calls, a heredoc body written to a file, a script that
+    is not on disk, and a path only the run can compute: none is a download."""
+    _tree(rooted, files)
+    assert uc.check_file(_write(rooted, _job(_run(run)))) == []
+
+
+def test_two_scripts_that_source_each_other_terminate(rooted):
+    _tree(
+        rooted,
+        {
+            "scripts/a.bash": f"source scripts/b.bash\ncurl -fsSLo t {PINNED}\n",
+            "scripts/b.bash": "source scripts/a.bash\n",
+        },
+    )
+    path = _write(rooted, _job(_run("bash scripts/a.bash")))
+    assert len(uc.check_file(path)) == 1
+
+
+def test_a_composite_action_script_resolves_through_the_action_path(rooted):
+    _tree(rooted, {".github/actions/tool/install.sh": f"curl -fsSLo t {PINNED}\n"})
+    _action(
+        rooted,
+        "tool-run",
+        '      - shell: bash\n        run: bash "$GITHUB_ACTION_PATH/../tool/install.sh"\n',
+    )
+    path = _write(rooted, _job("      - uses: ./.github/actions/tool-run\n"))
+    messages = _messages(path)
+    assert len(messages) == 1
+    assert "in .github/actions/tool/install.sh" in messages[0]
+
+
+# ── which cache covers which download ───────────────────────────────────────
+
+
+def _cache(key: str, path: str = "/tmp/elsewhere") -> str:
+    return (
+        "      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n"
+        f"        with:\n          path: {path}\n          key: {key}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("cache", "fires"),
+    [
+        (_cache("deps-${{ runner.os }}"), True),
+        (_cache("tool-2.7.0-${{ runner.os }}"), False),
+        (_cache("tool-v2.7.0-${{ runner.os }}"), False),
+        (_cache("tool-${{ env.TOOL_VERSION }}"), False),
+        (_cache("tool-${{ hashFiles('scripts/pin.bash') }}"), False),
+        (_cache("tool-${{ hashFiles('scripts/other.bash') }}"), True),
+        (_cache("deps-${{ runner.os }}", "/tmp/tool-cache"), False),
+        (_cache("deps-${{ runner.os }}", "~/.cache/tool"), True),
+        (_cache("${{ steps.key.outputs.key }}"), False),
+    ],
+    ids=[
+        "unrelated-key",
+        "version-in-key",
+        "v-prefixed-version-in-key",
+        "version-variable-in-key",
+        "hash-of-the-pin-file",
+        "hash-of-another-file",
+        "path-holds-the-output",
+        "path-holds-something-else",
+        "unreadable-key",
+    ],
+)
+def test_a_cache_covers_a_download_only_when_it_can_hold_it(rooted, cache, fires):
+    """A cache covers a fetch only when its key names the pin or its path holds
+    the output. A key the lint cannot read covers every fetch in the job."""
+    _tree(
+        rooted,
+        {
+            "scripts/pin.bash": "TOOL_VERSION=2.7.0\n",
+            "scripts/fetch.sh": (
+                "source scripts/pin.bash\n"
+                "curl -fsSLo /tmp/tool-cache/tool "
+                '"https://example.com/v${TOOL_VERSION}/tool"\n'
+            ),
+        },
+    )
+    path = _write(rooted, _job(cache + _run("bash scripts/fetch.sh")))
+    messages = _messages(path)
+    assert len(messages) == (1 if fires else 0), messages
+    if fires:
+        assert "no cache in the job keyed on its pin" in messages[0]
+
+
+def test_a_key_naming_the_variable_a_pin_is_derived_from_covers_it(rooted):
+    """`version="${TOOL_VERSION#v}"` is the pin the URL reads, and a key that
+    names TOOL_VERSION names it too."""
+    script = (
+        'TOOL_VERSION="${TOOL_VERSION:-v2.7.0}"\nversion="${TOOL_VERSION#v}"\n'
+        'curl -fsSLo t "https://example.com/v${version}/tool"'
+    )
+    path = _write(rooted, _job(_cache("tool-${{ env.TOOL_VERSION }}") + _run(script)))
+    assert uc.check_file(path) == []
+
+
+@pytest.mark.parametrize(
+    ("key", "fires"),
+    [("t-${{ hashFiles('pins.sh') }}", 0), ("t-${{ hashFiles('lib.bash') }}", 1)],
+    ids=["hashes-the-pin-file", "hashes-another-file"],
+)
+def test_a_key_hashing_the_file_that_assigns_the_pin_covers_it(rooted, key, fires):
+    """The walk cannot follow `source "$1"` inside a function, but the key
+    hashes the file that assigns the pin, so the cache still covers it."""
+    _tree(
+        rooted,
+        {
+            "pins.sh": "TOOL_VERSION=2.7.0\n",
+            "lib.bash": 'load_pins() { source "$1"; }\n',
+            "fetch.sh": (
+                "source lib.bash\nload_pins pins.sh\n"
+                'curl -fsSLo t "https://example.com/v${TOOL_VERSION}/tool"\n'
+            ),
+        },
+    )
+    path = _write(rooted, _job(_cache(key) + _run("bash fetch.sh")))
+    assert len(_messages(path)) == fires
+
+
+@pytest.mark.parametrize(
+    ("key", "fires"),
+    [
+        ("tool-${{ env.ARCH }}", 1),
+        ("tool-version-1", 1),
+        ("tool-${{ env.TOOL_VERSION }}", 0),
+    ],
+    ids=["a-variable-that-is-no-pin", "a-bare-word", "the-pin-variable"],
+)
+def test_only_a_pin_variable_named_in_a_key_covers_a_fetch(rooted, key, fires):
+    """`$ARCH` shapes the URL but holds no version, so a key that names it does
+    not track the pin. A bare `version` in a key is text, not the variable."""
+    script = (
+        "ARCH=amd64\nTOOL_VERSION=2.7.0\nversion=$TOOL_VERSION\n"
+        'curl -fsSLo t "https://example.com/v${version}/tool-$ARCH"'
+    )
+    path = _write(rooted, _job(_cache(key) + _run(script)))
+    assert len(_messages(path)) == fires
+
+
+@pytest.mark.parametrize(
+    ("pattern", "fires"),
+    [("**/fetch.sh", 0), ("*/fetch.sh", 1), ("fetch.sh", 0)],
+    ids=["globstar-matches-the-root", "star-needs-a-directory", "literal"],
+)
+def test_a_hashfiles_glob_matches_as_github_matches_it(rooted, pattern, fires):
+    """`**/` matches zero or more directories, and `*` never crosses a `/`."""
+    _tree(rooted, {"fetch.sh": 'curl -fsSLo t "https://example.com/v2.7.0/tool"\n'})
+    key = f"t-${{{{ hashFiles('{pattern}') }}}}"
+    path = _write(rooted, _job(_cache(key) + _run("bash fetch.sh")))
+    assert len(_messages(path)) == fires
+
+
+WORKDIR_JOB = """\
+name: x
+on:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: {directory}
+    steps:
+      - run: bash install.sh
+"""
+PINNED_FETCH = 'curl -fsSLo t "https://example.com/v2.7.0/tool"\n'
+
+
+@pytest.mark.parametrize(
+    ("directory", "where", "fires"),
+    [("tools", "tools", 1), ("tools", "", 0), ("${{ inputs.dir }}", "", 0)],
+    ids=["script-in-the-directory", "same-name-at-the-root", "unreadable-directory"],
+)
+def test_a_relative_path_resolves_in_the_working_directory(
+    rooted, directory, where, fires
+):
+    """`bash install.sh` runs the file in the step's working directory. A
+    directory the text does not fix resolves no relative path at all."""
+    _tree(rooted, {f"{where}/install.sh".lstrip("/"): PINNED_FETCH, "tools/x": ""})
+    path = _write(rooted, WORKDIR_JOB.format(directory=directory))
+    assert len(_messages(path)) == fires
+
+
+def test_a_pin_named_like_a_runner_context_value_is_not_in_its_key(rooted):
+    """`$os` is a pin of the URL, but `runner.os` in the key is the runner's
+    value, not the script's variable, so the cache does not cover the fetch."""
+    script = (
+        "os=linux\nTOOL_VERSION=2.7.0\n"
+        'curl -fsSLo t "https://example.com/v${TOOL_VERSION}/tool-$os"'
+    )
+    path = _write(rooted, _job(_cache("pip-${{ runner.os }}") + _run(script)))
+    assert len(_messages(path)) == 1
+
+
+OUTPUT_JOB = """\
+name: x
+on:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: {path}
+          key: deps-${{{{ runner.os }}}}
+      - working-directory: {directory}
+        run: |
+          {script}
+"""
+
+
+@pytest.mark.parametrize(
+    ("directory", "script", "path", "fires"),
+    [
+        ("tools", f"curl -fsSLo t.tgz {PINNED}", "tools/t.tgz", 0),
+        ("tools", f"curl -fsSLo t.tgz {PINNED}", "t.tgz", 1),
+        (".", f"cd sub && curl -fsSLo t.tgz {PINNED}", "sub/t.tgz", 0),
+        (".", f"cd sub && curl -fsSLo t.tgz {PINNED}", "other/x.tgz", 1),
+        ("${{ inputs.dir }}", f"curl -fsSLo t.tgz {PINNED}", "a/t.tgz", 0),
+    ],
+    ids=[
+        "in-the-working-directory",
+        "same-name-at-the-root",
+        "after-a-cd",
+        "after-a-cd-elsewhere",
+        "unreadable-directory",
+    ],
+)
+def test_a_relative_output_lands_in_the_directory_the_step_runs_in(
+    rooted, directory, script, path, fires
+):
+    """`-o t.tgz` writes into the step's working directory. After a `cd`, or in
+    a directory the text does not fix, only the output's own name is known, so
+    a cache path that ends in that name holds it."""
+    (rooted / "tools").mkdir()
+    workflow = OUTPUT_JOB.format(path=path, directory=directory, script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("script", "fires"),
+    [
+        (f"wget -q -P /tmp/tools {PINNED}.tgz", 0),
+        (f"wget -q --directory-prefix=/tmp/tools {PINNED}.tgz", 0),
+        (f"curl -fsSL --output-dir /tmp/tools -O {PINNED}.tgz", 0),
+        (f"curl -fsSL --output-dir /tmp/tools -o t {PINNED}.tgz", 0),
+        (f"wget -q -P /tmp/elsewhere {PINNED}.tgz", 1),
+    ],
+    ids=[
+        "wget-P",
+        "wget-directory-prefix",
+        "curl-output-dir-O",
+        "curl-output-dir-o",
+        "elsewhere",
+    ],
+)
+def test_a_download_directory_flag_places_the_output(rooted, script, fires):
+    """`wget -P DIR` and `curl --output-dir DIR` put the file in DIR."""
+    workflow = OUTPUT_JOB.format(path="/tmp/tools", directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("directory", "script", "path", "fires"),
+    [
+        (".", f"curl -fsSLo bin/tool {PINNED}\ncd bin && chmod +x tool", "bin", 0),
+        (".", f"( cd docs && make )\ncurl -fsSLo bin/tool {PINNED}", "bin", 0),
+        (".", f'OUT=bin/tool\ncurl -fsSL --output="$OUT" {PINNED}', "bin", 0),
+        (
+            ".",
+            f'INSTALL_DIR="$HOME/.local/bin"\ncurl -fsSLo "$INSTALL_DIR/tool" {PINNED}',
+            "~/.local/bin",
+            0,
+        ),
+        ("/tmp/w", f"curl -fsSLo tool {PINNED}", "/tmp/w/tool", 0),
+        (".", f"wget -q -P /tmp/a -P /tmp/b {PINNED}", "/tmp/b", 0),
+        (".", f"wget -q -P /tmp/a -P /tmp/b {PINNED}", "/tmp/a", 1),
+        (
+            ".",
+            f"curl -fsSL -Hcontent-type:text -o /tmp/a/t {PINNED}",
+            "ntent-type:text",
+            1,
+        ),
+        (".", f"f() {{ curl -fsSLo tool {PINNED}; }}\ncd sub\nf", "sub/tool", 0),
+        (".", f"f() {{ curl -fsSLo tool {PINNED}; }}\ncd sub\nf", "tool", 1),
+        (
+            ".",
+            f"diff <(cd a && ls) <(cd b && ls)\ncurl -fsSLo bin/tool {PINNED}",
+            "bin",
+            0,
+        ),
+        (".", f"cd a | cat\ncurl -fsSLo bin/tool {PINNED}", "bin", 0),
+        (".", f"cd sub && curl -fsSLo bin/tool {PINNED}", "sub/bin", 0),
+        (".", f"command cd sub\ncurl -fsSLo tool {PINNED}", "tool", 1),
+    ],
+    ids=[
+        "cd-after-the-download",
+        "cd-in-a-subshell",
+        "output-flag-with-equals",
+        "variable-built-on-home",
+        "absolute-working-directory",
+        "last-directory-flag",
+        "earlier-directory-flag",
+        "an-o-inside-another-flag-value",
+        "function-called-after-a-cd",
+        "function-called-after-a-cd-root-path",
+        "cd-in-a-process-substitution",
+        "cd-in-a-pipeline",
+        "directory-of-the-output-after-a-cd",
+        "command-cd",
+    ],
+)
+def test_an_output_resolves_as_the_shell_resolves_it(
+    rooted, directory, script, path, fires
+):
+    """A `cd` moves only the commands after it in the same shell. A variable
+    with one assignment spells that value, and the last directory flag wins."""
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=directory, script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("script", "path", "fires"),
+    [
+        ('cd sub\ncd "$GITHUB_WORKSPACE"\n./scripts/install.sh', "nothing", 1),
+        ("cd sub\ncd ..\nbash scripts/install.sh", "nothing", 1),
+        (f"cd sub && curl -fsSLo t.tgz {PINNED}", "sub", 0),
+        (f"cd sub && curl -fsSLo t.tgz {PINNED}", "t.tgz", 1),
+        (f'cd "$UNKNOWN" && curl -fsSLo bin/tool {PINNED}', "sub/bin", 0),
+        (f"cd sub | curl -fsSLo t.tgz {PINNED}", "t.tgz", 0),
+        (f"cd sub | curl -fsSLo t.tgz {PINNED}", "sub", 1),
+        (f"cd sub &\ncurl -fsSLo t.tgz {PINNED}", "t.tgz", 0),
+        (f"cd sub &\ncurl -fsSLo t.tgz {PINNED}", "sub", 1),
+        (f"f() {{ curl -fsSLo t.tgz {PINNED}; }}\n( cd sub; f )", "sub", 0),
+        (f"f() {{ curl -fsSLo t.tgz {PINNED}; }}\n( cd sub; f )", "t.tgz", 1),
+    ],
+    ids=[
+        "cd-back-to-the-workspace",
+        "cd-back-up",
+        "directory-after-a-fixed-cd",
+        "root-after-a-fixed-cd",
+        "unknown-cd-keeps-the-name",
+        "a-cd-in-another-pipeline-member",
+        "a-cd-in-another-pipeline-member-moved-path",
+        "a-cd-in-the-background",
+        "a-cd-in-the-background-moved-path",
+        "a-function-runs-where-it-is-called",
+        "a-function-runs-where-it-is-called-root-path",
+    ],
+)
+def test_a_cd_the_text_fixes_sets_the_directory(rooted, script, path, fires):
+    """A `cd` whose target the text fixes tells where the next command runs,
+    so a script it starts is still followed and an output is still placed."""
+    _tree(rooted, {"scripts/install.sh": f"curl -fsSLo t {PINNED}\n", "sub/x": ""})
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+LIB_FETCH = f"curl -fsSLo bin/tool {PINNED}\n"
+TWICE = 'source scripts/lib.sh\ncd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"'
+
+
+@pytest.mark.parametrize(("path", "fires"), [("bin", 0), ("sub/bin", 1)])
+def test_a_long_call_chain_runs_where_its_first_call_runs(rooted, path, fires):
+    """300 functions, each calling the one before, run where the outer call
+    runs: the step's directory."""
+    script = "\n".join(
+        [f"f0() {{ {LIB_FETCH.strip()}; }}"]
+        + [f"f{i}() {{ f{i - 1}; }}" for i in range(1, 300)]
+        + ["f299"]
+    )
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize("path", ["other/bin", "sub/bin"])
+@pytest.mark.parametrize(
+    "script",
+    [
+        f"if false; then cd sub; fi\n{LIB_FETCH}",
+        f"for d in sub; do cd sub; done\n{LIB_FETCH}",
+        f"for d in a b; do {LIB_FETCH.strip()}; cd sub; done",
+        f"true && cd sub\n{LIB_FETCH}",
+        f"f() {{ {LIB_FETCH.strip()}; }}\nf\ncd sub\nf",
+        f"if false; then cd sub; else {LIB_FETCH.strip()}; fi",
+        f"if false; then cd sub; elif true; then {LIB_FETCH.strip()}; fi",
+        f"case x in y) cd sub ;; x) {LIB_FETCH.strip()} ;; esac",
+        f"cd sub || {LIB_FETCH.strip()}",
+        f"if cd sub; then :; else {LIB_FETCH.strip()}; fi",
+        f"if ! cd sub; then {LIB_FETCH.strip()}; fi",
+        f"f() {{ {LIB_FETCH.strip()}; }}\ntrap f EXIT\ncd sub",
+        f"f() {{ {LIB_FETCH.strip()}; }}\ncd sub\ngrep -q f x\ncd ..\nfn=f\n$fn",
+    ],
+    ids=[
+        "if",
+        "loop",
+        "loop-holding-the-fetch",
+        "and-list",
+        "calls-that-disagree",
+        "if-else-arms",
+        "if-elif-arms",
+        "case-arms",
+        "or-list",
+        "cd-in-a-condition",
+        "negated-cd",
+        "trap",
+        "a-word-that-is-not-a-call",
+    ],
+)
+def test_a_cd_the_text_does_not_order_keeps_the_name(rooted, script, path):
+    """A `cd` in a branch or a loop may or may not run before the fetch, and
+    two calls of one function can run in two directories. The directory is
+    unknown, so the output keeps its name, and a cache path that ends in its
+    directory covers it."""
+    _tree(rooted, {"sub/x": ""})
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == 0
+
+
+@pytest.mark.parametrize(
+    ("lib", "script", "path", "fires"),
+    [
+        (LIB_FETCH, "source scripts/lib.sh\ncd sub", "bin", 0),
+        (LIB_FETCH, "source scripts/lib.sh\ncd sub", "sub/bin", 1),
+        (LIB_FETCH, 'cd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"', "sub/bin", 0),
+        (LIB_FETCH, 'cd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"', "bin", 1),
+        ("cd sub\n", f"source scripts/lib.sh\n{LIB_FETCH}", "sub/bin", 0),
+        ("cd sub\n", f"source scripts/lib.sh\n{LIB_FETCH}", "bin", 1),
+        ("cd sub\n", f"{LIB_FETCH}source scripts/lib.sh", "bin", 0),
+        ("cd sub\n", f"( source scripts/lib.sh )\n{LIB_FETCH}", "bin", 0),
+        ("cd sub\n", f"( source scripts/lib.sh )\n{LIB_FETCH}", "sub/bin", 1),
+        ("cd sub\n", f"source scripts/lib.sh | cat\n{LIB_FETCH}", "bin", 0),
+        (
+            LIB_FETCH,
+            '( cd sub; source "$GITHUB_WORKSPACE/scripts/lib.sh" )',
+            "sub/bin",
+            0,
+        ),
+        (LIB_FETCH, '( cd sub; source "$GITHUB_WORKSPACE/scripts/lib.sh" )', "bin", 1),
+        (LIB_FETCH, TWICE, "sub/bin", 0),
+        (LIB_FETCH, TWICE, "other/bin", 0),
+    ],
+    ids=[
+        "fetch-in-a-sourced-file-then-cd",
+        "fetch-in-a-sourced-file-then-cd-wrong-path",
+        "cd-then-fetch-in-a-sourced-file",
+        "cd-then-fetch-in-a-sourced-file-root-path",
+        "cd-in-a-sourced-file-then-fetch",
+        "cd-in-a-sourced-file-then-fetch-root-path",
+        "fetch-then-cd-in-a-sourced-file",
+        "cd-in-a-file-sourced-in-a-subshell",
+        "cd-in-a-file-sourced-in-a-subshell-moved-path",
+        "cd-in-a-file-sourced-in-a-pipeline",
+        "fetch-in-a-file-sourced-after-a-subshell-cd",
+        "fetch-in-a-file-sourced-after-a-subshell-cd-root-path",
+        "a-file-sourced-at-two-lines-keeps-the-name",
+        "a-file-sourced-at-two-lines-keeps-the-name-root-path",
+    ],
+)
+def test_a_sourced_file_runs_at_its_source_line(rooted, lib, script, path, fires):
+    """The commands of a sourced file run where the `source` command runs, so a
+    `cd` before or after it orders against them like any other command."""
+    _tree(rooted, {"scripts/lib.sh": lib, "sub/x": ""})
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+def test_two_files_with_one_text_keep_their_own_source_line(rooted):
+    """Two files with the same text share one parse tree. Each one still has
+    its own `source` line, so the walk ends and the last `cd` places the file."""
+    hop = 'cd /tmp\nsource "${BASH_SOURCE[0]%/*}/../run.sh"\n'
+    _tree(rooted, {"sub/sub/run.sh": hop, "sub/run.sh": hop, "run.sh": "true\n"})
+    script = f'source "$GITHUB_WORKSPACE/sub/sub/run.sh"\n{LIB_FETCH}'
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path="/tmp/bin", directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == 0
+
+
+@pytest.mark.parametrize(
+    ("script", "path", "fires"),
+    [
+        (f"wget -q -P/opt/tools {PINNED}", "/opt/tools", 0),
+        (f"wget -qP/opt/tools {PINNED}", "/opt/tools", 0),
+        (f"wget -qO/opt/tools/t {PINNED}", "/opt/tools", 0),
+        (f"curl -fsSL -o/opt/tools/t {PINNED}", "/opt/tools", 0),
+        (f"curl -fsSLo/opt/tools/t {PINNED}", "/opt/tools", 0),
+        (f"curl -fsSL -o/opt/tools/t {PINNED}", "/opt/else", 1),
+        (f"curl -fsSL -Ttool.tgz -o /opt/tools/t {PINNED}", "l.tgz", 1),
+        (f"wget -BxyzO/opt/t {PINNED}", "/opt", 1),
+        (f"curl -fsSLOJ {PINNED}", "tool", 0),
+        (f"curl -fsSLJo tool {PINNED}", "tool", 0),
+        (f"curl -OHx-y:z {PINNED}", "tool", 0),
+    ],
+    ids=[
+        "wget-P-attached",
+        "wget-qP-attached",
+        "wget-qO-attached",
+        "curl-o-attached",
+        "curl-cluster-o-attached",
+        "curl-o-attached-elsewhere",
+        "a-value-flag-before-o",
+        "a-value-flag-before-wget-O",
+        "curl-OJ-cluster",
+        "curl-J-before-o",
+        "curl-value-flag-after-O",
+    ],
+)
+def test_an_attached_flag_value_is_read(rooted, script, path, fires):
+    """`-P/opt/tools` and `-o/opt/tools/t` carry their value in the same word.
+    Only letters that take no value may come before the flag: in `-Ttool.tgz`
+    the letters after `-T` are its value, so no `-o` is there."""
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("path", "fires"), [("bin", 1), ("tools/bin/tool", 0)], ids=["root-bin", "tail"]
+)
+def test_a_script_run_after_a_cd_writes_where_the_cd_went(rooted, path, fires):
+    """The parent shell runs `cd tools`, so `-o bin/tool` in the child lands in
+    `tools/bin/tool`, not in `bin/tool`."""
+    _tree(
+        rooted, {"scripts/fetch.sh": f"curl -fsSLo bin/tool {PINNED}\n", "tools/x": ""}
+    )
+    script = 'cd tools && bash "$GITHUB_WORKSPACE/scripts/fetch.sh"'
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("key", "files", "fires"),
+    [
+        ("t-${{ hashFiles('wf.yaml') }}", {}, 0),
+        ("t-${{ hashFiles('other.yaml') }}", {}, 1),
+        ("t-${{ hashFiles('wf.yaml') }}", {"fetch.sh": f"curl -fsSLo t {PINNED}\n"}, 1),
+    ],
+    ids=["hashes-the-workflow", "hashes-another-file", "fetch-in-a-script"],
+)
+def test_a_key_hashing_the_workflow_covers_its_inline_fetch(rooted, key, files, fires):
+    """The `run:` body is text of the workflow file, so a hash of that file
+    names the fetch. A fetch in a script the step runs is not in it."""
+    _tree(rooted, files)
+    run = "bash fetch.sh" if files else f"curl -fsSLo t {PINNED}"
+    path = _write(rooted, _job(_cache(key) + _run(run)))
+    assert len(_messages(path)) == fires
+
+
+def test_a_key_hashing_the_action_file_covers_its_inline_fetch(rooted):
+    _action(
+        rooted, "tool", f"      - shell: bash\n        run: curl -fsSLo t {PINNED}\n"
+    )
+    key = "t-${{ hashFiles('.github/actions/tool/action.yaml') }}"
+    path = _write(rooted, _job(_cache(key) + "      - uses: ./.github/actions/tool\n"))
+    assert uc.check_file(path) == []
+
+
+@pytest.mark.parametrize(
+    ("pattern", "fires"),
+    [("scripts/**.sh", 0), ("scripts/*.sh", 0), ("scripts/*.bash", 1)],
+    ids=["double-star-inside-a-segment", "star", "another-suffix"],
+)
+def test_a_hashed_pin_file_is_found_by_any_glob(rooted, pattern, fires):
+    """GitHub reads `**.sh` inside a segment as `*.sh`. A matched file that is
+    not UTF-8 and that the step never runs is not read."""
+    _tree(
+        rooted,
+        {
+            "scripts/pins.sh": "TOOL_VERSION=2.7.0\n",
+            "lib.bash": 'load_pins() { source "$1"; }\n',
+            "fetch.sh": (
+                "source lib.bash\nload_pins scripts/pins.sh\n"
+                'curl -fsSLo t "https://example.com/v${TOOL_VERSION}/tool"\n'
+            ),
+        },
+    )
+    (rooted / "scripts" / "blob.sh").write_bytes(b"\xff\xfe\n")
+    key = f"t-${{{{ hashFiles('{pattern}') }}}}"
+    path = _write(rooted, _job(_cache(key) + _run("bash fetch.sh")))
+    assert len(_messages(path)) == fires
+
+
+# ── a digest pins the bytes ─────────────────────────────────────────────────
+
+
+DIGEST_SCRIPT = (
+    f"SHA={DIGEST}\n"
+    "URL=https://example.com/tool/latest\n"
+    'curl -fsSLo t "$URL"\n'
+    "{check}\n"
+)
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        'echo "$SHA  t" | sha256sum -c -',
+        'echo "$SHA  t" | shasum -a 256 -c -',
+        'sha256sum --check --status <<<"$SHA  t"',
+    ],
+    ids=["sha256sum", "shasum", "here-string"],
+)
+def test_a_download_checked_against_a_digest_is_pinned(tmp_path, check):
+    """No version in the URL, but the job refuses any other bytes."""
+    path = _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check=check))))
+    messages = _messages(path)
+    assert len(messages) == 1, messages
+    assert "https://example.com/tool/latest" not in messages[0]
+    assert "$URL (digest-checked)" in messages[0]
+
+
+def test_an_unversioned_download_with_no_digest_check_is_left_alone(tmp_path):
+    path = _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check="chmod +x t"))))
+    assert uc.check_file(path) == []
+
+
+def test_a_digest_check_of_another_file_does_not_pin_the_download(tmp_path):
+    """The check must name the file the download writes. Here it names a
+    different file, so the unversioned download stays unpinned."""
+    script = DIGEST_SCRIPT.format(check='echo "$SHA  other.tgz" | sha256sum -c -')
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+
+
+@pytest.mark.parametrize(
+    ("download", "fires"),
+    [
+        ('curl -fsSLO "$URL/t"', True),
+        ('curl -fsSL "$URL/t" > t', True),
+        ('curl -fsSL "$URL/t" > other', False),
+        ('curl -fsSL "$URL/api" | jq -r .tag', False),
+    ],
+    ids=["remote-name", "redirect", "redirect-elsewhere", "no-output"],
+)
+def test_a_digest_pins_only_the_file_a_download_writes(tmp_path, download, fires):
+    """A direct download pins through a check only when the check names the
+    file it writes. A lookup whose output goes to a pipe writes no file."""
+    script = (
+        f"SHA={DIGEST}\nURL=https://example.com/tool\n{download}\n"
+        'echo "$SHA  t" | sha256sum -c -\n'
+    )
+    assert len(_messages(_write(tmp_path, _job(_run(script))))) == (1 if fires else 0)
+
+
+def test_a_checksum_file_names_the_file_it_vouches_for(tmp_path):
+    script = DIGEST_SCRIPT.format(check="sha256sum -c t.sha256").replace(
+        "curl -fsSLo t ", 'curl -fsSLo t.sha256 "$URL.sha256"\ncurl -fsSLo t '
+    )
+    messages = _messages(_write(tmp_path, _job(_run(script))))
+    assert ["$URL (digest-checked)" in m for m in messages] == [True]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'EXPECTED="$(cat sums)"\nOUT=t\ncurl -fsSLo "$OUT" "$URL"\n'
+        'sha256sum -c <<< "${EXPECTED}  ${OUT}"',
+        'OUT="$1"\ncurl -fsSLo "$OUT" "$URL"\nsha256sum -c <<< "$(cat sums)  ${OUT}"',
+    ],
+    ids=["known-name", "name-only-the-run-knows"],
+)
+def test_a_partly_unknown_here_string_still_names_the_file(tmp_path, script):
+    """The digest is computed at run time, but the file name is the output's:
+    a fixed value, or the same variable the download writes to."""
+    script = "URL=https://example.com/tool/latest\n" + script
+    messages = _messages(_write(tmp_path, _job(_run(script))))
+    assert ["(digest-checked)" in m for m in messages] == [True]
+
+
+def test_wget_to_stdout_in_a_flag_cluster_writes_no_file(tmp_path):
+    """`-qO-` sends the bytes to stdout, so `t` is a file nobody wrote."""
+    script = (
+        f"SHA={DIGEST}\nURL=https://example.com/tool\n"
+        'wget -qO- "$URL/t" | tar -x\necho "$SHA  t" | sha256sum -c -\n'
+    )
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+
+
+def test_a_download_to_stdout_is_not_pinned_by_a_check_reading_stdin(tmp_path):
+    """`-o -` and `sha256sum -c -` both spell stdin or stdout, not a file."""
+    script = (
+        "curl -fsSL https://example.com/install.sh -o - | bash\n"
+        f'echo "{DIGEST}  tool.tgz" | sha256sum -c -\n'
+    )
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+
+
+def test_a_downloader_function_with_a_hidden_output_is_not_digest_pinned(tmp_path):
+    """The function writes where its body decides, so no check can be said to
+    name the file this call fetches."""
+    script = (
+        'get() { curl -fsSL "$1"; }\n'
+        "get https://api.github.com/repos/o/r/releases/latest > rel.json\n"
+        "sha256sum -c sums.txt\n"
+    )
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+
+
+def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
+    script = DIGEST_SCRIPT.format(check='echo "$SHA  t" | sha256sum -c -')
+    path = _write(tmp_path, _job(_cache(f"tool-{DIGEST}") + _run(script)))
+    assert uc.check_file(path) == []
+
+
+# ── Python the shell runs ───────────────────────────────────────────────────
+
+
+FETCH_PY = """\
+import hashlib
+import urllib.request
+
+URL = "https://example.com/tool/latest"
+WANT = "{digest}"
+
+
+def download(dest):
+    data = urllib.request.urlopen(URL).read()
+    {check}
+    with open(dest, "wb") as handle:
+        handle.write(data)
+
+
+if __name__ == "__main__":
+    download("tool")
+"""
+
+HASH_CHECK = "if hashlib.sha256(data).hexdigest() != WANT:\n        raise SystemExit(1)"
+INSTALL_SH = 'DIR="${BASH_SOURCE[0]%/*}"\nCOMMAND "$DIR/fetch.py"\n'
+
+
+@pytest.mark.parametrize("command", ["python3", "uv run", "python"])
+def test_a_python_fetch_that_checks_a_digest_fires(rooted, command):
+    """The step runs a shell script that hands a Python file to an
+    interpreter, and that file hashes what it fetched and compares the hash."""
+    _tree(
+        rooted,
+        {
+            "scripts/install.sh": INSTALL_SH.replace("COMMAND", command),
+            "scripts/fetch.py": FETCH_PY.format(digest=DIGEST, check=HASH_CHECK),
+        },
+    )
+    path = _write(rooted, _job(_run("bash scripts/install.sh")))
+    messages = _messages(path)
+    assert len(messages) == 1, messages
+    assert "fetched by scripts/fetch.py:download, digest-checked" in messages[0]
+
+
+def test_a_python_fetch_in_an_imported_helper_fires(rooted):
+    """The entry script imports a repo module, and the fetch lives there."""
+    _tree(
+        rooted,
+        {
+            "scripts/main.py": "import helper\nhelper.download('t')\n",
+            "scripts/helper.py": FETCH_PY.format(digest=DIGEST, check=HASH_CHECK),
+        },
+    )
+    path = _write(rooted, _job(_run("python3 scripts/main.py")))
+    assert ["scripts/helper.py:download" in m for m in _messages(path)] == [True]
+
+
+def test_a_fetcher_imported_beside_another_module_is_read(rooted):
+    _tree(
+        rooted,
+        {
+            "fetch.py": (
+                "import os, requests\nrequests.get('https://example.com/v2.7.0/tool')\n"
+            )
+        },
+    )
+    assert len(_messages(_write(rooted, _job(_run("python3 fetch.py"))))) == 1
+
+
+def test_a_python_fetch_at_a_pinned_url_fires_with_no_digest(rooted):
+    _tree(
+        rooted,
+        {
+            "fetch.py": (
+                "import requests\nVERSION = '2.7.0'\n"
+                "requests.get(f'https://example.com/v{VERSION}/tool')\n"
+            )
+        },
+    )
+    path = _write(rooted, _job(_run("python3 fetch.py")))
+    assert [
+        "v${VERSION}/tool (fetched by fetch.py:<module>)" in m for m in _messages(path)
+    ] == [True]
+
+
+@pytest.mark.parametrize(
+    ("install", "check"),
+    [
+        (INSTALL_SH.replace("COMMAND", "python3"), "pass"),
+        ('python3 "$UNRESOLVABLE/fetch.py"\n', HASH_CHECK),
+    ],
+    ids=["no-digest-no-version", "unresolvable-path"],
+)
+def test_what_the_python_walk_leaves_alone(rooted, install, check):
+    _tree(
+        rooted,
+        {
+            "scripts/install.sh": install,
+            "scripts/fetch.py": FETCH_PY.format(digest=DIGEST, check=check),
+        },
+    )
+    path = _write(rooted, _job(_run("bash scripts/install.sh")))
+    assert uc.check_file(path) == []
+
+
+def test_a_hash_compare_in_another_function_does_not_pin_a_method_fetch(rooted):
+    """The fetch sits in a class method, and the only compare sits in a
+    different function, so nothing checks the bytes this fetch reads."""
+    _tree(
+        rooted,
+        {
+            "fetch.py": (
+                "import hashlib\nimport urllib.request\n\n"
+                "class Client:\n"
+                "    def latest(self):\n"
+                "        return urllib.request.urlopen('https://e/api/latest').read()\n"
+                "\n\ndef verify(data, want):\n"
+                "    return hashlib.sha256(data).hexdigest() == want\n"
+            )
+        },
+    )
+    assert uc.check_file(_write(rooted, _job(_run("python3 fetch.py")))) == []
+
+
+@pytest.mark.parametrize(
+    "run", ["uv run pytest tests/fetch.py", "uv run ruff check tests/fetch.py"]
+)
+def test_a_python_file_another_program_reads_is_not_the_step_script(rooted, run):
+    _tree(rooted, {"tests/fetch.py": FETCH_PY.format(digest=DIGEST, check=HASH_CHECK)})
+    assert uc.check_file(_write(rooted, _job(_run(run)))) == []
+
+
+# ── the measured case ───────────────────────────────────────────────────────
+
+# The osv-scanner fetch path of agent-glovebox's `js-scan-run` job, through its
+# `scan.sh` and `osv-scanner.bash`. The fetch sits two script hops below the
+# `run:` body, so only a walk that follows scripts sees it.
+GLOVEBOX_SCAN = """\
+set -euo pipefail
+
+HERE="$(dirname "${BASH_SOURCE[0]}")"
+# shellcheck source=../lib/osv-scanner.bash disable=SC1091
+source "$HERE/../lib/osv-scanner.bash"
+
+download_osv_scanner osv-scanner
+./osv-scanner scan source --lockfile pnpm-lock.yaml
+"""
+GLOVEBOX_OSV = """\
+# shellcheck source=../lib-pinned-install.sh disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib-pinned-install.sh"
+
+OSV_VERSION="2.7.0"
+OSV_SHA256="160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b"
+
+download_osv_scanner() {
+  local dest="$1"
+  PINNED_TOOL=osv-scanner pinned_curl \\
+    "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64" \\
+    "$dest"
+  echo "${OSV_SHA256}  ${dest}" | sha256sum -c -
+  chmod +x "$dest"
+}
+"""
+GLOVEBOX_PINNED = """\
+pinned_curl() {
+  local url="$1" dest="${2:-$PINNED_STAGED}" retry_widen=--retry-connrefused
+  curl --proto '=https' -fsSL --retry 6 "$retry_widen" -o "$dest" "$url" || return
+}
+"""
+GLOVEBOX_JOB = """\
+name: deps
+on:
+  pull_request:
+jobs:
+  js-scan-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+{cache}      - name: Scan pnpm-lock.yaml for known vulnerabilities
+        run: bash .github/scripts/deps-vuln/scan.sh js
+"""
+# glovebox PR #9135: a cache keyed on the file that pins the version and digest.
+GLOVEBOX_CACHE = """\
+      - name: Cache the pinned osv-scanner
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/osv-scanner-cache
+          key: osv-scanner-${{ runner.os }}-${{ hashFiles('.github/scripts/lib/osv-scanner.bash') }}
+"""
+
+
+@pytest.mark.parametrize(("cache", "fires"), [("", True), (GLOVEBOX_CACHE, False)])
+def test_the_glovebox_osv_scanner_job(rooted, cache, fires):
+    _tree(
+        rooted,
+        {
+            ".github/scripts/deps-vuln/scan.sh": GLOVEBOX_SCAN,
+            ".github/scripts/lib/osv-scanner.bash": GLOVEBOX_OSV,
+            ".github/scripts/lib-pinned-install.sh": GLOVEBOX_PINNED,
+        },
+    )
+    path = _write(rooted, GLOVEBOX_JOB.format(cache=cache))
+    findings = uc.check_file(path)
+    assert len(findings) == (1 if fires else 0), findings
+    if fires:
+        line, message = findings[0]
+        assert _step_line(path, line).startswith("- name: Scan pnpm-lock.yaml")
+        assert (
+            "osv-scanner_linux_amd64 in .github/scripts/lib/osv-scanner.bash" in message
+        )
+        assert "no cache step anywhere in the job" in message
