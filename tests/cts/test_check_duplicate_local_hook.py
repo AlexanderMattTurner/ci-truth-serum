@@ -183,7 +183,10 @@ def test_a_config_pre_commit_would_refuse_fails_loud(text: str) -> None:
         # The opt-out.
         (
             _config(_hook("a", "x.py"), _hook("b", "x.py")),
-            _config(_hook("a", "x.py"), _hook("b", "x.py", "  # duplicate-hook-ok: x")),
+            _config(
+                _hook("a", "x.py"),
+                _hook("b", "x.py", "  # duplicate-hook-ok: two stages run it"),
+            ),
         ),
     ],
 )

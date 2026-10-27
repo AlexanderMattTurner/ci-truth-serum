@@ -21,21 +21,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install uv
-        uses: ./.github/actions/setup-uv
+      # Node and pnpm too, not only uv: the tests under tests/ that drive the
+      # .github/scripts helpers run node and the pinned JS tools.
+      - name: Setup base environment
+        uses: ./.github/actions/setup-base-env
         with:
-          install-python: "true"
+          setup-python: "true"
       - name: Lint (ruff)
         run: uv run --extra dev ruff check ci_truth_serum tests/cts
       - name: Format check (ruff)
         run: uv run --extra dev ruff format --check ci_truth_serum tests/cts
+      # The whole tests/ tree, on every pull request: the tests of
+      # .github/scripts sit beside the check pack's, and a path gate in front of
+      # them skipped them exactly when a script they test changed.
       - name: Tests (pytest)
-        run: uv run --extra dev pytest tests/cts -n auto -q
-      # A template sync can drop a name from shared-names.json that a file here
-      # still reads. validate-config.yaml runs this test only when tests/ or a
-      # workflow changes, so it runs here on every pull request.
-      - name: Shared-names readers (pytest)
-        run: uv run --extra dev pytest tests/test_shared_names_readers.py -q
+        run: uv run --extra dev pytest tests -n auto -q
 
   # Stable Required check: runs even when `test` is cancelled, so a protected
   # branch never gets stuck on a check that never reports.

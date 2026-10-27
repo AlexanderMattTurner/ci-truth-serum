@@ -59,7 +59,8 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     github_string,
     unwrap_expression,
     workflow_triggers,
-    yaml_comment_view,
+    yaml_marker_comments,
+    source_lines,
 )
 from _cts_linecheck import WORKFLOW_GLOBS  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -488,8 +489,8 @@ def check_file(
         return []
 
     blocks = _job_blocks(text)
-    lines = text.splitlines()
-    comments = yaml_comment_view(text)
+    lines = source_lines(text)
+    comments = yaml_marker_comments(text)
     required = _marked_jobs(blocks, jobs)
 
     violations: list[tuple[int | None, str]] = []

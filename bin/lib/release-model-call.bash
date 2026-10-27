@@ -24,16 +24,13 @@ ANTHROPIC_MAX_ATTEMPTS="${ANTHROPIC_MAX_ATTEMPTS:-3}"
 ANTHROPIC_RETRY_DELAY="${ANTHROPIC_RETRY_DELAY:-2}"
 ANTHROPIC_API_URL="${ANTHROPIC_API_URL:-https://api.anthropic.com/v1/messages}"
 
-# The credential env vars to try, in order. Populated from the environment so the
-# workflow decides which secrets exist; an unset or empty rung is skipped rather
-# than attempted and failed.
-RELEASE_CREDENTIAL_ORDER=(
-  ANTHROPIC_API_KEY
-  CLAUDE_CODE_OAUTH_TOKEN
-  CLAUDE_CODE_OAUTH_TOKEN_FALLBACK
-  CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3
-  CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5
-)
+# The credential env vars to try, in order: the subscription tokens in the order
+# every other caller uses, then the metered key, which bills, only once each token
+# is rejected. The workflow decides which secrets exist; an unset or empty rung is
+# skipped rather than attempted and failed.
+# shellcheck source=../../.github/scripts/lib/claude-oauth-ladder.bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../.github/scripts/lib/claude-oauth-ladder.bash"
+RELEASE_CREDENTIAL_ORDER=("${CLAUDE_OAUTH_LADDER_VARS[@]}" ANTHROPIC_API_KEY)
 
 # release_credential_ladder — print the NAME of every non-empty credential env
 # var, one per line, in ladder order. Names only: a value never leaves this file.

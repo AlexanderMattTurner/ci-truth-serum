@@ -57,7 +57,9 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     run_file_cli,
     tracked_shell_files,
+    run_message_checks,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # Helpers that themselves assert `[[ $# -ge 2 ]]` before returning — calling one
 # at the top of an arm is an accepted guard. A small named allowlist, not a
@@ -393,16 +395,18 @@ def _body_statements(case_item: Node):
         yield child
 
 
-def _optout(lines: list[str], lineno: int) -> "re.Match[str] | None":
-    """A `# flag-arity-ok:` marker on the read's own line or the line above it."""
-    cur = lines[lineno - 1] if 0 <= lineno - 1 < len(lines) else ""
-    prev = lines[lineno - 2] if lineno - 2 >= 0 else ""
-    return _OPTOUT_RE.search(cur) or _OPTOUT_RE.search(prev)
+def _optout(said: dict[int, str], lineno: int) -> "re.Match[str] | None":
+    """A `# flag-arity-ok:` marker in a real comment on the read's own line or
+    the line above it. SAID maps a 1-based line to its comment, so a marker a
+    command prints is text and marks nothing."""
+    return _OPTOUT_RE.search(said.get(lineno, "")) or _OPTOUT_RE.search(
+        said.get(lineno - 1, "")
+    )
 
 
 def _scan_arm(
     case_item: Node,
-    lines: list[str],
+    said: dict[int, str],
     exits: frozenset[str],
     found: list[tuple[int, str]],
 ) -> None:
@@ -433,7 +437,7 @@ def _scan_arm(
             if required <= proven:
                 continue
             lineno = read.start_point[0] + 1
-            marker = _optout(lines, lineno)
+            marker = _optout(said, lineno)
             if marker is not None:
                 if not marker.group("reason").strip():
                     found.append((lineno, _MSG_EMPTY_OPTOUT))
@@ -448,12 +452,12 @@ def violations(text: str) -> list[tuple[int, str]]:
     reads a positional (``$N`` / ``shift N``) beyond what its arity guards
     prove exists. One report per arm."""
     root = parse(text)
-    lines = text.split("\n")
+    said = shell_comments(text)
     exits = exit_names(root)
     found: list[tuple[int, str]] = []
     for node in _walk(root):
         if node.type == "case_item":
-            _scan_arm(node, lines, exits, found)
+            _scan_arm(node, said, exits, found)
     found.sort()
     return found
 
@@ -464,17 +468,7 @@ def main(argv: list[str]) -> int:
         if "--all" in argv
         else [a for a in argv if not a.startswith("--")]
     )
-
-    rc = 0
-    for path in files:
-        try:
-            text = Path(path).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue  # a deleted/renamed path pre-commit may still list
-        for line_no, message in violations(text):
-            print(f"{path}:{line_no}: {message}", file=sys.stderr)
-            rc = 1
-    return rc
+    return run_message_checks(files, lambda text, _path: violations(text))
 
 
 if __name__ == "__main__":

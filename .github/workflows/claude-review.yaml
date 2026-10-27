@@ -116,7 +116,7 @@ jobs:
       statuses: write # a caller's post-review command re-posts the head's verdict
       actions: read # the owed-review re-check lists this workflow's in-flight runs
       checks: read # the reviewer's jobs may read another check run on the head
-    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@8fd4317a10020e28b8e721a11a2c9857b0027fc3 # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
+    uses: AlexanderMattTurner/agent-review/.github/workflows/review.yaml@667f5f240c84496a55b09763a03c94927878733b # pin-comment-ok: agent-review cuts no release yet; re-pin at its first vX.Y
     with:
       reviewer-repository: AlexanderMattTurner/agent-review
       # Name the pin again here. The called workflow falls back to
@@ -124,7 +124,7 @@ jobs:
       # reusable call, and its clone step then refuses to run unpinned code. The
       # sha below MUST equal the one the `uses:` line above names; move both in
       # the same edit.
-      reviewer-ref: 8fd4317a10020e28b8e721a11a2c9857b0027fc3
+      reviewer-ref: 667f5f240c84496a55b09763a03c94927878733b
       review-prompt: .github/prompts/claude-pr-review.md
       # The review posts with the workflow GITHUB_TOKEN, and that token's events
       # start no workflow run. So `Review findings resolved` would sit at its old
@@ -133,18 +133,16 @@ jobs:
       # reviewed, with GH_TOKEN, GH_REPO, PR and REPORT_SHA already exported.
       post-review-command: bash .github/scripts/review-findings-gate.sh
     secrets:
-      # Rung 1 is the metered key the reviewer spends before any subscription
-      # tier; the OAuth tiers keep this repository's own order behind it, so a
-      # setup that configures only CLAUDE_CODE_OAUTH_TOKEN still reaches it on
-      # the first subscription attempt. An unset rung is skipped, not a stop.
-      rung_1: ${{ secrets.ANTHROPIC_API_KEY }}
-      rung_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      rung_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
-      rung_4: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
-      rung_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
-      rung_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4 }}
-      rung_7: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
-      rung_8: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
+      # Every repository that calls the reviewer passes these seven
+      # subscription tokens in this order. No rung holds a metered API key, so
+      # a review never bills; the reviewer tries one last if a rung ever does.
+      rung_1: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
+      rung_2: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2 }}
+      rung_3: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3 }}
+      rung_4: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4 }}
+      rung_5: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5 }}
+      rung_6: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6 }}
+      rung_7: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   # Auto-approve the PRs the reviewer deliberately SKIPS (see `review` above:
   # low-risk chore/style by title, machine-cut `release:` PRs, and
@@ -454,14 +452,28 @@ jobs:
         run: bash .github/scripts/install-input-sanitizer.sh
 
       - name: Fetch and sanitize the untrusted PR diff
+        id: prepare
         if: steps.threads.outputs.has_threads == 'true' || steps.bodyhold.outputs.has_body_hold == 'true'
         env:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
         run: bash .github/scripts/prepare-pr-review-input.sh
 
+      # Over the size cap the script writes no diff.txt and sets oversized=true.
+      # The judge, its cost tally and the resolve step below all skip on that
+      # output, and this step makes the skip visible: a judge that read a
+      # missing diff would answer about nothing.
+      - name: Report that the diff is too large to judge
+        if: steps.prepare.outputs.oversized == 'true'
+        env:
+          DIFF_LINES: ${{ steps.prepare.outputs.diff_lines }}
+        run: |
+          msg="The thread resolver did not run: the diff is ${DIFF_LINES} lines, over the size limit. Resolve each addressed thread by hand."
+          echo "::notice title=Thread resolver skipped::${msg}"
+          echo "${msg}" >>"$GITHUB_STEP_SUMMARY"
+
       - name: Judge which threads (and any body hold) are addressed (Claude Haiku)
         id: haiku
-        if: steps.threads.outputs.has_threads == 'true' || steps.bodyhold.outputs.has_body_hold == 'true'
+        if: steps.prepare.outputs.oversized == 'false'
         uses: ./.github/actions/claude-run
         with:
           oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -496,7 +508,7 @@ jobs:
             sanitizer report: ${{ runner.temp }}/pr-input/sanitizer-report.txt
 
       - name: Tally this Haiku run's cost onto the review footnote
-        if: steps.threads.outputs.has_threads == 'true' || steps.bodyhold.outputs.has_body_hold == 'true'
+        if: steps.prepare.outputs.oversized == 'false'
         # Runs on every Haiku pass (even one that resolves nothing), so the
         # footnote's running Haiku cost stays current. Independent of the
         # resolve step below.
@@ -505,7 +517,7 @@ jobs:
         run: bash .github/scripts/append-haiku-cost.sh
 
       - name: Resolve the threads Haiku judged addressed
-        if: steps.threads.outputs.has_threads == 'true'
+        if: steps.threads.outputs.has_threads == 'true' && steps.prepare.outputs.oversized == 'false'
         env:
           PR_INPUT_DIR: ${{ runner.temp }}/pr-input
           # resolveReviewThread is not available to the Actions GITHUB_TOKEN — it

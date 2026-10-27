@@ -19,14 +19,12 @@ each ``run:`` value read. A push that must stay opts out with
 """
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
-    PathologicalInputError,
     is_lookup,
     iter_nodes,
     parse,
@@ -34,7 +32,6 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 )
 from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     shell_comments,
-    yaml_comments,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
@@ -42,12 +39,13 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_source_checks,
     yaml_run_scalars,
     yaml_run_script,
+    is_workflow_path,
+    yaml_marker_comments,
+    source_lines,
 )
 
 OPT_OUT = "main-push-ok"
 DEFAULT_BRANCHES = ("main", "master")
-
-_WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 
 # git's global options that take their value as the NEXT word (`git -C dir push`).
 _GIT_VALUE_OPTIONS = frozenset(
@@ -210,11 +208,10 @@ def _unexcused(
     COMMENTS is what each line says as a real comment (1-based line to text), so
     a marker quoted inside a string or a heredoc excuses nothing.
     """
-    said = [comments.get(line, "") for line in range(1, len(lines) + 1)]
     return sorted(
         start
         for start, end in spans.items()
-        if not annotated_near(lines, start, OPT_OUT, span_end=end, comments=said)
+        if not annotated_near(lines, start, OPT_OUT, span_end=end, comments=comments)
     )
 
 
@@ -225,7 +222,7 @@ def violations(
 ) -> list[int]:
     """1-based start lines of the pushes in shell TEXT that land on BRANCHES."""
     return _unexcused(
-        _pushes(text, branches, gits), text.splitlines(), shell_comments(text)
+        _pushes(text, branches, gits), source_lines(text), shell_comments(text)
     )
 
 
@@ -240,13 +237,17 @@ def workflow_violations(
     opt-out is read from a real YAML comment or a real script comment.
     """
     spans: dict[int, int] = {}
-    for scalar in yaml_run_scalars(text):
+    # Every `run:` value, whatever its shell: a push from a `pwsh` step lands on
+    # main too. The markers come from the SAME scripts, so each step this can
+    # flag is a step that can carry its opt-out.
+    scalars = yaml_run_scalars(text)
+    for scalar in scalars:
         script = "\n" * text.count("\n", 0, scalar.start) + yaml_run_script(
             text, scalar
         )
         for start, end in _pushes(script, branches, gits).items():
             spans[start] = max(spans.get(start, end), end)
-    return _unexcused(spans, text.splitlines(), yaml_comments(text))
+    return _unexcused(spans, source_lines(text), yaml_marker_comments(text, scalars))
 
 
 def main(argv: list[str]) -> int:
@@ -266,22 +267,13 @@ def main(argv: list[str]) -> int:
     gits = frozenset(args.git_command)
 
     def find(text: str, path: str) -> list[int]:
-        if _WORKFLOW_PATH.search(path.replace("\\", "/")):
+        if is_workflow_path(path):
             return workflow_violations(text, branches, gits)
         if path.endswith((".yaml", ".yml")):
             return []
         return violations(text, branches, gits)
 
-    # One path at a time, so a file the grammar refuses fails LOUDLY and names
-    # its path instead of ending the whole run with a traceback.
-    status = 0
-    for path in args.files:
-        try:
-            status = max(status, run_source_checks([path], find, _message(branches)))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    return run_source_checks(args.files, find, _message(branches))
 
 
 if __name__ == "__main__":

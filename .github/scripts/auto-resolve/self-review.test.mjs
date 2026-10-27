@@ -172,15 +172,20 @@ function fixtureBaseWorktree(root) {
   return base;
 }
 
-// The ladder the script walks, in attempt order.
-const LADDER_VARS = [
-  "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK",
-  "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3",
-  "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4",
-  "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5",
-  "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6",
-];
+// The ladder the script walks, in attempt order, read from the one list the
+// script itself sources, so token N lands on the Nth rung tried.
+const LADDER_VARS = execFileSync(
+  "bash",
+  [
+    "-c",
+    'source "$1"; printf "%s\\n" "${CLAUDE_OAUTH_LADDER_VARS[@]}"',
+    "ladder",
+    join(HERE, "..", "lib", "claude-oauth-ladder.bash"),
+  ],
+  { encoding: "utf8" },
+)
+  .split("\n")
+  .filter(Boolean);
 
 const FIXTURES = {
   delta: fixtureMergeWithDelta,

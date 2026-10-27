@@ -30,6 +30,8 @@ annotation *readers* with their own grammar, not boolean opt-out predicates, and
 
 import re
 
+import pytest
+
 from tests._helpers import HOOKS_DIR, load_hook
 
 lc = load_hook("_cts_linecheck.py", "lc_for_annotation_contract")
@@ -231,3 +233,85 @@ def test_the_handrolled_window_detector_actually_matches() -> None:
     # Sanctioned: a bare line, a loop variable, and the shared helper.
     assert _handrolled_windows("if annotated(line, OPT_OUT):") == []
     assert _handrolled_windows("annotated_near(lines, lineno, OPT_OUT)") == []
+
+
+# ── the comment SURFACE: a marker a command prints marks nothing ─────────
+# `annotated_near` reads only what the grammar calls a comment, so a marker in a
+# string a command prints, or in a heredoc body, is text. These lints read the
+# raw line, and the advice their own error prints — `annotate # <token>: <why>`
+# — cleared the finding when a script echoed it on the line above.
+_SHELL_OPT_OUT_CASES = {
+    "check_exit_suppression": "cmd || true",
+    "check_soft_timeout": "timeout 60 make test",
+    "check_curl_retry": "curl -fsSL -o f https://example.com/x",
+    "check_pinned_downloads": "curl -fsSL https://x/y.sh | bash",
+    "check_bare_mkdir": 'mkdir -p "$D"',
+    "check_echo_fallback": "x=$(cmd || echo fallback)",
+    "check_main_push": "git push origin HEAD:main",
+    "check_versionless_install": "pip install requests",
+    "check_truncating_pr_json": "gh pr view 1 --json files",
+}
+
+
+@pytest.mark.parametrize(("name", "command"), sorted(_SHELL_OPT_OUT_CASES.items()))
+def test_a_printed_or_heredoc_marker_does_not_suppress(name: str, command: str) -> None:
+    check = load_hook(f"{name}.py", f"{name}_for_comment_surface")
+    token = check.OPT_OUT
+    base = check.violations(f"#!/bin/bash\n{command}\n")
+    printed = check.violations(
+        f'#!/bin/bash\necho "to opt out, write # {token}: because"\n{command}\n'
+    )
+    heredoc = check.violations(
+        f"#!/bin/bash\ncat > notes.md <<'EOF'\n# {token}: generated docs\nEOF\n{command}\n"
+    )
+    real = check.violations(f"#!/bin/bash\n# {token}: vendored upstream\n{command}\n")
+    assert base, "non-vacuity: the command is a finding"
+    assert real == [], "non-vacuity: a real comment suppresses it"
+    assert (len(printed), len(heredoc)) == (len(base), len(base))
+
+
+def test_a_url_fragment_is_not_a_marker() -> None:
+    pinned = load_hook("check_pinned_downloads.py", "pinned_for_url_fragment")
+    assert pinned.violations(
+        '#!/bin/bash\ncurl -fsSL "https://x/i.sh#pin-exempt:ok" | bash\n'
+    )
+
+
+def test_a_template_slot_is_no_reason() -> None:
+    """Every error in this pack prints its opt-out as `# <token>: <reason>`. A
+    pasted copy states no reason, so it must not suppress."""
+    for slot in ("<reason>", "<why>", "<reason> -->", '<reason>"'):
+        assert not lc.annotated(f"# example-ok: {slot}", "example-ok"), slot
+    assert not lc.annotated("# example-ok: n/a", "example-ok")
+    # Non-vacuity: prose that merely contains a slot is a reason.
+    assert lc.annotated("# example-ok: <x> is vendored", "example-ok")
+
+
+# ── a lone `\r` must not slide the window off the comment map ────────────
+# Each grammar numbers lines its own way: tree-sitter counts `\n`, Python's
+# `ast` also counts `\r`. A window built from `str.splitlines()` counts both
+# and `\v`, `\f` and U+2028 too, so the comment block above a finding was read
+# one line off, and a real marker two lines up cleared nothing.
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [
+        (
+            "check_exit_suppression",
+            "#!/bin/bash\n: a\rb\n# allow-exit-suppress: wraps onto\n"
+            "# a second comment line\ncmd || true\n",
+        ),
+        (
+            "check_global_stdio_swap",
+            "import sys\nx = 1\ry = 2\n# allow-stdio-swap: wraps onto\n"
+            "# a second comment line\nsys.stdout = None\n",
+        ),
+    ],
+)
+def test_a_lone_carriage_return_keeps_the_marker_on_its_line(
+    name: str, text: str
+) -> None:
+    check = load_hook(f"{name}.py", f"{name}_for_lone_cr")
+    assert check.violations(text) == []
+    # Non-vacuity: the same file without the marker is a finding.
+    unmarked = text.replace(check.OPT_OUT, "no-such-marker")
+    assert check.violations(unmarked) != []

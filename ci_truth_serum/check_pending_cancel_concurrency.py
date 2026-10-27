@@ -121,6 +121,8 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     valid_twin_names,
     workflow_files,
     yaml_comment_view,
+    yaml_marker_comments,
+    source_lines,
 )
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
@@ -318,9 +320,7 @@ def _inert_slot_violations(
     return violations
 
 
-def _workflow_misfire_violations(
-    text: str, doc: dict, comment_lines: list[str]
-) -> list[tuple[int | None, str]]:
+def _workflow_misfire_violations(text: str, doc: dict) -> list[tuple[int | None, str]]:
     """The finding for a workflow-level group whose run-id escape picks the run
     id on every trigger the workflow declares, or an empty list.
 
@@ -334,10 +334,14 @@ def _workflow_misfire_violations(
     if not triggers or not all(group_is_per_run_on(group, t) for t in triggers):
         return []
     line = concurrency_line(text)
-    lines = text.splitlines()
+    lines = source_lines(text)
     window = _top_level_block(lines, line)
     if annotated_near(
-        lines, line, INERT_OPT_OUT, span_end=window.stop, comments=comment_lines
+        lines,
+        line,
+        INERT_OPT_OUT,
+        span_end=window.stop,
+        comments=yaml_marker_comments(text),
     ):
         return []
     message = _MISFIRE_MESSAGE.format(
@@ -403,7 +407,7 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     blocks = _job_blocks(text)
     comment_lines = yaml_comment_view(text)
     violations = _inert_slot_violations(doc, jobs, blocks, comment_lines)
-    violations += _workflow_misfire_violations(text, doc, comment_lines)
+    violations += _workflow_misfire_violations(text, doc)
 
     storm = _storm_types(doc)
     if not storm:

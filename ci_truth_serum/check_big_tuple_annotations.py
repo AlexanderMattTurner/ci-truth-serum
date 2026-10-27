@@ -36,6 +36,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 )
 from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "big-tuple-ok"
 DEFAULT_MIN_ELEMENTS = 3
@@ -110,6 +111,7 @@ def violations(
     was actually handed.
     """
     lines = py_lines(text)
+    said = py_comments(text)
     hits: list[tuple[int, int]] = []
     for tree in trees(text):
         parents = {
@@ -124,7 +126,7 @@ def violations(
             if count < min_elements:
                 continue
             start, end = _suppression_span(node, parents)
-            if annotated_near(lines, start, OPT_OUT, span_end=end):
+            if annotated_near(lines, start, OPT_OUT, span_end=end, comments=said):
                 continue
             hits.append((node.lineno, count))
     return sorted(hits)

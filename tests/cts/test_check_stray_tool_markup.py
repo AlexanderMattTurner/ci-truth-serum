@@ -35,8 +35,8 @@ _A = "antml:"
 
 
 def test_flags_then_clean() -> None:
-    assert mod.violations("intro\n</invoke>\n") == [2]
-    assert mod.violations("intro\nthe tool call is done\n") == []
+    assert mod.violations("intro\n</invoke>\n", "notes.md") == [2]
+    assert mod.violations("intro\nthe tool call is done\n", "notes.md") == []
 
 
 # -- each plain sentinel variant, member-by-member -----------------------------
@@ -57,7 +57,7 @@ FLAGGED = {
 
 @pytest.mark.parametrize("tag", FLAGGED.values(), ids=list(FLAGGED))
 def test_each_flagged_variant(tag: str) -> None:
-    assert mod.violations(f"body line\n{tag}\n") == [2]
+    assert mod.violations(f"body line\n{tag}\n", "notes.md") == [2]
 
 
 # -- the antml:-prefixed variants (assembled, never written literally) ---------
@@ -75,7 +75,7 @@ ANTML_FLAGGED = {
 
 @pytest.mark.parametrize("tag", ANTML_FLAGGED.values(), ids=list(ANTML_FLAGGED))
 def test_each_antml_flagged_variant(tag: str) -> None:
-    assert mod.violations(f"body line\n{tag}\n") == [2]
+    assert mod.violations(f"body line\n{tag}\n", "notes.md") == [2]
 
 
 # -- false positives that must NOT be flagged ----------------------------------
@@ -96,7 +96,7 @@ CLEAN = {
 
 @pytest.mark.parametrize("body", CLEAN.values(), ids=list(CLEAN))
 def test_no_false_positive(body: str) -> None:
-    assert mod.violations(body) == []
+    assert mod.violations(body, "notes.md") == []
 
 
 # -- fenced code blocks are skipped --------------------------------------------
@@ -104,22 +104,22 @@ def test_no_false_positive(body: str) -> None:
 
 def test_fenced_block_is_skipped() -> None:
     body = "intro\n\n```\n</invoke>\n```\n\ndone\n"
-    assert mod.violations(body) == []
+    assert mod.violations(body, "notes.md") == []
 
 
 def test_tilde_fence_is_skipped() -> None:
     body = "intro\n\n~~~\n</parameter>\n~~~\n\ndone\n"
-    assert mod.violations(body) == []
+    assert mod.violations(body, "notes.md") == []
 
 
 def test_info_string_fence_is_skipped() -> None:
     body = "intro\n\n```xml\n<function_calls>\n```\n"
-    assert mod.violations(body) == []
+    assert mod.violations(body, "notes.md") == []
 
 
 def test_tag_after_a_closed_fence_still_fires() -> None:
     body = "```\n</invoke>\n```\n</parameter>\n"
-    assert mod.violations(body) == [4]
+    assert mod.violations(body, "notes.md") == [4]
 
 
 # -- escape hatch ---------------------------------------------------------------
@@ -127,17 +127,17 @@ def test_tag_after_a_closed_fence_still_fires() -> None:
 
 def test_html_comment_allow_above_suppresses() -> None:
     body = "<!-- allow-stray-markup: literal example for the docs -->\n</invoke>\n"
-    assert mod.violations(body) == []
+    assert mod.violations(body, "notes.md") == []
 
 
 def test_hash_comment_allow_above_suppresses() -> None:
     body = "# allow-stray-markup: fixture demonstrating the leak\n</invoke>\n"
-    assert mod.violations(body) == []
+    assert mod.violations(body, "notes.md") == []
 
 
 def test_allow_marker_two_lines_above_does_not_suppress() -> None:
     body = "<!-- allow-stray-markup: too far -->\nfiller\n</invoke>\n"
-    assert mod.violations(body) == [3]
+    assert mod.violations(body, "notes.md") == [3]
 
 
 # -- main(): CLI contract -------------------------------------------------------

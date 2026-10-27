@@ -46,7 +46,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_words,
     iter_nodes,
     node_text,
@@ -57,7 +56,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_line_checks,
+    source_lines,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "bare-mkdir-ok"
 
@@ -185,7 +186,8 @@ def violations(text: str) -> list[int]:
     """1-based line numbers of unexempted bare `mkdir -p` invocations —
     a `mkdir -p` whose directory is verified nearby (`_verified_nearby`) is not
     one."""
-    physical = text.splitlines()
+    physical = source_lines(text)
+    said = shell_comments(text)
     hits: set[int] = set()
     for command_node in iter_nodes(parse(text), "command"):
         if not _is_bare_mkdir_p(command_node):
@@ -195,24 +197,15 @@ def violations(text: str) -> list[int]:
             continue
         lineno = command_node.start_point[0] + 1
         end_line = command_node.end_point[0] + 1
-        if annotated_near(physical, lineno, OPT_OUT, span_end=end_line):
+        if annotated_near(physical, lineno, OPT_OUT, span_end=end_line, comments=said):
             continue
         hits.add(lineno)
     return sorted(hits)
 
 
 def main(argv: list[str]) -> int:
-    """Run the detector one path at a time, so a file the grammar refuses to
-    parse fails LOUDLY (naming the path, exit 1) instead of silently vanishing
-    from the scan, while every other path is still checked."""
-    status = 0
-    for path in argv:
-        try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    """Run the detector over ARGV, refusing by name a file it cannot read."""
+    return run_line_checks(argv, violations, MESSAGE)
 
 
 if __name__ == "__main__":

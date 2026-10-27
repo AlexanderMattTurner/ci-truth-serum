@@ -31,7 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_fastyaml import compose  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
-    yaml_script_view,
+    yaml_marker_comments,
+    source_lines,
 )
 
 OPT_OUT = "duplicate-hook-ok"
@@ -144,7 +145,7 @@ def duplicates(hooks: list[Hook], excused: set[int]) -> list[tuple[int, str]]:
 def findings(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for every duplicate in the config TEXT."""
     hooks = local_hooks(text)
-    lines, said = text.splitlines(), yaml_script_view(text)
+    lines, said = source_lines(text), yaml_marker_comments(text)
     excused = {
         position
         for position, hook in enumerate(hooks)

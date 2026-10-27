@@ -63,6 +63,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     is_test_path,
     run_file_cli,
+    source_lines,
 )
 
 OPT_OUT = "allow-positional-git-argv"
@@ -184,7 +185,7 @@ def violations(
 ) -> list[int]:
     """1-based line numbers that index into git's argv positionally, unannotated."""
     comments = comment_lines(text, path)
-    physical = text.splitlines()
+    physical = source_lines(text, path)
     code = _code_view(physical, comments)
     starts = _string_starts(text)
     positional_test = _positional_test_re(subcommands)
@@ -197,7 +198,7 @@ def violations(
         # A whole `case … esac` on one line leaves no window open below it.
         if _CASE_END.search(line):
             in_case = False
-        if annotated_near(physical, lineno, OPT_OUT):
+        if annotated_near(physical, lineno, OPT_OUT, comments=comments):
             continue
         if _ANCHORED_COMMAND_LINE.search(line) or positional_test.search(line):
             hits.append(lineno)

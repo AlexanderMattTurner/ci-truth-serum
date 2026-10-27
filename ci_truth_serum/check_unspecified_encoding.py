@@ -43,8 +43,8 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
-from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import trees, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-unspecified-encoding"
 
@@ -151,21 +151,16 @@ def violations(text: str) -> list[int]:
     findings" — the false green this pack refuses to produce for source it
     was actually handed.
     """
-    lines = py_lines(text)
-
-    def _line_at(lineno: int) -> str:
-        # A named lookup rather than an inline `lines[lineno - 1]` at each
-        # anchor, so this reads exactly one line with no neighbour-reaching
-        # arithmetic — a marker on the line ABOVE an anchor is usually a
-        # nested call's own annotation and must not leak to this one.
-        return lines[lineno - 1] if 0 < lineno <= len(lines) else ""
+    said = py_comments(text)
 
     def exempt(call: ast.Call) -> bool:
         # Only the two lines the call itself owns, never its whole span: a marker
         # anywhere else in a multi-line call belongs to a NESTED call, and scanning the
         # span would let that one annotation silently exempt the enclosing call too.
         anchors = {call.func.end_lineno or call.lineno, call.end_lineno or call.lineno}
-        return any(annotated(_line_at(n), OPT_OUT) for n in anchors)
+        # Exactly the anchor lines: a marker on the line ABOVE an anchor is
+        # usually a nested call's own annotation and must not leak to this one.
+        return any(annotated(said.get(n, ""), OPT_OUT) for n in anchors)
 
     return sorted(
         node.func.end_lineno or node.lineno

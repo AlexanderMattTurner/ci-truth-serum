@@ -38,7 +38,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
-    PathologicalInputError,
     command_words,
     iter_nodes,
     node_text,
@@ -46,10 +45,12 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     redirect_parts,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotated,
     run_file_cli,
     run_line_checks,
+    annotated_near,
+    source_lines,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-stderr-suppress"
 
@@ -212,7 +213,8 @@ def _command_words(command, arrays: dict[str, list[str]]) -> list[str]:
 
 def violations(text: str) -> list[int]:
     """1-based line numbers in TEXT that suppress stderr on a launch/build."""
-    lines = text.split("\n")
+    lines = source_lines(text)
+    said = shell_comments(text)
     root = parse(text)
     arrays = _array_values(root)  # collected file-wide (two-pass)
     hits = set()
@@ -227,24 +229,14 @@ def violations(text: str) -> list[int]:
         # INCLUDING its redirects' — a continuation-wrapped launch puts the
         # suppression (and so the reason for it) on a later line than the verb.
         last = max(node.end_point[0] + 1 for node in (command, *redirects))
-        if not any(annotated(line, OPT_OUT) for line in lines[lineno - 1 : last]):
+        if not annotated_near(lines, lineno, OPT_OUT, span_end=last, comments=said):
             hits.add(lineno)
     return sorted(hits)
 
 
 def main(argv: list[str]) -> int:
-    """Run the detector over ARGV through the shared read/report loop, one path at a
-    time so a file the grammar refuses to parse safely fails LOUDLY (naming the
-    path, exit 1) instead of being silently skipped, while every remaining path is
-    still checked."""
-    status = 0
-    for path in argv:
-        try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    """Run the detector over ARGV, refusing by name a file it cannot read."""
+    return run_line_checks(argv, violations, MESSAGE)
 
 
 if __name__ == "__main__":

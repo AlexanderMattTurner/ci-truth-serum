@@ -264,3 +264,11 @@ def test_main_takes_the_branch_flag(tmp_path, monkeypatch) -> None:
 def test_main_refuses_an_empty_file_list(capsys) -> None:
     assert mod.main([]) == 2
     assert "no files to scan" in capsys.readouterr().err
+
+
+def test_a_flagged_pwsh_step_can_carry_its_opt_out() -> None:
+    """Findings come from every `run:` value, so the markers must too: a push
+    from a `pwsh` step is flagged, and its author's comment beside it clears it."""
+    step = "steps:\n  - shell: pwsh\n    run: |\n      git push origin main{}\n"
+    assert mod.workflow_violations(step.format("")) == [4]
+    assert mod.workflow_violations(step.format("  # main-push-ok: release job")) == []

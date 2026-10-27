@@ -68,12 +68,13 @@ from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     SHELL_PYTHON_OR_WORKFLOW_YAML,
     Check,
 )
+from _cts_linecheck import annotated_near, is_checkout_uses  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from run_selection import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     SelectorError,
     resolve_all,
 )
 
-ANNOTATION = re.compile(r"#\s*trace-ci-ok:\s*\S")
+ALLOW = "trace-ci-ok"
 
 # CI configuration files, by path. The globs are the `fileMatch` values of the
 # SchemaStore catalog (https://www.schemastore.org/api/json/catalog.json), which
@@ -720,9 +721,11 @@ def _github_checkout(steps: yaml.Node | None) -> str | None:
     """Where the first `actions/checkout` step of this repository puts the code:
     its `path`, read from the workspace. A job without one has the workspace."""
     for step in _seq(steps):
-        action = (_scalar(_child(step, "uses")) or "").partition("@")[0]
         given = _child(step, "with")
-        if action == "actions/checkout" and _child(given, "repository") is None:
+        if (
+            is_checkout_uses(_scalar(_child(step, "uses")))
+            and _child(given, "repository") is None
+        ):
             return _ci_path(_scalar(_child(given, "path")) or ".", GITHUB_WORKSPACE)
     return GITHUB_WORKSPACE
 
@@ -2328,16 +2331,14 @@ def run_lints(synthetics: list[Synthetic], checks: list[Check]) -> list[TraceFin
 # Main
 # --------------------------------------------------------------------------- #
 def _annotated(repo: Path, finding: TraceFinding) -> bool:
-    """Whether a comment on the finding's line, or on the line above it,
-    accepts the finding."""
+    """Whether a `# trace-ci-ok: <reason>` comment accepts the finding, placed
+    where ``annotation_window`` allows."""
     path = repo / finding.path
     if not path.is_file():
         return False
-    comments = _comments(
-        finding.path, path.read_text(encoding="utf-8", errors="replace")
-    )
-    return any(
-        ANNOTATION.search(comments.get(n, "")) for n in (finding.line - 1, finding.line)
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return annotated_near(
+        text.split("\n"), finding.line, ALLOW, comments=_comments(finding.path, text)
     )
 
 

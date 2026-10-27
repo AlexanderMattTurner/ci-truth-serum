@@ -46,7 +46,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_words,
     iter_nodes,
     node_text,
@@ -54,10 +53,12 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotation_re,
     run_file_cli,
     run_line_checks,
+    annotated_near,
+    source_lines,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "secret-perms-ok"
 
@@ -93,8 +94,6 @@ _VALUE_FLAGS = frozenset({"-m", "--mode", "-o", "--owner", "-g", "--group", "-t"
 # Redirect operators that OPEN a file: `>` truncates, `>>` appends, `&>`/`&>>`
 # send both streams to it. `>&` is a descriptor dup (`2>&1`) and opens nothing.
 _WRITE_OPERATORS = frozenset({">", ">>", "&>", "&>>"})
-
-_ANNOTATION_RE = annotation_re(OPT_OUT)
 
 
 def _words(command) -> list[str]:
@@ -241,7 +240,8 @@ def _window(create, statements: list) -> list:
 def violations(text: str) -> list[int]:
     """1-based line numbers in TEXT of unguarded secret creates that are tightened
     by a nearby later chmod, without a ``# secret-perms-ok:`` opt-out."""
-    lines = text.split("\n")
+    lines = source_lines(text)
+    said = shell_comments(text)
     root = parse(text)
     statements = [child for child in root.children if child.type != "comment"]
     umasks = [c for c in iter_nodes(root, "command") if _is_private_umask(c)]
@@ -263,24 +263,14 @@ def violations(text: str) -> list[int]:
         # The create's own lines carry the opt-out; a redirect can push its end
         # past the command word's, so the span covers the whole statement.
         end = _statement(create).end_point[0] + 1
-        if not any(_ANNOTATION_RE.search(line) for line in lines[start - 1 : end]):
+        if not annotated_near(lines, start, OPT_OUT, span_end=end, comments=said):
             hits.add(start)
     return sorted(hits)
 
 
 def main(argv: list[str]) -> int:
-    """Run the detector over ARGV through the shared read/report loop, one path at a
-    time so a file the grammar refuses to parse safely fails LOUDLY (naming the
-    path, exit 1) instead of being silently skipped, while every remaining path is
-    still checked."""
-    status = 0
-    for path in argv:
-        try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    """Run the detector over ARGV, refusing by name a file it cannot read."""
+    return run_line_checks(argv, violations, MESSAGE)
 
 
 if __name__ == "__main__":

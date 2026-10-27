@@ -93,7 +93,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_line_checks,
+    source_lines,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # A sourced bash library carries no shebang and declares `# shellcheck shell=bash`. By
 # convention such a lib is sourced into strict-mode callers and must NOT re-set shell
@@ -332,7 +334,7 @@ def _pipefail_start(text: str, root) -> int | None:
     A sourced bash library (no shebang + `# shellcheck shell=bash`) inherits strict
     mode from its callers, so it is scoped from byte 0. Otherwise the first `set`
     command that enables pipefail marks the start."""
-    physical = text.splitlines()
+    physical = source_lines(text)
     no_shebang = not (physical and physical[0].startswith("#!"))
     if no_shebang and any(_SHELLCHECK_BASH.search(raw) for raw in physical[:5]):
         return 0
@@ -363,7 +365,8 @@ def _scan(text: str, root) -> list[int]:
     start = _pipefail_start(text, root)
     if start is None:
         return []
-    physical = text.splitlines()
+    physical = source_lines(text)
+    said = shell_comments(text)
     hits: set[int] = set()
     for pipeline in iter_nodes(root, "pipeline"):
         # A pipeline that runs before pipefail is enabled returns the reader's own
@@ -387,6 +390,7 @@ def _scan(text: str, root) -> list[int]:
             pipeline.start_point[0] + 1,
             _ALLOW,
             span_end=pipeline.end_point[0] + 1,
+            comments=said,
         ):
             continue
         hits.add(reader.start_point[0] + 1)

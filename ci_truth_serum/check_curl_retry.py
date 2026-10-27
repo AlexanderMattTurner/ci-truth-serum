@@ -68,7 +68,6 @@ from tree_sitter import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
-    PathologicalInputError,
     is_lookup,
     iter_nodes,
     node_text,
@@ -79,7 +78,9 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     annotated_near,
     run_file_cli,
     run_message_checks,
+    source_lines,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "curl-retry-ok"
 
@@ -391,7 +392,8 @@ def findings(text: str) -> list[tuple[int, str]]:
     """The (1-based line, arm) pairs for the file-writing ``curl`` commands in
     TEXT that no ``# curl-retry-ok`` annotation exempts. One line reports once,
     under the first arm that claims it."""
-    physical = text.splitlines()
+    physical = source_lines(text)
+    said = shell_comments(text)
     root = parse(text)
     carriers = _flag_carrying_assignments(root)
     hits: dict[int, str] = {}
@@ -401,7 +403,9 @@ def findings(text: str) -> list[tuple[int, str]]:
             continue
         start = node.start_point[0] + 1
         end = node.end_point[0] + 1
-        if annotated_near(physical, start, OPT_OUT, require_reason=False, span_end=end):
+        if annotated_near(
+            physical, start, OPT_OUT, require_reason=False, span_end=end, comments=said
+        ):
             continue
         hits.setdefault(start, arm)
     return list(hits.items())
@@ -473,30 +477,14 @@ def main(argv: list[str]) -> int:
             "curl must carry its own `--retry`. Drop the flag from your config.",
             file=sys.stderr,
         )
-    # One path at a time, so a file the shell grammar refuses to parse (over
-    # _MAX_PIPE_BYTES of piped bytes) fails LOUDLY, naming the path, instead of
-    # taking the whole run down with an uncaught traceback.
-    #
     # `findings` already says which arm each hit is, so the message is looked
     # up per HIT. A pass per arm would report nothing for an arm missing from
     # MESSAGES, and a silent pass over a real defect is what this module exists
     # to prevent. `MESSAGES[arm]` raises instead.
-    status = 0
-    for path in args.files:
-        try:
-            status = max(
-                status,
-                run_message_checks(
-                    [path],
-                    lambda text, _path: [
-                        (line, MESSAGES[arm]) for line, arm in findings(text)
-                    ],
-                ),
-            )
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    return run_message_checks(
+        args.files,
+        lambda text, _path: [(line, MESSAGES[arm]) for line, arm in findings(text)],
+    )
 
 
 if __name__ == "__main__":

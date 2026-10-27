@@ -44,16 +44,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_words,
     iter_nodes,
     parse,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    annotation_re,
     run_file_cli,
     run_line_checks,
+    annotated_near,
+    source_lines,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-substitution-exit"
 
@@ -79,8 +80,6 @@ _CONSUMER_COMMANDS = frozenset({"read", "mapfile", "readarray"})
 # The operator tokens the grammar puts between a `pipeline`'s stages; dropping
 # them leaves the stages themselves.
 _OPERATORS = frozenset({"||", "&&", "|", "|&", ";", ";;", "&", "\n"})
-
-_ALLOW_WITH_REASON = annotation_re(OPT_OUT)
 
 
 def _program(command) -> str:
@@ -154,42 +153,27 @@ def _pipe_producers(root) -> list:
     return found
 
 
-def _suppressed(lines: list[str], start: int, end: int) -> bool:
-    """True when a reason-bearing opt-out sits on a line of the flagged construct
-    (1-based ``start``..``end``) or the line directly above it."""
-    span = lines[max(start - 2, 0) : end]
-    return any(_ALLOW_WITH_REASON.search(line) for line in span)
-
-
 def violations(text: str) -> list[int]:
     """1-based line numbers in TEXT where a structured-data producer feeds a loop
     through an exit-swallowing construct without a reason-bearing annotation.
 
     The finding is anchored on the PRODUCER, which is the command whose status is
     lost and the line a reader writes the annotation on."""
-    lines = text.split("\n")
+    lines = source_lines(text)
+    said = shell_comments(text)
     root = parse(text)
     hits = set()
     for producer in _redirect_producers(root) + _pipe_producers(root):
         start = producer.start_point[0] + 1
-        if not _suppressed(lines, start, producer.end_point[0] + 1):
+        end = producer.end_point[0] + 1
+        if not annotated_near(lines, start, OPT_OUT, span_end=end, comments=said):
             hits.add(start)
     return sorted(hits)
 
 
 def main(argv: list[str]) -> int:
-    """Run the detector over ARGV through the shared read/report loop, one path at a
-    time so a file the grammar refuses to parse safely fails LOUDLY (naming the
-    path, exit 1) instead of being silently skipped, while every remaining path is
-    still checked."""
-    status = 0
-    for path in argv:
-        try:
-            status = max(status, run_line_checks([path], violations, MESSAGE))
-        except PathologicalInputError as err:
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-    return status
+    """Run the detector over ARGV, refusing by name a file it cannot read."""
+    return run_line_checks(argv, violations, MESSAGE)
 
 
 if __name__ == "__main__":

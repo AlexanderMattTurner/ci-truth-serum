@@ -151,3 +151,118 @@ def test_a_non_shell_file_is_never_parse_checked(
     status = linecheck.run_source_checks([str(doc)], lambda _t, _p: [], "msg")
     assert status == 0
     assert capsys.readouterr().err == ""
+
+
+# ── every shell check's own `main` refuses, not only the shared driver ───────
+# Each of these held a hand-written read loop that skipped the refusal, so the
+# file above reported clean through the check's real entry point.
+_MAIN_CHECKS = (
+    "check_truncating_pr_json",
+    "check_versionless_install",
+    "check_pinned_downloads",
+    "check_gh_slurp_jq",
+    "check_stderr_merge_parse",
+    "check_echo_fallback",
+    "check_flag_arity",
+)
+
+
+@pytest.mark.parametrize("name", _MAIN_CHECKS)
+def test_each_shell_check_main_refuses_an_unparseable_file(
+    name: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    check = load_hook(f"{name}.py", f"{name}_for_unparseable_main")
+    script = tmp_path / "x.sh"
+    script.write_text(f"#!/bin/bash\n{COLLAPSE_TRIGGER}{VIOLATION}", encoding="utf-8")
+    assert check.main([str(script)]) == 1
+    assert "could not parse this file" in capsys.readouterr().err
+
+
+def test_the_dead_function_check_refuses_an_unparseable_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A cross-file check: a file the grammar cannot read contributes no
+    definitions, and a verdict built without it is not a pass."""
+    check = load_hook("check_dead_shell_functions.py", "dead_fn_for_unparseable")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    script = tmp_path / "x.sh"
+    script.write_text(f"#!/bin/bash\n{COLLAPSE_TRIGGER}{VIOLATION}", encoding="utf-8")
+    # The grammar refuses this one outright: too many pipes to parse safely.
+    huge = tmp_path / "huge.sh"
+    huge.write_text("#!/bin/bash\ncmd " + "| cmd " * 3000 + "\n", encoding="utf-8")
+    assert check.main(["--repo-root", str(tmp_path), str(huge), str(script)]) == 1
+    err = capsys.readouterr().err
+    assert "pipe bytes" in err, "the pathological file must be refused, not crash"
+    assert "could not parse this file" in err, "the next path is still checked"
+
+
+# ── a workflow's `run:` scripts: one reader, which honours `shell:` ──────────
+_STEP = "jobs:\n  a:\n    runs-on: ubuntu-latest\n    steps:\n      - run: pip install requests\n"
+
+
+def _workflow(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / ".github" / "workflows" / "w.yaml"
+    path.parent.mkdir(parents=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_a_bash_run_script_is_read_at_its_step_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    check = load_hook("check_versionless_install.py", "versionless_for_run_scripts")
+    path = _workflow(tmp_path, _STEP)
+    assert check.main([str(path)]) == 1
+    assert f"{path}:5:" in capsys.readouterr().err
+
+
+def test_a_non_bash_run_script_is_not_read_as_bash(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A `pwsh` script is another language; reading it with the bash grammar
+    invents findings. Non-vacuity: the bash step above reports."""
+    check = load_hook("check_versionless_install.py", "versionless_for_pwsh")
+    path = _workflow(tmp_path, _STEP + "        shell: pwsh\n")
+    assert check.main([str(path)]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_a_workflow_that_will_not_parse_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The copies of this reader returned no scripts for broken YAML, so the
+    check reported a clean pass over a file it never read."""
+    check = load_hook("check_versionless_install.py", "versionless_for_bad_yaml")
+    path = _workflow(tmp_path, _STEP + "  b: [unclosed\n")
+    assert check.main([str(path)]) == 1
+    assert "could not read this file as YAML" in capsys.readouterr().err
+
+
+def test_a_run_key_that_github_never_executes_is_not_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`env: {run: …}` is a value a step reads, not a command it runs."""
+    check = load_hook("check_versionless_install.py", "versionless_for_env_run")
+    text = (
+        "jobs:\n  a:\n    runs-on: ubuntu-latest\n"
+        "    env:\n      run: pip install requests\n"
+        "    steps:\n      - run: echo ok\n"
+    )
+    assert check.main([str(_workflow(tmp_path, text))]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_an_aliased_step_in_a_bash_job_is_read(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    check = load_hook("check_versionless_install.py", "versionless_for_alias")
+    text = (
+        "jobs:\n"
+        "  a:\n    runs-on: windows-latest\n"
+        "    defaults:\n      run:\n        shell: pwsh\n"
+        "    steps:\n      - &install\n        run: pip install requests\n"
+        "  b:\n    runs-on: ubuntu-latest\n    steps:\n      - *install\n"
+    )
+    path = _workflow(tmp_path, text)
+    assert check.main([str(path)]) == 1
+    assert f"{path}:" in capsys.readouterr().err

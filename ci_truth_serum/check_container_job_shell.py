@@ -29,7 +29,8 @@ from _cts_fastyaml import compose  # noqa: E402,I001  # pylint: disable=wrong-im
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     workflow_files as _workflow_files,
-    yaml_script_view,
+    yaml_marker_comments,
+    source_lines,
 )
 
 REPO_ROOT = Path.cwd()
@@ -97,8 +98,8 @@ def violations(text: str) -> list[tuple[int, str]]:
     jobs = _value(root, "jobs")
     if not isinstance(jobs, yaml.MappingNode) or _declares_shell(root):
         return []
-    lines = text.splitlines()
-    comments = yaml_script_view(text)
+    lines = source_lines(text)
+    comments = yaml_marker_comments(text)
     found: list[int] = []
     for key_node, job in jobs.value:
         if not _set(_value(job, "container")) or _declares_shell(job):

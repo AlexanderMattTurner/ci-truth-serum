@@ -165,14 +165,14 @@
   description: An unverified curl/wget that you then run is a supply-chain entry point.
   entry: python -m ci_truth_serum.check_pinned_downloads
   language: python
-  files: '\.(sh|bash)$|(^|/)Dockerfile(\.[\w-]+)?$'
+  types_or: [shell, dockerfile]
 
 - id: check-versionless-install
   name: "identity: every install command must name a version"
   description: A versionless `pip install pkg` / `apt-get install pkg` resolves to whatever the index serves that day.
   entry: python -m ci_truth_serum.check_versionless_install
   language: python
-  files: '\.(sh|bash)$|(^|/)\.github/(workflows|actions)/.*\.ya?ml$'
+  types_or: [shell, yaml]
 
 - id: check-provenance-repo-url
   name: "identity: package repository URLs must name the repo that publishes"
@@ -1022,11 +1022,13 @@
 
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
-# picked up with no consumer change. Three checks are not aggregated — enable
+# picked up with no consumer change. Four checks are not aggregated — enable
 # each on its own: `check-absolute-symlinks` (a language:script shell hook),
 # `check-lockstep-pins` (config-driven; it hard-errors without the per-repo
-# --pair args an aggregate cannot supply), and `check-env-symmetry` (needs a
-# per-project --prefix arg an aggregate can't supply). These have no files/types
+# --pair args an aggregate cannot supply), `check-env-symmetry` (needs a
+# per-project --prefix arg an aggregate can't supply), and
+# `check-bash32-portability` (judges every file it gets, so it needs your own
+# `files:` naming the scripts that run on macOS). These have no files/types
 # filter so they always run (the workflow lints self-discover); the content
 # lints inside still receive only files of their kind.
 - id: check-tier1

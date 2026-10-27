@@ -80,14 +80,16 @@ function ladder(env) {
 }
 
 test("every rung the workflow passes is walked, member by member", () => {
+  // The operator's own token is LAST: every credential provisioned for CI is
+  // spent before it (see claude-oauth-ladder.bash).
   const rungs = [
-    "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK",
     "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2",
     "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3",
     "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_4",
     "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5",
     "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_6",
+    "CLAUDE_CODE_OAUTH_TOKEN",
   ];
   for (const rung of rungs)
     assert.deepEqual(ladder({ [rung]: `tok-${rung}` }), [`tok-${rung}`], rung);
@@ -105,7 +107,7 @@ test("an unset middle rung is stepped over, not treated as the end of the ladder
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK: "",
       CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2: "b",
     }),
-    ["a", "b"],
+    ["b", "a"],
   );
 });
 

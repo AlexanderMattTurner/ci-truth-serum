@@ -91,6 +91,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     LineLoader,
     workflow_files,
     yaml_script_view,
+    is_checkout_step,
 )
 from _cts_py_imports import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     interpreter_scripts,
@@ -158,10 +159,6 @@ class Checkout:
         return f"{self.workflow.name}:{self.job_name}"
 
 
-def _is_checkout(step: JsonObject) -> bool:
-    return str(step.get("uses") or "").startswith("actions/checkout")
-
-
 def _window(steps: list[JsonObject], start: int) -> tuple[JsonObject, ...]:
     """The steps that run against a checkout's tree, from START onward. A
     checkout with `path:` clones beside the tree rather than replacing it, so
@@ -176,7 +173,7 @@ def _window(steps: list[JsonObject], start: int) -> tuple[JsonObject, ...]:
         condition = str(step.get("if") or "")
         if condition in excluded_ifs:
             continue
-        if _is_checkout(step) and not (step.get("with") or {}).get("path"):
+        if is_checkout_step(step) and not (step.get("with") or {}).get("path"):
             if not condition:
                 break
             excluded_ifs.add(condition)
@@ -206,7 +203,7 @@ def checkouts(text: str, workflow: Path) -> list[Checkout] | None:
             continue
         steps = [s for s in job.get("steps") or [] if isinstance(s, dict)]
         for index, step in enumerate(steps):
-            if not _is_checkout(step):
+            if not is_checkout_step(step):
                 continue
             with_inputs = step.get("with") or {}
             raw = with_inputs.get("sparse-checkout")
@@ -338,7 +335,7 @@ def _replaces_tree(step: JsonObject) -> bool:
     """Whether STEP always replaces the job's tree: a checkout with no `path:`
     and no `if:`. `_window` ends at the first such step."""
     return (
-        _is_checkout(step)
+        is_checkout_step(step)
         and not (step.get("with") or {}).get("path")
         and not step.get("if")
     )

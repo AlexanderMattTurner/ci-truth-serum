@@ -39,7 +39,8 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     run_file_cli,
     run_line_checks,
 )
-from _cts_py_ast import parse_whole, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import lines, parse_whole, walk  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "cwd-git-ok"
 
@@ -179,9 +180,9 @@ def _writes(argv: ast.List | ast.Tuple, read_only: frozenset[str]) -> bool:
     return subcommand is not None and subcommand not in read_only
 
 
-def _suppressed(node: ast.Call, physical: list[str]) -> bool:
+def _suppressed(node: ast.Call, physical: list[str], said: dict[int, str]) -> bool:
     end = getattr(node, "end_lineno", node.lineno)
-    return annotated_near(physical, node.lineno, OPT_OUT, span_end=end)
+    return annotated_near(physical, node.lineno, OPT_OUT, span_end=end, comments=said)
 
 
 def violations(text: str, read_only: frozenset[str] = READ_ONLY) -> list[int]:
@@ -190,7 +191,8 @@ def violations(text: str, read_only: frozenset[str] = READ_ONLY) -> list[int]:
         tree = parse_whole(text)
     except SyntaxError:
         return []
-    physical = text.splitlines()
+    physical = lines(text)
+    said = py_comments(text)
     hits = []
     for node in walk(tree):
         if not isinstance(node, ast.Call):
@@ -198,7 +200,7 @@ def violations(text: str, read_only: frozenset[str] = READ_ONLY) -> list[int]:
         argv = _git_argv(node)
         if argv is None or _names_a_repo(node, argv) or _creates_its_own_repo(argv):
             continue
-        if not _writes(argv, read_only) or _suppressed(node, physical):
+        if not _writes(argv, read_only) or _suppressed(node, physical, said):
             continue
         hits.append(node.lineno)
     return sorted(hits)

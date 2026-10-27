@@ -16,12 +16,13 @@ transitively through each ``violations()``:
 
 import string
 
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from tests._helpers import load_hook
 
 comments = load_hook("_cts_comments.py", "fuzz_comments")
+linecheck = load_hook("_cts_linecheck.py", "fuzz_comments_linecheck")
 js_ast = load_hook("_cts_js_ast.py", "fuzz_js_ast")
 
 # Fragments that exercise the constructs a text scan gets wrong: delimiters
@@ -83,11 +84,15 @@ def _sources(draw) -> str:
 
 
 @given(_sources(), _PATHS)
+# A lone `\r` is a line break to Python's grammar and to no other here, so the
+# readers and this oracle both number lines through `source_lines`.
+@example(source="[\n\r0\n// line\n/* block */", path="a.py")
+@example(source="[\n\r0\n// line", path="a.py")
 def test_comment_lines_never_crashes_and_reports_real_lines(
     source: str, path: str
 ) -> None:
     found = comments.comment_lines(source, path)
-    lines = source.split("\n")
+    lines = linecheck.source_lines(source, path)
     for lineno, body in found.items():
         assert 1 <= lineno <= len(lines)
         # Every fragment on the line must occur on that line: an extractor that

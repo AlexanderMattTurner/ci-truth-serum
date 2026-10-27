@@ -53,7 +53,7 @@ from _cts_bash_ast import command_name  # noqa: E402,I001  # pylint: disable=wro
 from _cts_bash_ast import command_words  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_bash_ast import parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_linecheck import LineLoader as _LineLoader  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import LineLoader as _LineLoader, is_checkout_step  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import annotation_re  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import yaml_script_view  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -154,7 +154,7 @@ def _spends_in_range(step: dict, name: str) -> bool:
 
 def _spends_as_checkout_ref(step: dict, name: str) -> bool:
     """True when STEP checks out the commit NAME names."""
-    if "actions/checkout" not in str(step.get("uses", "")):
+    if not is_checkout_step(step):
         return False
     inputs = step.get("with")
     ref = inputs.get("ref") if isinstance(inputs, dict) else None

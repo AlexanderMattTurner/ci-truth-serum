@@ -34,15 +34,11 @@ block scanned instead, reported at the step's line.
 
 import argparse
 import ast
-import re
 import sys
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_arguments,
     iter_nodes,
     node_text,
@@ -50,12 +46,15 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    LineLoader,
     MESSAGE_PREFIX,
-    annotation_re,
     is_python_source,
     is_shell_source,
     run_file_cli,
+    annotated_near,
+    run_message_checks,
+    per_run_script,
+    is_workflow_path,
+    source_lines,
 )
 from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     lines as py_lines,
@@ -63,16 +62,14 @@ from _cts_py_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-pos
     trees,
     walk,
 )
+from _cts_comments import py_comments, shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "truncating-pr-json-ok"
-_ALLOW = annotation_re(OPT_OUT, require_reason=True)
 
 # Connection fields `gh` asks for as `<field>(first: 100)` with no natural
 # bound. `labels`/`assignees` are absent — a repository defines ~40 labels, so
 # neither can reach 100.
 _TRUNCATING = frozenset({"files", "commits", "comments", "reviews"})
-
-_WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 
 
 def _requested_fields(words: list[str]) -> set[str]:
@@ -131,15 +128,13 @@ def violations(text: str, *, truncating: frozenset[str] = _TRUNCATING) -> list[i
     (reported at its first line), a call written in a comment is a `comment`
     node, and one written inside a message string or a heredoc body is that
     string or body rather than a command."""
-    raw = text.splitlines()
-    hits = []
-    for start, end in sorted(_shell_hits(text, truncating).items()):
-        if any(_ALLOW.search(line) for line in raw[start - 1 : end]) or (
-            start >= 2 and _ALLOW.search(raw[start - 2])
-        ):
-            continue
-        hits.append(start)
-    return hits
+    raw = source_lines(text)
+    said = shell_comments(text)
+    return [
+        start
+        for start, end in sorted(_shell_hits(text, truncating).items())
+        if not annotated_near(raw, start, OPT_OUT, span_end=end, comments=said)
+    ]
 
 
 # ── Python: subprocess.run(["gh", "pr", …]) and its shell=True string form ──
@@ -210,7 +205,7 @@ def _python_truncating_read(
 
 
 def _python_hits(
-    tree: ast.AST, lines_: list[str], truncating: frozenset[str]
+    tree: ast.AST, lines_: list[str], said: dict[int, str], truncating: frozenset[str]
 ) -> list[int]:
     """1-based line numbers of a `subprocess.run(["gh", "pr", …])` call in TREE
     reading a truncating field, absent a `# truncating-pr-json-ok:` annotation."""
@@ -223,7 +218,7 @@ def _python_hits(
         if not listed and not _shell_string_truncating_read(node, truncating):
             continue
         end = getattr(node, "end_lineno", node.lineno)
-        if any(_ALLOW.search(ln) for ln in lines_[max(node.lineno - 2, 0) : end]):
+        if annotated_near(lines_, node.lineno, OPT_OUT, span_end=end, comments=said):
             continue
         hits.append(node.lineno)
     return sorted(set(hits))
@@ -236,38 +231,11 @@ def python_violations(
     same call written as a `shell=True` command-line string) reading a
     truncating `--json` field, absent a `# truncating-pr-json-ok:` annotation."""
     physical = py_lines(source)
+    said = py_comments(source)
     hits: list[int] = []
     for tree in trees(source):
-        hits += _python_hits(tree, physical, truncating)
+        hits += _python_hits(tree, physical, said, truncating)
     return sorted(set(hits))
-
-
-def _run_scripts(path: Path) -> list[tuple[int, str]]:
-    """(step line, script) for every inline `run:` block in a workflow or
-    composite-action file. An unparseable file yields no scripts — YAML syntax
-    is another tool's job, and the shell files this check owns are its argv."""
-    try:
-        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=LineLoader)
-    except yaml.YAMLError:
-        return []
-    if not isinstance(doc, dict):
-        return []
-    containers = []
-    jobs = doc.get("jobs")
-    if isinstance(jobs, dict):
-        containers += [job for job in jobs.values() if isinstance(job, dict)]
-    runs = doc.get("runs")
-    if isinstance(runs, dict):
-        containers.append(runs)
-    scripts: list[tuple[int, str]] = []
-    for container in containers:
-        steps = container.get("steps")
-        if not isinstance(steps, list):
-            continue
-        for step in steps:
-            if isinstance(step, dict) and isinstance(step.get("run"), str):
-                scripts.append((step.get("__line__", 1), step["run"]))
-    return scripts
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -295,37 +263,17 @@ def main(argv: list[str]) -> int:
         f"no list at all, or annotate `# {OPT_OUT}: <reason>`. The marker "
         "must sit on a line the command spans, or the line directly above it."
     )
-    status = 0
-    for arg in args.files:
-        path = Path(arg)
-        try:
-            if _WORKFLOW_PATH.search(arg.replace("\\", "/")):
-                hits = [
-                    step_line
-                    for step_line, script in _run_scripts(path)
-                    if violations(script, truncating=truncating)
-                ]
-            else:
-                text = path.read_text(encoding="utf-8")
-                if is_python_source(arg):
-                    hits = python_violations(text, truncating=truncating)
-                elif is_shell_source(arg, text.split("\n", 1)[0]):
-                    hits = violations(text, truncating=truncating)
-                else:
-                    continue  # neither shell nor Python — e.g. a non-workflow YAML
-        except (OSError, UnicodeDecodeError):
-            continue  # a deleted/renamed path pre-commit may still list
-        except PathologicalInputError as err:
-            # A shape the grammar cannot parse safely fails the check LOUDLY:
-            # skipping it would false-green exactly the input an adversary
-            # controls.
-            print(f"{arg}: {err}", file=sys.stderr)
-            status = 1
-            continue
-        for lineno in hits:
-            print(f"{arg}:{lineno}: {message}", file=sys.stderr)
-            status = 1
-    return status
+
+    def find(text: str, path: str) -> list[tuple[int, str]]:
+        if is_python_source(path):
+            hits = python_violations(text, truncating=truncating)
+        elif is_shell_source(path, text.split("\n", 1)[0]) or is_workflow_path(path):
+            hits = violations(text, truncating=truncating)
+        else:
+            hits = []  # neither shell nor Python — e.g. a non-workflow YAML
+        return [(n, message) for n in hits]
+
+    return run_message_checks(args.files, per_run_script(find))
 
 
 if __name__ == "__main__":

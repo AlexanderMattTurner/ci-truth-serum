@@ -68,11 +68,8 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_arguments,
     iter_nodes,
     node_text,
@@ -80,11 +77,14 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    LineLoader,
     MESSAGE_PREFIX,
     annotated_near,
     run_file_cli,
+    run_message_checks,
+    per_run_script,
+    source_lines,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "pin-exempt"
 
@@ -93,8 +93,6 @@ MESSAGE = (
     "than the ones you reviewed — pin it (`pkg==1.2.3` / `pkg=1.2.3-1` / "
     f"`pkg@1.2.3`), or annotate `# {OPT_OUT}: <reason>`"
 )
-
-_WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 
 # Version syntax differs per installer family, so each package spec is judged by
 # the family that will resolve it.
@@ -371,7 +369,8 @@ def violations(text: str) -> list[int]:
     string. The raw physical lines are kept for the `# pin-exempt:` opt-out, which
     by definition lives in a comment (accepted on any physical line of the flagged
     command, or the line directly above it)."""
-    raw = text.splitlines()
+    raw = source_lines(text)
+    said = shell_comments(text)
     # One finding per line, carrying the WIDEST span that starts there: two commands
     # can begin on the same row (`pip install a; pip install b`, or a `bash -c`
     # string whose install sits on the line that opened it), and a line reported
@@ -382,68 +381,17 @@ def violations(text: str) -> list[int]:
         widest[start] = max(widest.get(start, end), end)
     hits = []
     for start, end in sorted(widest.items()):
-        if annotated_near(raw, start, OPT_OUT, span_end=end):
+        if annotated_near(raw, start, OPT_OUT, span_end=end, comments=said):
             continue
         hits.append(start)
     return hits
 
 
-def _run_scripts(path: Path) -> list[tuple[int, str]]:
-    """(step line, script) for every inline `run:` block in a workflow or
-    composite-action file. An unparseable file yields no scripts — YAML syntax is
-    actionlint's job, and the shell files this lint owns are its argv."""
-    try:
-        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=LineLoader)
-    except yaml.YAMLError:
-        return []
-    if not isinstance(doc, dict):
-        return []
-    containers = []
-    jobs = doc.get("jobs")
-    if isinstance(jobs, dict):
-        containers += [job for job in jobs.values() if isinstance(job, dict)]
-    runs = doc.get("runs")
-    if isinstance(runs, dict):
-        containers.append(runs)
-    scripts: list[tuple[int, str]] = []
-    for container in containers:
-        steps = container.get("steps")
-        if not isinstance(steps, list):
-            continue
-        for step in steps:
-            if isinstance(step, dict) and isinstance(step.get("run"), str):
-                scripts.append((step.get("__line__", 1), step["run"]))
-    return scripts
-
-
 def main(argv: list[str]) -> int:
-    status = 0
-    for arg in argv:
-        path = Path(arg)
-        try:
-            if _WORKFLOW_PATH.search(arg.replace("\\", "/")):
-                hits = [
-                    step_line
-                    for step_line, script in _run_scripts(path)
-                    if violations(script)
-                ]
-            elif arg.endswith((".yaml", ".yml")):
-                continue  # a non-workflow YAML file is not shell
-            else:
-                hits = violations(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError):
-            continue  # a deleted/renamed path pre-commit may still list
-        except PathologicalInputError as err:
-            # A shape the grammar cannot parse safely fails the check LOUDLY (the
-            # same posture as check_untrusted_exec): skipping it would false-green
-            # exactly the input an adversary controls.
-            print(f"{arg}: {err}", file=sys.stderr)
-            status = 1
-            continue
-        for lineno in hits:
-            print(f"{arg}:{lineno}: {MESSAGE}", file=sys.stderr)
-            status = 1
-    return status
+    return run_message_checks(
+        argv,
+        per_run_script(lambda text, _path: [(n, MESSAGE) for n in violations(text)]),
+    )
 
 
 if __name__ == "__main__":

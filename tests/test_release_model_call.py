@@ -136,9 +136,25 @@ def test_ladder_lists_only_non_empty_rungs_in_order(tmp_path: Path) -> None:
     result = _run("release_credential_ladder", env)
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == [
-        "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_3",
         "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_5",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ]
+
+
+def test_the_metered_key_is_the_last_rung(tmp_path: Path) -> None:
+    """The key bills per token, so every subscription token comes first."""
+    env = _sandbox(tmp_path, ["200"]) | {
+        "ANTHROPIC_API_KEY": "k",
+        "CLAUDE_CODE_OAUTH_TOKEN": "b",
+        "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2": "c",
+    }
+    result = _run("release_credential_ladder", env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [
+        "CLAUDE_CODE_OAUTH_TOKEN_FALLBACK_2",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
     ]
 
 
@@ -228,16 +244,19 @@ def test_auth_headers_keep_a_credential_with_whitespace_in_one_argument(
 
 
 def test_first_healthy_rung_answers_and_no_later_rung_is_tried(tmp_path: Path) -> None:
+    """A healthy subscription token answers, so the metered key never bills."""
     env = _sandbox(tmp_path, ["200"]) | {
-        "ANTHROPIC_API_KEY": "sk-ant-api03-first",
-        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-second",
+        "ANTHROPIC_API_KEY": "sk-ant-api03-last",
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-first",
     }
     out = tmp_path / "response.json"
     result = _run(f'anthropic_call "{{}}" "{out}"', env)
     assert result.returncode == 0, result.stderr
     assert len(_requests(env)) == 1
-    assert "x-api-key: sk-ant-api03-first" in _requests(env)[0]
-    assert "Model call succeeded on credential ANTHROPIC_API_KEY." in result.stderr
+    assert "authorization: Bearer sk-ant-oat01-first" in _requests(env)[0]
+    assert (
+        "Model call succeeded on credential CLAUDE_CODE_OAUTH_TOKEN." in result.stderr
+    )
     assert json.loads(out.read_text(encoding="utf-8"))["stop_reason"] == "tool_use"
 
 
@@ -247,8 +266,8 @@ def test_rejected_first_rung_falls_through_to_the_second_and_succeeds(
     # The whole point of the ladder: rung 1 is over its usage cap (401), so the
     # call must continue rather than end the run.
     env = _sandbox(tmp_path, ["401", "200"]) | {
-        "ANTHROPIC_API_KEY": "sk-ant-api03-exhausted",
-        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-healthy",
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-exhausted",
+        "ANTHROPIC_API_KEY": "sk-ant-api03-healthy",
     }
     out = tmp_path / "response.json"
     result = _run(f'anthropic_call "{{}}" "{out}"', env)
@@ -256,14 +275,12 @@ def test_rejected_first_rung_falls_through_to_the_second_and_succeeds(
 
     requests = _requests(env)
     assert len(requests) == 2
-    assert "x-api-key: sk-ant-api03-exhausted" in requests[0]
-    assert "authorization: Bearer sk-ant-oat01-healthy" in requests[1]
-    assert "anthropic-beta: oauth-2025-04-20" in requests[1]
+    assert "authorization: Bearer sk-ant-oat01-exhausted" in requests[0]
+    assert "anthropic-beta: oauth-2025-04-20" in requests[0]
+    assert "x-api-key: sk-ant-api03-healthy" in requests[1]
 
-    assert "Credential ANTHROPIC_API_KEY rejected (HTTP 401)" in result.stderr
-    assert (
-        "Model call succeeded on credential CLAUDE_CODE_OAUTH_TOKEN." in result.stderr
-    )
+    assert "Credential CLAUDE_CODE_OAUTH_TOKEN rejected (HTTP 401)" in result.stderr
+    assert "Model call succeeded on credential ANTHROPIC_API_KEY." in result.stderr
 
 
 def test_every_rung_rejected_returns_non_zero(tmp_path: Path) -> None:
@@ -335,17 +352,17 @@ def test_retry_budget_is_spent_per_rung_then_the_ladder_advances(
     tmp_path: Path,
 ) -> None:
     env = _sandbox(tmp_path, ["500", "500", "200"]) | {
-        "ANTHROPIC_API_KEY": "sk-ant-api03-flaky",
-        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-healthy",
+        "CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-flaky",
+        "ANTHROPIC_API_KEY": "sk-ant-api03-healthy",
         "ANTHROPIC_MAX_ATTEMPTS": "2",
     }
     result = _run(f'anthropic_call "{{}}" "{tmp_path / "r.json"}"', env)
     assert result.returncode == 0, result.stderr
     requests = _requests(env)
     assert len(requests) == 3
-    assert "x-api-key: sk-ant-api03-flaky" in requests[0]
-    assert "x-api-key: sk-ant-api03-flaky" in requests[1]
-    assert "authorization: Bearer sk-ant-oat01-healthy" in requests[2]
+    assert "authorization: Bearer sk-ant-oat01-flaky" in requests[0]
+    assert "authorization: Bearer sk-ant-oat01-flaky" in requests[1]
+    assert "x-api-key: sk-ant-api03-healthy" in requests[2]
 
 
 # --------------------------------------------------------------------------
@@ -405,14 +422,14 @@ def test_a_rung_never_inherits_the_previous_rungs_error_message(
     result = _run(f'anthropic_call "{{}}" "{tmp_path / "r.json"}"', env)
     assert result.returncode == 1
     assert (
-        "Credential ANTHROPIC_API_KEY rejected (HTTP 401): credit balance is too low"
+        "Credential CLAUDE_CODE_OAUTH_TOKEN rejected (HTTP 401): credit balance is too low"
         in result.stderr
     )
     assert (
-        "Credential CLAUDE_CODE_OAUTH_TOKEN failed (HTTP 000); response body was not Anthropic-shaped."
+        "Credential ANTHROPIC_API_KEY failed (HTTP 000); response body was not Anthropic-shaped."
         in result.stderr
     )
-    assert "CLAUDE_CODE_OAUTH_TOKEN rejected (HTTP 000)" not in result.stderr
+    assert "ANTHROPIC_API_KEY rejected (HTTP 000)" not in result.stderr
 
 
 def test_non_json_error_body_still_reports_the_rung(tmp_path: Path) -> None:

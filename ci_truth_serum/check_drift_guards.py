@@ -964,7 +964,7 @@ def text_violations(
         comments = text_comments(text)
     hits: list[tuple[int, str]] = []
     for i, line in enumerate(lines):
-        if annotated_near(lines, i + 1, _ALLOW_TOKEN):
+        if annotated_near(lines, i + 1, _ALLOW_TOKEN, comments=comments):
             continue
         body = comments.get(i + 1)
         match = _GUARD_RE.search(line)

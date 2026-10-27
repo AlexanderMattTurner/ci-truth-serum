@@ -43,6 +43,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 )
 from _cts_py_ast import lines as py_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import parse_whole  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import py_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-unreset-state"
 
@@ -232,11 +233,13 @@ def violations(text: str, reset_name: str = DEFAULT_RESET_NAME) -> list[int]:
     if declares_reset(tree, reset_name):
         return []
     physical = py_lines(text)
+    said = py_comments(text)
     written = runtime_writes(tree)
     return sorted(
         lineno
         for name, lineno in module_bindings(tree).items()
-        if name in written and not annotated_near(physical, lineno, OPT_OUT)
+        if name in written
+        and not annotated_near(physical, lineno, OPT_OUT, comments=said)
     )
 
 

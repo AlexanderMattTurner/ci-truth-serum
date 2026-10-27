@@ -71,6 +71,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _job_blocks,
     workflow_files as _workflow_files,
     yaml_script_view,
+    is_checkout_step,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -92,7 +93,6 @@ _BASE_REF = re.compile(
 # The action that materializes a whole ref into the workspace. Only a `ref:` handed
 # to THIS turns a base context into executable code on disk; the same context in an
 # `env:` (a diff range, a coverage baseline) stages nothing.
-_CHECKOUT_ACTION = re.compile(r"^actions/checkout(?:[@/]|$)")
 _SECRET_REF = re.compile(r"secrets\.\w+")
 
 ALLOW = "trusted-base-ok"
@@ -178,8 +178,7 @@ def _job_stages_base(cfg: dict) -> bool:
     """True if the job hands an author-chosen BASE ref to `actions/checkout`, i.e.
     materializes that ref's tree — as opposed to reading a base context as data."""
     return any(
-        _BASE_REF.search(ref)
-        and _CHECKOUT_ACTION.match(str(step.get("uses", "")).strip())
+        _BASE_REF.search(ref) and is_checkout_step(step)
         for step, ref in _step_refs(cfg)
     )
 

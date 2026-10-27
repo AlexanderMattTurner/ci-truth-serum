@@ -56,7 +56,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import iter_nodes  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_js_ast import is_js_source, parse  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_linecheck import annotated_near, run_file_cli, run_source_checks  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import annotated_near, run_file_cli, run_source_checks, source_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import marker_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-dangling-import"
 
@@ -209,7 +210,8 @@ def violations(text: str, path: str) -> list[int]:
     """
     if not is_js_source(path):
         return []
-    physical = text.split("\n")
+    physical = source_lines(text, path)
+    said = marker_comments(text, path)
     hits = {
         lineno
         for lineno, specifier in relative_specifiers(text, path)
@@ -218,7 +220,8 @@ def violations(text: str, path: str) -> list[int]:
     return sorted(
         lineno
         for lineno in hits
-        if lineno <= len(physical) and not annotated_near(physical, lineno, OPT_OUT)
+        if lineno <= len(physical)
+        and not annotated_near(physical, lineno, OPT_OUT, comments=said)
     )
 
 

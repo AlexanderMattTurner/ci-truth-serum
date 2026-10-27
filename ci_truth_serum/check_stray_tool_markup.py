@@ -41,9 +41,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
+    is_prose_path,
     run_file_cli,
-    run_line_checks,
+    run_source_checks,
+    source_lines,
 )
+from _cts_comments import marker_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The tool-call-specific tags: both their opening and closing whole-line forms are
 # stray scaffolding (these names have no legitimate whole-line use in source).
@@ -60,11 +63,12 @@ _FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 _ALLOW = "allow-stray-markup"
 
 
-def violations(text: str) -> list[int]:
+def violations(text: str, path: str) -> list[int]:
     """1-based line numbers that are entirely a stray tool-call tag, outside any
     fenced code block and without an ``allow-stray-markup`` annotation on the line
-    directly above."""
-    lines = text.splitlines()
+    directly above. PATH names the language, which says where a marker may sit."""
+    lines = source_lines(text, path)
+    said = marker_comments(text, path, prose=is_prose_path(path))
     hits: list[int] = []
     in_fence = False
     for lineno, raw in enumerate(lines, 1):
@@ -75,14 +79,14 @@ def violations(text: str) -> list[int]:
             continue
         # A bare tag fills the whole line, so any suppression sits on the line
         # above (an inline annotation would stop the line from being a bare tag).
-        if annotated_near(lines, lineno, _ALLOW):
+        if annotated_near(lines, lineno, _ALLOW, comments=said):
             continue
         hits.append(lineno)
     return hits
 
 
 def main(argv: list[str]) -> int:
-    return run_line_checks(
+    return run_source_checks(
         argv,
         violations,
         "stray agent tool-call markup committed into the file — delete the leaked "

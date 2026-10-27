@@ -404,7 +404,7 @@ def test_pathological_input_fails_loudly(
     a silent no-findings pass — and the paths beside it are still checked."""
     pathological = tmp_path / "huge.sh"
     pathological.write_text("cmd " + "| cmd " * 3000 + "\n", encoding="utf-8")
-    with pytest.raises(mod.PathologicalInputError):
+    with pytest.raises(sys.modules["_cts_bash_ast"].PathologicalInputError):
         mod.violations(pathological.read_text(encoding="utf-8"))
     bad = tmp_path / "bad.sh"
     bad.write_text("teardown || true\n", encoding="utf-8")

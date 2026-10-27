@@ -61,7 +61,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_name,
     iter_nodes,
     node_text,
@@ -70,7 +69,10 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated_near,
     run_file_cli,
+    run_line_checks,
+    source_lines,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "echo-fallback-ok"
 
@@ -211,7 +213,8 @@ def violations(text: str) -> list[int]:
     on. The raw physical lines are kept for the `# echo-fallback-ok:` opt-out,
     which by definition lives in a comment (accepted on any physical line of the
     flagged construct, or the line directly above it)."""
-    raw = text.splitlines()
+    raw = source_lines(text)
+    said = shell_comments(text)
     # One finding per line, carrying the WIDEST span that starts there: two
     # fallbacks can begin on the same row, and a line reported twice would be a
     # duplicate finding — plus the wider span gives the opt-out lookup every
@@ -230,32 +233,14 @@ def violations(text: str) -> list[int]:
 
     hits = []
     for start, end in sorted(widest.items()):
-        if annotated_near(raw, start, OPT_OUT, span_end=end):
+        if annotated_near(raw, start, OPT_OUT, span_end=end, comments=said):
             continue
         hits.append(start)
     return hits
 
 
 def main(argv: list[str]) -> int:
-    status = 0
-    for path in argv:
-        try:
-            text = Path(path).read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue  # a deleted/renamed path pre-commit may still list
-        try:
-            hits = violations(text)
-        except PathologicalInputError as err:
-            # A shape the grammar cannot parse safely fails the check LOUDLY
-            # (the same posture as check_untrusted_exec): skipping it would
-            # false-green exactly the input an adversary controls.
-            print(f"{path}: {err}", file=sys.stderr)
-            status = 1
-            continue
-        for lineno in hits:
-            print(f"{path}:{lineno}: {MESSAGE}", file=sys.stderr)
-            status = 1
-    return status
+    return run_line_checks(argv, violations, MESSAGE)
 
 
 if __name__ == "__main__":

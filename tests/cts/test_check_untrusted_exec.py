@@ -710,3 +710,17 @@ def test_a_job_permissions_block_replaces_the_workflows(tmp_path):
         1,
     )
     assert ue.check_file(_write(tmp_path, body)) == []
+
+
+def test_optout_text_a_step_prints_does_not_suppress(tmp_path):
+    """`echo "… # untrusted-exec-ok: <reason>"` is advice a step prints, not a
+    marker its author wrote. Non-vacuity: the same step with a real shell
+    comment suppresses."""
+    printed = _wf(_PR_HEAD_SHA, _run_step("pnpm build")) + (
+        '      - run: echo "::notice::annotate the job with # untrusted-exec-ok: <reason>"\n'
+    )
+    commented = _wf(_PR_HEAD_SHA, _run_step("pnpm build")) + (
+        "      - run: |\n          true  # untrusted-exec-ok: build is hermetic here\n"
+    )
+    assert len(ue.check_file(_write(tmp_path, printed, "p.yaml"))) == 1
+    assert ue.check_file(_write(tmp_path, commented, "c.yaml")) == []

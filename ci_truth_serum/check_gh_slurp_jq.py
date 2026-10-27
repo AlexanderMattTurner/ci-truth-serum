@@ -57,11 +57,8 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    PathologicalInputError,
     command_arguments,
     iter_nodes,
     node_text,
@@ -69,11 +66,14 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    LineLoader,
     MESSAGE_PREFIX,
-    annotation_re,
     run_file_cli,
+    run_message_checks,
+    per_run_script,
+    annotated_near,
+    source_lines,
 )
+from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 OPT_OUT = "allow-gh-slurp-jq"
 
@@ -85,8 +85,6 @@ MESSAGE = (
     "`gh api … --paginate --slurp` output and apply the filter in a SEPARATE "
     f"`jq` invocation, or annotate `# {OPT_OUT}: <reason>`."
 )
-
-_WORKFLOW_PATH = re.compile(r"(?:^|/)\.github/(?:workflows|actions)/.*\.ya?ml$")
 
 # The two words that open the subcommand under scrutiny. Searched at any token
 # position, so a wrapper in front (`retry_stdout gh api …`) needs no enumeration.
@@ -101,7 +99,6 @@ _PAGINATE = "--paginate"
 _LONG_FILTERS = frozenset({"--jq", "--template"})
 _SHORT_FILTER = re.compile(r"-(?!-)[A-Za-z]*[qt]")
 
-_ALLOW = annotation_re(OPT_OUT)
 
 # A bare read of one variable — `$GH` or `${GH}` — and nothing else. A token that
 # only CONTAINS an expansion is a different word at run time, so it never matches.
@@ -196,7 +193,8 @@ def violations(text: str) -> list[int]:
     string or body rather than a command. The raw physical lines are kept for the
     opt-out, which by definition lives in a comment (accepted on any physical
     line of the flagged command, or the line directly above it)."""
-    raw = text.splitlines()
+    raw = source_lines(text)
+    said = shell_comments(text)
     # One finding per line, carrying the WIDEST span that starts there: two calls
     # can begin on the same row (`gh api "$A" --slurp ; gh api "$B" --slurp`), a
     # line reported twice would be a duplicate finding, and the wider span gives
@@ -215,72 +213,18 @@ def violations(text: str) -> list[int]:
             continue
         start, end = command.start_point[0] + 1, command.end_point[0] + 1
         widest[start] = max(widest.get(start, end), end)
-    hits = []
-    for start, end in sorted(widest.items()):
-        if any(_ALLOW.search(physical) for physical in raw[start - 1 : end]) or (
-            start >= 2 and _ALLOW.search(raw[start - 2])
-        ):
-            continue
-        hits.append(start)
-    return hits
-
-
-def _run_scripts(path: Path) -> list[tuple[int, str]]:
-    """(step line, script) for every inline `run:` block in a workflow or
-    composite-action file. An unparseable file yields no scripts — YAML syntax is
-    actionlint's job, and the shell files this lint owns are its argv."""
-    try:
-        doc = yaml.load(path.read_text(encoding="utf-8"), Loader=LineLoader)
-    except yaml.YAMLError:
-        return []
-    if not isinstance(doc, dict):
-        return []
-    containers = []
-    jobs = doc.get("jobs")
-    if isinstance(jobs, dict):
-        containers += [job for job in jobs.values() if isinstance(job, dict)]
-    runs = doc.get("runs")
-    if isinstance(runs, dict):
-        containers.append(runs)
-    scripts: list[tuple[int, str]] = []
-    for container in containers:
-        steps = container.get("steps")
-        if not isinstance(steps, list):
-            continue
-        for step in steps:
-            if isinstance(step, dict) and isinstance(step.get("run"), str):
-                scripts.append((step.get("__line__", 1), step["run"]))
-    return scripts
+    return [
+        start
+        for start, end in sorted(widest.items())
+        if not annotated_near(raw, start, OPT_OUT, span_end=end, comments=said)
+    ]
 
 
 def main(argv: list[str]) -> int:
-    status = 0
-    for arg in argv:
-        path = Path(arg)
-        try:
-            if _WORKFLOW_PATH.search(arg.replace("\\", "/")):
-                hits = [
-                    step_line
-                    for step_line, script in _run_scripts(path)
-                    if violations(script)
-                ]
-            elif arg.endswith((".yaml", ".yml")):
-                continue  # a non-workflow YAML file is not shell
-            else:
-                hits = violations(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError):
-            continue  # a deleted/renamed path pre-commit may still list
-        except PathologicalInputError as err:
-            # A shape the grammar cannot parse safely fails the check LOUDLY (the
-            # same posture as check_untrusted_exec): skipping it would false-green
-            # exactly the input an adversary controls.
-            print(f"{arg}: {err}", file=sys.stderr)
-            status = 1
-            continue
-        for lineno in hits:
-            print(f"{arg}:{lineno}: {MESSAGE}", file=sys.stderr)
-            status = 1
-    return status
+    return run_message_checks(
+        argv,
+        per_run_script(lambda text, _path: [(n, MESSAGE) for n in violations(text)]),
+    )
 
 
 if __name__ == "__main__":
