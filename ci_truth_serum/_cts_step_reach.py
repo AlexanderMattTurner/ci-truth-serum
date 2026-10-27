@@ -195,6 +195,7 @@ class Namespace:
         self._values: dict[int, str | None] = {}
         self._bodies: dict[str, list[tuple[Node, Unit]]] = {}
         self._changers: list[tuple[Node, Unit]] | None = None
+        self._directories: dict[int, Path | None] = {}
         self._add(entry)
         self._walk()
 
@@ -261,14 +262,16 @@ class Namespace:
 
     # ── values ──────────────────────────────────────────────────────────────
 
-    def file(self, value: str | None, moved: bool = False) -> Path | None:
+    def file(self, value: str | None) -> Path | None:
+        """The repo file VALUE names from the step's working directory."""
+        return self.file_in(value, self.cwd)
+
+    def file_in(self, value: str | None, directory: Path | None) -> Path | None:
         """The repo file VALUE names, or None. A relative path resolves against
-        the step's working directory, and against nothing when that is unknown
-        or MOVED says a `cd` ran before the command that names it."""
-        unknown = self.cwd is None or moved
-        if not value or (unknown and not value.startswith("/")):
+        DIRECTORY, and against nothing when that is None."""
+        if not value or (directory is None and not value.startswith("/")):
             return None
-        path = Path(os.path.normpath((self.cwd or self.repo_root) / value))
+        path = Path(os.path.normpath((directory or self.repo_root) / value))
         if not path.is_relative_to(self.repo_root) or not path.is_file():
             return None
         return path
@@ -426,11 +429,17 @@ class Namespace:
             ]
         return self._bodies[name]
 
-    def moved_before(self, command: Node, unit: Unit) -> bool:
-        """True when a `cd`, `pushd` or `popd` may have moved the shell before
-        COMMAND in UNIT runs: an earlier one in the same shell of the same file,
-        or one in another file or a function body, whose order the text does
-        not fix."""
+    def directory_at(self, command: Node, unit: Unit) -> Path | None:
+        """The directory COMMAND in UNIT runs in: the step's, or the target of
+        the last `cd` before it when the text fixes that target. None when the
+        text does not fix it: a `cd` to a computed path, a `pushd` or `popd`,
+        or a `cd` in another file or a function body, whose order the text
+        does not fix."""
+        if command.id not in self._directories:
+            self._directories[command.id] = self._directory_at(command, unit)
+        return self._directories[command.id]
+
+    def _directory_at(self, command: Node, unit: Unit) -> Path | None:
         if self._changers is None:
             self._changers = [
                 (other, owner)
@@ -440,6 +449,7 @@ class Namespace:
         # A function body runs where it is called, so its own byte offset
         # orders nothing.
         in_function = _inside_definition(command, unit.root)
+        last: Node | None = None
         for other, owner in self._changers:
             scope = other.parent
             while scope is not None and scope.type not in _OWN_SHELL:
@@ -450,10 +460,29 @@ class Namespace:
             ):
                 continue  # a subshell's `cd` moves only the subshell
             if in_function or not same_file or _inside_definition(other, unit.root):
-                return True
-            if other.start_byte < command.start_byte:
-                return True
-        return False
+                return None
+            if other.start_byte < command.start_byte and (
+                last is None or other.start_byte > last.start_byte
+            ):
+                last = other
+        if last is None:
+            return self.cwd
+        return self._cd_target(last, unit)
+
+    def _cd_target(self, command: Node, unit: Unit) -> Path | None:
+        """Where the `cd` COMMAND goes, when the text fixes it."""
+        arguments = command_arguments(command)
+        while arguments and node_text(arguments[0]) in _BUILTIN_RUNNERS:
+            arguments = arguments[1:]
+        if len(arguments) != 2 or node_text(arguments[0]) != "cd":
+            return None  # `pushd`, `popd`, a bare `cd`, or an option
+        target = self.value(arguments[1], unit)
+        if not target or target.startswith(("-", "~")):
+            return None
+        if target.startswith("/"):
+            return Path(os.path.normpath(target))
+        before = self.directory_at(command, unit)
+        return Path(os.path.normpath(before / target)) if before else None
 
     def assigned_in(self, name: str) -> set[Path]:
         """The followed files that assign NAME."""
@@ -582,16 +611,14 @@ def reach(
             continue
         for command, owner in namespace.executed:
             words = namespace.words(command, owner)
-            moved = namespace.moved_before(command, owner)
-            py = namespace.file(_python_target(words), moved)
+            here = namespace.directory_at(command, owner)
+            py = namespace.file_in(_python_target(words), here)
             if py is not None and py.suffix == ".py" and py not in python:
                 python.append(py)
                 continue
-            target = namespace.file(_shell_target(words), moved)
+            target = namespace.file_in(_shell_target(words), here)
             if target is not None and target not in seen:
                 seen.add(target)
-                # A child started after a `cd` runs in a directory the text
-                # does not fix.
-                child_cwd = None if moved else namespace.cwd
-                queue.append(_Pending(_unit(target, target), hops + 1, child_cwd))
+                # A child runs in the directory its parent was in.
+                queue.append(_Pending(_unit(target, target), hops + 1, here))
     return Reach(tuple(namespaces), tuple(python))

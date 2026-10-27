@@ -748,6 +748,32 @@ def test_an_output_resolves_as_the_shell_resolves_it(
 
 
 @pytest.mark.parametrize(
+    ("script", "path", "fires"),
+    [
+        ('cd sub\ncd "$GITHUB_WORKSPACE"\n./scripts/install.sh', "nothing", 1),
+        ("cd sub\ncd ..\nbash scripts/install.sh", "nothing", 1),
+        (f"cd sub && curl -fsSLo t.tgz {PINNED}", "sub", 0),
+        (f"cd sub && curl -fsSLo t.tgz {PINNED}", "t.tgz", 1),
+        (f'cd "$UNKNOWN" && curl -fsSLo bin/tool {PINNED}', "sub/bin", 0),
+    ],
+    ids=[
+        "cd-back-to-the-workspace",
+        "cd-back-up",
+        "directory-after-a-fixed-cd",
+        "root-after-a-fixed-cd",
+        "unknown-cd-keeps-the-name",
+    ],
+)
+def test_a_cd_the_text_fixes_sets_the_directory(rooted, script, path, fires):
+    """A `cd` whose target the text fixes tells where the next command runs,
+    so a script it starts is still followed and an output is still placed."""
+    _tree(rooted, {"scripts/install.sh": f"curl -fsSLo t {PINNED}\n", "sub/x": ""})
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
     ("path", "fires"), [("bin", 1), ("tools/bin/tool", 0)], ids=["root-bin", "tail"]
 )
 def test_a_script_run_after_a_cd_writes_where_the_cd_went(rooted, path, fires):

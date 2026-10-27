@@ -504,25 +504,24 @@ def _outputs(command: Node, words: list[str], spelled: list[str]) -> set[str]:
 
 
 def _placed(
-    outputs: set[str], namespace: Namespace, moved: bool
+    outputs: set[str], root_path: Path, directory: Path | None
 ) -> tuple[frozenset[str], frozenset[str]]:
     """OUTPUTS as paths a cache `path:` can name: absolute, under `~`, or
-    relative to the workspace. The second set holds each relative output whose
-    directory the text does not fix: the step's directory is an expression, a
-    `cd` ran first (MOVED), or the path is a variable only the run knows."""
+    relative to the workspace ROOT_PATH. A relative output lands in DIRECTORY.
+    The second set holds each relative output whose directory the text does
+    not fix: DIRECTORY is None, or the path is a variable only the run knows."""
     placed, names = set(), set()
-    moved = moved or namespace.cwd is None
-    root = str(namespace.repo_root)
+    root = str(root_path)
     for output in outputs:
         out = posixpath.normpath(_home(output))
         if out == root or out.startswith(root + "/"):
             placed.add(posixpath.relpath(out, root))
         elif out.startswith(("/", "~")):
             placed.add(out)
-        elif moved or out.startswith("$"):
+        elif directory is None or out.startswith("$"):
             names.add(out)
         else:
-            cwd = posixpath.normpath(str(namespace.cwd))
+            cwd = posixpath.normpath(str(directory))
             if cwd == root or cwd.startswith(root + "/"):
                 cwd = posixpath.relpath(cwd, root)
             placed.add(posixpath.normpath(posixpath.join(cwd, out)))
@@ -607,8 +606,8 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
     spelled = [_spelled(node, namespace, unit) for node in args]
     outputs, output_names = _placed(
         _outputs(command, words, spelled),
-        namespace,
-        namespace.moved_before(command, unit),
+        namespace.repo_root,
+        namespace.directory_at(command, unit),
     )
     for node, token, value in zip(args, words, values):
         if _PINNED_URL.match(token) or (value and _PINNED_URL.match(value)):
