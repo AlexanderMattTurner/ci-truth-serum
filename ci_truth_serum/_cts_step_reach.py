@@ -62,6 +62,28 @@ _SHELL_VALUE_OPTION = re.compile(r"[-+][A-Za-z]*[oO]")
 _SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
 _SOURCE_COMMANDS = frozenset({"source", "."})
 _ACTION_PATH_EXPR = re.compile(r"\$\{\{\s*github\.action_path\s*\}\}")
+_WORKSPACE_EXPR = re.compile(r"\$\{\{\s*github\.workspace\s*\}\}")
+# The `uv run` options that take the next word as their value.
+_UV_VALUE_OPTIONS = frozenset(
+    {
+        "--with",
+        "--with-editable",
+        "--with-requirements",
+        "--directory",
+        "--project",
+        "--python",
+        "-p",
+        "--group",
+        "--only-group",
+        "--no-group",
+        "--extra",
+        "--package",
+        "--env-file",
+        "--index",
+        "--index-url",
+        "--extra-index-url",
+    }
+)
 
 
 class Unit(NamedTuple):
@@ -409,10 +431,15 @@ def _uv_run_target(rest: list[str | None]) -> str | None:
     file, or the script a Python interpreter in that place is handed. A `.py`
     word after any other program (`uv run pytest t.py`) is that program's
     argument, not a script the step runs."""
+    skip = False
     for index, word in enumerate(rest):
+        if skip:
+            skip = False
+            continue
         if word is None:
             return None
         if word.startswith("-"):
+            skip = word in _UV_VALUE_OPTIONS
             continue
         if word.endswith(".py"):
             return word
@@ -468,6 +495,7 @@ def reach(
     nothing."""
     if action_dir:
         script = _ACTION_PATH_EXPR.sub(lambda _: str(repo_root / action_dir), script)
+    script = _WORKSPACE_EXPR.sub(lambda _: str(repo_root), script)
     cwd = None if working_directory is None else repo_root / working_directory
     entry = Unit(None, script, parse(script), None)
     namespaces: list[Namespace] = []

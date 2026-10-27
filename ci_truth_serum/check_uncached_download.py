@@ -75,7 +75,8 @@ REQUIRED; a bare annotation does not suppress.
 
 The workflow is the artifact under test, so a workflow or composite action that
 does not parse is a finding. A followed Python file that does not parse ends the
-walk, like any other path the lint cannot read.
+walk, like any other path the lint cannot read. A followed file that is not
+UTF-8 raises, because the lint cannot judge bytes it cannot decode.
 
 This lint is opinionated (Tier 2): it prescribes a cache for a class of cost that
 is real but never fails loudly.
@@ -94,7 +95,6 @@ from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    ARGUMENT_TYPES,
     PathologicalInputError,
     command_arguments,
     iter_nodes,
@@ -244,15 +244,17 @@ class Fetch(NamedTuple):
     outputs: frozenset[str]
 
 
-def _caches(step: dict) -> bool:
-    """True when STEP restores or saves a cache.
-
-    The `uses:` value carries a ref (`actions/cache@0057852…`), so the action's
-    name is the part before the `@`."""
+def _action_name(step: dict) -> str:
+    """The action STEP uses, without its `@ref` (`actions/cache@0057852…`)."""
     uses = step.get("uses")
-    if not isinstance(uses, str):
+    return uses.split("@", 1)[0].strip() if isinstance(uses, str) else ""
+
+
+def _caches(step: dict) -> bool:
+    """True when STEP restores or saves a cache."""
+    action = _action_name(step)
+    if not action:
         return False
-    action = uses.split("@", 1)[0].strip()
     if action.startswith(_CACHE_ACTIONS) or action in _ALWAYS_CACHING_ACTIONS:
         return True
     inputs = _SETUP_CACHE_INPUTS.get(action)
@@ -374,13 +376,26 @@ def _digest_checks(namespace: Namespace) -> list[tuple[Node, Unit]]:
 
 def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set[str]:
     """The base names of the files the digest checks name, as far as the text
-    fixes them: `echo "$SHA  tool" | sha256sum -c -` names `tool`, and
+    fixes them, from argument words and here-strings:
+    `echo "$SHA  tool" | sha256sum -c -` names `tool`, and
     `sha256sum -c tool.tgz.sha256` names `tool.tgz` through its checksum file."""
     names = set()
     for scope, unit in checks:
-        for node in iter_nodes(scope, *ARGUMENT_TYPES):
+        nodes = [
+            node
+            for command in iter_nodes(scope, "command")
+            for node in command_arguments(command)[1:]
+        ]
+        nodes += [
+            child
+            for here in iter_nodes(scope, "herestring_redirect")
+            for child in here.named_children
+        ]
+        for node in nodes:
             text = namespace.value(node, unit) or unquote(node_text(node))
             for word in text.split():
+                if word.startswith("-"):
+                    continue  # an option, or stdin
                 name = posixpath.basename(word)
                 names |= {name, _CHECKSUM_SUFFIX.sub("", name)}
     return names
@@ -473,7 +488,7 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
         pins = _pins_of(
             [args[words.index(spec)]] if spec in words else [], namespace, unit
         )
-        pins |= set(_VERSION_LITERAL.findall(spec))
+        pins |= _literals(spec)
         fetches.append(
             Fetch(
                 spec + where,
@@ -588,13 +603,23 @@ def _py_text(
     return ""
 
 
+def _is_digest_method(node: ast.AST) -> bool:
+    """True when NODE is a `.hexdigest()` or `.digest()` call."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _PY_HASH_METHODS
+    )
+
+
 def _is_hash_call(node: ast.AST, hashers: set[str]) -> bool:
-    if not isinstance(node, ast.Call):
-        return False
-    func = node.func
-    if isinstance(func, ast.Attribute) and func.attr in _PY_HASH_METHODS:
+    if _is_digest_method(node):
         return True
-    return isinstance(func, ast.Name) and func.id in hashers
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in hashers
+    )
 
 
 def _compares_hash(scope: ast.AST, hashers: set[str], aliases: dict[str, str]) -> bool:
@@ -651,27 +676,21 @@ def _checks_digest(
 
 # A cheap shortlist ahead of the parse: a module that spells no fetcher's name
 # holds no fetch call. The `ast` walk below is what decides.
-_PY_FETCHER_SPELLING = re.compile(
-    r"urlopen|urlretrieve|\b(?:import|from)\s+(?:requests|httpx)\b"
-)
+_PY_FETCHER_SPELLING = re.compile(r"\b(?:urlopen|urlretrieve|requests|httpx)\b")
 
 
 @functools.lru_cache(maxsize=1024)
-def _source(path: Path) -> str | None:
-    """PATH's text, or None when it is not UTF-8. A file the walk cannot read
-    ends it, as an unresolved path does."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        return None
+def _source(path: Path) -> str:
+    """PATH's text. A followed file that is not UTF-8 raises, as a followed
+    shell file does: the lint cannot judge bytes it cannot read."""
+    return path.read_text(encoding="utf-8")
 
 
 @functools.lru_cache(maxsize=512)
 def _parsed(path: Path) -> ast.Module | None:
     """PATH's tree, or None when it does not read as Python."""
-    source = _source(path)
     try:
-        return ast.parse(source) if source is not None else None
+        return ast.parse(_source(path))
     except (SyntaxError, ValueError):
         return None
 
@@ -693,8 +712,7 @@ def _python_fetches(path: Path) -> list[Fetch]:
 def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
     """The pinned downloads written in the Python file PATH itself. IMPORTER is
     the file that imports it, whose hash a cache key may also name."""
-    source = _source(path)
-    if source is None or not _PY_FETCHER_SPELLING.search(source):
+    if not _PY_FETCHER_SPELLING.search(_source(path)):
         return []
     tree = _parsed(path)
     if tree is None:
@@ -717,12 +735,7 @@ def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
     hashers = {
         name
         for name, node in functions.items()
-        if any(
-            isinstance(sub, ast.Call)
-            and isinstance(sub.func, ast.Attribute)
-            and sub.func.attr in _PY_HASH_METHODS
-            for sub in ast.walk(node)
-        )
+        if any(_is_digest_method(sub) for sub in ast.walk(node))
     }
     digests = {
         node.value
@@ -839,9 +852,10 @@ class CacheScope(NamedTuple):
 def _cache_scope(step: dict) -> CacheScope | None:
     """STEP's key and paths, or None when the lint cannot read them statically.
     A None scope covers every download in the job."""
-    uses = str(step.get("uses", "")).split("@", 1)[0].strip()
     with_block = step.get("with")
-    if not uses.startswith(_CACHE_ACTIONS) or not isinstance(with_block, dict):
+    if not _action_name(step).startswith(_CACHE_ACTIONS) or not isinstance(
+        with_block, dict
+    ):
         return None
     key, path = with_block.get("key"), with_block.get("path")
     if not isinstance(key, str) or not isinstance(path, str) or "${{" in path:
@@ -871,7 +885,7 @@ def _pin_in_key(pin: str) -> re.Pattern[str]:
     in a key is text, so `version` in `deps-version-1` names no variable."""
     if _IDENTIFIER.fullmatch(pin) and not _DIGEST_LITERAL.fullmatch(pin):
         return re.compile(rf"\b(?:env|vars|matrix|inputs)\.{re.escape(pin)}(?!\w)")
-    return re.compile(rf"(?<![\w.]){re.escape(pin)}(?!\w|\.\w)")
+    return re.compile(rf"(?<![\w.])v?{re.escape(pin)}(?!\w|\.\w)")
 
 
 @functools.lru_cache(maxsize=1024)

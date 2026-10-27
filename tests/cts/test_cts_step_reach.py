@@ -220,6 +220,7 @@ def test_a_script_that_runs_itself_is_walked_once(tmp_path):
         ("python3 -I tools/x.py arg", "tools/x.py"),
         ("uv run tools/x.py", "tools/x.py"),
         ("uv run --frozen tools/x.py", "tools/x.py"),
+        ("uv run --with requests tools/x.py", "tools/x.py"),
         ("uv run python3 tools/x.py", "tools/x.py"),
         ("uv run python -m tools.x", "tools/x.py"),
         ("python -m tools.x", "tools/x.py"),
@@ -229,6 +230,7 @@ def test_a_script_that_runs_itself_is_walked_once(tmp_path):
         "option",
         "uv-run",
         "uv-run-option",
+        "uv-run-option-with-a-value",
         "uv-run-python",
         "uv-run-module",
         "module",
@@ -258,8 +260,12 @@ def test_a_python_file_the_text_does_not_fix_is_not_recorded(tmp_path, run):
 
 @pytest.mark.parametrize(
     "run",
-    ['bash "$GITHUB_ACTION_PATH/x.sh"', "bash ${{ github.action_path }}/x.sh"],
-    ids=["variable", "expression"],
+    [
+        'bash "$GITHUB_ACTION_PATH/x.sh"',
+        "bash ${{ github.action_path }}/x.sh",
+        "bash ${{ github.workspace }}/.github/actions/a/x.sh",
+    ],
+    ids=["variable", "expression", "workspace-expression"],
 )
 def test_a_composite_action_path_resolves(tmp_path, run):
     write(tmp_path, ".github/actions/a/x.sh", "curl one\n")

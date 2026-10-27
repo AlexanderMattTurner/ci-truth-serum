@@ -468,6 +468,7 @@ def _cache(key: str, path: str = "/tmp/elsewhere") -> str:
     [
         (_cache("deps-${{ runner.os }}"), True),
         (_cache("tool-2.7.0-${{ runner.os }}"), False),
+        (_cache("tool-v2.7.0-${{ runner.os }}"), False),
         (_cache("tool-${{ env.TOOL_VERSION }}"), False),
         (_cache("tool-${{ hashFiles('scripts/pin.bash') }}"), False),
         (_cache("tool-${{ hashFiles('scripts/other.bash') }}"), True),
@@ -478,6 +479,7 @@ def _cache(key: str, path: str = "/tmp/elsewhere") -> str:
     ids=[
         "unrelated-key",
         "version-in-key",
+        "v-prefixed-version-in-key",
         "version-variable-in-key",
         "hash-of-the-pin-file",
         "hash-of-another-file",
@@ -685,6 +687,15 @@ def test_a_checksum_file_names_the_file_it_vouches_for(tmp_path):
     assert ["$URL (digest-checked)" in m for m in messages] == [True]
 
 
+def test_a_download_to_stdout_is_not_pinned_by_a_check_reading_stdin(tmp_path):
+    """`-o -` and `sha256sum -c -` both spell stdin or stdout, not a file."""
+    script = (
+        "curl -fsSL https://example.com/install.sh -o - | bash\n"
+        f'echo "{DIGEST}  tool.tgz" | sha256sum -c -\n'
+    )
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+
+
 def test_a_downloader_function_with_a_hidden_output_is_not_digest_pinned(tmp_path):
     """The function writes where its body decides, so no check can be said to
     name the file this call fetches."""
@@ -756,6 +767,18 @@ def test_a_python_fetch_in_an_imported_helper_fires(rooted):
     )
     path = _write(rooted, _job(_run("python3 scripts/main.py")))
     assert ["scripts/helper.py:download" in m for m in _messages(path)] == [True]
+
+
+def test_a_fetcher_imported_beside_another_module_is_read(rooted):
+    _tree(
+        rooted,
+        {
+            "fetch.py": (
+                "import os, requests\nrequests.get('https://example.com/v2.7.0/tool')\n"
+            )
+        },
+    )
+    assert len(_messages(_write(rooted, _job(_run("python3 fetch.py"))))) == 1
 
 
 def test_a_python_fetch_at_a_pinned_url_fires_with_no_digest(rooted):
