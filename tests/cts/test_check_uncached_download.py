@@ -755,6 +755,12 @@ def test_an_output_resolves_as_the_shell_resolves_it(
         (f"cd sub && curl -fsSLo t.tgz {PINNED}", "sub", 0),
         (f"cd sub && curl -fsSLo t.tgz {PINNED}", "t.tgz", 1),
         (f'cd "$UNKNOWN" && curl -fsSLo bin/tool {PINNED}', "sub/bin", 0),
+        (f"cd sub | curl -fsSLo t.tgz {PINNED}", "t.tgz", 0),
+        (f"cd sub | curl -fsSLo t.tgz {PINNED}", "sub", 1),
+        (f"cd sub &\ncurl -fsSLo t.tgz {PINNED}", "t.tgz", 0),
+        (f"cd sub &\ncurl -fsSLo t.tgz {PINNED}", "sub", 1),
+        (f"f() {{ curl -fsSLo t.tgz {PINNED}; }}\n( cd sub; f )", "sub", 0),
+        (f"f() {{ curl -fsSLo t.tgz {PINNED}; }}\n( cd sub; f )", "t.tgz", 1),
     ],
     ids=[
         "cd-back-to-the-workspace",
@@ -762,6 +768,12 @@ def test_an_output_resolves_as_the_shell_resolves_it(
         "directory-after-a-fixed-cd",
         "root-after-a-fixed-cd",
         "unknown-cd-keeps-the-name",
+        "a-cd-in-another-pipeline-member",
+        "a-cd-in-another-pipeline-member-moved-path",
+        "a-cd-in-the-background",
+        "a-cd-in-the-background-moved-path",
+        "a-function-runs-where-it-is-called",
+        "a-function-runs-where-it-is-called-root-path",
     ],
 )
 def test_a_cd_the_text_fixes_sets_the_directory(rooted, script, path, fires):
@@ -769,6 +781,166 @@ def test_a_cd_the_text_fixes_sets_the_directory(rooted, script, path, fires):
     so a script it starts is still followed and an output is still placed."""
     _tree(rooted, {"scripts/install.sh": f"curl -fsSLo t {PINNED}\n", "sub/x": ""})
     script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+LIB_FETCH = f"curl -fsSLo bin/tool {PINNED}\n"
+TWICE = 'source scripts/lib.sh\ncd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"'
+
+
+@pytest.mark.parametrize(("path", "fires"), [("bin", 0), ("sub/bin", 1)])
+def test_a_long_call_chain_runs_where_its_first_call_runs(rooted, path, fires):
+    """300 functions, each calling the one before, run where the outer call
+    runs: the step's directory."""
+    script = "\n".join(
+        [f"f0() {{ {LIB_FETCH.strip()}; }}"]
+        + [f"f{i}() {{ f{i - 1}; }}" for i in range(1, 300)]
+        + ["f299"]
+    )
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize("path", ["other/bin", "sub/bin"])
+@pytest.mark.parametrize(
+    "script",
+    [
+        f"if false; then cd sub; fi\n{LIB_FETCH}",
+        f"for d in sub; do cd sub; done\n{LIB_FETCH}",
+        f"for d in a b; do {LIB_FETCH.strip()}; cd sub; done",
+        f"true && cd sub\n{LIB_FETCH}",
+        f"f() {{ {LIB_FETCH.strip()}; }}\nf\ncd sub\nf",
+        f"if false; then cd sub; else {LIB_FETCH.strip()}; fi",
+        f"if false; then cd sub; elif true; then {LIB_FETCH.strip()}; fi",
+        f"case x in y) cd sub ;; x) {LIB_FETCH.strip()} ;; esac",
+        f"cd sub || {LIB_FETCH.strip()}",
+        f"if cd sub; then :; else {LIB_FETCH.strip()}; fi",
+        f"if ! cd sub; then {LIB_FETCH.strip()}; fi",
+        f"f() {{ {LIB_FETCH.strip()}; }}\ntrap f EXIT\ncd sub",
+        f"f() {{ {LIB_FETCH.strip()}; }}\ncd sub\ngrep -q f x\ncd ..\nfn=f\n$fn",
+    ],
+    ids=[
+        "if",
+        "loop",
+        "loop-holding-the-fetch",
+        "and-list",
+        "calls-that-disagree",
+        "if-else-arms",
+        "if-elif-arms",
+        "case-arms",
+        "or-list",
+        "cd-in-a-condition",
+        "negated-cd",
+        "trap",
+        "a-word-that-is-not-a-call",
+    ],
+)
+def test_a_cd_the_text_does_not_order_keeps_the_name(rooted, script, path):
+    """A `cd` in a branch or a loop may or may not run before the fetch, and
+    two calls of one function can run in two directories. The directory is
+    unknown, so the output keeps its name, and a cache path that ends in its
+    directory covers it."""
+    _tree(rooted, {"sub/x": ""})
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == 0
+
+
+@pytest.mark.parametrize(
+    ("lib", "script", "path", "fires"),
+    [
+        (LIB_FETCH, "source scripts/lib.sh\ncd sub", "bin", 0),
+        (LIB_FETCH, "source scripts/lib.sh\ncd sub", "sub/bin", 1),
+        (LIB_FETCH, 'cd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"', "sub/bin", 0),
+        (LIB_FETCH, 'cd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"', "bin", 1),
+        ("cd sub\n", f"source scripts/lib.sh\n{LIB_FETCH}", "sub/bin", 0),
+        ("cd sub\n", f"source scripts/lib.sh\n{LIB_FETCH}", "bin", 1),
+        ("cd sub\n", f"{LIB_FETCH}source scripts/lib.sh", "bin", 0),
+        ("cd sub\n", f"( source scripts/lib.sh )\n{LIB_FETCH}", "bin", 0),
+        ("cd sub\n", f"( source scripts/lib.sh )\n{LIB_FETCH}", "sub/bin", 1),
+        ("cd sub\n", f"source scripts/lib.sh | cat\n{LIB_FETCH}", "bin", 0),
+        (
+            LIB_FETCH,
+            '( cd sub; source "$GITHUB_WORKSPACE/scripts/lib.sh" )',
+            "sub/bin",
+            0,
+        ),
+        (LIB_FETCH, '( cd sub; source "$GITHUB_WORKSPACE/scripts/lib.sh" )', "bin", 1),
+        (LIB_FETCH, TWICE, "sub/bin", 0),
+        (LIB_FETCH, TWICE, "other/bin", 0),
+    ],
+    ids=[
+        "fetch-in-a-sourced-file-then-cd",
+        "fetch-in-a-sourced-file-then-cd-wrong-path",
+        "cd-then-fetch-in-a-sourced-file",
+        "cd-then-fetch-in-a-sourced-file-root-path",
+        "cd-in-a-sourced-file-then-fetch",
+        "cd-in-a-sourced-file-then-fetch-root-path",
+        "fetch-then-cd-in-a-sourced-file",
+        "cd-in-a-file-sourced-in-a-subshell",
+        "cd-in-a-file-sourced-in-a-subshell-moved-path",
+        "cd-in-a-file-sourced-in-a-pipeline",
+        "fetch-in-a-file-sourced-after-a-subshell-cd",
+        "fetch-in-a-file-sourced-after-a-subshell-cd-root-path",
+        "a-file-sourced-at-two-lines-keeps-the-name",
+        "a-file-sourced-at-two-lines-keeps-the-name-root-path",
+    ],
+)
+def test_a_sourced_file_runs_at_its_source_line(rooted, lib, script, path, fires):
+    """The commands of a sourced file run where the `source` command runs, so a
+    `cd` before or after it orders against them like any other command."""
+    _tree(rooted, {"scripts/lib.sh": lib, "sub/x": ""})
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+def test_two_files_with_one_text_keep_their_own_source_line(rooted):
+    """Two files with the same text share one parse tree. Each one still has
+    its own `source` line, so the walk ends and the last `cd` places the file."""
+    hop = 'cd /tmp\nsource "${BASH_SOURCE[0]%/*}/../run.sh"\n'
+    _tree(rooted, {"sub/sub/run.sh": hop, "sub/run.sh": hop, "run.sh": "true\n"})
+    script = f'source "$GITHUB_WORKSPACE/sub/sub/run.sh"\n{LIB_FETCH}'
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path="/tmp/bin", directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == 0
+
+
+@pytest.mark.parametrize(
+    ("script", "path", "fires"),
+    [
+        (f"wget -q -P/opt/tools {PINNED}", "/opt/tools", 0),
+        (f"wget -qP/opt/tools {PINNED}", "/opt/tools", 0),
+        (f"wget -qO/opt/tools/t {PINNED}", "/opt/tools", 0),
+        (f"curl -fsSL -o/opt/tools/t {PINNED}", "/opt/tools", 0),
+        (f"curl -fsSLo/opt/tools/t {PINNED}", "/opt/tools", 0),
+        (f"curl -fsSL -o/opt/tools/t {PINNED}", "/opt/else", 1),
+        (f"curl -fsSL -Ttool.tgz -o /opt/tools/t {PINNED}", "l.tgz", 1),
+        (f"wget -BxyzO/opt/t {PINNED}", "/opt", 1),
+        (f"curl -fsSLOJ {PINNED}", "tool", 0),
+        (f"curl -fsSLJo tool {PINNED}", "tool", 0),
+        (f"curl -OHx-y:z {PINNED}", "tool", 0),
+    ],
+    ids=[
+        "wget-P-attached",
+        "wget-qP-attached",
+        "wget-qO-attached",
+        "curl-o-attached",
+        "curl-cluster-o-attached",
+        "curl-o-attached-elsewhere",
+        "a-value-flag-before-o",
+        "a-value-flag-before-wget-O",
+        "curl-OJ-cluster",
+        "curl-J-before-o",
+        "curl-value-flag-after-O",
+    ],
+)
+def test_an_attached_flag_value_is_read(rooted, script, path, fires):
+    """`-P/opt/tools` and `-o/opt/tools/t` carry their value in the same word.
+    Only letters that take no value may come before the flag: in `-Ttool.tgz`
+    the letters after `-T` are its value, so no `-o` is there."""
     workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
     assert len(_messages(_write(rooted, workflow))) == fires
 
