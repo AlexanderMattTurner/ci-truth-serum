@@ -94,6 +94,10 @@ _DIRECTORY_CHANGERS = frozenset({"cd", "pushd", "popd"})
 _OWN_SHELL = frozenset(
     {"subshell", "command_substitution", "process_substitution", "pipeline"}
 )
+# The nodes that run their body any number of times, and the ones that run
+# it only on a condition.
+_LOOPS = frozenset({"for_statement", "c_style_for_statement", "while_statement"})
+_BRANCHES = frozenset({"if_statement", "case_statement"})
 # The words that run the builtin they name: `command cd sub` moves the shell.
 _BUILTIN_RUNNERS = frozenset({"command", "builtin"})
 
@@ -198,8 +202,10 @@ class Namespace:
         self._changers: list[tuple[Node, Unit]] | None = None
         # The `source` command that read each sourced file. None when two
         # commands source it, so its commands run at more than one line.
-        self._anchors: dict[Path | None, tuple[Node, Unit] | None] = {}
+        self._anchors: dict[Path, tuple[Node, Unit] | None] = {}
         self._directories: dict[tuple[Path | None, int], Path | None] = {}
+        # The functions whose calls `_called_directory` is reading.
+        self._calling: set[str] = set()
         self._add(entry)
         self._walk()
 
@@ -442,7 +448,9 @@ class Namespace:
         """The directory COMMAND in UNIT runs in: the step's, or the target of
         the last `cd` before it when the text fixes that target. None when the
         text does not fix it: a `cd` to a computed path, a `pushd` or `popd`,
-        a `cd` in a function body, or a file sourced at two lines."""
+        a `cd` in a loop or in a branch that does not hold COMMAND, a `cd` in
+        a function body, calls of COMMAND's function that disagree, or a file
+        sourced at two lines."""
         key = (unit.path, command.id)
         if key not in self._directories:
             self._directories[key] = self._directory_at(command, unit)
@@ -459,18 +467,46 @@ class Namespace:
         command_chain = self._chain(command, unit)
         last: list[tuple[Node, Unit]] | None = None
         for other, owner in self._changers:
-            if _confined(self._links(other, owner), command_links):
+            links = self._links(other, owner)
+            if _confined(links, command_links):
                 continue  # a subshell's `cd` moves only the subshell
             chain = self._chain(other, owner)
-            if chain is None or command_chain is None:
+            if chain is None:
+                return None
+            if command_chain is None:
+                continue  # ordered against the call sites below
+            if _unordered(links, command_links):
                 return None
             if _precedes(chain, command_chain) and (
                 last is None or _precedes(last, chain)
             ):
                 last = chain
+        if command_chain is None:
+            return self._called_directory(command_links)
         if last is None:
             return self.cwd
         return self._cd_target(*last[0])
+
+    def _called_directory(self, links: list[tuple[Node, Unit]]) -> Path | None:
+        """The directory a command in a function body runs in: the one every
+        call of that function runs in. None when the calls disagree, the
+        function calls itself, or a file on the way is sourced at two lines."""
+        if self._anchors.get(links[-1][1].path, ()) is None:
+            return None
+        name = next(
+            (_function_name(n) for n, u in links if _inside_definition(n, u.root)),
+            None,
+        )
+        if name is None or name in self._calling:
+            return None
+        self._calling.add(name)
+        found = {
+            self.directory_at(call, owner)
+            for call, owner in self.executed
+            if name in callable_words(call)
+        }
+        self._calling.discard(name)
+        return found.pop() if len(found) == 1 else None
 
     def _links(self, node: Node, unit: Unit) -> list[tuple[Node, Unit]]:
         """NODE in UNIT, then the `source` command that read UNIT, and so on
@@ -514,12 +550,31 @@ class Namespace:
 
 
 def _own_shell(node: Node) -> Node | None:
-    """The nearest node above NODE that runs its own shell, if any. In a
-    pipeline that is the member holding NODE, not the whole pipeline."""
-    below, scope = node, node.parent
-    while scope is not None and scope.type not in _OWN_SHELL:
-        below, scope = scope, scope.parent
-    return below if scope is not None and scope.type == "pipeline" else scope
+    """The nearest node at or above NODE that runs its own shell, if any. In
+    a pipeline that is the member holding NODE; a node that `&` sends to the
+    background is its own."""
+    below = node
+    while True:
+        after = below.next_sibling
+        if after is not None and after.type == "&":
+            return below
+        scope = below.parent
+        if scope is None:
+            return None
+        if scope.type in _OWN_SHELL:
+            return below if scope.type == "pipeline" else scope
+        below = scope
+
+
+def _function_name(node: Node) -> str:
+    """The name of the innermost function whose body holds NODE."""
+    while node.type != "function_definition":
+        node = node.parent
+    return node_text(node.child_by_field_name("name"))
+
+
+def _holds(scope: Node, node: Node | None) -> bool:
+    return node is not None and scope.start_byte <= node.start_byte < scope.end_byte
 
 
 def _confined(
@@ -531,11 +586,29 @@ def _confined(
     at = {unit.path: node for node, unit in command}
     for node, unit in changer:
         scope = _own_shell(node)
-        inside = at.get(unit.path)
-        if scope is not None and (
-            inside is None or not scope.start_byte <= inside.start_byte < scope.end_byte
-        ):
+        if scope is not None and not _holds(scope, at.get(unit.path)):
             return True
+    return False
+
+
+def _unordered(
+    changer: list[tuple[Node, Unit]], command: list[tuple[Node, Unit]]
+) -> bool:
+    """True when the text does not fix whether a `cd` ran before COMMAND: a
+    link of the CHANGER sits in a loop, or in a branch that holds no link of
+    COMMAND (an `if`, a `case`, or the right side of `&&` or `||`)."""
+    at = {unit.path: node for node, unit in command}
+    for node, unit in changer:
+        below, scope = node, node.parent
+        while scope is not None:
+            branch = scope.type in _BRANCHES or (
+                scope.type == "list" and below != scope.children[0]
+            )
+            if scope.type in _LOOPS or (
+                branch and not _holds(scope, at.get(unit.path))
+            ):
+                return True
+            below, scope = scope, scope.parent
     return False
 
 

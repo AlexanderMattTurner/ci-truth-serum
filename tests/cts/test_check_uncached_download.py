@@ -757,6 +757,10 @@ def test_an_output_resolves_as_the_shell_resolves_it(
         (f'cd "$UNKNOWN" && curl -fsSLo bin/tool {PINNED}', "sub/bin", 0),
         (f"cd sub | curl -fsSLo t.tgz {PINNED}", "t.tgz", 0),
         (f"cd sub | curl -fsSLo t.tgz {PINNED}", "sub", 1),
+        (f"cd sub &\ncurl -fsSLo t.tgz {PINNED}", "t.tgz", 0),
+        (f"cd sub &\ncurl -fsSLo t.tgz {PINNED}", "sub", 1),
+        (f"f() {{ curl -fsSLo t.tgz {PINNED}; }}\n( cd sub; f )", "sub", 0),
+        (f"f() {{ curl -fsSLo t.tgz {PINNED}; }}\n( cd sub; f )", "t.tgz", 1),
     ],
     ids=[
         "cd-back-to-the-workspace",
@@ -766,6 +770,10 @@ def test_an_output_resolves_as_the_shell_resolves_it(
         "unknown-cd-keeps-the-name",
         "a-cd-in-another-pipeline-member",
         "a-cd-in-another-pipeline-member-moved-path",
+        "a-cd-in-the-background",
+        "a-cd-in-the-background-moved-path",
+        "a-function-runs-where-it-is-called",
+        "a-function-runs-where-it-is-called-root-path",
     ],
 )
 def test_a_cd_the_text_fixes_sets_the_directory(rooted, script, path, fires):
@@ -778,6 +786,30 @@ def test_a_cd_the_text_fixes_sets_the_directory(rooted, script, path, fires):
 
 
 LIB_FETCH = f"curl -fsSLo bin/tool {PINNED}\n"
+TWICE = 'source scripts/lib.sh\ncd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"'
+
+
+@pytest.mark.parametrize("path", ["other/bin", "sub/bin"])
+@pytest.mark.parametrize(
+    "script",
+    [
+        f"if false; then cd sub; fi\n{LIB_FETCH}",
+        f"for d in sub; do cd sub; done\n{LIB_FETCH}",
+        f"for d in a b; do {LIB_FETCH.strip()}; cd sub; done",
+        f"true && cd sub\n{LIB_FETCH}",
+        f"f() {{ {LIB_FETCH.strip()}; }}\nf\ncd sub\nf",
+    ],
+    ids=["if", "loop", "loop-holding-the-fetch", "and-list", "calls-that-disagree"],
+)
+def test_a_cd_the_text_does_not_order_keeps_the_name(rooted, script, path):
+    """A `cd` in a branch or a loop may or may not run before the fetch, and
+    two calls of one function can run in two directories. The directory is
+    unknown, so the output keeps its name, and a cache path that ends in its
+    directory covers it."""
+    _tree(rooted, {"sub/x": ""})
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == 0
 
 
 @pytest.mark.parametrize(
@@ -800,12 +832,8 @@ LIB_FETCH = f"curl -fsSLo bin/tool {PINNED}\n"
             0,
         ),
         (LIB_FETCH, '( cd sub; source "$GITHUB_WORKSPACE/scripts/lib.sh" )', "bin", 1),
-        (
-            LIB_FETCH,
-            "source scripts/lib.sh\ncd sub\nsource scripts/../scripts/lib.sh",
-            "sub/bin",
-            0,
-        ),
+        (LIB_FETCH, TWICE, "sub/bin", 0),
+        (LIB_FETCH, TWICE, "other/bin", 0),
     ],
     ids=[
         "fetch-in-a-sourced-file-then-cd",
@@ -821,6 +849,7 @@ LIB_FETCH = f"curl -fsSLo bin/tool {PINNED}\n"
         "fetch-in-a-file-sourced-after-a-subshell-cd",
         "fetch-in-a-file-sourced-after-a-subshell-cd-root-path",
         "a-file-sourced-at-two-lines-keeps-the-name",
+        "a-file-sourced-at-two-lines-keeps-the-name-root-path",
     ],
 )
 def test_a_sourced_file_runs_at_its_source_line(rooted, lib, script, path, fires):
