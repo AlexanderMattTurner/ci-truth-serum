@@ -207,9 +207,19 @@ def test_a_script_that_runs_itself_is_walked_once(tmp_path):
         ("python3 -I tools/x.py arg", "tools/x.py"),
         ("uv run tools/x.py", "tools/x.py"),
         ("uv run --frozen tools/x.py", "tools/x.py"),
+        ("uv run python3 tools/x.py", "tools/x.py"),
+        ("uv run python -m tools.x", "tools/x.py"),
         ("python -m tools.x", "tools/x.py"),
     ],
-    ids=["python3", "option", "uv-run", "uv-run-option", "module"],
+    ids=[
+        "python3",
+        "option",
+        "uv-run",
+        "uv-run-option",
+        "uv-run-python",
+        "uv-run-module",
+        "module",
+    ],
 )
 def test_a_python_file_handed_to_an_interpreter_is_recorded(tmp_path, run, expected):
     write(tmp_path, "tools/x.py", "")
@@ -223,8 +233,10 @@ def test_a_python_file_handed_to_an_interpreter_is_recorded(tmp_path, run, expec
         "python3 -c 'import x' tools/x.py",
         'python3 "$NOPE/x.py"',
         "python3 tools/gone.py",
+        "uv run pytest tools/x.py",
+        "uv run --frozen ruff check tools/x.py",
     ],
-    ids=["dash-c", "unresolvable", "missing"],
+    ids=["dash-c", "unresolvable", "missing", "uv-run-pytest", "uv-run-ruff"],
 )
 def test_a_python_file_the_text_does_not_fix_is_not_recorded(tmp_path, run):
     write(tmp_path, "tools/x.py", "")

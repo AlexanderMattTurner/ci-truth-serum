@@ -77,7 +77,8 @@ class Unit(NamedTuple):
 
 
 @functools.lru_cache(maxsize=512)
-def _load(path: Path) -> tuple[str, Node]:
+def load_shell(path: Path) -> tuple[str, Node]:
+    """The text of the shell file PATH and its parse tree, read once."""
     text = path.read_text(encoding="utf-8")
     return text, parse(text)
 
@@ -86,7 +87,7 @@ _comments = functools.lru_cache(maxsize=512)(shell_comments)
 
 
 def _unit(path: Path, entry: Path | None) -> Unit:
-    text, root = _load(path)
+    text, root = load_shell(path)
     return Unit(path, text, root, entry)
 
 
@@ -381,13 +382,30 @@ def _python_target(words: list[str | None]) -> str | None:
             return None
         name = word.rsplit("/", 1)[-1]
         if name == "uv" and words[index + 1 : index + 2] == ["run"]:
-            rest = words[index + 2 :]
-            return next((w for w in rest if w and w.endswith(".py")), None)
+            return _uv_run_target(words[index + 2 :])
         if re.fullmatch(r"python[0-9.]*", name) and words[index + 1 : index + 2] == [
             "-m"
         ]:
             module = words[index + 2] if len(words) > index + 2 else None
             return module.replace(".", "/") + ".py" if module else None
+    return None
+
+
+def _uv_run_target(rest: list[str | None]) -> str | None:
+    """The `.py` file `uv run` executes: its program word when that is a `.py`
+    file, or the script a Python interpreter in that place is handed. A `.py`
+    word after any other program (`uv run pytest t.py`) is that program's
+    argument, not a script the step runs."""
+    for index, word in enumerate(rest):
+        if word is None:
+            return None
+        if word.startswith("-"):
+            continue
+        if word.endswith(".py"):
+            return word
+        if re.fullmatch(r"python[0-9.]*", word.rsplit("/", 1)[-1]):
+            return _python_target(rest[index:])
+        return None
     return None
 
 

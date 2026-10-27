@@ -97,6 +97,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     iter_nodes,
     node_text,
     program_name,
+    redirect_parts,
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -109,7 +110,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 )
 from _cts_py_ast import name_of  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_imports import local_files, sys_path_roots  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_step_reach import Namespace, Unit, reach, tokens  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_step_reach import Namespace, Unit, load_shell, reach, tokens  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from check_versionless_install import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NODE,
     _find_install,
@@ -184,6 +185,8 @@ _OUTPUT_FLAGS = {
     "curl": (re.compile(r"^-[A-Za-z]*o$"), "--output"),
     "wget": (re.compile(r"^-[A-Za-z]*O$"), "--output-document"),
 }
+# curl's `-O` writes the URL's last path segment.
+_REMOTE_NAME = re.compile(r"^(?:-[A-Za-z]*O[A-Za-z]*|--remote-name)$")
 
 # A cache key expression this lint can read: the runner, the env, the matrix,
 # the event context, and `hashFiles()`. Anything else (a step output, an input)
@@ -351,14 +354,21 @@ def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set
     return names
 
 
-def _outputs(tokens: list[str], values: list[str | None]) -> set[str]:
-    """The file a curl or wget command writes, from its output flag."""
-    program = program_name(tokens[0]) if tokens else ""
+def _outputs(command: Node, tokens: list[str], values: list[str | None]) -> set[str]:
+    """The file a curl or wget COMMAND writes: from its output flag, from
+    curl's `-O` (the URL's last segment), or from a stdout redirect."""
+    program = next((p for t in tokens if (p := program_name(t)) in _OUTPUT_FLAGS), "")
     flags = _OUTPUT_FLAGS.get(program)
     if flags is None:
         return set()
     short, long = flags
-    found = set()
+    found = _stdout_redirects(command)
+    if program == "curl" and any(_REMOTE_NAME.match(t) for t in tokens):
+        found |= {
+            posixpath.basename(url)
+            for token, value in zip(tokens, values)
+            if _URL.match(url := value or token)
+        }
     for index, token in enumerate(tokens[:-1]):
         if short.match(token) or token == long:
             found.add(values[index + 1] or tokens[index + 1])
@@ -366,6 +376,21 @@ def _outputs(tokens: list[str], values: list[str | None]) -> set[str]:
         if token.startswith(long + "="):
             found.add(token.split("=", 1)[1])
     return found
+
+
+def _stdout_redirects(command: Node) -> set[str]:
+    """The files COMMAND's `>`/`>>` redirects write its stdout to."""
+    parent = command.parent
+    if parent is None or parent.type != "redirected_statement":
+        return set()
+    found = set()
+    for child in parent.children:
+        if child.type != "file_redirect":
+            continue
+        parts = redirect_parts(child)
+        if parts.operator in (">", ">>", ">|") and parts.descriptor in (None, "1"):
+            found.add(parts.destination)
+    return found - {""}
 
 
 class _Shell(NamedTuple):
@@ -394,15 +419,20 @@ def _shell_context(namespace: Namespace) -> _Shell:
     )
 
 
-def _digest_pinned(url: str, outputs: frozenset[str], shell: _Shell) -> bool:
+def _digest_pinned(
+    url: str, outputs: frozenset[str], shell: _Shell, *, direct: bool
+) -> bool:
     """True when the namespace checks a digest that can be this download's: the
     URL is an http(s) address, and the check names the file the download writes.
-    A download whose output the text does not fix (a call to a downloader
-    function) takes any check in the namespace."""
+    A DIRECT curl or wget with no output the text can read (`curl … | jq`) writes
+    no file a check can name. A call to a downloader function hides its output,
+    so it takes any check in the namespace."""
     if not shell.digest_checked or not _URL.match(url):
         return False
     names = {posixpath.basename(output) for output in outputs}
-    return not names or bool(names & shell.checked_names)
+    if not names:
+        return not direct
+    return bool(names & shell.checked_names)
 
 
 def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
@@ -427,14 +457,15 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
                 frozenset(),
             )
         )
-    if not _runs_downloader(command) and not shell.downloaders & set(words):
+    direct = _runs_downloader(command)
+    if not direct and not shell.downloaders & set(words):
         return fetches
     values = [namespace.value(node, unit) for node in args]
-    outputs = frozenset(_outputs(words, values))
+    outputs = frozenset(_outputs(command, words, values))
     for node, token, value in zip(args, words, values):
         if _PINNED_URL.match(token) or (value and _PINNED_URL.match(value)):
             label, extra = token, set()
-        elif _digest_pinned(value or token, outputs, shell):
+        elif _digest_pinned(value or token, outputs, shell, direct=direct):
             label, extra = f"{token} (digest-checked)", set(shell.digest_pins)
         else:
             continue
@@ -628,7 +659,7 @@ def _python_fetches(path: Path) -> list[Fetch]:
     tree = _parsed(path)
     if tree is None:
         return []
-    fetches = _module_fetches(path, None)
+    fetches = list(_module_fetches(path, None))
     for module in _local_imports(tree, path):
         fetches += _module_fetches(module, path)
     return fetches
@@ -678,11 +709,28 @@ def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
     }
     sources = {rel for p in (path, importer) if (rel := _relative(p))}
     rel = _relative(path) or path.name
-    owner = {id(sub): name for name, fn in functions.items() for sub in ast.walk(fn)}
+    # A fetch's scope is its innermost enclosing function. ast.walk is
+    # breadth-first, so an inner function overwrites its outer one here. The
+    # module scope holds only top-level statements, so a compare inside some
+    # function never vouches for a fetch outside it.
+    owner: dict[int, ast.AST] = {}
+    for fn in nodes:
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            owner.update((id(sub), fn) for sub in ast.walk(fn))
+    top = ast.Module(
+        body=[
+            stmt
+            for stmt in tree.body
+            if not isinstance(
+                stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )
+        ],
+        type_ignores=[],
+    )
     fetches = []
     for node in calls:
-        scope_name = owner.get(id(node), "<module>")
-        scope = functions.get(scope_name, tree)
+        scope = owner.get(id(node), top)
+        scope_name = getattr(scope, "name", "<module>")
         url_node = (
             node.args[0]
             if node.args
@@ -788,18 +836,46 @@ def _home(path: str) -> str:
     return path
 
 
+@functools.lru_cache(maxsize=4096)
+def _pin_in_key(pin: str) -> re.Pattern[str]:
+    """PIN as a whole token of a cache key. `env.OSV_VERSION` names the pin
+    `OSV_VERSION`, but `runner.os` and `github.sha` are values the job never
+    sets, so a pin variable that shares their name (`$os`) is not in the key."""
+    return re.compile(rf"(?<!\w)(?<!runner\.)(?<!github\.){re.escape(pin)}(?!\w)")
+
+
+@functools.lru_cache(maxsize=1024)
+def _hashed_assignments(root: Path, pattern: str) -> frozenset[str]:
+    """The variables the shell files a `hashFiles()` PATTERN matches assign. A
+    key that hashes the file that sets a pin names that pin, even when the
+    walk cannot tell which file a call like `source_pins "$1"` reads."""
+    names: set[str] = set()
+    if not pattern or pattern.startswith(("/", "!")):
+        return frozenset()
+    for path in root.glob(pattern):
+        if path.suffix not in (".sh", ".bash") or not path.is_file():
+            continue
+        names |= {
+            node_text(name)
+            for assignment in iter_nodes(load_shell(path)[1], "variable_assignment")
+            for name in assignment.children
+            if name.type == "variable_name"
+        }
+    return frozenset(names)
+
+
 def _covers(scope: CacheScope, fetch: Fetch) -> bool:
     """True when SCOPE's key names FETCH's pin or a file that sets it, or its
     path holds FETCH's output."""
-    if any(
-        re.search(rf"(?<!\w){re.escape(pin)}(?!\w)", scope.key) for pin in fetch.pins
-    ):
+    if any(_pin_in_key(pin).search(scope.key) for pin in fetch.pins):
         return True
     for match in _HASHFILES.finditer(scope.key):
         patterns = [a or b for a, b in _QUOTED.findall(match["args"])]
         for pattern in patterns:
             pattern = pattern.removeprefix("./")
             if any(fnmatch.fnmatchcase(src, pattern) for src in fetch.sources):
+                return True
+            if fetch.pins & _hashed_assignments(REPO_ROOT, pattern):
                 return True
     for output in fetch.outputs:
         out = _home(output)

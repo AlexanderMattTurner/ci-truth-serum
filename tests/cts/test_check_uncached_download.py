@@ -518,6 +518,39 @@ def test_a_key_naming_the_variable_a_pin_is_derived_from_covers_it(rooted):
     assert uc.check_file(path) == []
 
 
+def test_a_key_hashing_the_file_that_assigns_the_pin_covers_it(rooted):
+    """The walk cannot follow `source "$1"` inside a function, but the key
+    hashes the file that assigns the pin, so the cache still covers it."""
+    _tree(
+        rooted,
+        {
+            "pins.sh": "TOOL_VERSION=2.7.0\n",
+            "lib.bash": 'load_pins() { source "$1"; }\n',
+            "fetch.sh": (
+                "source lib.bash\nload_pins pins.sh\n"
+                'curl -fsSLo t "https://example.com/v${TOOL_VERSION}/tool"\n'
+            ),
+        },
+    )
+    for key, fires in [
+        ("t-${{ hashFiles('pins.sh') }}", 0),
+        ("t-${{ hashFiles('lib.bash') }}", 1),
+    ]:
+        path = _write(rooted, _job(_cache(key) + _run("bash fetch.sh")))
+        assert len(_messages(path)) == fires, key
+
+
+def test_a_pin_named_like_a_runner_context_value_is_not_in_its_key(rooted):
+    """`$os` is a pin of the URL, but `runner.os` in the key is the runner's
+    value, not the script's variable, so the cache does not cover the fetch."""
+    script = (
+        "os=linux\nTOOL_VERSION=2.7.0\n"
+        'curl -fsSLo t "https://example.com/v${TOOL_VERSION}/tool-$os"'
+    )
+    path = _write(rooted, _job(_cache("pip-${{ runner.os }}") + _run(script)))
+    assert len(_messages(path)) == 1
+
+
 # ── a digest pins the bytes ─────────────────────────────────────────────────
 
 
@@ -557,6 +590,26 @@ def test_a_digest_check_of_another_file_does_not_pin_the_download(tmp_path):
     different file, so the unversioned download stays unpinned."""
     script = DIGEST_SCRIPT.format(check='echo "$SHA  other.tgz" | sha256sum -c -')
     assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+
+
+@pytest.mark.parametrize(
+    ("download", "fires"),
+    [
+        ('curl -fsSLO "$URL/t"', True),
+        ('curl -fsSL "$URL/t" > t', True),
+        ('curl -fsSL "$URL/t" > other', False),
+        ('curl -fsSL "$URL/api" | jq -r .tag', False),
+    ],
+    ids=["remote-name", "redirect", "redirect-elsewhere", "no-output"],
+)
+def test_a_digest_pins_only_the_file_a_download_writes(tmp_path, download, fires):
+    """A direct download pins through a check only when the check names the
+    file it writes. A lookup whose output goes to a pipe writes no file."""
+    script = (
+        f"SHA={DIGEST}\nURL=https://example.com/tool\n{download}\n"
+        'echo "$SHA  t" | sha256sum -c -\n'
+    )
+    assert len(_messages(_write(tmp_path, _job(_run(script))))) == (1 if fires else 0)
 
 
 def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
@@ -655,6 +708,33 @@ def test_what_the_python_walk_leaves_alone(rooted, install, check):
     )
     path = _write(rooted, _job(_run("bash scripts/install.sh")))
     assert uc.check_file(path) == []
+
+
+def test_a_hash_compare_in_another_function_does_not_pin_a_method_fetch(rooted):
+    """The fetch sits in a class method, and the only compare sits in a
+    different function, so nothing checks the bytes this fetch reads."""
+    _tree(
+        rooted,
+        {
+            "fetch.py": (
+                "import hashlib\nimport urllib.request\n\n"
+                "class Client:\n"
+                "    def latest(self):\n"
+                "        return urllib.request.urlopen('https://e/api/latest').read()\n"
+                "\n\ndef verify(data, want):\n"
+                "    return hashlib.sha256(data).hexdigest() == want\n"
+            )
+        },
+    )
+    assert uc.check_file(_write(rooted, _job(_run("python3 fetch.py")))) == []
+
+
+@pytest.mark.parametrize(
+    "run", ["uv run pytest tests/fetch.py", "uv run ruff check tests/fetch.py"]
+)
+def test_a_python_file_another_program_reads_is_not_the_step_script(rooted, run):
+    _tree(rooted, {"tests/fetch.py": FETCH_PY.format(digest=DIGEST, check=HASH_CHECK)})
+    assert uc.check_file(_write(rooted, _job(_run(run)))) == []
 
 
 # ── the measured case ───────────────────────────────────────────────────────
