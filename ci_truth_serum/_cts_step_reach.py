@@ -98,6 +98,9 @@ _OWN_SHELL = frozenset(
 # it only on a condition.
 _LOOPS = frozenset({"for_statement", "c_style_for_statement", "while_statement"})
 _BRANCHES = frozenset({"if_statement", "case_statement"})
+# How many functions deep `_calls_directory` follows calls before it gives up:
+# each level costs about six Python frames.
+_MAX_CALL_DEPTH = 32
 # The words that run the builtin they name: `command cd sub` moves the shell.
 _BUILTIN_RUNNERS = frozenset({"command", "builtin"})
 
@@ -199,13 +202,17 @@ class Namespace:
         # Keyed by file and node: two files with the same text share a tree.
         self._values: dict[tuple[Path | None, int], str | None] = {}
         self._bodies: dict[str, list[tuple[Node, Unit]]] = {}
-        self._changers: list[tuple[Node, Unit]] | None = None
+        self._changers: list[tuple[list, list | None]] | None = None
         # The `source` command that read each sourced file. None when two
         # commands source it, so its commands run at more than one line.
         self._anchors: dict[Path, tuple[Node, Unit] | None] = {}
         self._directories: dict[tuple[Path | None, int], Path | None] = {}
-        # The functions whose calls `_called_directory` is reading.
+        # The functions whose calls `_calls_directory` is reading, and the
+        # directory each function's calls run in.
         self._calling: set[str] = set()
+        self._called: dict[str, Path | None] = {}
+        # The executed commands that may call each word: read after the walk.
+        self._mentions: dict[str, list[tuple[Node, Unit]]] | None = None
         self._add(entry)
         self._walk()
 
@@ -459,18 +466,16 @@ class Namespace:
     def _directory_at(self, command: Node, unit: Unit) -> Path | None:
         if self._changers is None:
             self._changers = [
-                (other, owner)
+                (self._links(other, owner), self._chain(other, owner))
                 for other, owner in self.executed
                 if _changes_directory(tokens(other))
             ]
         command_links = self._links(command, unit)
         command_chain = self._chain(command, unit)
         last: list[tuple[Node, Unit]] | None = None
-        for other, owner in self._changers:
-            links = self._links(other, owner)
+        for links, chain in self._changers:
             if _confined(links, command_links):
                 continue  # a subshell's `cd` moves only the subshell
-            chain = self._chain(other, owner)
             if chain is None:
                 return None
             if command_chain is None:
@@ -489,22 +494,35 @@ class Namespace:
 
     def _called_directory(self, links: list[tuple[Node, Unit]]) -> Path | None:
         """The directory a command in a function body runs in: the one every
-        call of that function runs in. None when the calls disagree, the
-        function calls itself, or a file on the way is sourced at two lines."""
+        call of that function runs in. None when the calls disagree, a word
+        other than a command name names the function (`trap f EXIT`, `retry
+        f`), the calls form a cycle, or a file on the way is sourced at two
+        lines."""
         if self._anchors.get(links[-1][1].path, ()) is None:
             return None
         name = next(
             (_function_name(n) for n, u in links if _inside_definition(n, u.root)),
             None,
         )
-        if name is None or name in self._calling:
+        if name is None:
             return None
+        if name not in self._called:
+            self._called[name] = self._calls_directory(name)
+        return self._called[name]
+
+    def _calls_directory(self, name: str) -> Path | None:
+        if name in self._calling or len(self._calling) >= _MAX_CALL_DEPTH:
+            return None
+        if self._mentions is None:
+            self._mentions = {}
+            for command, unit in self.executed:
+                for word in set(callable_words(command)):
+                    self._mentions.setdefault(word, []).append((command, unit))
+        calls = self._mentions.get(name, [])
+        if any(tokens(call)[0] != name for call, _ in calls):
+            return None  # it may run anywhere: at exit, or under a wrapper
         self._calling.add(name)
-        found = {
-            self.directory_at(call, owner)
-            for call, owner in self.executed
-            if name in callable_words(call)
-        }
+        found = {self.directory_at(call, owner) for call, owner in calls}
         self._calling.discard(name)
         return found.pop() if len(found) == 1 else None
 
@@ -573,7 +591,7 @@ def _function_name(node: Node) -> str:
     return node_text(node.child_by_field_name("name"))
 
 
-def _holds(scope: Node, node: Node | None) -> bool:
+def _holds(scope: "Node | _Span", node: Node | None) -> bool:
     return node is not None and scope.start_byte <= node.start_byte < scope.end_byte
 
 
@@ -595,21 +613,60 @@ def _unordered(
     changer: list[tuple[Node, Unit]], command: list[tuple[Node, Unit]]
 ) -> bool:
     """True when the text does not fix whether a `cd` ran before COMMAND: a
-    link of the CHANGER sits in a loop, or in a branch that holds no link of
-    COMMAND (an `if`, a `case`, or the right side of `&&` or `||`)."""
+    link of the CHANGER sits in a loop, or a branch may run that link and not
+    COMMAND's link in the same file."""
     at = {unit.path: node for node, unit in command}
     for node, unit in changer:
+        inside = at.get(unit.path)
         below, scope = node, node.parent
         while scope is not None:
-            branch = scope.type in _BRANCHES or (
-                scope.type == "list" and below != scope.children[0]
-            )
-            if scope.type in _LOOPS or (
-                branch and not _holds(scope, at.get(unit.path))
-            ):
+            if scope.type in _LOOPS or _apart(scope, below, inside):
                 return True
             below, scope = scope, scope.parent
     return False
+
+
+def _apart(scope: Node, below: Node, inside: Node | None) -> bool:
+    """True when SCOPE can run its child BELOW and skip INSIDE: two arms of an
+    `if` or a `case`, the right side of `&&` or `||` without INSIDE, or the
+    left side of `||` with INSIDE on its right."""
+    if scope.type == "list":
+        operator, right = scope.children[1], scope.children[-1]
+        if below == right:
+            return not _holds(right, inside)
+        return operator.type == "||" and _holds(right, inside)
+    if scope.type not in _BRANCHES:
+        return False
+    arms = _arms(scope)
+    mine = next((i for i, arm in enumerate(arms) if _holds(arm, below)), None)
+    theirs = next((i for i, arm in enumerate(arms) if _holds(arm, inside)), None)
+    if scope.type == "if_statement" and mine == 0:
+        return theirs is not None and theirs >= 2  # the condition, then `else`
+    return mine is not None and mine != theirs
+
+
+class _Span(NamedTuple):
+    """A byte range in one parse tree."""
+
+    start_byte: int
+    end_byte: int
+
+
+def _arms(scope: Node) -> list[_Span]:
+    """The parts of an `if` that run apart: its condition, the `then` body,
+    then each `elif` and `else`. The items of a `case`."""
+    if scope.type == "case_statement":
+        return [
+            _Span(c.start_byte, c.end_byte)
+            for c in scope.children
+            if c.type == "case_item"
+        ]
+    spans, start = [], scope.start_byte
+    for child in scope.children:
+        if child.type in ("then", "elif_clause", "else_clause", "fi"):
+            spans.append(_Span(start, child.start_byte))
+            start = child.end_byte if child.type == "then" else child.start_byte
+    return spans
 
 
 def _precedes(first: list[tuple[Node, Unit]], second: list[tuple[Node, Unit]]) -> bool:

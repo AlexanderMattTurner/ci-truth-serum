@@ -789,6 +789,20 @@ LIB_FETCH = f"curl -fsSLo bin/tool {PINNED}\n"
 TWICE = 'source scripts/lib.sh\ncd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"'
 
 
+@pytest.mark.parametrize(("path", "fires"), [("bin", 0), ("sub/bin", 1)])
+def test_a_long_call_chain_runs_where_its_first_call_runs(rooted, path, fires):
+    """300 functions, each calling the one before, run where the outer call
+    runs: the step's directory."""
+    script = "\n".join(
+        [f"f0() {{ {LIB_FETCH.strip()}; }}"]
+        + [f"f{i}() {{ f{i - 1}; }}" for i in range(1, 300)]
+        + ["f299"]
+    )
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
 @pytest.mark.parametrize("path", ["other/bin", "sub/bin"])
 @pytest.mark.parametrize(
     "script",
@@ -798,8 +812,28 @@ TWICE = 'source scripts/lib.sh\ncd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh
         f"for d in a b; do {LIB_FETCH.strip()}; cd sub; done",
         f"true && cd sub\n{LIB_FETCH}",
         f"f() {{ {LIB_FETCH.strip()}; }}\nf\ncd sub\nf",
+        f"if false; then cd sub; else {LIB_FETCH.strip()}; fi",
+        f"if false; then cd sub; elif true; then {LIB_FETCH.strip()}; fi",
+        f"case x in y) cd sub ;; x) {LIB_FETCH.strip()} ;; esac",
+        f"cd sub || {LIB_FETCH.strip()}",
+        f"if cd sub; then :; else {LIB_FETCH.strip()}; fi",
+        f"f() {{ {LIB_FETCH.strip()}; }}\ntrap f EXIT\ncd sub",
+        f"f() {{ {LIB_FETCH.strip()}; }}\ncd sub\ngrep -q f x\ncd ..\nfn=f\n$fn",
     ],
-    ids=["if", "loop", "loop-holding-the-fetch", "and-list", "calls-that-disagree"],
+    ids=[
+        "if",
+        "loop",
+        "loop-holding-the-fetch",
+        "and-list",
+        "calls-that-disagree",
+        "if-else-arms",
+        "if-elif-arms",
+        "case-arms",
+        "or-list",
+        "cd-in-a-condition",
+        "trap",
+        "a-word-that-is-not-a-call",
+    ],
 )
 def test_a_cd_the_text_does_not_order_keeps_the_name(rooted, script, path):
     """A `cd` in a branch or a loop may or may not run before the fetch, and
