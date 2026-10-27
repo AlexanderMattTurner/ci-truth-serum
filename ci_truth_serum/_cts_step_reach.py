@@ -195,6 +195,8 @@ class Namespace:
         self._values: dict[int, str | None] = {}
         self._bodies: dict[str, list[tuple[Node, Unit]]] = {}
         self._changers: list[tuple[Node, Unit]] | None = None
+        # The `source` command that read each sourced unit, by the unit's tree.
+        self._anchors: dict[int, tuple[Node, Unit]] = {}
         self._directories: dict[int, Path | None] = {}
         self._add(entry)
         self._walk()
@@ -242,6 +244,7 @@ class Namespace:
             return None
         added = _unit(target, unit.entry)
         self._add(added)
+        self._anchors[id(added.root)] = (command, unit)
         return added
 
     def _source_target(self, command: Node, unit: Unit) -> Path | None:
@@ -446,10 +449,7 @@ class Namespace:
                 for other, owner in self.executed
                 if _changes_directory(tokens(other))
             ]
-        # A function body runs where it is called, so its own byte offset
-        # orders nothing.
-        in_function = _inside_definition(command, unit.root)
-        last: Node | None = None
+        last: tuple[Node, Unit] | None = None
         for other, owner in self._changers:
             scope = other.parent
             while scope is not None and scope.type not in _OWN_SHELL:
@@ -459,15 +459,45 @@ class Namespace:
                 same_file and scope.start_byte <= command.start_byte < scope.end_byte
             ):
                 continue  # a subshell's `cd` moves only the subshell
-            if in_function or not same_file or _inside_definition(other, unit.root):
+            before = self._before((other, owner), (command, unit))
+            if before is None:
                 return None
-            if other.start_byte < command.start_byte and (
-                last is None or other.start_byte > last.start_byte
-            ):
-                last = other
+            if before and (last is None or self._before(last, (other, owner))):
+                last = (other, owner)
         if last is None:
             return self.cwd
-        return self._cd_target(last, unit)
+        return self._cd_target(*last)
+
+    def _before(
+        self, first: tuple[Node, Unit], second: tuple[Node, Unit]
+    ) -> bool | None:
+        """True when the command FIRST runs before SECOND, compared in the
+        deepest file both run from. None when the text does not fix the order:
+        one of them runs from a function body."""
+        chain_a, chain_b = self._chain(*first), self._chain(*second)
+        if chain_a is None or chain_b is None:
+            return None
+        roots_b = {id(u.root): node for node, u in chain_b}
+        for node_a, unit_a in chain_a:
+            node_b = roots_b.get(id(unit_a.root))
+            if node_b is not None:
+                return node_a.start_byte < node_b.start_byte
+        return None
+
+    def _chain(self, node: Node, unit: Unit) -> list[tuple[Node, Unit]] | None:
+        """NODE in UNIT, then the `source` command that read UNIT, and so on
+        up to the file the namespace starts from. A sourced file's commands
+        run where that `source` runs. None when a link sits in a function
+        body, which runs where it is called."""
+        chain = []
+        while True:
+            if _inside_definition(node, unit.root):
+                return None
+            chain.append((node, unit))
+            anchor = self._anchors.get(id(unit.root))
+            if anchor is None:
+                return chain
+            node, unit = anchor
 
     def _cd_target(self, command: Node, unit: Unit) -> Path | None:
         """Where the `cd` COMMAND goes, when the text fixes it."""

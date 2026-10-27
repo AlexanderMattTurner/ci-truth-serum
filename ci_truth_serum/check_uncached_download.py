@@ -199,19 +199,23 @@ _CHECK_FLAG = re.compile(r"^(?:--check|-[A-Za-z]*c[A-Za-z]*)$")
 # The nodes around a checksum command that carry its stdin.
 _CHECK_SCOPES = frozenset({"pipeline", "redirected_statement"})
 
-# curl's and wget's flags that name the file the download writes.
-# A short flag closes a cluster (`-fsSLo FILE`). The only attached value read
-# is `-` (`-qO-`, stdout): in `-Hcontent-type:x` the `o` is part of a value.
+# The short flags of curl and wget that take no value. Only these may come
+# before a value flag in one word: in `-Ttool.tgz` the letters after `-T`
+# are its value, so the word holds no `-o`.
+_CURL_BARE = "fsSLkqvIiOjgN46l0123nRpZ#GBa"
+_WGET_BARE = "qvncNrkKmpbxSdF46EHL"
+# curl's and wget's flags that name the file the download writes. A short flag
+# closes a cluster (`-fsSLo FILE`) or carries its value (`-o/tmp/t`, `-qO-`).
 _OUTPUT_FLAGS = {
-    "curl": (re.compile(r"^-[A-Za-z]*o(?P<value>-?)$"), "--output"),
-    "wget": (re.compile(r"^-[A-Za-z]*O(?P<value>-?)$"), "--output-document"),
+    "curl": (re.compile(rf"^-[{_CURL_BARE}]*o(?P<value>.*)$"), "--output"),
+    "wget": (re.compile(rf"^-[{_WGET_BARE}]*O(?P<value>.*)$"), "--output-document"),
 }
 # curl's `-O` writes the URL's last path segment.
-_REMOTE_NAME = re.compile(r"^(?:-[A-Za-z]*O[A-Za-z]*|--remote-name)$")
+_REMOTE_NAME = re.compile(rf"^(?:-[{_CURL_BARE}]*O[{_CURL_BARE}]*|--remote-name)$")
 # curl's and wget's flags that name the directory the file lands in.
 _DIRECTORY_FLAGS = {
     "curl": (None, "--output-dir"),
-    "wget": (re.compile(r"^-[A-Za-z]*P(?P<value>)$"), "--directory-prefix"),
+    "wget": (re.compile(rf"^-[{_WGET_BARE}]*P(?P<value>.*)$"), "--directory-prefix"),
 }
 # The source that stands for the workflow or action file a `run:` body is
 # written in, until `_script_fetches` knows which file that is.

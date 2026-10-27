@@ -773,6 +773,68 @@ def test_a_cd_the_text_fixes_sets_the_directory(rooted, script, path, fires):
     assert len(_messages(_write(rooted, workflow))) == fires
 
 
+LIB_FETCH = f"curl -fsSLo bin/tool {PINNED}\n"
+
+
+@pytest.mark.parametrize(
+    ("lib", "script", "path", "fires"),
+    [
+        (LIB_FETCH, "source scripts/lib.sh\ncd sub", "bin", 0),
+        (LIB_FETCH, "source scripts/lib.sh\ncd sub", "sub/bin", 1),
+        (LIB_FETCH, 'cd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"', "sub/bin", 0),
+        (LIB_FETCH, 'cd sub\nsource "$GITHUB_WORKSPACE/scripts/lib.sh"', "bin", 1),
+        ("cd sub\n", f"source scripts/lib.sh\n{LIB_FETCH}", "sub/bin", 0),
+        ("cd sub\n", f"source scripts/lib.sh\n{LIB_FETCH}", "bin", 1),
+        ("cd sub\n", f"{LIB_FETCH}source scripts/lib.sh", "bin", 0),
+    ],
+    ids=[
+        "fetch-in-a-sourced-file-then-cd",
+        "fetch-in-a-sourced-file-then-cd-wrong-path",
+        "cd-then-fetch-in-a-sourced-file",
+        "cd-then-fetch-in-a-sourced-file-root-path",
+        "cd-in-a-sourced-file-then-fetch",
+        "cd-in-a-sourced-file-then-fetch-root-path",
+        "fetch-then-cd-in-a-sourced-file",
+    ],
+)
+def test_a_sourced_file_runs_at_its_source_line(rooted, lib, script, path, fires):
+    """The commands of a sourced file run where the `source` command runs, so a
+    `cd` before or after it orders against them like any other command."""
+    _tree(rooted, {"scripts/lib.sh": lib, "sub/x": ""})
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("script", "path", "fires"),
+    [
+        (f"wget -q -P/opt/tools {PINNED}", "/opt/tools", 0),
+        (f"wget -qP/opt/tools {PINNED}", "/opt/tools", 0),
+        (f"wget -qO/opt/tools/t {PINNED}", "/opt/tools", 0),
+        (f"curl -fsSL -o/opt/tools/t {PINNED}", "/opt/tools", 0),
+        (f"curl -fsSLo/opt/tools/t {PINNED}", "/opt/tools", 0),
+        (f"curl -fsSL -o/opt/tools/t {PINNED}", "/opt/else", 1),
+        (f"curl -fsSL -Ttool.tgz -o /opt/tools/t {PINNED}", "ol.tgz", 1),
+    ],
+    ids=[
+        "wget-P-attached",
+        "wget-qP-attached",
+        "wget-qO-attached",
+        "curl-o-attached",
+        "curl-cluster-o-attached",
+        "curl-o-attached-elsewhere",
+        "a-value-flag-before-o",
+    ],
+)
+def test_an_attached_flag_value_is_read(rooted, script, path, fires):
+    """`-P/opt/tools` and `-o/opt/tools/t` carry their value in the same word.
+    Only letters that take no value may come before the flag: in `-Ttool.tgz`
+    the letters after `-T` are its value, so no `-o` is there."""
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
 @pytest.mark.parametrize(
     ("path", "fires"), [("bin", 1), ("tools/bin/tool", 0)], ids=["root-bin", "tail"]
 )
