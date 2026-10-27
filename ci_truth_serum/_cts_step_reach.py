@@ -192,12 +192,14 @@ class Namespace:
         self.executed: list[tuple[Node, Unit]] = []
         self._resolving: set[str] = set()
         self._variables: dict[str, str | None] = {}
-        self._values: dict[int, str | None] = {}
+        # Keyed by file and node: two files with the same text share a tree.
+        self._values: dict[tuple[Path | None, int], str | None] = {}
         self._bodies: dict[str, list[tuple[Node, Unit]]] = {}
         self._changers: list[tuple[Node, Unit]] | None = None
-        # The `source` command that read each sourced unit, by the unit's tree.
-        self._anchors: dict[int, tuple[Node, Unit]] = {}
-        self._directories: dict[int, Path | None] = {}
+        # The `source` command that read each sourced file. None when two
+        # commands source it, so its commands run at more than one line.
+        self._anchors: dict[Path | None, tuple[Node, Unit] | None] = {}
+        self._directories: dict[tuple[Path | None, int], Path | None] = {}
         self._add(entry)
         self._walk()
 
@@ -240,11 +242,14 @@ class Namespace:
         if len(words) < 2 or words[0] not in _SOURCE_COMMANDS:
             return None
         target = self._source_target(command, unit)
-        if target is None or any(u.path == target for u in self.units):
+        if target is None:
+            return None
+        if any(u.path == target for u in self.units):
+            self._anchors[target] = None
             return None
         added = _unit(target, unit.entry)
         self._add(added)
-        self._anchors[id(added.root)] = (command, unit)
+        self._anchors[target] = (command, unit)
         return added
 
     def _source_target(self, command: Node, unit: Unit) -> Path | None:
@@ -315,9 +320,10 @@ class Namespace:
         `$GITHUB_WORKSPACE`, `$GITHUB_ACTION_PATH`, a variable with one
         assignment of those forms, and the default of `${X:-default}` when no
         file assigns X."""
-        if node.id not in self._values:
-            self._values[node.id] = self._value(node, unit)
-        return self._values[node.id]
+        key = (unit.path, node.id)
+        if key not in self._values:
+            self._values[key] = self._value(node, unit)
+        return self._values[key]
 
     def _value(self, node: Node, unit: Unit) -> str | None:
         kind = node.type
@@ -436,11 +442,11 @@ class Namespace:
         """The directory COMMAND in UNIT runs in: the step's, or the target of
         the last `cd` before it when the text fixes that target. None when the
         text does not fix it: a `cd` to a computed path, a `pushd` or `popd`,
-        or a `cd` in another file or a function body, whose order the text
-        does not fix."""
-        if command.id not in self._directories:
-            self._directories[command.id] = self._directory_at(command, unit)
-        return self._directories[command.id]
+        a `cd` in a function body, or a file sourced at two lines."""
+        key = (unit.path, command.id)
+        if key not in self._directories:
+            self._directories[key] = self._directory_at(command, unit)
+        return self._directories[key]
 
     def _directory_at(self, command: Node, unit: Unit) -> Path | None:
         if self._changers is None:
@@ -449,55 +455,43 @@ class Namespace:
                 for other, owner in self.executed
                 if _changes_directory(tokens(other))
             ]
-        last: tuple[Node, Unit] | None = None
+        command_links = self._links(command, unit)
+        command_chain = self._chain(command, unit)
+        last: list[tuple[Node, Unit]] | None = None
         for other, owner in self._changers:
-            scope = other.parent
-            while scope is not None and scope.type not in _OWN_SHELL:
-                scope = scope.parent
-            same_file = owner.root is unit.root
-            if scope is not None and not (
-                same_file and scope.start_byte <= command.start_byte < scope.end_byte
-            ):
+            if _confined(self._links(other, owner), command_links):
                 continue  # a subshell's `cd` moves only the subshell
-            before = self._before((other, owner), (command, unit))
-            if before is None:
+            chain = self._chain(other, owner)
+            if chain is None or command_chain is None:
                 return None
-            if before and (last is None or self._before(last, (other, owner))):
-                last = (other, owner)
+            if _precedes(chain, command_chain) and (
+                last is None or _precedes(last, chain)
+            ):
+                last = chain
         if last is None:
             return self.cwd
-        return self._cd_target(*last)
+        return self._cd_target(*last[0])
 
-    def _before(
-        self, first: tuple[Node, Unit], second: tuple[Node, Unit]
-    ) -> bool | None:
-        """True when the command FIRST runs before SECOND, compared in the
-        deepest file both run from. None when the text does not fix the order:
-        one of them runs from a function body."""
-        chain_a, chain_b = self._chain(*first), self._chain(*second)
-        if chain_a is None or chain_b is None:
-            return None
-        roots_b = {id(u.root): node for node, u in chain_b}
-        for node_a, unit_a in chain_a:
-            node_b = roots_b.get(id(unit_a.root))
-            if node_b is not None:
-                return node_a.start_byte < node_b.start_byte
-        return None
+    def _links(self, node: Node, unit: Unit) -> list[tuple[Node, Unit]]:
+        """NODE in UNIT, then the `source` command that read UNIT, and so on
+        up to the file the namespace starts from, or to a file sourced at two
+        lines. A sourced file's commands run where that `source` runs."""
+        links = [(node, unit)]
+        while (anchor := self._anchors.get(unit.path)) is not None:
+            node, unit = anchor
+            links.append(anchor)
+        return links
 
     def _chain(self, node: Node, unit: Unit) -> list[tuple[Node, Unit]] | None:
-        """NODE in UNIT, then the `source` command that read UNIT, and so on
-        up to the file the namespace starts from. A sourced file's commands
-        run where that `source` runs. None when a link sits in a function
-        body, which runs where it is called."""
-        chain = []
-        while True:
-            if _inside_definition(node, unit.root):
-                return None
-            chain.append((node, unit))
-            anchor = self._anchors.get(id(unit.root))
-            if anchor is None:
-                return chain
-            node, unit = anchor
+        """The links of NODE when they fix the line it runs at. None when a
+        link sits in a function body, which runs where it is called, or a file
+        on the way is sourced at two lines."""
+        links = self._links(node, unit)
+        if self._anchors.get(links[-1][1].path, ()) is None:
+            return None
+        if any(_inside_definition(n, u.root) for n, u in links):
+            return None
+        return links
 
     def _cd_target(self, command: Node, unit: Unit) -> Path | None:
         """Where the `cd` COMMAND goes, when the text fixes it."""
@@ -517,6 +511,42 @@ class Namespace:
     def assigned_in(self, name: str) -> set[Path]:
         """The followed files that assign NAME."""
         return {u.path for _, u in self.assignments.get(name, []) if u.path}
+
+
+def _own_shell(node: Node) -> Node | None:
+    """The nearest node above NODE that runs its own shell, if any. In a
+    pipeline that is the member holding NODE, not the whole pipeline."""
+    below, scope = node, node.parent
+    while scope is not None and scope.type not in _OWN_SHELL:
+        below, scope = scope, scope.parent
+    return below if scope is not None and scope.type == "pipeline" else scope
+
+
+def _confined(
+    changer: list[tuple[Node, Unit]], command: list[tuple[Node, Unit]]
+) -> bool:
+    """True when a `cd` cannot move COMMAND: a link of the CHANGER sits in a
+    subshell that holds no link of COMMAND. The links are the ones
+    `Namespace._links` gives."""
+    at = {unit.path: node for node, unit in command}
+    for node, unit in changer:
+        scope = _own_shell(node)
+        inside = at.get(unit.path)
+        if scope is not None and (
+            inside is None or not scope.start_byte <= inside.start_byte < scope.end_byte
+        ):
+            return True
+    return False
+
+
+def _precedes(first: list[tuple[Node, Unit]], second: list[tuple[Node, Unit]]) -> bool:
+    """True when the chain FIRST runs before SECOND, compared in the deepest
+    file both pass through. Every chain ends at the namespace's first file."""
+    at = {unit.path: node for node, unit in second}
+    for node, unit in first:
+        if unit.path in at:
+            return node.start_byte < at[unit.path].start_byte
+    raise AssertionError("two chains of one namespace share no file")
 
 
 class _Pending(NamedTuple):

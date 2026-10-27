@@ -755,6 +755,8 @@ def test_an_output_resolves_as_the_shell_resolves_it(
         (f"cd sub && curl -fsSLo t.tgz {PINNED}", "sub", 0),
         (f"cd sub && curl -fsSLo t.tgz {PINNED}", "t.tgz", 1),
         (f'cd "$UNKNOWN" && curl -fsSLo bin/tool {PINNED}', "sub/bin", 0),
+        (f"cd sub | curl -fsSLo t.tgz {PINNED}", "t.tgz", 0),
+        (f"cd sub | curl -fsSLo t.tgz {PINNED}", "sub", 1),
     ],
     ids=[
         "cd-back-to-the-workspace",
@@ -762,6 +764,8 @@ def test_an_output_resolves_as_the_shell_resolves_it(
         "directory-after-a-fixed-cd",
         "root-after-a-fixed-cd",
         "unknown-cd-keeps-the-name",
+        "a-cd-in-another-pipeline-member",
+        "a-cd-in-another-pipeline-member-moved-path",
     ],
 )
 def test_a_cd_the_text_fixes_sets_the_directory(rooted, script, path, fires):
@@ -786,6 +790,22 @@ LIB_FETCH = f"curl -fsSLo bin/tool {PINNED}\n"
         ("cd sub\n", f"source scripts/lib.sh\n{LIB_FETCH}", "sub/bin", 0),
         ("cd sub\n", f"source scripts/lib.sh\n{LIB_FETCH}", "bin", 1),
         ("cd sub\n", f"{LIB_FETCH}source scripts/lib.sh", "bin", 0),
+        ("cd sub\n", f"( source scripts/lib.sh )\n{LIB_FETCH}", "bin", 0),
+        ("cd sub\n", f"( source scripts/lib.sh )\n{LIB_FETCH}", "sub/bin", 1),
+        ("cd sub\n", f"source scripts/lib.sh | cat\n{LIB_FETCH}", "bin", 0),
+        (
+            LIB_FETCH,
+            '( cd sub; source "$GITHUB_WORKSPACE/scripts/lib.sh" )',
+            "sub/bin",
+            0,
+        ),
+        (LIB_FETCH, '( cd sub; source "$GITHUB_WORKSPACE/scripts/lib.sh" )', "bin", 1),
+        (
+            LIB_FETCH,
+            "source scripts/lib.sh\ncd sub\nsource scripts/../scripts/lib.sh",
+            "sub/bin",
+            0,
+        ),
     ],
     ids=[
         "fetch-in-a-sourced-file-then-cd",
@@ -795,6 +815,12 @@ LIB_FETCH = f"curl -fsSLo bin/tool {PINNED}\n"
         "cd-in-a-sourced-file-then-fetch",
         "cd-in-a-sourced-file-then-fetch-root-path",
         "fetch-then-cd-in-a-sourced-file",
+        "cd-in-a-file-sourced-in-a-subshell",
+        "cd-in-a-file-sourced-in-a-subshell-moved-path",
+        "cd-in-a-file-sourced-in-a-pipeline",
+        "fetch-in-a-file-sourced-after-a-subshell-cd",
+        "fetch-in-a-file-sourced-after-a-subshell-cd-root-path",
+        "a-file-sourced-at-two-lines-keeps-the-name",
     ],
 )
 def test_a_sourced_file_runs_at_its_source_line(rooted, lib, script, path, fires):
@@ -806,6 +832,17 @@ def test_a_sourced_file_runs_at_its_source_line(rooted, lib, script, path, fires
     assert len(_messages(_write(rooted, workflow))) == fires
 
 
+def test_two_files_with_one_text_keep_their_own_source_line(rooted):
+    """Two files with the same text share one parse tree. Each one still has
+    its own `source` line, so the walk ends and the last `cd` places the file."""
+    hop = 'cd /tmp\nsource "${BASH_SOURCE[0]%/*}/../run.sh"\n'
+    _tree(rooted, {"sub/sub/run.sh": hop, "sub/run.sh": hop, "run.sh": "true\n"})
+    script = f'source "$GITHUB_WORKSPACE/sub/sub/run.sh"\n{LIB_FETCH}'
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path="/tmp/bin", directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == 0
+
+
 @pytest.mark.parametrize(
     ("script", "path", "fires"),
     [
@@ -815,7 +852,11 @@ def test_a_sourced_file_runs_at_its_source_line(rooted, lib, script, path, fires
         (f"curl -fsSL -o/opt/tools/t {PINNED}", "/opt/tools", 0),
         (f"curl -fsSLo/opt/tools/t {PINNED}", "/opt/tools", 0),
         (f"curl -fsSL -o/opt/tools/t {PINNED}", "/opt/else", 1),
-        (f"curl -fsSL -Ttool.tgz -o /opt/tools/t {PINNED}", "ol.tgz", 1),
+        (f"curl -fsSL -Ttool.tgz -o /opt/tools/t {PINNED}", "l.tgz", 1),
+        (f"wget -BxyzO/opt/t {PINNED}", "/opt", 1),
+        (f"curl -fsSLOJ {PINNED}", "tool", 0),
+        (f"curl -fsSLJo tool {PINNED}", "tool", 0),
+        (f"curl -OHx-y:z {PINNED}", "tool", 0),
     ],
     ids=[
         "wget-P-attached",
@@ -825,6 +866,10 @@ def test_a_sourced_file_runs_at_its_source_line(rooted, lib, script, path, fires
         "curl-cluster-o-attached",
         "curl-o-attached-elsewhere",
         "a-value-flag-before-o",
+        "a-value-flag-before-wget-O",
+        "curl-OJ-cluster",
+        "curl-J-before-o",
+        "curl-value-flag-after-O",
     ],
 )
 def test_an_attached_flag_value_is_read(rooted, script, path, fires):

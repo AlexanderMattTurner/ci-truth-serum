@@ -202,16 +202,17 @@ _CHECK_SCOPES = frozenset({"pipeline", "redirected_statement"})
 # The short flags of curl and wget that take no value. Only these may come
 # before a value flag in one word: in `-Ttool.tgz` the letters after `-T`
 # are its value, so the word holds no `-o`.
-_CURL_BARE = "fsSLkqvIiOjgN46l0123nRpZ#GBa"
-_WGET_BARE = "qvncNrkKmpbxSdF46EHL"
+_CURL_BARE = "fsSLkqvIiOjJgN46l0123nRpZ#GBaMV:"
+_WGET_BARE = "qvcNrkKmpbxSdF46EHLV"
 # curl's and wget's flags that name the file the download writes. A short flag
 # closes a cluster (`-fsSLo FILE`) or carries its value (`-o/tmp/t`, `-qO-`).
 _OUTPUT_FLAGS = {
     "curl": (re.compile(rf"^-[{_CURL_BARE}]*o(?P<value>.*)$"), "--output"),
     "wget": (re.compile(rf"^-[{_WGET_BARE}]*O(?P<value>.*)$"), "--output-document"),
 }
-# curl's `-O` writes the URL's last path segment.
-_REMOTE_NAME = re.compile(rf"^(?:-[{_CURL_BARE}]*O[{_CURL_BARE}]*|--remote-name)$")
+# curl's `-O` writes the URL's last path segment. The letters after it do
+# not matter: `-OH x` still writes that file.
+_REMOTE_NAME = re.compile(rf"^(?:-[{_CURL_BARE}]*O|--remote-name$)")
 # curl's and wget's flags that name the directory the file lands in.
 _DIRECTORY_FLAGS = {
     "curl": (None, "--output-dir"),
@@ -469,8 +470,8 @@ def _spelled(
 
 def _flag_values(words: list[str], spelled: list[str], short, long: str) -> list[str]:
     """The values WORDS give the flag spelled SHORT (a pattern with a `value`
-    group, or None) or LONG, in order: `-o FILE`, `-o-`, `--output FILE` and
-    `--output=FILE`. Each value comes from SPELLED, the words' values."""
+    group, or None) or LONG, in order: `-o FILE`, `-o/tmp/t`, `--output FILE`
+    and `--output=FILE`. Each value comes from SPELLED, the words' values."""
     found = []
     for index, (word, value) in enumerate(zip(words, spelled)):
         after = spelled[index + 1] if index + 1 < len(words) else None
