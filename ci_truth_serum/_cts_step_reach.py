@@ -1,29 +1,22 @@
 """The shell a CI step really runs: its own `run:` body and the repo files it reaches.
 
-PROBLEM CLASS — a lint that reads only the `run:` text misses everything a step
-does through a repository script. `run: bash .github/scripts/scan.sh` is one
-command on the page. The download it causes sits two files away, in a function
-that a sourced library defines. This module follows those edges on the bash
-grammar (`_cts_bash_ast`) and hands a caller every command that runs, each with
-the file it is written in.
+A lint that reads only the `run:` text misses everything a step does through a
+repository script. `run: bash .github/scripts/scan.sh` is one command on the
+page, and the download it causes can sit two files away. This module follows
+those edges on the bash grammar (`_cts_bash_ast`) and hands a caller every
+command that runs, each with the file it is written in.
 
 A NAMESPACE is one shell process: an entry script plus every file it sources.
 Functions and variables are shared across it. Three edges are followed:
 
   * `source X` and `. X` add X to the namespace;
-  * a call to a function the namespace defines walks that function's body,
-    and a body nobody calls is never walked;
+  * a call to a function the namespace defines walks that function's body;
   * `bash X`, `sh X` and `./X.sh` start a child namespace, and a Python
-    interpreter handed `X.py` (`python3 X.py`, `uv run X.py`, `python -m m`)
-    records X for the caller.
+    interpreter handed `X.py` records X for the caller.
 
-A path is resolved only from what the text fixes: a literal, a `# shellcheck
-source=` directive, `${BASH_SOURCE[0]%/*}`, `$(dirname "$0")`, `$(cd X && pwd)`,
-`$(git rev-parse --show-toplevel)`, `$GITHUB_WORKSPACE`, a variable with one
-assignment of those forms, and the default of `${X:-default}` when no file
-assigns X. Any other path ends the walk silently: a guessed path
-would judge a file the step never runs. The depth is bounded and each file is
-read once per namespace, so a cycle terminates.
+`Namespace.value` lists the path forms that resolve. Any other path ends the
+walk silently, because a guessed path judges a file the step never runs. The
+depth is bounded and each file is read once per namespace, so a cycle ends.
 """
 
 import functools
@@ -31,6 +24,7 @@ import os
 import posixpath
 import re
 import sys
+from collections import deque
 from pathlib import Path
 from typing import NamedTuple
 
@@ -49,7 +43,8 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     unquote,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_imports import interpreter_scripts  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import MESSAGE_PREFIX  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_imports import _PY_INTERPRETER, interpreter_scripts  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from check_shell_source_declarations import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _DIRECTIVE,
     _comment_block_above,
@@ -61,6 +56,9 @@ from check_shell_source_declarations import (  # noqa: E402,I001  # pylint: disa
 MAX_HOPS = 6
 
 _SHELL_INTERPRETER = re.compile(r"(?:ba|da|z|k)?sh")
+# A short-option cluster whose last letter takes the next word as its value
+# (`bash -eo pipefail x.sh`, `bash -O extglob x.sh`).
+_SHELL_VALUE_OPTION = re.compile(r"[-+][A-Za-z]*[oO]")
 _SHELL_SUFFIX = re.compile(r"\.(?:sh|bash)$")
 _SOURCE_COMMANDS = frozenset({"source", "."})
 _ACTION_PATH_EXPR = re.compile(r"\$\{\{\s*github\.action_path\s*\}\}")
@@ -99,7 +97,7 @@ def _executed(node: Node) -> list[Node]:
 
 
 @functools.lru_cache(maxsize=1024)
-def _index(root: Node) -> tuple[list[tuple[str, Node]], list[tuple[str, Node]]]:
+def definitions(root: Node) -> tuple[list[tuple[str, Node]], list[tuple[str, Node]]]:
     """(name, body) of each function ROOT defines, and (name, node) of each
     variable it assigns, at any depth."""
     functions = []
@@ -122,12 +120,23 @@ def tokens(command: Node) -> list[str]:
     return [unquote(node_text(node)) for node in command_arguments(command)]
 
 
+def callable_words(command: Node) -> list[str]:
+    """The words of COMMAND that may name a function it runs: its name, and
+    each argument (`retry f`, `trap f EXIT`). A printing command's arguments
+    are text, so only its own name counts."""
+    words = tokens(command)
+    return words[:1] if words and MESSAGE_PREFIX.match(words[0]) else words
+
+
 class Namespace:
     """One shell process: the units it reads, and every command it runs."""
 
-    def __init__(self, repo_root: Path, entry: Unit, action_dir: str | None):
+    def __init__(
+        self, repo_root: Path, entry: Unit, action_dir: str | None, cwd: Path | None
+    ):
         self.repo_root = repo_root
         self.action_dir = action_dir
+        self.cwd = cwd
         self.units: list[Unit] = []
         self.functions: dict[str, list[tuple[Node, Unit]]] = {}
         self.assignments: dict[str, list[tuple[Node, Unit]]] = {}
@@ -147,7 +156,7 @@ class Namespace:
         self._variables.clear()
         self._values.clear()
         self.units.append(unit)
-        functions, assignments = _index(unit.root)
+        functions, assignments = definitions(unit.root)
         for name, body in functions:
             self.functions.setdefault(name, []).append((body, unit))
         for name, assignment in assignments:
@@ -157,21 +166,21 @@ class Namespace:
         """Walk to a fixed point. A function a later-sourced file defines may be
         called by a command walked before that file was read, so the words of
         every executed command stay in MENTIONED until a definition appears."""
-        pending: list[tuple[Node, Unit]] = [(self.units[0].root, self.units[0])]
+        pending = deque([(self.units[0].root, self.units[0])])
         mentioned: set[str] = set()
         walked: set[str] = set()
         while pending:
             while pending:
-                node, unit = pending.pop(0)
+                node, unit = pending.popleft()
                 for command in _executed(node):
                     self.executed.append((command, unit))
-                    mentioned.update(tokens(command))
+                    mentioned.update(callable_words(command))
                     added = self._sourced(command, unit)
                     if added is not None:
                         pending.append((added.root, added))
             for name in sorted((mentioned & self.functions.keys()) - walked):
                 walked.add(name)
-                pending += self.functions[name]
+                pending.extend(self.functions[name])
 
     def _sourced(self, command: Node, unit: Unit) -> Unit | None:
         words = tokens(command)
@@ -204,10 +213,10 @@ class Namespace:
 
     def file(self, value: str | None) -> Path | None:
         """The repo file VALUE names, or None. A relative path resolves against
-        the repo root, which is the working directory GitHub starts a step in."""
-        if not value:
+        the step's working directory, and against nothing when that is unknown."""
+        if not value or (self.cwd is None and not value.startswith("/")):
             return None
-        path = Path(os.path.normpath(self.repo_root / value))
+        path = Path(os.path.normpath((self.cwd or self.repo_root) / value))
         if not path.is_relative_to(self.repo_root) or not path.is_file():
             return None
         return path
@@ -241,7 +250,13 @@ class Namespace:
         return self.value(value, unit)
 
     def value(self, node: Node, unit: Unit) -> str | None:
-        """NODE's value after expansion when the text fixes it, else None."""
+        """NODE's value after expansion when the text fixes it, else None.
+
+        The text fixes a literal, `${BASH_SOURCE[0]%/*}`, `$(dirname "$0")`,
+        `$(cd X && pwd)`, `$(git rev-parse --show-toplevel)`,
+        `$GITHUB_WORKSPACE`, `$GITHUB_ACTION_PATH`, a variable with one
+        assignment of those forms, and the default of `${X:-default}` when no
+        file assigns X."""
         if node.id not in self._values:
             self._values[node.id] = self._value(node, unit)
         return self._values[node.id]
@@ -383,9 +398,7 @@ def _python_target(words: list[str | None]) -> str | None:
         name = word.rsplit("/", 1)[-1]
         if name == "uv" and words[index + 1 : index + 2] == ["run"]:
             return _uv_run_target(words[index + 2 :])
-        if re.fullmatch(r"python[0-9.]*", name) and words[index + 1 : index + 2] == [
-            "-m"
-        ]:
+        if _PY_INTERPRETER.fullmatch(name) and words[index + 1 : index + 2] == ["-m"]:
             module = words[index + 2] if len(words) > index + 2 else None
             return module.replace(".", "/") + ".py" if module else None
     return None
@@ -403,7 +416,7 @@ def _uv_run_target(rest: list[str | None]) -> str | None:
             continue
         if word.endswith(".py"):
             return word
-        if re.fullmatch(r"python[0-9.]*", word.rsplit("/", 1)[-1]):
+        if _PY_INTERPRETER.fullmatch(word.rsplit("/", 1)[-1]):
             return _python_target(rest[index:])
         return None
     return None
@@ -419,40 +432,54 @@ def _shell_target(words: list[str | None]) -> str | None:
         return words[0]
     if not _SHELL_INTERPRETER.fullmatch(words[0].rsplit("/", 1)[-1]):
         return None
-    for word in words[1:]:
+    rest = iter(words[1:])
+    for word in rest:
         if word is None or word == "-c":
             return None
-        if not word.startswith("-"):
+        if _SHELL_VALUE_OPTION.fullmatch(word):
+            next(rest, None)
+        elif not word.startswith(("-", "+")):
             return word
     return None
 
 
 @functools.lru_cache(maxsize=1024)
-def _file_namespace(path: Path, repo_root: Path, action_dir: str | None) -> Namespace:
+def _file_namespace(
+    path: Path, repo_root: Path, action_dir: str | None, cwd: Path | None
+) -> Namespace:
     """The namespace a followed script starts, built once per run of the lint:
     a shared script is reached from many jobs."""
-    return Namespace(repo_root, _unit(path, path), action_dir)
+    return Namespace(repo_root, _unit(path, path), action_dir, cwd)
 
 
 @functools.lru_cache(maxsize=256)
-def reach(script: str, repo_root: Path, action_dir: str | None) -> Reach:
+def reach(
+    script: str,
+    repo_root: Path,
+    action_dir: str | None,
+    working_directory: str | None = "",
+) -> Reach:
     """Every namespace and Python file the `run:` body SCRIPT reaches.
 
     ACTION_DIR is the composite action the step comes from, so its
-    `$GITHUB_ACTION_PATH` and `${{ github.action_path }}` resolve."""
+    `$GITHUB_ACTION_PATH` and `${{ github.action_path }}` resolve.
+    WORKING_DIRECTORY is the step's `working-directory`, relative to the repo
+    root; None means the text does not fix it, so a relative path resolves to
+    nothing."""
     if action_dir:
         script = _ACTION_PATH_EXPR.sub(lambda _: str(repo_root / action_dir), script)
+    cwd = None if working_directory is None else repo_root / working_directory
     entry = Unit(None, script, parse(script), None)
     namespaces: list[Namespace] = []
     python: list[Path] = []
-    queue: list[tuple[Unit, int]] = [(entry, 0)]
+    queue = deque([(entry, 0)])
     seen: set[Path] = set()
     while queue:
-        unit, hops = queue.pop(0)
+        unit, hops = queue.popleft()
         namespace = (
-            Namespace(repo_root, unit, action_dir)
+            Namespace(repo_root, unit, action_dir, cwd)
             if unit.path is None
-            else _file_namespace(unit.path, repo_root, action_dir)
+            else _file_namespace(unit.path, repo_root, action_dir, cwd)
         )
         namespaces.append(namespace)
         if hops >= MAX_HOPS:

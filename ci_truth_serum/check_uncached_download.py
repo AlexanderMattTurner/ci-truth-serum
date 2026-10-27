@@ -31,25 +31,29 @@ script the step runs or sources, and each function call into that function's
 body. It also records a Python file the step hands an interpreter, which this
 module parses with `ast`. A path that the text does not fix ends the walk with
 no finding, because a guessed path judges a file the step never runs. Measured
-on agent-glovebox: both osv-scanner jobs download a digest-pinned binary on
-every run through a two-file chain, and the lint read zero findings there before
-it followed scripts.
+on agent-glovebox: both osv-scanner jobs download a pinned binary on every run
+through a two-file chain, and only a walk that follows scripts sees it.
 
 A cache in the job covers a download only when the cache can hold it:
 
-  * its `key:` names the pin — the version variable, the version, the digest,
-    or a `hashFiles()` of a file that holds the fetch or assigns its pin;
+  * its `key:` names the pin — the version, the digest, the version variable
+    as `env.NAME`, or a `hashFiles()` of a file that holds the fetch or
+    assigns its pin;
   * or its `path:` holds the file the download writes.
+
+A variable counts as a pin only when its name says it holds one (`*VERSION*`,
+`*SHA*`, …) or the text fixes a version or digest as its value, so a key that
+names `env.ARCH` does not cover a download whose URL also reads `$ARCH`.
 
 A cache whose key or path the lint cannot read statically (a setup action's own
 cache, a key from a step output) still covers every download in the job. A miss
 there costs less than a false positive. Local composite actions
 (`uses: ./.github/actions/foo`) are inlined first.
 
-A fetcher that checks a cache directory before it downloads (glovebox PR #9135)
-satisfies the lint through the `actions/cache` step that restores that
-directory. The fetcher itself writes nothing the lint can tie to a pin, so the
-lint asks for the cache step, not for the check inside the fetcher.
+A fetcher that checks a cache directory before it downloads satisfies the lint
+through the `actions/cache` step that restores that directory. The fetcher
+itself writes nothing the lint can tie to a pin, so the lint asks for the
+cache step, not for the check inside the fetcher.
 
 Deliberately NOT reported, because the download is the point or has no stable key:
 
@@ -78,7 +82,6 @@ is real but never fails loudly.
 """
 
 import ast
-import fnmatch
 import functools
 import posixpath
 import re
@@ -110,7 +113,16 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 )
 from _cts_py_ast import name_of  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_imports import local_files, sys_path_roots  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_step_reach import Namespace, Unit, load_shell, reach, tokens  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    Namespace,
+    Unit,
+    callable_words,
+    definitions,
+    load_shell,
+    reach,
+    tokens,
+)
+from check_path_gate_deps import glob_to_regex  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from check_versionless_install import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NODE,
     _find_install,
@@ -173,6 +185,12 @@ _URL = re.compile(r"^https?://")
 _VERSION_LITERAL = re.compile(r"(?<![\w.])v?(?P<version>\d+\.\d+(?:\.\d+)*)(?![\w])")
 _DIGEST_LITERAL = re.compile(r"\b[0-9a-f]{64}(?:[0-9a-f]{64})?\b")
 _RUNNER_VARIABLE = re.compile(r"^(?:GITHUB|RUNNER)_")
+# A variable whose name says it holds a pin. REF is left out: it is a substring
+# of PREFIX, a word that names a directory far more often than a release.
+_PIN_NAME = re.compile(r"VERSION|RELEASE|TAG|SHA|DIGEST|CHECKSUM|HASH", re.IGNORECASE)
+_IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+# The suffix a checksum file adds to the name of the file it vouches for.
+_CHECKSUM_SUFFIX = re.compile(r"\.(?:sha(?:1|224|256|384|512)(?:sums?)?|b2|asc)$")
 
 # The checksum tools whose `-c` mode refuses any bytes but the pinned ones.
 _DIGEST_TOOLS = re.compile(r"sha(?:1|224|256|384|512)sum|shasum|b2sum")
@@ -265,7 +283,7 @@ def _downloader_functions(namespace: Namespace) -> frozenset[str]:
         for command, _ in namespace.function_commands(name):
             if _runs_downloader(command):
                 found.add(name)
-            callees[name] |= set(tokens(command)) & namespace.functions.keys()
+            callees[name] |= set(callable_words(command)) & namespace.functions.keys()
     changed = True
     while changed:
         before = len(found)
@@ -292,11 +310,22 @@ def _expanded_names(node: Node) -> set[str]:
     return names
 
 
+def _literals(text: str) -> set[str]:
+    """The versions and digests written in TEXT."""
+    return set(_VERSION_LITERAL.findall(text)) | set(_DIGEST_LITERAL.findall(text))
+
+
+def _is_pin_name(name: str, value: str | None) -> bool:
+    """True when the variable NAME holds a pin: its name says so, or VALUE, its
+    fixed value, carries a version or digest."""
+    return bool(_PIN_NAME.search(name)) or bool(value and _literals(value))
+
+
 def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
     """The words a cache key may carry to name what NODES pin: each version or
-    digest written in them, and each variable they expand. A variable assigned
-    from another one adds that one too, so `version="${TOOL_VERSION#v}"` lets a
-    key name `TOOL_VERSION`."""
+    digest written in them, and each pin variable they expand. A variable
+    assigned from another one adds that one too, so `version="${TOOL_VERSION#v}"`
+    lets a key name `TOOL_VERSION`."""
     names: set[str] = set()
     pending = [name for node in nodes for name in _expanded_names(node)]
     while pending:
@@ -306,13 +335,13 @@ def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
         names.add(name)
         for assignment, _ in namespace.assignments.get(name, []):
             pending += _expanded_names(assignment)
+    values = {name: namespace.variable(name, unit) for name in names}
+    pins = {name for name, value in values.items() if _is_pin_name(name, value)}
     texts = [node_text(node) for node in nodes]
     texts += [namespace.value(node, unit) or "" for node in nodes]
-    texts += [namespace.variable(name, unit) or "" for name in names]
-    pins = set(names)
+    texts += [value or "" for value in values.values()]
     for text in texts:
-        pins |= set(_VERSION_LITERAL.findall(text))
-        pins |= set(_DIGEST_LITERAL.findall(text))
+        pins |= _literals(text)
     return pins
 
 
@@ -345,36 +374,39 @@ def _digest_checks(namespace: Namespace) -> list[tuple[Node, Unit]]:
 
 def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set[str]:
     """The base names of the files the digest checks name, as far as the text
-    fixes them: `echo "$SHA  tool" | sha256sum -c -` names `tool`."""
+    fixes them: `echo "$SHA  tool" | sha256sum -c -` names `tool`, and
+    `sha256sum -c tool.tgz.sha256` names `tool.tgz` through its checksum file."""
     names = set()
     for scope, unit in checks:
         for node in iter_nodes(scope, *ARGUMENT_TYPES):
             text = namespace.value(node, unit) or unquote(node_text(node))
-            names |= {posixpath.basename(word) for word in text.split()}
+            for word in text.split():
+                name = posixpath.basename(word)
+                names |= {name, _CHECKSUM_SUFFIX.sub("", name)}
     return names
 
 
-def _outputs(command: Node, tokens: list[str], values: list[str | None]) -> set[str]:
+def _outputs(command: Node, words: list[str], values: list[str | None]) -> set[str]:
     """The file a curl or wget COMMAND writes: from its output flag, from
     curl's `-O` (the URL's last segment), or from a stdout redirect."""
-    program = next((p for t in tokens if (p := program_name(t)) in _OUTPUT_FLAGS), "")
+    program = next((p for w in words if (p := program_name(w)) in _OUTPUT_FLAGS), "")
     flags = _OUTPUT_FLAGS.get(program)
     if flags is None:
         return set()
     short, long = flags
     found = _stdout_redirects(command)
-    if program == "curl" and any(_REMOTE_NAME.match(t) for t in tokens):
+    if program == "curl" and any(_REMOTE_NAME.match(w) for w in words):
         found |= {
             posixpath.basename(url)
-            for token, value in zip(tokens, values)
-            if _URL.match(url := value or token)
+            for word, value in zip(words, values)
+            if _URL.match(url := value or word)
         }
-    for index, token in enumerate(tokens[:-1]):
-        if short.match(token) or token == long:
-            found.add(values[index + 1] or tokens[index + 1])
-    for token in tokens:
-        if token.startswith(long + "="):
-            found.add(token.split("=", 1)[1])
+    for index, word in enumerate(words[:-1]):
+        if short.match(word) or word == long:
+            found.add(values[index + 1] or words[index + 1])
+    for word in words:
+        if word.startswith(long + "="):
+            found.add(word.split("=", 1)[1])
     return found
 
 
@@ -401,7 +433,6 @@ class _Shell(NamedTuple):
     namespace: Namespace
     downloaders: frozenset[str]
     digest_pins: frozenset[str]
-    digest_checked: bool
     checked_names: frozenset[str]
 
 
@@ -414,24 +445,18 @@ def _shell_context(namespace: Namespace) -> _Shell:
         namespace,
         _downloader_functions(namespace),
         frozenset(pins),
-        bool(checks),
         frozenset(_checked_names(checks, namespace)),
     )
 
 
-def _digest_pinned(
-    url: str, outputs: frozenset[str], shell: _Shell, *, direct: bool
-) -> bool:
+def _digest_pinned(url: str, outputs: frozenset[str], shell: _Shell) -> bool:
     """True when the namespace checks a digest that can be this download's: the
-    URL is an http(s) address, and the check names the file the download writes.
-    A DIRECT curl or wget with no output the text can read (`curl … | jq`) writes
-    no file a check can name. A call to a downloader function hides its output,
-    so it takes any check in the namespace."""
-    if not shell.digest_checked or not _URL.match(url):
+    URL is an http(s) address, and a check names the file the download writes.
+    A download with no output the text can read (`curl … | jq`, or a call to a
+    downloader function that writes where its body decides) pins nothing."""
+    if not _URL.match(url):
         return False
     names = {posixpath.basename(output) for output in outputs}
-    if not names:
-        return not direct
     return bool(names & shell.checked_names)
 
 
@@ -457,15 +482,14 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
                 frozenset(),
             )
         )
-    direct = _runs_downloader(command)
-    if not direct and not shell.downloaders & set(words):
+    if not _runs_downloader(command) and not shell.downloaders & set(words):
         return fetches
     values = [namespace.value(node, unit) for node in args]
     outputs = frozenset(_outputs(command, words, values))
     for node, token, value in zip(args, words, values):
         if _PINNED_URL.match(token) or (value and _PINNED_URL.match(value)):
             label, extra = token, set()
-        elif _digest_pinned(value or token, outputs, shell, direct=direct):
+        elif _digest_pinned(value or token, outputs, shell):
             label, extra = f"{token} (digest-checked)", set(shell.digest_pins)
         else:
             continue
@@ -481,13 +505,13 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
     return fetches
 
 
-def _pinned_install(tokens: list[str], args: list) -> list[str]:
-    """The pinned package specs of an install invocation in TOKENS."""
-    invocation = _find_install(tokens)
+def _pinned_install(words: list[str], args: list) -> list[str]:
+    """The pinned package specs of an install invocation in WORDS."""
+    invocation = _find_install(words)
     if not invocation:
         return []
     family, index = invocation
-    if family == NODE and not writes_outside_the_lockfile(tokens, index):
+    if family == NODE and not writes_outside_the_lockfile(words, index):
         return []  # a local install is covered by the lockfile and setup-node's cache
     pinned, unpinned = spec_scan(args[index:], family)
     if unpinned:
@@ -741,8 +765,9 @@ def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
         if not pinned_url and not _checks_digest(scope, functions, hashers, aliases):
             continue
         names = set(re.findall(r"\$\{(?P<name>\w+)\}", url))
-        values = {_py_text(constants[n], constants) for n in names if n in constants}
-        pins = names | values | set(_VERSION_LITERAL.findall(url))
+        values = {n: _py_text(constants[n], constants) for n in names if n in constants}
+        pins = {n for n in names if _is_pin_name(n, values.get(n))}
+        pins |= set(values.values()) | set(_VERSION_LITERAL.findall(url))
         pins |= set() if pinned_url else digests
         label = f"{url or 'a URL'} (fetched by {rel}:{scope_name}"
         label += ")" if pinned_url else ", digest-checked)"
@@ -787,10 +812,12 @@ def _namespace_fetches(namespace: Namespace) -> list[Fetch]:
     ]
 
 
-def _script_fetches(script: str, action_dir: str | None) -> list[Fetch]:
+def _script_fetches(
+    script: str, action_dir: str | None, working_directory: str | None
+) -> list[Fetch]:
     """Every pinned download the `run:` body SCRIPT causes, through every repo
     file it reaches."""
-    reached = reach(script, REPO_ROOT, action_dir)
+    reached = reach(script, REPO_ROOT, action_dir, working_directory)
     fetches: list[Fetch] = []
     for namespace in reached.namespaces:
         fetches += _namespace_fetches(namespace)
@@ -838,10 +865,13 @@ def _home(path: str) -> str:
 
 @functools.lru_cache(maxsize=4096)
 def _pin_in_key(pin: str) -> re.Pattern[str]:
-    """PIN as a whole token of a cache key. `env.OSV_VERSION` names the pin
-    `OSV_VERSION`, but `runner.os` and `github.sha` are values the job never
-    sets, so a pin variable that shares their name (`$os`) is not in the key."""
-    return re.compile(rf"(?<!\w)(?<!runner\.)(?<!github\.){re.escape(pin)}(?!\w)")
+    """PIN as it can appear in a cache key. A version or digest is a literal
+    token (`tool-2.7.0`). A variable name is a reference to a value the job
+    sets: `env.TOOL_VERSION`, `vars.…`, `matrix.…` or `inputs.…`. A bare word
+    in a key is text, so `version` in `deps-version-1` names no variable."""
+    if _IDENTIFIER.fullmatch(pin) and not _DIGEST_LITERAL.fullmatch(pin):
+        return re.compile(rf"\b(?:env|vars|matrix|inputs)\.{re.escape(pin)}(?!\w)")
+    return re.compile(rf"(?<![\w.]){re.escape(pin)}(?!\w|\.\w)")
 
 
 @functools.lru_cache(maxsize=1024)
@@ -855,12 +885,7 @@ def _hashed_assignments(root: Path, pattern: str) -> frozenset[str]:
     for path in root.glob(pattern):
         if path.suffix not in (".sh", ".bash") or not path.is_file():
             continue
-        names |= {
-            node_text(name)
-            for assignment in iter_nodes(load_shell(path)[1], "variable_assignment")
-            for name in assignment.children
-            if name.type == "variable_name"
-        }
+        names |= {name for name, _ in definitions(load_shell(path)[1])[1]}
     return frozenset(names)
 
 
@@ -873,7 +898,7 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
         patterns = [a or b for a, b in _QUOTED.findall(match["args"])]
         for pattern in patterns:
             pattern = pattern.removeprefix("./")
-            if any(fnmatch.fnmatchcase(src, pattern) for src in fetch.sources):
+            if any(glob_to_regex(pattern).match(src) for src in fetch.sources):
                 return True
             if fetch.pins & _hashed_assignments(REPO_ROOT, pattern):
                 return True
@@ -883,7 +908,7 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
             if (
                 out == path
                 or out.startswith(path + "/")
-                or fnmatch.fnmatchcase(out, path)
+                or glob_to_regex(path).match(out)
             ):
                 return True
     return False
@@ -978,6 +1003,25 @@ def check_file(path: Path) -> list[tuple[int, str]]:
         ]
 
 
+def _default_directory(doc: dict, job: dict) -> object:
+    """The `defaults.run.working-directory` that applies to JOB: the job's own,
+    else the workflow's, else the repo root."""
+    for container in (job, doc):
+        defaults = container.get("defaults")
+        run = defaults.get("run") if isinstance(defaults, dict) else None
+        if isinstance(run, dict) and "working-directory" in run:
+            return run["working-directory"]
+    return ""
+
+
+def _directory(value: object) -> str | None:
+    """A `working-directory` value relative to the repo root, or None when the
+    text does not fix it (an expression, a non-string)."""
+    if not isinstance(value, str) or "${{" in value:
+        return None
+    return value.removeprefix("./")
+
+
 def _check_parsed(path: Path) -> list[tuple[int, str]]:
     doc = _load(path)
     jobs = doc.get("jobs") if doc else None
@@ -1001,6 +1045,7 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         scopes = [_cache_scope(step) for step, _, _ in flat if _caches(step)]
         if None in scopes:
             continue  # a cache the lint cannot read covers the whole job
+        default_directory = _default_directory(doc, job)
         for step, line, origin in flat:
             script = step.get("run")
             if not isinstance(script, str):
@@ -1008,9 +1053,13 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
             if any(annotated(text, OPT_OUT) for text in script.splitlines()):
                 continue
             action_dir = origin.removeprefix("./") if origin else None
+            # `defaults.run` reaches only the workflow's own steps.
+            directory = _directory(
+                step.get("working-directory", "" if origin else default_directory)
+            )
             uncovered = [
                 fetch
-                for fetch in _script_fetches(script, action_dir)
+                for fetch in _script_fetches(script, action_dir, directory)
                 if not any(_covers(scope, fetch) for scope in scopes)
             ]
             if not uncovered:

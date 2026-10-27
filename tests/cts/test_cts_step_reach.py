@@ -34,7 +34,7 @@ def echo_value(root: Path, script: str) -> str | None:
     """The value of the first argument of the first `echo` SCRIPT runs, with
     SCRIPT written at ROOT/scripts/run.sh."""
     path = write(root, "scripts/run.sh", script + "\n")
-    namespace = sr.Namespace(root, sr._unit(path, path), None)
+    namespace = sr.Namespace(root, sr._unit(path, path), None, root)
     echo = next(c for c, _ in namespace.executed if sr.tokens(c)[0] == "echo")
     return namespace.value(sr.command_arguments(echo)[1], namespace.units[0])
 
@@ -144,6 +144,18 @@ def test_a_call_before_its_definition_is_sourced_still_runs(tmp_path):
     assert commands(reached, "curl") == [["curl", "one"]]
 
 
+@pytest.mark.parametrize(
+    "line",
+    ['gb_warn "run f now"', "echo f", "cat <<'EOF' > doc.txt\nf\nEOF"],
+    ids=["message-string", "printed-word", "heredoc-body"],
+)
+def test_a_function_name_in_text_is_not_a_call(tmp_path, line):
+    """A message, a printed word and a heredoc body are text no shell runs."""
+    write(tmp_path, "run.sh", f"f() {{ curl one; }}\n{line}\n")
+    reached = sr.reach("bash run.sh", tmp_path, None)
+    assert commands(reached, "curl") == []
+
+
 def test_a_nested_definition_runs_only_when_called(tmp_path):
     write(tmp_path, "run.sh", "outer() { inner() { curl one; }; }\nouter\n")
     reached = sr.reach("bash run.sh", tmp_path, None)
@@ -171,8 +183,9 @@ def test_an_absolute_directive_is_not_followed(tmp_path):
         ("sh -e a.sh", "a.sh"),
         ("./a.sh", "a.sh"),
         ("bash bin/tool", "bin/tool"),
+        ("bash -eo pipefail a.sh", "a.sh"),
     ],
-    ids=["bash", "sh-with-option", "direct", "no-suffix"],
+    ids=["bash", "sh-with-option", "direct", "no-suffix", "option-with-a-value"],
 )
 def test_an_executed_script_starts_a_child_namespace(tmp_path, run, name):
     write(tmp_path, name, "curl one\n")
