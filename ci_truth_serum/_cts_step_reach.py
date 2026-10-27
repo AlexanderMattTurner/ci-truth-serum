@@ -40,6 +40,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     iter_nodes,
     node_text,
     parse,
+    program_name,
     unquote,
 )
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -84,6 +85,12 @@ _UV_VALUE_OPTIONS = frozenset(
         "--extra-index-url",
     }
 )
+
+
+# The commands that move the shell, and the nodes that run their own shell,
+# whose `cd` moves nothing outside them.
+_DIRECTORY_CHANGERS = frozenset({"cd", "pushd", "popd"})
+_OWN_SHELL = frozenset({"subshell", "command_substitution"})
 
 
 class Unit(NamedTuple):
@@ -174,6 +181,7 @@ class Namespace:
         self._variables: dict[str, str | None] = {}
         self._values: dict[int, str | None] = {}
         self._bodies: dict[str, list[tuple[Node, Unit]]] = {}
+        self._changers: list[tuple[Node, Unit]] | None = None
         self._add(entry)
         self._walk()
 
@@ -240,10 +248,12 @@ class Namespace:
 
     # ── values ──────────────────────────────────────────────────────────────
 
-    def file(self, value: str | None) -> Path | None:
+    def file(self, value: str | None, moved: bool = False) -> Path | None:
         """The repo file VALUE names, or None. A relative path resolves against
-        the step's working directory, and against nothing when that is unknown."""
-        if not value or (self.cwd is None and not value.startswith("/")):
+        the step's working directory, and against nothing when that is unknown
+        or MOVED says a `cd` ran before the command that names it."""
+        unknown = self.cwd is None or moved
+        if not value or (unknown and not value.startswith("/")):
             return None
         path = Path(os.path.normpath((self.cwd or self.repo_root) / value))
         if not path.is_relative_to(self.repo_root) or not path.is_file():
@@ -403,9 +413,45 @@ class Namespace:
             ]
         return self._bodies[name]
 
+    def moved_before(self, command: Node, unit: Unit) -> bool:
+        """True when a `cd`, `pushd` or `popd` may have moved the shell before
+        COMMAND in UNIT runs: an earlier one in the same shell of the same file,
+        or one in another file or a function body, whose order the text does
+        not fix."""
+        if self._changers is None:
+            self._changers = [
+                (other, owner)
+                for other, owner in self.executed
+                if (words := tokens(other))
+                and program_name(words[0]) in _DIRECTORY_CHANGERS
+            ]
+        for other, owner in self._changers:
+            scope = other.parent
+            while scope is not None and scope.type not in _OWN_SHELL:
+                scope = scope.parent
+            same_file = owner.root is unit.root
+            if scope is not None and not (
+                same_file and scope.start_byte <= command.start_byte < scope.end_byte
+            ):
+                continue  # a subshell's `cd` moves only the subshell
+            if not same_file or _inside_definition(other, unit.root):
+                return True
+            if other.start_byte < command.start_byte:
+                return True
+        return False
+
     def assigned_in(self, name: str) -> set[Path]:
         """The followed files that assign NAME."""
         return {u.path for _, u in self.assignments.get(name, []) if u.path}
+
+
+class _Pending(NamedTuple):
+    """A unit the walk still has to read: HOPS from the `run:` body, in the
+    working directory CWD (None when the text does not fix it)."""
+
+    unit: Unit
+    hops: int
+    cwd: Path | None
 
 
 class Reach(NamedTuple):
@@ -507,26 +553,30 @@ def reach(
     entry = Unit(None, script, parse(script), None)
     namespaces: list[Namespace] = []
     python: list[Path] = []
-    queue = deque([(entry, 0)])
+    queue = deque([_Pending(entry, 0, cwd)])
     seen: set[Path] = set()
     while queue:
-        unit, hops = queue.popleft()
+        unit, hops, here = queue.popleft()
         namespace = (
-            Namespace(repo_root, unit, action_dir, cwd)
+            Namespace(repo_root, unit, action_dir, here)
             if unit.path is None
-            else _file_namespace(unit.path, repo_root, action_dir, cwd)
+            else _file_namespace(unit.path, repo_root, action_dir, here)
         )
         namespaces.append(namespace)
         if hops >= MAX_HOPS:
             continue
         for command, owner in namespace.executed:
             words = namespace.words(command, owner)
-            py = namespace.file(_python_target(words))
+            moved = namespace.moved_before(command, owner)
+            py = namespace.file(_python_target(words), moved)
             if py is not None and py.suffix == ".py" and py not in python:
                 python.append(py)
                 continue
-            target = namespace.file(_shell_target(words))
+            target = namespace.file(_shell_target(words), moved)
             if target is not None and target not in seen:
                 seen.add(target)
-                queue.append((_unit(target, target), hops + 1))
+                # A child started after a `cd` runs in a directory the text
+                # does not fix.
+                child_cwd = None if moved else namespace.cwd
+                queue.append(_Pending(_unit(target, target), hops + 1, child_cwd))
     return Reach(tuple(namespaces), tuple(python))

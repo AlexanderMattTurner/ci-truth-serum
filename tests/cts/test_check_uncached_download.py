@@ -688,6 +688,63 @@ def test_a_download_directory_flag_places_the_output(rooted, script, fires):
 
 
 @pytest.mark.parametrize(
+    ("directory", "script", "path", "fires"),
+    [
+        (".", f"curl -fsSLo bin/tool {PINNED}\ncd bin && chmod +x tool", "bin", 0),
+        (".", f"( cd docs && make )\ncurl -fsSLo bin/tool {PINNED}", "bin", 0),
+        (".", f'OUT=bin/tool\ncurl -fsSL --output="$OUT" {PINNED}', "bin", 0),
+        (
+            ".",
+            f'INSTALL_DIR="$HOME/.local/bin"\ncurl -fsSLo "$INSTALL_DIR/tool" {PINNED}',
+            "~/.local/bin",
+            0,
+        ),
+        ("/tmp/w", f"curl -fsSLo tool {PINNED}", "/tmp/w/tool", 0),
+        (".", f"wget -q -P /tmp/a -P /tmp/b {PINNED}", "/tmp/b", 0),
+        (".", f"wget -q -P /tmp/a -P /tmp/b {PINNED}", "/tmp/a", 1),
+        (
+            ".",
+            f"curl -fsSL -Hcontent-type:text -o /tmp/a/t {PINNED}",
+            "ntent-type:text",
+            1,
+        ),
+    ],
+    ids=[
+        "cd-after-the-download",
+        "cd-in-a-subshell",
+        "output-flag-with-equals",
+        "variable-built-on-home",
+        "absolute-working-directory",
+        "last-directory-flag",
+        "earlier-directory-flag",
+        "an-o-inside-another-flag-value",
+    ],
+)
+def test_an_output_resolves_as_the_shell_resolves_it(
+    rooted, directory, script, path, fires
+):
+    """A `cd` moves only the commands after it in the same shell. A variable
+    with one assignment spells that value, and the last directory flag wins."""
+    script = script.replace("\n", "\n          ")
+    workflow = OUTPUT_JOB.format(path=path, directory=directory, script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("path", "fires"), [("bin", 1), ("tools/bin/tool", 0)], ids=["root-bin", "tail"]
+)
+def test_a_script_run_after_a_cd_writes_where_the_cd_went(rooted, path, fires):
+    """The parent shell runs `cd tools`, so `-o bin/tool` in the child lands in
+    `tools/bin/tool`, not in `bin/tool`."""
+    _tree(
+        rooted, {"scripts/fetch.sh": f"curl -fsSLo bin/tool {PINNED}\n", "tools/x": ""}
+    )
+    script = 'cd tools && bash "$GITHUB_WORKSPACE/scripts/fetch.sh"'
+    workflow = OUTPUT_JOB.format(path=path, directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
     ("key", "files", "fires"),
     [
         ("t-${{ hashFiles('wf.yaml') }}", {}, 0),
@@ -823,6 +880,15 @@ def test_a_partly_unknown_here_string_still_names_the_file(tmp_path, script):
     script = "URL=https://example.com/tool/latest\n" + script
     messages = _messages(_write(tmp_path, _job(_run(script))))
     assert ["(digest-checked)" in m for m in messages] == [True]
+
+
+def test_wget_to_stdout_in_a_flag_cluster_writes_no_file(tmp_path):
+    """`-qO-` sends the bytes to stdout, so `t` is a file nobody wrote."""
+    script = (
+        f"SHA={DIGEST}\nURL=https://example.com/tool\n"
+        'wget -qO- "$URL/t" | tar -x\necho "$SHA  t" | sha256sum -c -\n'
+    )
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
 
 
 def test_a_download_to_stdout_is_not_pinned_by_a_check_reading_stdin(tmp_path):

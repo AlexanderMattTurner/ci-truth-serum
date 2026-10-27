@@ -200,20 +200,19 @@ _CHECK_FLAG = re.compile(r"^(?:--check|-[A-Za-z]*c[A-Za-z]*)$")
 _CHECK_SCOPES = frozenset({"pipeline", "redirected_statement"})
 
 # curl's and wget's flags that name the file the download writes.
+# A short flag closes a cluster (`-fsSLo FILE`). The only attached value read
+# is `-` (`-qO-`, stdout): in `-Hcontent-type:x` the `o` is part of a value.
 _OUTPUT_FLAGS = {
-    "curl": (re.compile(r"^-[A-Za-z]*o$"), "--output"),
-    "wget": (re.compile(r"^-[A-Za-z]*O$"), "--output-document"),
+    "curl": (re.compile(r"^-[A-Za-z]*o(?P<value>-?)$"), "--output"),
+    "wget": (re.compile(r"^-[A-Za-z]*O(?P<value>-?)$"), "--output-document"),
 }
 # curl's `-O` writes the URL's last path segment.
 _REMOTE_NAME = re.compile(r"^(?:-[A-Za-z]*O[A-Za-z]*|--remote-name)$")
 # curl's and wget's flags that name the directory the file lands in.
 _DIRECTORY_FLAGS = {
     "curl": (None, "--output-dir"),
-    "wget": (re.compile(r"^-[A-Za-z]*P$"), "--directory-prefix"),
+    "wget": (re.compile(r"^-[A-Za-z]*P(?P<value>)$"), "--directory-prefix"),
 }
-# The commands that move the shell, so a relative path after one may name
-# any directory.
-_DIRECTORY_CHANGERS = frozenset({"cd", "pushd", "popd"})
 # The source that stands for the workflow or action file a `run:` body is
 # written in, until `_script_fetches` knows which file that is.
 _RUN_BODY = "<run body>"
@@ -421,16 +420,33 @@ def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set
     return names
 
 
-def _spelled(node: Node, namespace: Namespace, unit: Unit) -> str:
+def _spelled(
+    node: Node,
+    namespace: Namespace,
+    unit: Unit,
+    following: frozenset[str] = frozenset(),
+) -> str:
     """NODE's value when the text fixes it. Otherwise its text after quote
-    removal, with each expansion that only the run can fix spelled `$NAME`, so
-    one variable reads the same in an output flag and in a here-string."""
+    removal. A variable with one assignment spells that assignment, so
+    `D="$HOME/bin"` makes `$D/tool` read `$HOME/bin/tool`. Any other expansion
+    is spelled `$NAME`, so one variable reads the same in an output flag and
+    in a here-string. FOLLOWING holds the names being spelled, to stop a cycle."""
     value = namespace.value(node, unit)
     if value is not None:
         return value
     if node.type in ("simple_expansion", "expansion"):
-        name = next(iter_nodes(node, "variable_name"), None)
-        return f"${node_text(name)}" if name is not None else node_text(node)
+        name_node = next(iter_nodes(node, "variable_name"), None)
+        if name_node is None:
+            return node_text(node)
+        name = node_text(name_node)
+        assignments = namespace.assignments.get(name, [])
+        plain = node_text(node).strip() in (f"${name}", f"${{{name}}}")
+        if plain and name not in following and len(assignments) == 1:
+            assignment, owner = assignments[0]
+            assigned = assignment.child_by_field_name("value")
+            if assigned is not None:
+                return _spelled(assigned, namespace, owner, following | {name})
+        return f"${name}"
     if node.type not in ("string", "concatenation"):
         return unquote(node_text(node))
     raw, base = node.text or b"", node.start_byte
@@ -441,21 +457,26 @@ def _spelled(node: Node, namespace: Namespace, unit: Unit) -> str:
         if child.type == "string_content":
             continue
         pieces += [raw[start : body_start(child) - base].decode()]
-        pieces += [_spelled(child, namespace, unit)]
+        pieces += [_spelled(child, namespace, unit, following)]
         start = child.end_byte - base
     pieces.append(raw[start:end].decode())
     return "".join(pieces)
 
 
-def _flag_values(words: list[str], spelled: list[str], short, long: str) -> set[str]:
-    """The values WORDS give the flag spelled SHORT (a pattern, or None) or
-    LONG: `-o FILE`, `--output FILE` and `--output=FILE`."""
-    found = {
-        spelled[index + 1]
-        for index, word in enumerate(words[:-1])
-        if word == long or (short is not None and short.match(word))
-    }
-    found |= {word.split("=", 1)[1] for word in words if word.startswith(long + "=")}
+def _flag_values(words: list[str], spelled: list[str], short, long: str) -> list[str]:
+    """The values WORDS give the flag spelled SHORT (a pattern with a `value`
+    group, or None) or LONG, in order: `-o FILE`, `-o-`, `--output FILE` and
+    `--output=FILE`. Each value comes from SPELLED, the words' values."""
+    found = []
+    for index, (word, value) in enumerate(zip(words, spelled)):
+        after = spelled[index + 1] if index + 1 < len(words) else None
+        match = short.match(word) if short is not None else None
+        if word == long or (match and not match["value"]):
+            if after is not None:
+                found.append(after)
+        elif word.startswith(long + "=") or match:
+            prefix = word[: match.start("value")] if match else long + "="
+            found.append(value.removeprefix(prefix))
     return found
 
 
@@ -466,45 +487,31 @@ def _outputs(command: Node, words: list[str], spelled: list[str]) -> set[str]:
     program = next((p for w in words if (p := program_name(w)) in _OUTPUT_FLAGS), "")
     if program not in _OUTPUT_FLAGS:
         return set()
-    named = _flag_values(words, spelled, *_OUTPUT_FLAGS[program])
+    named = set(_flag_values(words, spelled, *_OUTPUT_FLAGS[program]))
     remote = (
         any(_REMOTE_NAME.match(w) for w in words) if program == "curl" else not named
     )
     if remote:
         named |= {posixpath.basename(url) for url in spelled if _URL.match(url)}
-    for directory in _flag_values(words, spelled, *_DIRECTORY_FLAGS[program]):
+    # Both tools honour the last directory flag only.
+    directories = _flag_values(words, spelled, *_DIRECTORY_FLAGS[program])
+    if directories:
         named = {
-            name if name.startswith("/") or name == "-" else f"{directory}/{name}"
+            name if name.startswith("/") or name == "-" else f"{directories[-1]}/{name}"
             for name in named
         }
     return named | _stdout_redirects(command)
 
 
-@functools.lru_cache(maxsize=1024)
-def _changes_directory(namespace: Namespace) -> bool:
-    """True when the shell runs `cd`, `pushd` or `popd` outside a command
-    substitution, whose own shell cannot move this one."""
-    for command, _ in namespace.executed:
-        words = tokens(command)
-        if not words or program_name(words[0]) not in _DIRECTORY_CHANGERS:
-            continue
-        parent = command.parent
-        while parent is not None and parent.type != "command_substitution":
-            parent = parent.parent
-        if parent is None:
-            return True
-    return False
-
-
 def _placed(
-    outputs: set[str], namespace: Namespace
+    outputs: set[str], namespace: Namespace, moved: bool
 ) -> tuple[frozenset[str], frozenset[str]]:
     """OUTPUTS as paths a cache `path:` can name: absolute, under `~`, or
     relative to the workspace. The second set holds each relative output whose
-    directory the text does not fix: the step's directory is an expression, or
-    the shell changes directory, or the path is a variable only the run knows."""
+    directory the text does not fix: the step's directory is an expression, a
+    `cd` ran first (MOVED), or the path is a variable only the run knows."""
     placed, names = set(), set()
-    moved = namespace.cwd is None or _changes_directory(namespace)
+    moved = moved or namespace.cwd is None
     root = str(namespace.repo_root)
     for output in outputs:
         out = posixpath.normpath(_home(output))
@@ -515,7 +522,9 @@ def _placed(
         elif moved or out.startswith("$"):
             names.add(out)
         else:
-            cwd = posixpath.relpath(str(namespace.cwd), root)
+            cwd = posixpath.normpath(str(namespace.cwd))
+            if cwd == root or cwd.startswith(root + "/"):
+                cwd = posixpath.relpath(cwd, root)
             placed.add(posixpath.normpath(posixpath.join(cwd, out)))
     return frozenset(placed), frozenset(names)
 
@@ -596,7 +605,11 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
         return fetches
     values = [namespace.value(node, unit) for node in args]
     spelled = [_spelled(node, namespace, unit) for node in args]
-    outputs, output_names = _placed(_outputs(command, words, spelled), namespace)
+    outputs, output_names = _placed(
+        _outputs(command, words, spelled),
+        namespace,
+        namespace.moved_before(command, unit),
+    )
     for node, token, value in zip(args, words, values):
         if _PINNED_URL.match(token) or (value and _PINNED_URL.match(value)):
             label, extra = token, set()

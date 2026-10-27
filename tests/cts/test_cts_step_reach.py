@@ -290,3 +290,18 @@ def test_a_string_keeps_the_blanks_between_two_expansions(tmp_path):
     namespace = sr.Namespace(tmp_path, sr._unit(path, path), None, tmp_path)
     command = namespace.executed[-1][0]
     assert namespace.words(command, namespace.executed[-1][1]) == ["echo", "x  y"]
+
+
+def test_a_cd_inside_a_substitution_in_another_file_moves_nothing(tmp_path):
+    """`D="$(cd … && pwd)"` runs its `cd` in the substitution's own shell, so a
+    relative `bash setup.bash` in another file still resolves."""
+    (tmp_path / "lib.sh").write_text(
+        'D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\nrun_setup() { bash setup.bash; }\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "setup.bash").write_text("true\n", encoding="utf-8")
+    reached = sr.reach("source lib.sh\nrun_setup\n", tmp_path, None)
+    assert [ns.units[0].path for ns in reached.namespaces] == [
+        None,
+        tmp_path / "setup.bash",
+    ]
