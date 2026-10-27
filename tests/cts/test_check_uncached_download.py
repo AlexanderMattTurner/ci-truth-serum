@@ -618,6 +618,127 @@ def test_a_pin_named_like_a_runner_context_value_is_not_in_its_key(rooted):
     assert len(_messages(path)) == 1
 
 
+OUTPUT_JOB = """\
+name: x
+on:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: {path}
+          key: deps-${{{{ runner.os }}}}
+      - working-directory: {directory}
+        run: |
+          {script}
+"""
+
+
+@pytest.mark.parametrize(
+    ("directory", "script", "path", "fires"),
+    [
+        ("tools", f"curl -fsSLo t.tgz {PINNED}", "tools/t.tgz", 0),
+        ("tools", f"curl -fsSLo t.tgz {PINNED}", "t.tgz", 1),
+        (".", f"cd sub && curl -fsSLo t.tgz {PINNED}", "sub/t.tgz", 0),
+        (".", f"cd sub && curl -fsSLo t.tgz {PINNED}", "other/x.tgz", 1),
+        ("${{ inputs.dir }}", f"curl -fsSLo t.tgz {PINNED}", "a/t.tgz", 0),
+    ],
+    ids=[
+        "in-the-working-directory",
+        "same-name-at-the-root",
+        "after-a-cd",
+        "after-a-cd-elsewhere",
+        "unreadable-directory",
+    ],
+)
+def test_a_relative_output_lands_in_the_directory_the_step_runs_in(
+    rooted, directory, script, path, fires
+):
+    """`-o t.tgz` writes into the step's working directory. After a `cd`, or in
+    a directory the text does not fix, only the output's own name is known, so
+    a cache path that ends in that name holds it."""
+    (rooted / "tools").mkdir()
+    workflow = OUTPUT_JOB.format(path=path, directory=directory, script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("script", "fires"),
+    [
+        (f"wget -q -P /tmp/tools {PINNED}.tgz", 0),
+        (f"wget -q --directory-prefix=/tmp/tools {PINNED}.tgz", 0),
+        (f"curl -fsSL --output-dir /tmp/tools -O {PINNED}.tgz", 0),
+        (f"curl -fsSL --output-dir /tmp/tools -o t {PINNED}.tgz", 0),
+        (f"wget -q -P /tmp/elsewhere {PINNED}.tgz", 1),
+    ],
+    ids=[
+        "wget-P",
+        "wget-directory-prefix",
+        "curl-output-dir-O",
+        "curl-output-dir-o",
+        "elsewhere",
+    ],
+)
+def test_a_download_directory_flag_places_the_output(rooted, script, fires):
+    """`wget -P DIR` and `curl --output-dir DIR` put the file in DIR."""
+    workflow = OUTPUT_JOB.format(path="/tmp/tools", directory=".", script=script)
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("key", "files", "fires"),
+    [
+        ("t-${{ hashFiles('wf.yaml') }}", {}, 0),
+        ("t-${{ hashFiles('other.yaml') }}", {}, 1),
+        ("t-${{ hashFiles('wf.yaml') }}", {"fetch.sh": f"curl -fsSLo t {PINNED}\n"}, 1),
+    ],
+    ids=["hashes-the-workflow", "hashes-another-file", "fetch-in-a-script"],
+)
+def test_a_key_hashing_the_workflow_covers_its_inline_fetch(rooted, key, files, fires):
+    """The `run:` body is text of the workflow file, so a hash of that file
+    names the fetch. A fetch in a script the step runs is not in it."""
+    _tree(rooted, files)
+    run = "bash fetch.sh" if files else f"curl -fsSLo t {PINNED}"
+    path = _write(rooted, _job(_cache(key) + _run(run)))
+    assert len(_messages(path)) == fires
+
+
+def test_a_key_hashing_the_action_file_covers_its_inline_fetch(rooted):
+    _action(
+        rooted, "tool", f"      - shell: bash\n        run: curl -fsSLo t {PINNED}\n"
+    )
+    key = "t-${{ hashFiles('.github/actions/tool/action.yaml') }}"
+    path = _write(rooted, _job(_cache(key) + "      - uses: ./.github/actions/tool\n"))
+    assert uc.check_file(path) == []
+
+
+@pytest.mark.parametrize(
+    ("pattern", "fires"),
+    [("scripts/**.sh", 0), ("scripts/*.sh", 0), ("scripts/*.bash", 1)],
+    ids=["double-star-inside-a-segment", "star", "another-suffix"],
+)
+def test_a_hashed_pin_file_is_found_by_any_glob(rooted, pattern, fires):
+    """GitHub reads `**.sh` inside a segment as `*.sh`. A matched file that is
+    not UTF-8 and that the step never runs is not read."""
+    _tree(
+        rooted,
+        {
+            "scripts/pins.sh": "TOOL_VERSION=2.7.0\n",
+            "lib.bash": 'load_pins() { source "$1"; }\n',
+            "fetch.sh": (
+                "source lib.bash\nload_pins scripts/pins.sh\n"
+                'curl -fsSLo t "https://example.com/v${TOOL_VERSION}/tool"\n'
+            ),
+        },
+    )
+    (rooted / "scripts" / "blob.sh").write_bytes(b"\xff\xfe\n")
+    key = f"t-${{{{ hashFiles('{pattern}') }}}}"
+    path = _write(rooted, _job(_cache(key) + _run("bash fetch.sh")))
+    assert len(_messages(path)) == fires
+
+
 # ── a digest pins the bytes ─────────────────────────────────────────────────
 
 
@@ -685,6 +806,23 @@ def test_a_checksum_file_names_the_file_it_vouches_for(tmp_path):
     )
     messages = _messages(_write(tmp_path, _job(_run(script))))
     assert ["$URL (digest-checked)" in m for m in messages] == [True]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        'EXPECTED="$(cat sums)"\nOUT=t\ncurl -fsSLo "$OUT" "$URL"\n'
+        'sha256sum -c <<< "${EXPECTED}  ${OUT}"',
+        'OUT="$1"\ncurl -fsSLo "$OUT" "$URL"\nsha256sum -c <<< "$(cat sums)  ${OUT}"',
+    ],
+    ids=["known-name", "name-only-the-run-knows"],
+)
+def test_a_partly_unknown_here_string_still_names_the_file(tmp_path, script):
+    """The digest is computed at run time, but the file name is the output's:
+    a fixed value, or the same variable the download writes to."""
+    script = "URL=https://example.com/tool/latest\n" + script
+    messages = _messages(_write(tmp_path, _job(_run(script))))
+    assert ["(digest-checked)" in m for m in messages] == [True]
 
 
 def test_a_download_to_stdout_is_not_pinned_by_a_check_reading_stdin(tmp_path):

@@ -111,6 +111,13 @@ def _unit(path: Path, entry: Path | None) -> Unit:
     return Unit(path, text, root, entry)
 
 
+def body_start(node: Node) -> int:
+    """The byte NODE's own text starts at. The grammar can fold the blanks
+    before an expansion inside a string into the expansion's node."""
+    raw = node.text or b""
+    return node.start_byte + len(raw) - len(raw.lstrip())
+
+
 @functools.lru_cache(maxsize=65536)
 def _executed(node: Node) -> list[Node]:
     """The commands under NODE that run when NODE runs: a nested function
@@ -317,7 +324,7 @@ class Namespace:
         for child in node.named_children:
             if child.type == "string_content":
                 continue
-            pieces.append(_literal(raw[start : child.start_byte - base]))
+            pieces.append(_literal(raw[start : body_start(child) - base]))
             value = self.value(child, unit)
             if value is None:
                 return None

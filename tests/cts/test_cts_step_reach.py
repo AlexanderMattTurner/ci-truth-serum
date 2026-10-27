@@ -281,3 +281,12 @@ def test_a_second_assignment_in_a_sourced_file_unfixes_a_value(tmp_path):
     namespace = reached.namespaces[0]
     assert namespace.assigned_in("V") == {tmp_path / "pin.bash"}
     assert namespace.variable("V", namespace.units[0]) is None
+
+
+def test_a_string_keeps_the_blanks_between_two_expansions(tmp_path):
+    """The grammar folds `  ` into the second expansion's node."""
+    path = tmp_path / "s.sh"
+    path.write_text('A=x\nB=y\necho "${A}  ${B}"\n', encoding="utf-8")
+    namespace = sr.Namespace(tmp_path, sr._unit(path, path), None, tmp_path)
+    command = namespace.executed[-1][0]
+    assert namespace.words(command, namespace.executed[-1][1]) == ["echo", "x  y"]

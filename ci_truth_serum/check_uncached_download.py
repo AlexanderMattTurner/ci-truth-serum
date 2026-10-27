@@ -51,9 +51,9 @@ there costs less than a false positive. Local composite actions
 (`uses: ./.github/actions/foo`) are inlined first.
 
 A fetcher that checks a cache directory before it downloads satisfies the lint
-through the `actions/cache` step that restores that directory. The fetcher
-itself writes nothing the lint can tie to a pin, so the lint asks for the
-cache step, not for the check inside the fetcher.
+through the `actions/cache` step that restores that directory, when the key of
+that step names the pin or hashes the fetcher. The lint cannot read where a
+Python fetch writes, so a `path:` alone does not cover one.
 
 Deliberately NOT reported, because the download is the point or has no stable key:
 
@@ -116,6 +116,7 @@ from _cts_py_imports import local_files, sys_path_roots  # noqa: E402,I001  # py
 from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Namespace,
     Unit,
+    body_start,
     callable_words,
     definitions,
     load_shell,
@@ -205,6 +206,17 @@ _OUTPUT_FLAGS = {
 }
 # curl's `-O` writes the URL's last path segment.
 _REMOTE_NAME = re.compile(r"^(?:-[A-Za-z]*O[A-Za-z]*|--remote-name)$")
+# curl's and wget's flags that name the directory the file lands in.
+_DIRECTORY_FLAGS = {
+    "curl": (None, "--output-dir"),
+    "wget": (re.compile(r"^-[A-Za-z]*P$"), "--directory-prefix"),
+}
+# The commands that move the shell, so a relative path after one may name
+# any directory.
+_DIRECTORY_CHANGERS = frozenset({"cd", "pushd", "popd"})
+# The source that stands for the workflow or action file a `run:` body is
+# written in, until `_script_fetches` knows which file that is.
+_RUN_BODY = "<run body>"
 
 # A cache key expression this lint can read: the runner, the env, the matrix,
 # the event context, and `hashFiles()`. Anything else (a step output, an input)
@@ -236,12 +248,14 @@ class Fetch(NamedTuple):
     WHAT names it for the message. PINS are the words a cache key may carry to
     name it: variable names, versions, digests. SOURCES are the repo-relative
     files a `hashFiles()` key may hash to name it. OUTPUTS are the paths the
-    bytes land at, as far as the text fixes them."""
+    bytes land at, as far as the text fixes them. OUTPUT_NAMES are the
+    relative paths the bytes land at in a directory the text does not fix."""
 
     what: str
     pins: frozenset[str]
     sources: frozenset[str]
     outputs: frozenset[str]
+    output_names: frozenset[str] = frozenset()
 
 
 def _action_name(step: dict) -> str:
@@ -349,11 +363,18 @@ def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
 
 def _sources_of(pins: set[str], namespace: Namespace, unit: Unit) -> set[str]:
     """The files a `hashFiles()` key may hash to name a fetch: the file that
-    holds it, and each file that assigns one of its pins."""
+    holds it, and each file that assigns one of its pins. `_RUN_BODY` stands
+    for the workflow or action file when that file is one of them."""
     paths = {unit.path} if unit.path else set()
     for pin in pins:
         paths |= namespace.assigned_in(pin)
-    return {rel for path in paths if (rel := _relative(path))}
+    sources = {rel for path in paths if (rel := _relative(path))}
+    in_body = unit.path is None or any(
+        owner.path is None
+        for pin in pins
+        for _, owner in namespace.assignments.get(pin, [])
+    )
+    return sources | {_RUN_BODY} if in_body else sources
 
 
 def _digest_checks(namespace: Namespace) -> list[tuple[Node, Unit]]:
@@ -392,8 +413,7 @@ def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set
             for child in here.named_children
         ]
         for node in nodes:
-            text = namespace.value(node, unit) or unquote(node_text(node))
-            for word in text.split():
+            for word in _spelled(node, namespace, unit).split():
                 if word.startswith("-"):
                     continue  # an option, or stdin
                 name = posixpath.basename(word)
@@ -401,28 +421,103 @@ def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set
     return names
 
 
-def _outputs(command: Node, words: list[str], values: list[str | None]) -> set[str]:
-    """The file a curl or wget COMMAND writes: from its output flag, from
-    curl's `-O` (the URL's last segment), or from a stdout redirect."""
-    program = next((p for w in words if (p := program_name(w)) in _OUTPUT_FLAGS), "")
-    flags = _OUTPUT_FLAGS.get(program)
-    if flags is None:
-        return set()
-    short, long = flags
-    found = _stdout_redirects(command)
-    if program == "curl" and any(_REMOTE_NAME.match(w) for w in words):
-        found |= {
-            posixpath.basename(url)
-            for word, value in zip(words, values)
-            if _URL.match(url := value or word)
-        }
-    for index, word in enumerate(words[:-1]):
-        if short.match(word) or word == long:
-            found.add(values[index + 1] or words[index + 1])
-    for word in words:
-        if word.startswith(long + "="):
-            found.add(word.split("=", 1)[1])
+def _spelled(node: Node, namespace: Namespace, unit: Unit) -> str:
+    """NODE's value when the text fixes it. Otherwise its text after quote
+    removal, with each expansion that only the run can fix spelled `$NAME`, so
+    one variable reads the same in an output flag and in a here-string."""
+    value = namespace.value(node, unit)
+    if value is not None:
+        return value
+    if node.type in ("simple_expansion", "expansion"):
+        name = next(iter_nodes(node, "variable_name"), None)
+        return f"${node_text(name)}" if name is not None else node_text(node)
+    if node.type not in ("string", "concatenation"):
+        return unquote(node_text(node))
+    raw, base = node.text or b"", node.start_byte
+    start = 1 if node.type == "string" else 0
+    end = len(raw) - start
+    pieces = []
+    for child in node.named_children:
+        if child.type == "string_content":
+            continue
+        pieces += [raw[start : body_start(child) - base].decode()]
+        pieces += [_spelled(child, namespace, unit)]
+        start = child.end_byte - base
+    pieces.append(raw[start:end].decode())
+    return "".join(pieces)
+
+
+def _flag_values(words: list[str], spelled: list[str], short, long: str) -> set[str]:
+    """The values WORDS give the flag spelled SHORT (a pattern, or None) or
+    LONG: `-o FILE`, `--output FILE` and `--output=FILE`."""
+    found = {
+        spelled[index + 1]
+        for index, word in enumerate(words[:-1])
+        if word == long or (short is not None and short.match(word))
+    }
+    found |= {word.split("=", 1)[1] for word in words if word.startswith(long + "=")}
     return found
+
+
+def _outputs(command: Node, words: list[str], spelled: list[str]) -> set[str]:
+    """The files a curl or wget COMMAND writes: from its output flag, from the
+    URL's last segment (curl's `-O`, wget with no `-O`), in the directory its
+    directory flag names, or from a stdout redirect."""
+    program = next((p for w in words if (p := program_name(w)) in _OUTPUT_FLAGS), "")
+    if program not in _OUTPUT_FLAGS:
+        return set()
+    named = _flag_values(words, spelled, *_OUTPUT_FLAGS[program])
+    remote = (
+        any(_REMOTE_NAME.match(w) for w in words) if program == "curl" else not named
+    )
+    if remote:
+        named |= {posixpath.basename(url) for url in spelled if _URL.match(url)}
+    for directory in _flag_values(words, spelled, *_DIRECTORY_FLAGS[program]):
+        named = {
+            name if name.startswith("/") or name == "-" else f"{directory}/{name}"
+            for name in named
+        }
+    return named | _stdout_redirects(command)
+
+
+@functools.lru_cache(maxsize=1024)
+def _changes_directory(namespace: Namespace) -> bool:
+    """True when the shell runs `cd`, `pushd` or `popd` outside a command
+    substitution, whose own shell cannot move this one."""
+    for command, _ in namespace.executed:
+        words = tokens(command)
+        if not words or program_name(words[0]) not in _DIRECTORY_CHANGERS:
+            continue
+        parent = command.parent
+        while parent is not None and parent.type != "command_substitution":
+            parent = parent.parent
+        if parent is None:
+            return True
+    return False
+
+
+def _placed(
+    outputs: set[str], namespace: Namespace
+) -> tuple[frozenset[str], frozenset[str]]:
+    """OUTPUTS as paths a cache `path:` can name: absolute, under `~`, or
+    relative to the workspace. The second set holds each relative output whose
+    directory the text does not fix: the step's directory is an expression, or
+    the shell changes directory, or the path is a variable only the run knows."""
+    placed, names = set(), set()
+    moved = namespace.cwd is None or _changes_directory(namespace)
+    root = str(namespace.repo_root)
+    for output in outputs:
+        out = posixpath.normpath(_home(output))
+        if out == root or out.startswith(root + "/"):
+            placed.add(posixpath.relpath(out, root))
+        elif out.startswith(("/", "~")):
+            placed.add(out)
+        elif moved or out.startswith("$"):
+            names.add(out)
+        else:
+            cwd = posixpath.relpath(str(namespace.cwd), root)
+            placed.add(posixpath.normpath(posixpath.join(cwd, out)))
+    return frozenset(placed), frozenset(names)
 
 
 def _stdout_redirects(command: Node) -> set[str]:
@@ -500,11 +595,12 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
     if not _runs_downloader(command) and not shell.downloaders & set(words):
         return fetches
     values = [namespace.value(node, unit) for node in args]
-    outputs = frozenset(_outputs(command, words, values))
+    spelled = [_spelled(node, namespace, unit) for node in args]
+    outputs, output_names = _placed(_outputs(command, words, spelled), namespace)
     for node, token, value in zip(args, words, values):
         if _PINNED_URL.match(token) or (value and _PINNED_URL.match(value)):
             label, extra = token, set()
-        elif _digest_pinned(value or token, outputs, shell):
+        elif _digest_pinned(value or token, outputs | output_names, shell):
             label, extra = f"{token} (digest-checked)", set(shell.digest_pins)
         else:
             continue
@@ -515,6 +611,7 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
                 frozenset(pins),
                 frozenset(_sources_of(pins, namespace, unit)),
                 outputs,
+                output_names,
             )
         )
     return fetches
@@ -826,17 +923,27 @@ def _namespace_fetches(namespace: Namespace) -> list[Fetch]:
 
 
 def _script_fetches(
-    script: str, action_dir: str | None, working_directory: str | None
+    script: str,
+    holder: str | None,
+    action_dir: str | None,
+    working_directory: str | None,
 ) -> list[Fetch]:
     """Every pinned download the `run:` body SCRIPT causes, through every repo
-    file it reaches."""
+    file it reaches. HOLDER is the repo-relative workflow or action file that
+    SCRIPT is written in."""
     reached = reach(script, REPO_ROOT, action_dir, working_directory)
     fetches: list[Fetch] = []
     for namespace in reached.namespaces:
         fetches += _namespace_fetches(namespace)
     for path in reached.python:
         fetches += _python_fetches(path)
-    return fetches
+    held = frozenset({holder} if holder else ())
+    return [
+        fetch._replace(sources=fetch.sources - {_RUN_BODY} | held)
+        if _RUN_BODY in fetch.sources
+        else fetch
+        for fetch in fetches
+    ]
 
 
 # ── caches: which download a cache can hold ─────────────────────────────────
@@ -863,7 +970,7 @@ def _cache_scope(step: dict) -> CacheScope | None:
     if not all(_READABLE_EXPRESSION.match(e) for e in _EXPRESSION.findall(key)):
         return None
     paths = tuple(
-        _home(line.strip()).rstrip("/")
+        posixpath.normpath(_home(line.strip()))
         for line in path.splitlines()
         if line.strip() and not line.strip().startswith("!")
     )
@@ -888,6 +995,19 @@ def _pin_in_key(pin: str) -> re.Pattern[str]:
     return re.compile(rf"(?<![\w.])v?{re.escape(pin)}(?!\w|\.\w)")
 
 
+@functools.lru_cache(maxsize=4)
+def _shell_files(root: Path) -> tuple[str, ...]:
+    """The repo-relative path of every `.sh` and `.bash` file under ROOT."""
+    return tuple(
+        sorted(
+            path.relative_to(root).as_posix()
+            for suffix in (".sh", ".bash")
+            for path in root.rglob(f"*{suffix}")
+            if path.is_file()
+        )
+    )
+
+
 @functools.lru_cache(maxsize=1024)
 def _hashed_assignments(root: Path, pattern: str) -> frozenset[str]:
     """The variables the shell files a `hashFiles()` PATTERN matches assign. A
@@ -896,10 +1016,15 @@ def _hashed_assignments(root: Path, pattern: str) -> frozenset[str]:
     names: set[str] = set()
     if not pattern or pattern.startswith(("/", "!")):
         return frozenset()
-    for path in root.glob(pattern):
-        if path.suffix not in (".sh", ".bash") or not path.is_file():
+    matcher = glob_to_regex(pattern)
+    for rel in _shell_files(root):
+        if not matcher.match(rel):
             continue
-        names |= {name for name, _ in definitions(load_shell(path)[1])[1]}
+        try:
+            tree = load_shell(root / rel)[1]
+        except UnicodeDecodeError:
+            continue  # bytes no shell step reads as a script set no pin
+        names |= {name for name, _ in definitions(tree)[1]}
     return frozenset(names)
 
 
@@ -916,8 +1041,7 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
                 return True
             if fetch.pins & _hashed_assignments(REPO_ROOT, pattern):
                 return True
-    for output in fetch.outputs:
-        out = _home(output)
+    for out in fetch.outputs:
         for path in scope.paths:
             if (
                 out == path
@@ -925,7 +1049,13 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
                 or glob_to_regex(path).match(out)
             ):
                 return True
-    return False
+    # A relative output in a directory the text does not fix: a cache path
+    # that ends in it can hold it.
+    return any(
+        path == name or path.endswith("/" + name)
+        for name in fetch.output_names
+        for path in scope.paths
+    )
 
 
 def _steps(container: object) -> list[dict]:
@@ -1071,9 +1201,10 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
             directory = _directory(
                 step.get("working-directory", "" if origin else default_directory)
             )
+            holder = _relative(_action_path(origin) if origin else REPO_ROOT / path)
             uncovered = [
                 fetch
-                for fetch in _script_fetches(script, action_dir, directory)
+                for fetch in _script_fetches(script, holder, action_dir, directory)
                 if not any(_covers(scope, fetch) for scope in scopes)
             ]
             if not uncovered:
