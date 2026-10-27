@@ -97,6 +97,9 @@ _OWN_SHELL = frozenset(
 # The nodes that run their body any number of times, and the ones that run
 # it only on a condition.
 _LOOPS = frozenset({"for_statement", "c_style_for_statement", "while_statement"})
+# A `!` turns the success of a `cd` into failure, so the arms `_apart` reads
+# swap meaning: inside a loop or under a `!` the order is not fixed.
+_UNSURE = _LOOPS | {"negated_command"}
 _BRANCHES = frozenset({"if_statement", "case_statement"})
 # How many functions deep `_calls_directory` follows calls before it gives up:
 # each level costs about six Python frames.
@@ -613,14 +616,14 @@ def _unordered(
     changer: list[tuple[Node, Unit]], command: list[tuple[Node, Unit]]
 ) -> bool:
     """True when the text does not fix whether a `cd` ran before COMMAND: a
-    link of the CHANGER sits in a loop, or a branch may run that link and not
+    link of the CHANGER sits in a loop or under `!`, or a branch may run that link and not
     COMMAND's link in the same file."""
     at = {unit.path: node for node, unit in command}
     for node, unit in changer:
         inside = at.get(unit.path)
         below, scope = node, node.parent
         while scope is not None:
-            if scope.type in _LOOPS or _apart(scope, below, inside):
+            if scope.type in _UNSURE or _apart(scope, below, inside):
                 return True
             below, scope = scope, scope.parent
     return False
