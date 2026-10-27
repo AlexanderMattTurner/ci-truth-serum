@@ -1063,10 +1063,13 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
             ):
                 return True
     # A relative output in a directory the text does not fix: a cache path
-    # that ends in it can hold it.
+    # that ends in it, or in one of its leading directories, can hold it.
+    # `bin/tool` after a `cd` is held by `sub/bin`, but not by a bare `bin` or
+    # `bin/tool`, which name the directory the shell left.
     return any(
-        path == name or path.endswith("/" + name)
+        path.endswith("/" + head)
         for name in fetch.output_names
+        for head in (name.rsplit("/", n)[0] for n in range(name.count("/") + 1))
         for path in scope.paths
     )
 

@@ -708,6 +708,17 @@ def test_a_download_directory_flag_places_the_output(rooted, script, fires):
             "ntent-type:text",
             1,
         ),
+        (".", f"f() {{ curl -fsSLo tool {PINNED}; }}\ncd sub\nf", "sub/tool", 0),
+        (".", f"f() {{ curl -fsSLo tool {PINNED}; }}\ncd sub\nf", "tool", 1),
+        (
+            ".",
+            f"diff <(cd a && ls) <(cd b && ls)\ncurl -fsSLo bin/tool {PINNED}",
+            "bin",
+            0,
+        ),
+        (".", f"cd a | cat\ncurl -fsSLo bin/tool {PINNED}", "bin", 0),
+        (".", f"cd sub && curl -fsSLo bin/tool {PINNED}", "sub/bin", 0),
+        (".", f"command cd sub\ncurl -fsSLo tool {PINNED}", "tool", 1),
     ],
     ids=[
         "cd-after-the-download",
@@ -718,6 +729,12 @@ def test_a_download_directory_flag_places_the_output(rooted, script, fires):
         "last-directory-flag",
         "earlier-directory-flag",
         "an-o-inside-another-flag-value",
+        "function-called-after-a-cd",
+        "function-called-after-a-cd-root-path",
+        "cd-in-a-process-substitution",
+        "cd-in-a-pipeline",
+        "directory-of-the-output-after-a-cd",
+        "command-cd",
     ],
 )
 def test_an_output_resolves_as_the_shell_resolves_it(

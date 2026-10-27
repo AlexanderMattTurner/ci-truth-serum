@@ -305,3 +305,14 @@ def test_a_cd_inside_a_substitution_in_another_file_moves_nothing(tmp_path):
         None,
         tmp_path / "setup.bash",
     ]
+
+
+def test_a_cd_in_a_process_substitution_does_not_move_the_shell(tmp_path):
+    (tmp_path / "install.sh").write_text("true\n", encoding="utf-8")
+    reached = sr.reach(
+        "diff <(cd a && ls) <(cd b && ls)\nbash install.sh\n", tmp_path, None
+    )
+    assert [ns.units[0].path for ns in reached.namespaces] == [
+        None,
+        tmp_path / "install.sh",
+    ]

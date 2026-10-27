@@ -88,9 +88,14 @@ _UV_VALUE_OPTIONS = frozenset(
 
 
 # The commands that move the shell, and the nodes that run their own shell,
-# whose `cd` moves nothing outside them.
+# whose `cd` moves nothing outside them: bash runs each pipeline member in a
+# subshell.
 _DIRECTORY_CHANGERS = frozenset({"cd", "pushd", "popd"})
-_OWN_SHELL = frozenset({"subshell", "command_substitution"})
+_OWN_SHELL = frozenset(
+    {"subshell", "command_substitution", "process_substitution", "pipeline"}
+)
+# The words that run the builtin they name: `command cd sub` moves the shell.
+_BUILTIN_RUNNERS = frozenset({"command", "builtin"})
 
 
 class Unit(NamedTuple):
@@ -116,6 +121,14 @@ _comments = functools.lru_cache(maxsize=512)(shell_comments)
 def _unit(path: Path, entry: Path | None) -> Unit:
     text, root = load_shell(path)
     return Unit(path, text, root, entry)
+
+
+def _changes_directory(words: list[str]) -> bool:
+    """True when WORDS run `cd`, `pushd` or `popd`, bare or through `command`
+    or `builtin`."""
+    while words and words[0] in _BUILTIN_RUNNERS:
+        words = words[1:]
+    return bool(words) and program_name(words[0]) in _DIRECTORY_CHANGERS
 
 
 def body_start(node: Node) -> int:
@@ -422,9 +435,11 @@ class Namespace:
             self._changers = [
                 (other, owner)
                 for other, owner in self.executed
-                if (words := tokens(other))
-                and program_name(words[0]) in _DIRECTORY_CHANGERS
+                if _changes_directory(tokens(other))
             ]
+        # A function body runs where it is called, so its own byte offset
+        # orders nothing.
+        in_function = _inside_definition(command, unit.root)
         for other, owner in self._changers:
             scope = other.parent
             while scope is not None and scope.type not in _OWN_SHELL:
@@ -434,7 +449,7 @@ class Namespace:
                 same_file and scope.start_byte <= command.start_byte < scope.end_byte
             ):
                 continue  # a subshell's `cd` moves only the subshell
-            if not same_file or _inside_definition(other, unit.root):
+            if in_function or not same_file or _inside_definition(other, unit.root):
                 return True
             if other.start_byte < command.start_byte:
                 return True
