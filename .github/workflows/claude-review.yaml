@@ -127,11 +127,11 @@ jobs:
       reviewer-ref: 667f5f240c84496a55b09763a03c94927878733b
       review-prompt: .github/prompts/claude-pr-review.md
       # The review posts with the workflow GITHUB_TOKEN, and that token's events
-      # start no workflow run. So `Review findings resolved` would sit at its old
-      # verdict until the next push, the `recheck-review-gate` label, or the
-      # half-hourly sweep. The reviewer runs this command on the head it just
-      # reviewed, with GH_TOKEN, GH_REPO, PR and REPORT_SHA already exported.
-      post-review-command: bash .github/scripts/review-findings-gate.sh
+      # start no workflow run. So `Automated review posted` would stay pending and
+      # `Review findings resolved` would keep its old verdict until the next push.
+      # The reviewer runs this command on the head it just reviewed, with
+      # GH_TOKEN, GH_REPO, PR and REPORT_SHA already exported.
+      post-review-command: HEAD_SHA="$REPORT_SHA" bash .github/scripts/review-gate.sh && bash .github/scripts/review-findings-gate.sh
     secrets:
       # Every repository that calls the reviewer passes these seven
       # subscription tokens in this order. No rung holds a metered API key, so

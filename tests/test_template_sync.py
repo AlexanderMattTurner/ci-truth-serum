@@ -429,9 +429,11 @@ def test_survives_self_overwrite_with_longer_file(workdir: Path) -> None:
     with "unexpected EOF". The script must re-exec from an immutable copy so
     self-overwrite (even with a longer, deliberately broken tail) is harmless.
 
-    Runs the CHILD's own committed copy (relative path, exactly like CI), not
-    the repo SCRIPT, because only overwriting the file bash is executing
-    triggers the bug. Removing the re-exec guard flips this test red.
+    Runs the CHILD's own committed copy (relative path), not the repo SCRIPT,
+    because only overwriting the file bash is executing triggers the bug. CI runs
+    the template's copy, but the script still ships under a synced path, so a
+    consumer that runs its own copy by hand hits this. Removing the re-exec guard
+    flips this test red.
     """
     child = workdir / "child"
     template = workdir / "template"
@@ -466,7 +468,7 @@ def test_survives_self_overwrite_with_longer_file(workdir: Path) -> None:
         "GITHUB_OUTPUT": str(output_file),
         "TEMPLATE_SYNC_WORK_DIR": str(work),
     }
-    # Invoke the child's own copy relatively, the way template-sync.yaml does.
+    # Invoke the child's own copy relatively, the way a consumer's manual run does.
     result = subprocess.run(
         ["bash", script_rel], cwd=child, env=env, capture_output=True, text=True
     )
