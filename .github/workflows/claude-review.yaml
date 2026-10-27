@@ -295,6 +295,8 @@ jobs:
         # Self-contained install (into .github/scripts/node_modules) so repos
         # synced from the template need no sanitizer entry in their own
         # package.json. --ignore-scripts keeps the install hermetic.
+        # cache-exempt: this pull_request_target job holds a write token, and a restored
+        # node_modules would run cached code under it; a fresh install takes seconds.
         run: bash .github/scripts/install-input-sanitizer.sh
 
       - name: Render and sanitize the merge-resolution deltas
@@ -449,6 +451,8 @@ jobs:
         # Self-contained install (into .github/scripts/node_modules) so the diff
         # can be sanitized before Haiku sees it, with no sanitizer entry needed
         # in the repo's own package.json.
+        # cache-exempt: this pull_request_target job holds a write token, and a restored
+        # node_modules would run cached code under it; a fresh install takes seconds.
         run: bash .github/scripts/install-input-sanitizer.sh
 
       - name: Fetch and sanitize the untrusted PR diff

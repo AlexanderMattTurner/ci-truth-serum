@@ -338,3 +338,404 @@ def test_an_unparseable_composite_action_is_reported(tmp_path, monkeypatch):
     findings = uc.check_file(path)
     assert len(findings) == 1
     assert "could not parse" in findings[0][1]
+
+
+# ── followed scripts ─────────────────────────────────────────────────────────
+
+PINNED = "https://example.com/v2.7.0/tool"
+DIGEST = "160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b"
+
+
+def _tree(root: Path, files: dict[str, str]) -> None:
+    for name, text in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def _step_line(path: Path, line: int) -> str:
+    return path.read_text(encoding="utf-8").splitlines()[line - 1].strip()
+
+
+LIB = f'fetch_pinned() {{ curl -fsSLo "$1" "$2"; }}\nfetch_pinned tool {PINNED}\n'
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'source "$(dirname "$0")/lib.bash"',
+        'source "${BASH_SOURCE[0]%/*}/lib.bash"',
+        'HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"\n. "$HERE/lib.bash"',
+        '# shellcheck source=lib.bash\nsource "$LIBDIR/lib.bash"',
+        "source scripts/lib.bash",
+        'source "$(git rev-parse --show-toplevel)/scripts/lib.bash"',
+    ],
+    ids=["dirname-0", "bash-source", "cd-pwd", "directive", "literal", "toplevel"],
+)
+def test_a_fetch_in_a_sourced_library_function_fires_at_the_step(rooted, source):
+    """Gap 1: the step runs a script, the script sources a library, and the
+    library calls a function that wraps curl with a pinned URL."""
+    _tree(rooted, {"scripts/fetch.sh": source + "\n", "scripts/lib.bash": LIB})
+    path = _write(rooted, _job(_run("bash scripts/fetch.sh")))
+    findings = uc.check_file(path)
+    assert len(findings) == 1, findings
+    line, message = findings[0]
+    assert _step_line(path, line) == "- name: install"
+    assert f"{PINNED} in scripts/lib.bash" in message
+
+
+def test_a_function_called_from_the_entry_script_resolves_into_the_library(rooted):
+    """The call sits in the entry script, the definition in the library: the
+    URL is an argument at the call site, and the curl is in the body."""
+    _tree(
+        rooted,
+        {
+            "scripts/fetch.sh": f'source scripts/lib.bash\nfetch_pinned tool "{PINNED}"\n',
+            "scripts/lib.bash": 'fetch_pinned() { curl -fsSLo "$1" "$2"; }\n',
+        },
+    )
+    path = _write(rooted, _job(_run("bash scripts/fetch.sh")))
+    assert [PINNED in m for m in _messages(path)] == [True]
+
+
+@pytest.mark.parametrize(
+    ("files", "run"),
+    [
+        (
+            {"scripts/lib.bash": f'fetch_pinned() {{ curl -fsSLo t "{PINNED}"; }}\n'},
+            "source scripts/lib.bash",
+        ),
+        (
+            {
+                "scripts/fetch.sh": (
+                    f"cat > doc.txt <<'EOF'\ncurl -fsSLo tool {PINNED}\nEOF\n"
+                )
+            },
+            "bash scripts/fetch.sh",
+        ),
+        ({}, "bash scripts/missing.sh"),
+        (
+            {"scripts/fetch.sh": f"curl -fsSLo t {PINNED}\n"},
+            'bash "$UNRESOLVABLE/fetch.sh"',
+        ),
+    ],
+    ids=["defined-never-called", "heredoc-body", "missing-script", "unresolvable"],
+)
+def test_what_the_walk_does_not_run_is_not_judged(rooted, files, run):
+    """A function nobody calls, a heredoc body written to a file, a script that
+    is not on disk, and a path only the run can compute: none is a download."""
+    _tree(rooted, files)
+    assert uc.check_file(_write(rooted, _job(_run(run)))) == []
+
+
+def test_two_scripts_that_source_each_other_terminate(rooted):
+    _tree(
+        rooted,
+        {
+            "scripts/a.bash": f"source scripts/b.bash\ncurl -fsSLo t {PINNED}\n",
+            "scripts/b.bash": "source scripts/a.bash\n",
+        },
+    )
+    path = _write(rooted, _job(_run("bash scripts/a.bash")))
+    assert len(uc.check_file(path)) == 1
+
+
+def test_a_composite_action_script_resolves_through_the_action_path(rooted):
+    _tree(rooted, {".github/actions/tool/install.sh": f"curl -fsSLo t {PINNED}\n"})
+    _action(
+        rooted,
+        "tool-run",
+        '      - shell: bash\n        run: bash "$GITHUB_ACTION_PATH/../tool/install.sh"\n',
+    )
+    path = _write(rooted, _job("      - uses: ./.github/actions/tool-run\n"))
+    messages = _messages(path)
+    assert len(messages) == 1
+    assert "in .github/actions/tool/install.sh" in messages[0]
+
+
+# ── which cache covers which download ───────────────────────────────────────
+
+
+def _cache(key: str, path: str = "/tmp/elsewhere") -> str:
+    return (
+        "      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n"
+        f"        with:\n          path: {path}\n          key: {key}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("cache", "fires"),
+    [
+        (_cache("deps-${{ runner.os }}"), True),
+        (_cache("tool-2.7.0-${{ runner.os }}"), False),
+        (_cache("tool-${{ env.TOOL_VERSION }}"), False),
+        (_cache("tool-${{ hashFiles('scripts/pin.bash') }}"), False),
+        (_cache("tool-${{ hashFiles('scripts/other.bash') }}"), True),
+        (_cache("deps-${{ runner.os }}", "/tmp/tool-cache"), False),
+        (_cache("deps-${{ runner.os }}", "~/.cache/tool"), True),
+        (_cache("${{ steps.key.outputs.key }}"), False),
+    ],
+    ids=[
+        "unrelated-key",
+        "version-in-key",
+        "version-variable-in-key",
+        "hash-of-the-pin-file",
+        "hash-of-another-file",
+        "path-holds-the-output",
+        "path-holds-something-else",
+        "unreadable-key",
+    ],
+)
+def test_a_cache_covers_a_download_only_when_it_can_hold_it(rooted, cache, fires):
+    """Gap 2: an unrelated cache in the job no longer exempts every fetch. A key
+    the lint cannot read keeps the old any-cache rule."""
+    _tree(
+        rooted,
+        {
+            "scripts/pin.bash": "TOOL_VERSION=2.7.0\n",
+            "scripts/fetch.sh": (
+                "source scripts/pin.bash\n"
+                "curl -fsSLo /tmp/tool-cache/tool "
+                '"https://example.com/v${TOOL_VERSION}/tool"\n'
+            ),
+        },
+    )
+    path = _write(rooted, _job(cache + _run("bash scripts/fetch.sh")))
+    messages = _messages(path)
+    assert len(messages) == (1 if fires else 0), messages
+    if fires:
+        assert "no cache in the job keyed on its pin" in messages[0]
+
+
+def test_a_key_naming_the_variable_a_pin_is_derived_from_covers_it(rooted):
+    """`version="${TOOL_VERSION#v}"` is the pin the URL reads, and a key that
+    names TOOL_VERSION names it too."""
+    script = (
+        'TOOL_VERSION="${TOOL_VERSION:-v2.7.0}"\nversion="${TOOL_VERSION#v}"\n'
+        'curl -fsSLo t "https://example.com/v${version}/tool"'
+    )
+    path = _write(rooted, _job(_cache("tool-${{ env.TOOL_VERSION }}") + _run(script)))
+    assert uc.check_file(path) == []
+
+
+# ── a digest pins the bytes ─────────────────────────────────────────────────
+
+
+DIGEST_SCRIPT = (
+    f"SHA={DIGEST}\n"
+    "URL=https://example.com/tool/latest\n"
+    'curl -fsSLo t "$URL"\n'
+    "{check}\n"
+)
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        'echo "$SHA  t" | sha256sum -c -',
+        'echo "$SHA  t" | shasum -a 256 -c -',
+        'sha256sum --check --status <<<"$SHA  t"',
+    ],
+    ids=["sha256sum", "shasum", "here-string"],
+)
+def test_a_download_checked_against_a_digest_is_pinned(tmp_path, check):
+    """Gap 3: no version in the URL, but the job refuses any other bytes."""
+    path = _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check=check))))
+    messages = _messages(path)
+    assert len(messages) == 1, messages
+    assert "https://example.com/tool/latest" not in messages[0]
+    assert "$URL (digest-checked)" in messages[0]
+
+
+def test_an_unversioned_download_with_no_digest_check_is_left_alone(tmp_path):
+    path = _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check="chmod +x t"))))
+    assert uc.check_file(path) == []
+
+
+def test_a_digest_check_of_another_file_does_not_pin_the_download(tmp_path):
+    """The check must name the file the download writes. Here it names a
+    different file, so the unversioned download stays unpinned."""
+    script = DIGEST_SCRIPT.format(check='echo "$SHA  other.tgz" | sha256sum -c -')
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+
+
+def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
+    script = DIGEST_SCRIPT.format(check='echo "$SHA  t" | sha256sum -c -')
+    path = _write(tmp_path, _job(_cache(f"tool-{DIGEST}") + _run(script)))
+    assert uc.check_file(path) == []
+
+
+# ── Python the shell runs ───────────────────────────────────────────────────
+
+
+FETCH_PY = """\
+import hashlib
+import urllib.request
+
+URL = "https://example.com/tool/latest"
+WANT = "{digest}"
+
+
+def download(dest):
+    data = urllib.request.urlopen(URL).read()
+    {check}
+    with open(dest, "wb") as handle:
+        handle.write(data)
+
+
+if __name__ == "__main__":
+    download("tool")
+"""
+
+HASH_CHECK = "if hashlib.sha256(data).hexdigest() != WANT:\n        raise SystemExit(1)"
+INSTALL_SH = 'DIR="${BASH_SOURCE[0]%/*}"\nCOMMAND "$DIR/fetch.py"\n'
+
+
+@pytest.mark.parametrize("command", ["python3", "uv run", "python"])
+def test_a_python_fetch_that_checks_a_digest_fires(rooted, command):
+    """Gap 4: the step runs a shell script that hands a Python file to an
+    interpreter, and that file hashes what it fetched and compares the hash."""
+    _tree(
+        rooted,
+        {
+            "scripts/install.sh": INSTALL_SH.replace("COMMAND", command),
+            "scripts/fetch.py": FETCH_PY.format(digest=DIGEST, check=HASH_CHECK),
+        },
+    )
+    path = _write(rooted, _job(_run("bash scripts/install.sh")))
+    messages = _messages(path)
+    assert len(messages) == 1, messages
+    assert "fetched by scripts/fetch.py:download, digest-checked" in messages[0]
+
+
+def test_a_python_fetch_in_an_imported_helper_fires(rooted):
+    """The entry script imports a repo module, and the fetch lives there."""
+    _tree(
+        rooted,
+        {
+            "scripts/main.py": "import helper\nhelper.download('t')\n",
+            "scripts/helper.py": FETCH_PY.format(digest=DIGEST, check=HASH_CHECK),
+        },
+    )
+    path = _write(rooted, _job(_run("python3 scripts/main.py")))
+    assert ["scripts/helper.py:download" in m for m in _messages(path)] == [True]
+
+
+def test_a_python_fetch_at_a_pinned_url_fires_with_no_digest(rooted):
+    _tree(
+        rooted,
+        {
+            "fetch.py": (
+                "import requests\nVERSION = '2.7.0'\n"
+                "requests.get(f'https://example.com/v{VERSION}/tool')\n"
+            )
+        },
+    )
+    path = _write(rooted, _job(_run("python3 fetch.py")))
+    assert [
+        "v${VERSION}/tool (fetched by fetch.py:<module>)" in m for m in _messages(path)
+    ] == [True]
+
+
+@pytest.mark.parametrize(
+    ("install", "check"),
+    [
+        (INSTALL_SH.replace("COMMAND", "python3"), "pass"),
+        ('python3 "$UNRESOLVABLE/fetch.py"\n', HASH_CHECK),
+    ],
+    ids=["no-digest-no-version", "unresolvable-path"],
+)
+def test_what_the_python_walk_leaves_alone(rooted, install, check):
+    _tree(
+        rooted,
+        {
+            "scripts/install.sh": install,
+            "scripts/fetch.py": FETCH_PY.format(digest=DIGEST, check=check),
+        },
+    )
+    path = _write(rooted, _job(_run("bash scripts/install.sh")))
+    assert uc.check_file(path) == []
+
+
+# ── the measured case ───────────────────────────────────────────────────────
+
+# The osv-scanner fetch path of agent-glovebox's `js-scan-run` job, through its
+# `scan.sh` and `osv-scanner.bash`. The fetch sits two script hops below the
+# `run:` body, so only a walk that follows scripts sees it.
+GLOVEBOX_SCAN = """\
+set -euo pipefail
+
+HERE="$(dirname "${BASH_SOURCE[0]}")"
+# shellcheck source=../lib/osv-scanner.bash disable=SC1091
+source "$HERE/../lib/osv-scanner.bash"
+
+download_osv_scanner osv-scanner
+./osv-scanner scan source --lockfile pnpm-lock.yaml
+"""
+GLOVEBOX_OSV = """\
+# shellcheck source=../lib-pinned-install.sh disable=SC1091
+source "$(dirname "${BASH_SOURCE[0]}")/../lib-pinned-install.sh"
+
+OSV_VERSION="2.7.0"
+OSV_SHA256="160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b"
+
+download_osv_scanner() {
+  local dest="$1"
+  PINNED_TOOL=osv-scanner pinned_curl \\
+    "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64" \\
+    "$dest"
+  echo "${OSV_SHA256}  ${dest}" | sha256sum -c -
+  chmod +x "$dest"
+}
+"""
+GLOVEBOX_PINNED = """\
+pinned_curl() {
+  local url="$1" dest="${2:-$PINNED_STAGED}" retry_widen=--retry-connrefused
+  curl --proto '=https' -fsSL --retry 6 "$retry_widen" -o "$dest" "$url" || return
+}
+"""
+GLOVEBOX_JOB = """\
+name: deps
+on:
+  pull_request:
+jobs:
+  js-scan-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+{cache}      - name: Scan pnpm-lock.yaml for known vulnerabilities
+        run: bash .github/scripts/deps-vuln/scan.sh js
+"""
+# glovebox PR #9135: a cache keyed on the file that pins the version and digest.
+GLOVEBOX_CACHE = """\
+      - name: Cache the pinned osv-scanner
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/osv-scanner-cache
+          key: osv-scanner-${{ runner.os }}-${{ hashFiles('.github/scripts/lib/osv-scanner.bash') }}
+"""
+
+
+@pytest.mark.parametrize(("cache", "fires"), [("", True), (GLOVEBOX_CACHE, False)])
+def test_the_glovebox_osv_scanner_job(rooted, cache, fires):
+    _tree(
+        rooted,
+        {
+            ".github/scripts/deps-vuln/scan.sh": GLOVEBOX_SCAN,
+            ".github/scripts/lib/osv-scanner.bash": GLOVEBOX_OSV,
+            ".github/scripts/lib-pinned-install.sh": GLOVEBOX_PINNED,
+        },
+    )
+    path = _write(rooted, GLOVEBOX_JOB.format(cache=cache))
+    findings = uc.check_file(path)
+    assert len(findings) == (1 if fires else 0), findings
+    if fires:
+        line, message = findings[0]
+        assert _step_line(path, line).startswith("- name: Scan pnpm-lock.yaml")
+        assert (
+            "osv-scanner_linux_amd64 in .github/scripts/lib/osv-scanner.bash" in message
+        )
+        assert "no cache step anywhere in the job" in message
