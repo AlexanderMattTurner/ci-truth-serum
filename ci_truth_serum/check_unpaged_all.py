@@ -176,27 +176,40 @@ def _py_literal(node: ast.AST, constants: frozenset[str]) -> bool:
     )
 
 
+def _py_walked(node: ast.AST) -> list[ast.AST]:
+    """What the argument NODE of `all`/`any` iterates."""
+    if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+        return [each.iter for each in node.generators]
+    return [node]
+
+
 def _py_walks_literals(node: ast.AST, constants: frozenset[str]) -> bool:
     """True when the argument NODE of `all`/`any` iterates literal collections only."""
-    if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
-        return all(_py_literal(each.iter, constants) for each in node.generators)
-    return _py_literal(node, constants)
+    return all(_py_literal(each, constants) for each in _py_walked(node))
 
 
 def _py_constants(tree: ast.Module) -> frozenset[str]:
-    """The names bound exactly once, by a top-level assignment of a literal collection."""
-    stores = Counter(
-        node.id
+    """The names a top-level assignment binds to a literal collection, and that
+    nothing else touches: every other mention is an `all`/`any` walking it. A
+    mutation, a rebinding, a parameter or a pass to a call is such a mention."""
+    walked = {
+        id(each)
         for node in walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
-    ) + Counter(node.arg for node in walk(tree) if isinstance(node, ast.arg))
+        if isinstance(node, ast.Call) and name_of(node.func) in ("all", "any")
+        for each in (_py_walked(node.args[0]) if node.args else [])
+    }
+    mentions = Counter(
+        node.id if isinstance(node, ast.Name) else node.arg
+        for node in walk(tree)
+        if isinstance(node, (ast.Name, ast.arg)) and id(node) not in walked
+    )
     return frozenset(
         statement.targets[0].id
         for statement in tree.body
         if isinstance(statement, ast.Assign)
         and len(statement.targets) == 1
         and isinstance(statement.targets[0], ast.Name)
-        and stores[statement.targets[0].id] == 1
+        and mentions[statement.targets[0].id] == 1
         and _py_literal(statement.value, frozenset())
     )
 
@@ -308,17 +321,29 @@ def _js_literal(node, constants: frozenset[str]) -> bool:
     )
 
 
+_JS_NAMES = frozenset({"identifier", "shorthand_property_identifier"})
+
+
+def _js_receiver(node):
+    """The object a `.every`/`.some` call NODE reduces, or None for another call."""
+    if _js_method(node) not in ("every", "some"):
+        return None
+    return node.child_by_field_name("function").child_by_field_name("object")
+
+
 def _js_constants(root) -> frozenset[str]:
-    """The names declared exactly once, by a top-level `const` of a literal array."""
-    declared = Counter(
-        _text(name)
-        for node in iter_nodes(root, "variable_declarator")
-        if (name := node.child_by_field_name("name")) is not None
-    ) + Counter(
-        _text(name)
-        for node in iter_nodes(root, "formal_parameters")
-        for name in _walk(node)
-        if name.type == "identifier"
+    """The names a top-level `const` binds to a literal array, and that nothing
+    else touches: every other mention is a `.every`/`.some` receiver. A `.push`,
+    a parameter or a pass to a call is such a mention."""
+    walked = {
+        receiver.id
+        for node in iter_nodes(root, "call_expression")
+        if (receiver := _js_receiver(node)) is not None
+    }
+    mentions = Counter(
+        _text(node)
+        for node in _walk(root)
+        if node.type in _JS_NAMES and node.id not in walked
     )
     found = set()
     for statement in root.named_children:
@@ -333,14 +358,14 @@ def _js_constants(root) -> frozenset[str]:
                 and _js_literal(value, frozenset())
             ):
                 found.add(_text(name))
-    return frozenset(name for name in found if declared[name] == 1)
+    return frozenset(name for name in found if mentions[name] == 1)
 
 
 def _js_reduction(node, constants: frozenset[str]) -> bool:
     """True when NODE calls `.every` or `.some` on anything but a literal array."""
     if _js_method(node) not in ("every", "some"):
         return False
-    receiver = node.child_by_field_name("function").child_by_field_name("object")
+    receiver = _js_receiver(node)
     return receiver is None or not _js_literal(receiver, constants)
 
 

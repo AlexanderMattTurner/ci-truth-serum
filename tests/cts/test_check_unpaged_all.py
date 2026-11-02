@@ -170,6 +170,15 @@ def test_a_parameter_that_shadows_the_constant_is_not_literal():
     assert violations(source) == [7]
 
 
+def test_a_constant_filled_with_a_listing_is_not_literal():
+    source = (
+        "JOBS = []\n"
+        "JOBS.extend(gh_api('repos/o/r/actions/runs/1/jobs')['jobs'])\n"
+        "ok = all(j['conclusion'] == 'success' for j in JOBS)\n"
+    )
+    assert violations(source) == [3]
+
+
 def test_a_literal_generator_beside_a_listing_generator_is_reported():
     source = LITERAL_PY.replace(
         "for f in STATUS_FUNCTIONS)",
@@ -249,6 +258,29 @@ def test_javascript_shadowed_const_is_not_literal():
         "}\n"
     )
     assert violations(source, "decide.mjs") == [4]
+
+
+@pytest.mark.parametrize(
+    "touch",
+    [
+        pytest.param("WORDS.push(...answer.jobs.map((job) => job.name));", id="a-push"),
+        pytest.param(
+            "const pick = (WORDS) => WORDS;", id="a-parenthesised-arrow-parameter"
+        ),
+        pytest.param("const pick = WORDS => WORDS;", id="a-bare-arrow-parameter"),
+        pytest.param("record({ WORDS });", id="a-shorthand-property"),
+    ],
+)
+def test_a_javascript_const_anything_else_touches_is_not_literal(touch):
+    source = (
+        'const WORDS = ["a"];\n'
+        "export async function gated(runId) {\n"
+        "  const answer = await ghApi(`repos/o/r/actions/runs/${runId}/jobs`);\n"
+        f"  {touch}\n"
+        "  return WORDS.some((word) => answer.jobs[0].name === word);\n"
+        "}\n"
+    )
+    assert violations(source, "decide.mjs") == [5]
 
 
 # ─── the opt-out, and paths of neither language ──────────────────────────────
