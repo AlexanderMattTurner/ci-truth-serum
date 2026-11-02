@@ -128,6 +128,65 @@ def test_per_page_alone_is_not_paging():
     assert violations(SPLIT_PY) == [7]
 
 
+# A test module that reads a workflow YAML's `jobs` key and also names a GitHub
+# path, then asks a question of a fixed tuple of words. No listing is reduced.
+LITERAL_PY = """\
+RUN_URL = "https://github.example/o/r/actions/runs/7"
+STATUS_FUNCTIONS = ("always()", "!cancelled()")
+
+
+def gated(workflow):
+    condition = workflow["jobs"]["publish"]["if"]
+    return any(f in condition for f in STATUS_FUNCTIONS)
+"""
+
+
+@pytest.mark.parametrize(
+    ("iterated", "expected"),
+    [
+        pytest.param("STATUS_FUNCTIONS", [], id="a-module-constant-tuple"),
+        pytest.param('("always()", "!cancelled()")', [], id="an-inline-tuple"),
+        pytest.param('["always()", "!cancelled()"]', [], id="an-inline-list"),
+        pytest.param('workflow["jobs"]', [7], id="the-listing-itself"),
+    ],
+)
+def test_a_reduction_over_a_literal_collection_reads_no_listing(iterated, expected):
+    source = LITERAL_PY.replace("in STATUS_FUNCTIONS)", f"in {iterated})")
+    assert violations(source) == expected
+
+
+def test_a_constant_rebound_later_is_not_literal():
+    source = (
+        LITERAL_PY
+        + "\n\ndef widen(more):\n    global STATUS_FUNCTIONS\n    STATUS_FUNCTIONS = more\n"
+    )
+    assert violations(source) == [7]
+
+
+def test_a_parameter_that_shadows_the_constant_is_not_literal():
+    source = LITERAL_PY.replace(
+        "def gated(workflow):", "def gated(workflow, STATUS_FUNCTIONS):"
+    )
+    assert violations(source) == [7]
+
+
+def test_a_constant_filled_with_a_listing_is_not_literal():
+    source = (
+        "JOBS = []\n"
+        "JOBS.extend(gh_api('repos/o/r/actions/runs/1/jobs')['jobs'])\n"
+        "ok = all(j['conclusion'] == 'success' for j in JOBS)\n"
+    )
+    assert violations(source) == [3]
+
+
+def test_a_literal_generator_beside_a_listing_generator_is_reported():
+    source = LITERAL_PY.replace(
+        "for f in STATUS_FUNCTIONS)",
+        'for f in STATUS_FUNCTIONS for j in workflow["jobs"])',
+    )
+    assert violations(source) == [7]
+
+
 # ─── JavaScript ──────────────────────────────────────────────────────────────
 
 
@@ -169,6 +228,59 @@ def test_a_listing_key_inside_a_javascript_string_is_not_a_read():
         "}\n"
     )
     assert violations(source, "decide.mjs") == []
+
+
+@pytest.mark.parametrize(
+    ("receiver", "expected"),
+    [
+        pytest.param('["always()", "!cancelled()"]', [], id="an-inline-array"),
+        pytest.param("WORDS", [], id="a-top-level-const-array"),
+        pytest.param("answer.jobs", [4], id="the-listing-itself"),
+    ],
+)
+def test_javascript_reduction_over_a_literal_array_reads_no_listing(receiver, expected):
+    source = (
+        'const WORDS = ["always()", "!cancelled()"];\n'
+        "export async function gated(runId) {\n"
+        "  const answer = await ghApi(`repos/o/r/actions/runs/${runId}/jobs`);\n"
+        f"  return {receiver}.some((word) => answer.jobs[0].name.includes(word));\n"
+        "}\n"
+    )
+    assert violations(source, "decide.mjs") == expected
+
+
+def test_javascript_shadowed_const_is_not_literal():
+    source = (
+        'const WORDS = ["a"];\n'
+        "export async function gated(runId, WORDS) {\n"
+        "  const answer = await ghApi(`repos/o/r/actions/runs/${runId}/jobs`);\n"
+        "  return WORDS.some((word) => answer.jobs[0].name === word);\n"
+        "}\n"
+    )
+    assert violations(source, "decide.mjs") == [4]
+
+
+@pytest.mark.parametrize(
+    "touch",
+    [
+        pytest.param("WORDS.push(...answer.jobs.map((job) => job.name));", id="a-push"),
+        pytest.param(
+            "const pick = (WORDS) => WORDS;", id="a-parenthesised-arrow-parameter"
+        ),
+        pytest.param("const pick = WORDS => WORDS;", id="a-bare-arrow-parameter"),
+        pytest.param("record({ WORDS });", id="a-shorthand-property"),
+    ],
+)
+def test_a_javascript_const_anything_else_touches_is_not_literal(touch):
+    source = (
+        'const WORDS = ["a"];\n'
+        "export async function gated(runId) {\n"
+        "  const answer = await ghApi(`repos/o/r/actions/runs/${runId}/jobs`);\n"
+        f"  {touch}\n"
+        "  return WORDS.some((word) => answer.jobs[0].name === word);\n"
+        "}\n"
+    )
+    assert violations(source, "decide.mjs") == [5]
 
 
 # ─── the opt-out, and paths of neither language ──────────────────────────────
