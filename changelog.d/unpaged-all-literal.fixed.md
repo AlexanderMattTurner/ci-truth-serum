@@ -1,0 +1,1 @@
+- `check-unpaged-all`: a reduction over a literal tuple, list, set or array, or over a module constant bound once to one, no longer counts as reducing a GitHub listing.

@@ -52,6 +52,7 @@ JavaScript). Invoked by pre-commit with the staged Python and JavaScript paths.
 
 import ast
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
@@ -155,11 +156,49 @@ def _mentions(words: set[str], evidence: tuple[str, ...]) -> bool:
 # ── Python ───────────────────────────────────────────────────────────────
 
 
-def _py_reduction(node: ast.AST) -> bool:
+def _py_reduction(node: ast.AST, constants: frozenset[str]) -> bool:
     """True when NODE asks one question of a WHOLE list. `any` counts beside
     `all`: "did any job fail?" over one page misses the failures on page two,
-    which is the same wrong answer in the other direction."""
-    return isinstance(node, ast.Call) and name_of(node.func) in ("all", "any")
+    which is the same wrong answer in the other direction. A reduction that walks
+    only literal collections reads no listing, so it is not one."""
+    if not (isinstance(node, ast.Call) and name_of(node.func) in ("all", "any")):
+        return False
+    return not (node.args and _py_walks_literals(node.args[0], constants))
+
+
+def _py_literal(node: ast.AST, constants: frozenset[str]) -> bool:
+    """True when NODE is a tuple, list or set of constants, or a module name
+    CONSTANTS says is bound to one."""
+    if isinstance(node, ast.Name):
+        return node.id in constants
+    return isinstance(node, (ast.Tuple, ast.List, ast.Set)) and all(
+        isinstance(element, ast.Constant) for element in node.elts
+    )
+
+
+def _py_walks_literals(node: ast.AST, constants: frozenset[str]) -> bool:
+    """True when the argument NODE of `all`/`any` iterates literal collections only."""
+    if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+        return all(_py_literal(each.iter, constants) for each in node.generators)
+    return _py_literal(node, constants)
+
+
+def _py_constants(tree: ast.Module) -> frozenset[str]:
+    """The names bound exactly once, by a top-level assignment of a literal collection."""
+    stores = Counter(
+        node.id
+        for node in walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    ) + Counter(node.arg for node in walk(tree) if isinstance(node, ast.arg))
+    return frozenset(
+        statement.targets[0].id
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and stores[statement.targets[0].id] == 1
+        and _py_literal(statement.value, frozenset())
+    )
 
 
 def _py_reads_envelope(node: ast.AST) -> bool:
@@ -224,7 +263,8 @@ def _py_violations(source: str) -> list[int]:
         code, prose, has_loop = _py_words(tree)
         if not _mentions(code, API_EVIDENCE) or _pages(code | prose, has_loop):
             continue
-        hits += [node.lineno for node in nodes if _py_reduction(node)]
+        constants = _py_constants(tree)
+        hits += [node.lineno for node in nodes if _py_reduction(node, constants)]
     return hits
 
 
@@ -254,6 +294,54 @@ def _js_method(node) -> str | None:
         return None
     method = function.child_by_field_name("property")
     return _text(method) if method is not None else None
+
+
+_JS_LITERALS = frozenset({"false", "null", "number", "string", "true"})
+
+
+def _js_literal(node, constants: frozenset[str]) -> bool:
+    """True when NODE is an array of literals, or a name CONSTANTS binds to one."""
+    if node.type == "identifier":
+        return _text(node) in constants
+    return node.type == "array" and all(
+        child.type in _JS_LITERALS for child in node.named_children
+    )
+
+
+def _js_constants(root) -> frozenset[str]:
+    """The names declared exactly once, by a top-level `const` of a literal array."""
+    declared = Counter(
+        _text(name)
+        for node in iter_nodes(root, "variable_declarator")
+        if (name := node.child_by_field_name("name")) is not None
+    ) + Counter(
+        _text(name)
+        for node in iter_nodes(root, "formal_parameters")
+        for name in _walk(node)
+        if name.type == "identifier"
+    )
+    found = set()
+    for statement in root.named_children:
+        if statement.type != "lexical_declaration" or _text(statement)[:5] != "const":
+            continue
+        for declarator in statement.named_children:
+            name = declarator.child_by_field_name("name")
+            value = declarator.child_by_field_name("value")
+            if (
+                name is not None
+                and value is not None
+                and _js_literal(value, frozenset())
+            ):
+                found.add(_text(name))
+    return frozenset(name for name in found if declared[name] == 1)
+
+
+def _js_reduction(node, constants: frozenset[str]) -> bool:
+    """True when NODE calls `.every` or `.some` on anything but a literal array."""
+    if _js_method(node) not in ("every", "some"):
+        return False
+    receiver = node.child_by_field_name("function").child_by_field_name("object")
+    return receiver is None or not _js_literal(receiver, constants)
 
 
 def _js_reads_envelope(node) -> bool:
@@ -288,10 +376,11 @@ def _js_violations(source: str, path: str) -> list[int]:
     words, has_loop = _js_words(root)
     if not _mentions(words, API_EVIDENCE) or _pages(words, has_loop):
         return []
+    constants = _js_constants(root)
     return [
         node.start_point[0] + 1
         for node in iter_nodes(root, "call_expression")
-        if _js_method(node) in ("every", "some")
+        if _js_reduction(node, constants)
     ]
 
 
