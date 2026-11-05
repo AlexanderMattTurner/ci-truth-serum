@@ -1286,6 +1286,53 @@ def test_a_digest_check_in_a_sibling_function_pins_nothing(tmp_path):
     assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
 
 
+@pytest.mark.parametrize(
+    "check",
+    [
+        '[[ "$(sha256sum <other)" == "$SHA" ]]',
+        '[[ "$(sha256sum <package.json)" == "$STAMP" ]]',
+    ],
+    ids=["another-file", "a-cache-stamp"],
+)
+def test_a_check_of_another_file_in_the_same_body_pins_nothing(tmp_path, check):
+    """The function downloads `t` and hashes a different file, so the
+    floating download is not pinned by that check."""
+    script = (
+        "get_tool() {\n"
+        "  curl -fsSL https://example.com/latest/t -o t\n"
+        f"  {check}\n"
+        "}\n"
+        "get_tool\n"
+    )
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    ["command -v fetch_verified >/dev/null || exit 1", "type -t fetch_verified"],
+    ids=["command-v", "type"],
+)
+def test_a_lookup_of_a_checked_downloader_downloads_nothing(rooted, lookup):
+    provision = CHECKED_PROVISION.replace(
+        'fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst\n',
+        f"{lookup}\n",
+    )
+    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": provision})
+    path = _write(rooted, _job(_run("bash provision.bash")))
+    assert uc.check_file(path) == []
+
+
+def test_an_array_that_appends_options_still_names_its_tool(tmp_path):
+    check = (
+        'H=(shasum)\nH+=(-a 256)\n[[ "$("${H[@]}" <t | cut -d\' \' -f1)" == "$SHA" ]]'
+    )
+    messages = _messages(
+        _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check=check))))
+    )
+    assert len(messages) == 1, messages
+    assert "$URL (digest-checked)" in messages[0]
+
+
 WRAPPED_PROVISION = CHECKED_PROVISION.replace(
     'fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst\n',
     "provision() {\n"
@@ -1315,6 +1362,20 @@ def test_a_wrapper_with_no_arguments_does_not_hide_the_pinned_calls(rooted, key,
     assert "provision (digest-checked)" not in uncached[0]
     path = _write(rooted, _job(_cache(key) + _run("bash provision.bash")))
     assert len(_messages(path)) == (1 if fires else 0)
+
+
+def test_an_unpinned_call_beside_a_pinned_one_is_reported_by_the_wrapper(rooted):
+    """`kata` names its pin, `extra` names none. A key on the kata pin alone
+    leaves `extra` downloading on every run, so the wrapper reports it."""
+    provision = WRAPPED_PROVISION.replace('"$fc_version"', '"$rel"')
+    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": provision})
+    key = "k-${{ env.kata_version }}"
+    messages = _messages(
+        _write(rooted, _job(_cache(key) + _run("bash provision.bash")))
+    )
+    assert len(messages) == 1, messages
+    assert "provision (digest-checked) in provision.bash" in messages[0]
+    assert "fetch_verified kata" not in messages[0]
 
 
 def test_with_no_pin_in_the_chain_the_outermost_call_is_the_fetch(rooted):

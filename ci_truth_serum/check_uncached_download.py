@@ -27,9 +27,10 @@ A download is pinned in one of three ways:
     a function. In Python, the same function hashes the bytes and compares the
     hash. A job that refuses every other byte has immutable input by its own
     rule;
-  * the step calls a function whose body both downloads and checks a digest,
-    directly or through a wrapper. The outermost call that carries a pin is
-    the fetch, because it names the tool and its version.
+  * the step calls a function whose body downloads a file and checks the
+    digest of that file, directly or through a wrapper. The outermost call
+    that carries a pin is the fetch, because it names the tool and its
+    version.
 
 The lint reads more than the `run:` text. `_cts_step_reach` follows each repo
 script the step runs or sources, and each function call into that function's
@@ -103,6 +104,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     PathologicalInputError,
     _inside_definition,
     command_arguments,
+    is_lookup,
     iter_nodes,
     node_text,
     program_name,
@@ -357,11 +359,17 @@ def _functions_running(
     return _callers_of(seeds, callees)
 
 
-def _enclosing_function(node: Node) -> str | None:
-    """The name of the innermost function whose body holds NODE, if any."""
+def _enclosing_definition(node: Node) -> Node | None:
+    """The innermost `function_definition` whose body holds NODE, if any."""
     scope = node.parent
     while scope is not None and scope.type != "function_definition":
         scope = scope.parent
+    return scope
+
+
+def _enclosing_function(node: Node) -> str | None:
+    """The name of the innermost function whose body holds NODE, if any."""
+    scope = _enclosing_definition(node)
     name = scope.child_by_field_name("name") if scope is not None else None
     return node_text(name) if name is not None else None
 
@@ -438,7 +446,8 @@ def _sources_of(pins: set[str], namespace: Namespace, unit: Unit) -> set[str]:
 def _array_programs(word: Node, namespace: Namespace) -> set[str] | None:
     """The programs a command word that expands one array may name:
     `"${SHA_ARGV[@]}"` names `sha256sum` when each assignment of `SHA_ARGV` is
-    an array that starts with it. None when the word is anything else."""
+    an array that starts with it. A `+=` only appends options, so it names no
+    program. None when the word is anything else."""
     if word.type == "string" and len(word.named_children) == 1:
         word = word.named_children[0]
     if word.type not in ("simple_expansion", "expansion"):
@@ -447,6 +456,8 @@ def _array_programs(word: Node, namespace: Namespace) -> set[str] | None:
     assignments = namespace.assignments.get(node_text(names[0]), []) if names else []
     programs = set()
     for assignment, _ in assignments:
+        if any(child.type == "+=" for child in assignment.children):
+            continue
         value = assignment.child_by_field_name("value")
         if value is None or value.type != "array" or not value.named_children:
             return None
@@ -516,9 +527,7 @@ def _comparison_scopes(command: Node, unit: Unit) -> list[Node]:
     if parent.type != "variable_assignment":
         return []
     name = node_text(parent.child_by_field_name("name"))
-    region = parent.parent
-    while region is not None and region.type != "function_definition":
-        region = region.parent
+    region = _enclosing_definition(parent)
     scope = region.child_by_field_name("body") if region is not None else unit.root
     tests = [
         test
@@ -725,6 +734,36 @@ class _Shell(NamedTuple):
     checked_names: frozenset[str]
 
 
+def _written_names(
+    function: str, namespace: Namespace, downloaders: frozenset[str]
+) -> set[str]:
+    """The base names of the files the downloads in FUNCTION's own body may
+    write: each argument word of a command that runs curl or wget or calls a
+    downloader function, and each file its stdout goes to. They are spelled
+    as `_checked_names` spells a check's files, so the two sets compare."""
+    names = set()
+    for command, unit in namespace.function_commands(function):
+        if not _runs_downloader(command) and not set(callable_words(command)) & (
+            downloaders
+        ):
+            continue
+        nodes = command_arguments(command)[1:]
+        if command.parent is not None and command.parent.type == "redirected_statement":
+            nodes += [
+                destination
+                for redirect in command.parent.children
+                if redirect.type == "file_redirect"
+                and redirect_parts(redirect).operator in (">", ">>", ">|")
+                and (destination := redirect.child_by_field_name("destination"))
+            ]
+        for node in nodes:
+            names |= {
+                posixpath.basename(word)
+                for word in _spelled(node, namespace, unit).split()
+            }
+    return names
+
+
 def _shell_context(namespace: Namespace) -> _Shell:
     callees = _callees(namespace)
     downloaders = _functions_running(namespace, callees, _runs_downloader)
@@ -739,12 +778,22 @@ def _shell_context(namespace: Namespace) -> _Shell:
         pins |= found
         if name := _enclosing_function(node):
             by_function[name] = by_function.get(name, frozenset()) | found
-    # The check and a download share one body, so a sibling function that
-    # hashes some other file pins nothing. Every caller of such a function
-    # also downloads, so the closure stays inside DOWNLOADERS.
+    # The check names a file that a download in the same body writes, so a
+    # check of some other file, in that body or a sibling, pins nothing. Every
+    # caller of such a function also downloads, so the closure stays inside
+    # DOWNLOADERS.
+    checked: dict[str, set[str]] = {}
+    for node, unit in checks:
+        if (name := _enclosing_function(node)) in downloaders:
+            checked.setdefault(name, set()).update(
+                _checked_names([(node, unit)], namespace)
+            )
     checking = _callers_of(
-        downloaders
-        & {name for node, _ in checks if (name := _enclosing_function(node))},
+        {
+            name
+            for name, names in checked.items()
+            if names & _written_names(name, namespace, downloaders)
+        },
         callees,
     )
     return _Shell(
@@ -1125,61 +1174,91 @@ class _CheckedCall(NamedTuple):
     enclosing: str | None
 
 
+class _CallChains:
+    """The checked calls of one namespace, indexed by each function they call
+    and by the function whose body holds them. CHECKING names the downloader
+    functions that check a digest."""
+
+    def __init__(self, calls: list[_CheckedCall], checking: frozenset[str]):
+        self.checking = checking
+        self.by_callee: dict[str, list[_CheckedCall]] = {}
+        self.by_holder: dict[str | None, list[_CheckedCall]] = {}
+        for call in calls:
+            self.by_holder.setdefault(call.enclosing, []).append(call)
+            for name in call.called:
+                self.by_callee.setdefault(name, []).append(call)
+        self._above: dict[str, bool] = {}
+        self._covered: dict[frozenset[str], bool] = {}
+
+    def pinned_above(self, name: str | None) -> bool:
+        """True when a call of the checking function NAME, or of a checking
+        function that holds such a call, carries a pin."""
+        if name not in self.checking:
+            return False
+        if name not in self._above:
+            self._above[name] = False  # a call cycle adds no pin
+            self._above[name] = any(
+                call.pins or self.pinned_above(call.enclosing)
+                for call in self.by_callee.get(name, [])
+            )
+        return self._above[name]
+
+    def covered(self, call: _CheckedCall) -> bool:
+        """True when CALL names the pin of each download under it: it carries
+        a pin itself, or the functions it calls hold checked calls and every
+        one of them is covered."""
+        if call.pins:
+            return True
+        if call.called not in self._covered:
+            self._covered[call.called] = False  # a call cycle covers nothing
+            inner = [c for name in call.called for c in self.by_holder.get(name, [])]
+            self._covered[call.called] = bool(inner) and all(
+                self.covered(c) for c in inner
+            )
+        return self._covered[call.called]
+
+    def reports(self, call: _CheckedCall) -> bool:
+        """True when CALL is the site that reports its download: no call above
+        it names a pin, and it carries a pin itself, or it is the outermost
+        call and some download under it has no call that names a pin."""
+        if self.pinned_above(call.enclosing):
+            return False
+        if call.pins:
+            return True
+        return call.enclosing not in self.checking and not self.covered(call)
+
+
 def _checked_calls(
     commands: list[tuple[Node, Unit]], shell: _Shell, reported: frozenset[str]
 ) -> list[Fetch]:
     """The pinned downloads COMMANDS make by calling a downloader function that
     checks a digest. A function that REPORTED names already yields a fetch from
-    a command inside it, so a call to it adds none.
+    a command inside it, so a call to it adds none. A lookup
+    (`command -v fetch_verified`) runs nothing.
 
     One chain of calls is one download, so one call reports it: the outermost
     call whose arguments carry a pin, since that call names the tool and its
     version. An argument-less wrapper above it (`provision() { fetch_verified
-    kata "$kata_version" …; }`) does not take its place. When no call in the
-    chain carries a pin, the outermost call reports it."""
+    kata "$kata_version" …; }`) does not take its place. The outermost call
+    reports any download under it that no call names a pin for."""
     namespace = shell.namespace
     calls = []
     for command, unit in commands:
         called = set(callable_words(command)) & shell.checked_downloaders
-        if called and not called & reported:
-            pins = _pins_of(command_arguments(command)[1:], namespace, unit)
-            calls.append(
-                _CheckedCall(
-                    command,
-                    unit,
-                    frozenset(called),
-                    frozenset(pins),
-                    _enclosing_function(command),
-                )
+        if not called or called & reported or is_lookup(tokens(command)):
+            continue
+        pins = _pins_of(command_arguments(command)[1:], namespace, unit)
+        calls.append(
+            _CheckedCall(
+                command,
+                unit,
+                frozenset(called),
+                frozenset(pins),
+                _enclosing_function(command),
             )
-
-    def pinned_above(name: str | None, seen: frozenset[str]) -> bool:
-        """True when a call of the function NAME, or of a function that holds
-        such a call, carries a pin."""
-        if name not in shell.checked_downloaders or name in seen:
-            return False
-        return any(
-            call.pins or pinned_above(call.enclosing, seen | {name})
-            for call in calls
-            if name in call.called
         )
-
-    def pinned_below(names: frozenset[str], seen: frozenset[str]) -> bool:
-        """True when a call inside the functions NAMES, at any depth, carries
-        a pin."""
-        return any(
-            call.pins or pinned_below(call.called, seen | names)
-            for call in calls
-            if call.enclosing in names - seen
-        )
-
-    return [
-        _checked_fetch(call, shell)
-        for call in calls
-        if not pinned_above(call.enclosing, frozenset())
-        and (call.pins or call.enclosing not in shell.checked_downloaders)
-        and (call.pins or not pinned_below(call.called, frozenset()))
-    ]
+    chains = _CallChains(calls, shell.checked_downloaders)
+    return [_checked_fetch(call, shell) for call in calls if chains.reports(call)]
 
 
 def _checked_fetch(call: _CheckedCall, shell: _Shell) -> Fetch:
