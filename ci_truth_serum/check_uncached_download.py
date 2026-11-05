@@ -24,10 +24,10 @@ A download is pinned in one of three ways:
   * the same shell process checks the download against a digest. The check is
     a `sha256sum -c` command, or a test that compares the hash of the file
     (`[[ "$(sha256sum <f)" == "$SHA" ]]`). The tool can sit in an array or in
-    a function. A digest that the run computes, such as the output of a
-    `curl`, can change, so a comparison with it is no check. In Python, the same function hashes the bytes and compares the
-    hash. A job that refuses every other byte has immutable input by its own
-    rule;
+    a function. A digest that the run downloads changes with the bytes, so a
+    comparison with it is no check. In Python, the same function hashes the
+    bytes and compares the hash. A job that refuses every other byte has
+    immutable input by its own rule;
   * the step calls a function whose body downloads a file and checks the
     digest of that file, directly or through a wrapper. The outermost call
     that carries a pin is the fetch, because it names the tool and its
@@ -523,7 +523,7 @@ class _Floats:
             return True
         read = command_arguments(command)[1:] + [
             destination
-            for redirect in _stdin_redirects(command)
+            for redirect in _file_redirects(command, ("<",), "0")
             if (destination := redirect.child_by_field_name("destination"))
         ]
         return bool(_base_names(read, self.namespace, unit) & self.downloaded)
@@ -767,35 +767,33 @@ def _placed(
     return frozenset(placed), frozenset(names)
 
 
-def _file_redirects(command: Node, operators: tuple[str, ...]) -> list[Node]:
-    """COMMAND's file redirects on its own standard stream: stdin for `<`,
-    stdout for `>`, `>>` and `>|`."""
+_WRITE_OPERATORS = (">", ">>", ">|")
+
+
+def _file_redirects(
+    command: Node, operators: tuple[str, ...], descriptor: str
+) -> list[Node]:
+    """COMMAND's file redirects with one of OPERATORS on the stream DESCRIPTOR
+    names, written with that number or with none: `<f` reads stdin ("0") and
+    `>f` writes stdout ("1")."""
     parent = command.parent
     if parent is None or parent.type != "redirected_statement":
         return []
-    standard = "0" if operators == ("<",) else "1"
     return [
         child
         for child in parent.children
         if child.type == "file_redirect"
         and (parts := redirect_parts(child)).operator in operators
-        and parts.descriptor in (None, standard)
+        and parts.descriptor in (None, descriptor)
     ]
-
-
-def _stdout_redirect_nodes(command: Node) -> list[Node]:
-    """COMMAND's redirects that write its stdout to a file."""
-    return _file_redirects(command, (">", ">>", ">|"))
-
-
-def _stdin_redirects(command: Node) -> list[Node]:
-    """COMMAND's redirects that read its stdin from a file."""
-    return _file_redirects(command, ("<",))
 
 
 def _stdout_redirects(command: Node) -> set[str]:
     """The files COMMAND's `>`/`>>` redirects write its stdout to."""
-    found = {redirect_parts(r).destination for r in _stdout_redirect_nodes(command)}
+    found = {
+        redirect_parts(r).destination
+        for r in _file_redirects(command, _WRITE_OPERATORS, "1")
+    }
     return found - {""}
 
 
@@ -839,7 +837,7 @@ def _written_nodes(command: Node) -> list[Node]:
     argument, and the file its stdout goes to."""
     return command_arguments(command)[1:] + [
         destination
-        for redirect in _stdout_redirect_nodes(command)
+        for redirect in _file_redirects(command, _WRITE_OPERATORS, "1")
         if (destination := redirect.child_by_field_name("destination"))
     ]
 
