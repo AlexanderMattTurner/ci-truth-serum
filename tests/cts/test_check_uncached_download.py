@@ -1028,8 +1028,9 @@ DIGEST_SCRIPT = (
         'echo "$SHA  t" | sha256sum -c -',
         'echo "$SHA  t" | shasum -a 256 -c -',
         'sha256sum --check --status <<<"$SHA  t"',
+        'ARGV=(shasum -a 256)\necho "$SHA  t" | "${ARGV[@]}" -c -',
     ],
-    ids=["sha256sum", "shasum", "here-string"],
+    ids=["sha256sum", "shasum", "here-string", "tool-array"],
 )
 def test_a_download_checked_against_a_digest_is_pinned(tmp_path, check):
     """No version in the URL, but the job refuses any other bytes."""
@@ -1130,6 +1131,177 @@ def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
     script = DIGEST_SCRIPT.format(check='echo "$SHA  t" | sha256sum -c -')
     path = _write(tmp_path, _job(_cache(f"tool-{DIGEST}") + _run(script)))
     assert uc.check_file(path) == []
+
+
+# ── a comparison against a digest pins the bytes ───────────────────────────
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$SHA" ]] || exit 1',
+        '[ "$(sha256sum t | cut -d\' \' -f1)" = "$SHA" ] || exit 1',
+        'got="$(sha256sum t)"\nif [[ "${got%% *}" != "$SHA" ]]; then exit 1; fi',
+        'ARGV=(sha256sum)\n[[ "$("${ARGV[@]}" <t | cut -d\' \' -f1)" == "$SHA" ]]',
+        'h() { sha256sum | cut -d\' \' -f1; }\n[[ "$(h <t)" == "$SHA" ]]',
+    ],
+    ids=[
+        "double-bracket",
+        "single-bracket",
+        "assigned-first",
+        "tool-array",
+        "function",
+    ],
+)
+def test_a_download_compared_against_a_digest_is_pinned(tmp_path, check):
+    """`sha256sum -c` is one spelling of a digest check. Comparing the hash a
+    tool prints for the downloaded file is another."""
+    path = _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check=check))))
+    messages = _messages(path)
+    assert len(messages) == 1, messages
+    assert "$URL (digest-checked)" in messages[0]
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        '[[ "$(sha256sum <other | cut -d\' \' -f1)" == "$SHA" ]]',
+        '[[ "$(sha256sum t)" =~ $SHA ]]',
+        '[[ "$(sha256sum t)" =~ $SHA && "$MODE" == strict ]]',
+        '[[ "$(cat t)" == "$SHA" ]]',
+        'got="$(sha256sum t)"\necho "$got"',
+        'ARGV=(cat)\n[[ "$("${ARGV[@]}" <t)" == "$SHA" ]]',
+    ],
+    ids=[
+        "another-file",
+        "regex-match",
+        "another-comparison-in-the-test",
+        "no-hash",
+        "never-compared",
+        "array-of-another-tool",
+    ],
+)
+def test_a_comparison_that_is_no_digest_check_pins_nothing(tmp_path, check):
+    path = _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check=check))))
+    assert uc.check_file(path) == []
+
+
+# The shape agent-glovebox downloads through: the URL arrives as a variable a
+# helper binds at run time, and the digest check sits in a function the call
+# reaches two levels down.
+CHECKED_LIB = """\
+if command -v sha256sum >/dev/null; then HASH_ARGV=(sha256sum); else HASH_ARGV=(shasum -a 256); fi
+hash_into() {
+  local out hex='([0-9a-f]{64})'
+  out="$("${HASH_ARGV[@]}")" || return 1
+  [[ "$out" =~ $hex ]] || return 1
+  printf -v "$1" '%s' "${BASH_REMATCH[1]}"
+}
+hash_of() { local sum; hash_into sum || return 1; printf '%s\\n' "$sum"; }
+get() { curl -fsSL -o "$2" "$1"; }
+download_pinned() {
+  local url="$1" want="$2" file="$3"
+  retry get "$url" "$file.part" || return 1
+  [[ "$(hash_of <"$file.part")" == "$want" ]] || return 1
+  mv -f -- "$file.part" "$file"
+}
+"""
+CHECKED_PROVISION = """\
+source "$(dirname "$0")/lib.bash"
+fetch_verified() {
+  local tool="$1" version="$2" url="$3" dest="$4"
+  download_pinned "$url" "$(pin_of "$tool")" "$dest"
+}
+eval "$(python3 pins.py)"
+fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst
+"""
+
+
+def test_a_call_to_a_downloader_that_checks_a_digest_is_pinned_where_it_is_called(
+    rooted,
+):
+    """The call names the tool and its version, so that call is the site. The
+    calls inside the two functions are their own plumbing, not more fetches."""
+    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": CHECKED_PROVISION})
+    path = _write(rooted, _job(_run("bash provision.bash")))
+    messages = _messages(path)
+    assert len(messages) == 1, messages
+    assert (
+        "fetch_verified kata $kata_version $kata_url kata.tar.zst (digest-checked)"
+        " in provision.bash" in messages[0]
+    )
+    assert "download_pinned" not in messages[0]
+    assert "retry get" not in messages[0]
+
+
+@pytest.mark.parametrize(
+    ("key", "fires"),
+    [
+        ("k-${{ env.kata_version }}", False),
+        ("k-${{ hashFiles('lib.bash') }}", False),
+        ("k-${{ hashFiles('provision.bash') }}", False),
+        ("k-${{ hashFiles('other.bash') }}", True),
+    ],
+    ids=["version", "the-checking-file", "the-calling-file", "an-unrelated-file"],
+)
+def test_a_cache_keyed_on_the_call_or_the_checking_function_covers_it(
+    rooted, key, fires
+):
+    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": CHECKED_PROVISION})
+    path = _write(rooted, _job(_cache(key) + _run("bash provision.bash")))
+    assert len(_messages(path)) == (1 if fires else 0)
+
+
+@pytest.mark.parametrize(
+    "lib",
+    [
+        CHECKED_LIB.replace(
+            '[[ "$(hash_of <"$file.part")" == "$want" ]] || return 1\n', ""
+        ),
+        CHECKED_LIB.replace("retry get", "retry cp"),
+    ],
+    ids=["no-digest-check", "no-download"],
+)
+def test_a_function_that_does_not_both_download_and_check_pins_nothing(rooted, lib):
+    _tree(rooted, {"lib.bash": lib, "provision.bash": CHECKED_PROVISION})
+    path = _write(rooted, _job(_run("bash provision.bash")))
+    assert uc.check_file(path) == []
+
+
+def test_a_checked_downloader_with_a_pinned_url_inside_is_reported_once(tmp_path):
+    """The URL inside the function already names the pin, so the call to the
+    function adds no second fetch."""
+    script = (
+        f"SHA={DIGEST}\n"
+        "download() {\n"
+        '  curl -fsSLo "$1" https://example.com/v1.2.3/t\n'
+        '  echo "$SHA  $1" | sha256sum -c -\n'
+        "}\n"
+        "download t\n"
+    )
+    messages = _messages(_write(tmp_path, _job(_run(script))))
+    assert len(messages) == 1, messages
+    assert "https://example.com/v1.2.3/t" in messages[0]
+    assert "(digest-checked)" not in messages[0]
+
+
+def test_a_setup_script_behind_a_timeout_is_followed(rooted):
+    """agent-glovebox's fresh-setup leg: `timeout … bash setup.bash` is the
+    only edge from the step to the downloads, so a walk that stops at the
+    wrapper reports a job that fetches every pin on every run as clean."""
+    _tree(
+        rooted,
+        {
+            "lib.bash": CHECKED_LIB,
+            "provision.bash": CHECKED_PROVISION,
+            "setup.bash": "bash provision.bash\n",
+            "fresh-setup.sh": "timeout --kill-after=30 900 bash setup.bash </dev/null\n",
+        },
+    )
+    path = _write(rooted, _job(_run("bash fresh-setup.sh")))
+    messages = _messages(path)
+    assert len(messages) == 1, messages
+    assert "fetch_verified kata" in messages[0]
 
 
 # ── Python the shell runs ───────────────────────────────────────────────────

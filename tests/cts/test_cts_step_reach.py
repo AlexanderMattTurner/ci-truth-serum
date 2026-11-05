@@ -184,14 +184,50 @@ def test_an_absolute_directive_is_not_followed(tmp_path):
         ("./a.sh", "a.sh"),
         ("bash bin/tool", "bin/tool"),
         ("bash -eo pipefail a.sh", "a.sh"),
+        ("timeout --kill-after=30 900 bash a.sh", "a.sh"),
+        ("timeout -k 30 60s ./a.sh", "a.sh"),
+        ('timeout "$CAP" bash a.sh', "a.sh"),
+        ("sudo -u root -E bash a.sh", "a.sh"),
+        ("env -u HOME A=1 bash a.sh", "a.sh"),
+        ("nohup exec bash a.sh", "a.sh"),
     ],
-    ids=["bash", "sh-with-option", "direct", "no-suffix", "option-with-a-value"],
+    ids=[
+        "bash",
+        "sh-with-option",
+        "direct",
+        "no-suffix",
+        "option-with-a-value",
+        "timeout",
+        "timeout-short-option",
+        "timeout-computed-duration",
+        "sudo",
+        "env",
+        "two-wrappers",
+    ],
 )
 def test_an_executed_script_starts_a_child_namespace(tmp_path, run, name):
     write(tmp_path, name, "curl one\n")
     reached = sr.reach(run, tmp_path, None)
     assert len(reached.namespaces) == 2
     assert commands(reached, "curl") == [["curl", "one"]]
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        "command -v bash a.sh",
+        "grep bash a.sh",
+        "sudo bash -c a.sh",
+        "timeout bash a.sh",
+    ],
+    ids=["lookup", "argument-of-another-program", "string", "timeout-with-no-duration"],
+)
+def test_a_wrapper_hides_no_script_and_invents_none(tmp_path, run):
+    """`command -v` only prints, `grep` reads the file as text, `-c` hands the
+    shell a string, and a `timeout` with no duration runs nothing."""
+    write(tmp_path, "a.sh", "curl one\n")
+    reached = sr.reach(run, tmp_path, None)
+    assert len(reached.namespaces) == 1
 
 
 def test_a_string_handed_to_a_shell_is_not_a_file(tmp_path):

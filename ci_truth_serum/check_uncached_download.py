@@ -11,24 +11,30 @@ minutes on a job's clock rather than as a failure anyone reads.
 The failure it does produce is a timeout, and a timeout does not say so. GitHub
 reports a job that runs past `timeout-minutes` with the conclusion **cancelled**,
 and its log holds one line: "The operation was canceled." Worked case from the
-repo this lint came out of: a test shard with a 15-minute budget spent 7.9 of
-those minutes on one `npm install -g` of a pinned package, because the registry
+repo this lint came out of: a test shard had a 15-minute budget. One `npm
+install -g` of a pinned package used 7.9 of those minutes, because the registry
 was slow that hour. Three shards went "cancelled" at once. Nobody reads
 "cancelled" as "your uncached download ran long", so the hunt went to the tests.
 A cache keyed on the pinned version turns that 7.9 minutes into seconds.
 
-A download is pinned in one of two ways:
+A download is pinned in one of three ways:
 
   * the URL or the package spec names a fixed release (`/v2.7.0/`, `==0.14.0`,
     or a `*VERSION*` variable);
-  * the same shell process checks the download against a digest
-    (`sha256sum -c`, `shasum -a 256 -c`), or the same Python function hashes
-    the bytes and compares the hash. A job that refuses every other byte has
-    immutable input by its own rule.
+  * the same shell process checks the download against a digest. The check is
+    a `sha256sum -c` command, or a test that compares the hash of the file
+    (`[[ "$(sha256sum <f)" == "$SHA" ]]`). The tool can sit in an array or in
+    a function. In Python, the same function hashes the bytes and compares the
+    hash. A job that refuses every other byte has immutable input by its own
+    rule;
+  * the step calls a downloader function that checks a digest in its body or
+    in a function it calls. The outermost such call is the fetch, because it
+    names the tool and its version.
 
 The lint reads more than the `run:` text. `_cts_step_reach` follows each repo
 script the step runs or sources, and each function call into that function's
-body. It also records a Python file the step hands an interpreter, which this
+body. A wrapper in front of a script (`timeout 900 bash setup.bash`) does not
+hide it. It also records a Python file the step hands an interpreter, which this
 module parses with `ast`. A path that the text does not fix ends the walk with
 no finding, because a guessed path judges a file the step never runs. Measured
 on agent-glovebox: both osv-scanner jobs download a pinned binary on every run
@@ -36,31 +42,30 @@ through a two-file chain, and only a walk that follows scripts sees it.
 
 A cache in the job covers a download only when the cache can hold it:
 
-  * its `key:` names the pin — the version, the digest, the version variable
-    as `env.NAME`, or a `hashFiles()` of a file that holds the fetch or
-    assigns its pin;
+  * its `key:` names the pin. That is the version, the digest, the version
+    variable as `env.NAME`, or a `hashFiles()` of a file that holds the fetch
+    or assigns its pin;
   * or its `path:` holds the file the download writes.
 
-A variable counts as a pin only when its name says it holds one (`*VERSION*`,
-`*SHA*`, …) or the text fixes a version or digest as its value, so a key that
-names `env.ARCH` does not cover a download whose URL also reads `$ARCH`.
+A variable is a pin only when its name says so (`*VERSION*`, `*SHA*`, …), or
+when the text gives it a fixed version or digest. Thus a key that names
+`env.ARCH` does not cover a download whose URL also reads `$ARCH`.
 
-A cache whose key or path the lint cannot read statically (a setup action's own
-cache, a key from a step output) still covers every download in the job. A miss
-there costs less than a false positive. Local composite actions
-(`uses: ./.github/actions/foo`) are inlined first.
+Some caches have a key or path that the lint cannot read statically, such as a
+setup action's own cache or a key from a step output. Such a cache covers every
+download in the job. A miss there costs less than a false positive. Local
+composite actions (`uses: ./.github/actions/foo`) are inlined first.
 
-A fetcher that checks a cache directory before it downloads satisfies the lint
-through the `actions/cache` step that restores that directory, when the key of
-that step names the pin or hashes the fetcher. The lint cannot read where a
-Python fetch writes, so a `path:` alone does not cover one.
+A fetcher can check a cache directory before it downloads. The `actions/cache`
+step that restores that directory then covers it, when the key of that step
+names the pin or hashes the fetcher. The lint cannot read where a Python fetch
+writes, so a `path:` alone does not cover one.
 
 Deliberately NOT reported, because the download is the point or has no stable key:
 
   * an install with any unpinned spec — `check-versionless-install` owns that, and
     a floating install has no cache key that could stay correct;
-  * a `docker pull`, and any install inside a job whose purpose is to prove a
-    fresh machine can install the thing;
+  * a `docker pull`;
   * a program the job does not run from the repo, such as a pip-installed CLI.
 
 Fix it by adding `actions/cache` keyed on the pinned version, and by making the
@@ -88,7 +93,7 @@ import posixpath
 import re
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Protocol
 
 import yaml
 from tree_sitter import Node
@@ -198,6 +203,18 @@ _DIGEST_TOOLS = re.compile(r"sha(?:1|224|256|384|512)sum|shasum|b2sum")
 _CHECK_FLAG = re.compile(r"^(?:--check|-[A-Za-z]*c[A-Za-z]*)$")
 # The nodes around a checksum command that carry its stdin.
 _CHECK_SCOPES = frozenset({"pipeline", "redirected_statement"})
+# The nodes a checksum command's output passes through on its way to a
+# comparison or an assignment, and the operators that compare it.
+_HASH_OUTPUT_PATH = frozenset(
+    {
+        "redirected_statement",
+        "pipeline",
+        "command_substitution",
+        "string",
+        "concatenation",
+    }
+)
+_COMPARE_OPERATORS = frozenset({"==", "=", "!="})
 
 # The short flags of curl and wget that take no value. Only these may come
 # before a value flag in one word: in `-Ttool.tgz` the letters after `-T`
@@ -293,23 +310,59 @@ def _relative(path: Path | None) -> str | None:
     return path.relative_to(REPO_ROOT).as_posix()
 
 
-def _downloader_functions(namespace: Namespace) -> frozenset[str]:
-    """The functions whose bodies run curl or wget, directly or through another
-    such function. `pinned_curl() { curl … "$url"; }` is one."""
-    callees: dict[str, set[str]] = {}
-    found: set[str] = set()
-    for name in namespace.functions:
-        callees[name] = set()
-        for command, _ in namespace.function_commands(name):
-            if _runs_downloader(command):
-                found.add(name)
-            callees[name] |= set(callable_words(command)) & namespace.functions.keys()
+def _callees(namespace: Namespace) -> dict[str, frozenset[str]]:
+    """Each function the namespace defines, mapped to the functions its body
+    may call."""
+    defined = namespace.functions.keys()
+    return {
+        name: frozenset(
+            word
+            for command, _ in namespace.function_commands(name)
+            for word in callable_words(command)
+            if word in defined
+        )
+        for name in namespace.functions
+    }
+
+
+def _callers_of(found: set[str], callees: dict[str, frozenset[str]]) -> frozenset[str]:
+    """FOUND, and each function that calls one of them at any depth."""
+    found = set(found)
     changed = True
     while changed:
         before = len(found)
         found |= {name for name, called in callees.items() if called & found}
         changed = len(found) != before
     return frozenset(found)
+
+
+class _CommandTest(Protocol):
+    """A question about one command node."""
+
+    def __call__(self, command: Node, /) -> bool: ...
+
+
+def _functions_running(
+    namespace: Namespace, callees: dict[str, frozenset[str]], runs: _CommandTest
+) -> frozenset[str]:
+    """The functions whose bodies run a command that RUNS accepts, directly or
+    through another such function. With `_runs_downloader`,
+    `pinned_curl() { curl … "$url"; }` is one."""
+    seeds = {
+        name
+        for name in namespace.functions
+        if any(runs(command) for command, _ in namespace.function_commands(name))
+    }
+    return _callers_of(seeds, callees)
+
+
+def _enclosing_function(node: Node) -> str | None:
+    """The name of the innermost function whose body holds NODE, if any."""
+    scope = node.parent
+    while scope is not None and scope.type != "function_definition":
+        scope = scope.parent
+    name = scope.child_by_field_name("name") if scope is not None else None
+    return node_text(name) if name is not None else None
 
 
 @functools.lru_cache(maxsize=65536)
@@ -381,29 +434,118 @@ def _sources_of(pins: set[str], namespace: Namespace, unit: Unit) -> set[str]:
     return sources | {_RUN_BODY} if in_body else sources
 
 
-def _digest_checks(namespace: Namespace) -> list[tuple[Node, Unit]]:
-    """The `sha256sum -c` style commands the namespace runs. Each comes back as
-    the pipeline or redirected statement around it, since the digest and the
-    file name usually arrive on stdin."""
+def _array_programs(word: Node, namespace: Namespace) -> set[str] | None:
+    """The programs a command word that expands one array may name:
+    `"${SHA_ARGV[@]}"` names `sha256sum` when each assignment of `SHA_ARGV` is
+    an array that starts with it. None when the word is anything else."""
+    if word.type == "string" and len(word.named_children) == 1:
+        word = word.named_children[0]
+    if word.type not in ("simple_expansion", "expansion"):
+        return None
+    names = list(iter_nodes(word, "variable_name"))
+    assignments = namespace.assignments.get(node_text(names[0]), []) if names else []
+    programs = set()
+    for assignment, _ in assignments:
+        value = assignment.child_by_field_name("value")
+        if value is None or value.type != "array" or not value.named_children:
+            return None
+        programs.add(program_name(node_text(value.named_children[0])))
+    return programs or None
+
+
+def _runs_digest_tool(command: Node, namespace: Namespace) -> bool:
+    """True when COMMAND runs a checksum tool: by name, or through an array
+    that holds the tool and its options."""
+    args = command_arguments(command)
+    if not args:
+        return False
+    if _DIGEST_TOOLS.fullmatch(program_name(tokens(command)[0])):
+        return True
+    programs = _array_programs(args[0], namespace)
+    return bool(programs) and all(_DIGEST_TOOLS.fullmatch(p) for p in programs)
+
+
+def _is_comparison(expression: Node) -> bool:
+    """True when EXPRESSION is a `binary_expression` with `==`, `=` or `!=`."""
+    operator = expression.child_by_field_name("operator")
+    return operator is not None and operator.type in _COMPARE_OPERATORS
+
+
+def _compares(test: Node, name: str) -> bool:
+    """True when the `[[ ]]` or `[ ]` TEST compares the variable NAME: one side
+    of an `==`, `=` or `!=` in it expands NAME."""
+    return any(
+        name in _expanded_names(side)
+        for expression in iter_nodes(test, "binary_expression")
+        if _is_comparison(expression)
+        for side in (expression.child_by_field_name(f) for f in ("left", "right"))
+        if side is not None
+    )
+
+
+def _comparison_scopes(command: Node, unit: Unit) -> list[Node]:
+    """The nodes that compare what the hashing COMMAND prints, with the node
+    that names its input file first. Two shapes count:
+    `[[ "$(sha256sum <f)" == "$want" ]]` comes back as its test, and
+    `got="$(sha256sum f)"` comes back as that assignment and each test in the
+    same function (or file) that compares `$got`."""
+    node, substituted = command, False
+    while node.parent is not None and node.parent.type in _HASH_OUTPUT_PATH:
+        node = node.parent
+        substituted |= node.type == "command_substitution"
+    parent = node.parent
+    if not substituted or parent is None:
+        return []
+    if parent.type == "binary_expression":
+        test = parent
+        while test is not None and test.type != "test_command":
+            test = test.parent
+        return [test] if test is not None and _is_comparison(parent) else []
+    if parent.type != "variable_assignment":
+        return []
+    name = node_text(parent.child_by_field_name("name"))
+    region = parent.parent
+    while region is not None and region.type != "function_definition":
+        region = region.parent
+    tests = [
+        test
+        for test in iter_nodes(region or unit.root, "test_command")
+        if _compares(test, name)
+    ]
+    return [parent, *tests] if tests else []
+
+
+def _digest_checks(
+    namespace: Namespace, hashers: frozenset[str]
+) -> list[tuple[Node, Unit]]:
+    """The digest checks the namespace runs, each as the nodes that hold its
+    digest and its file name:
+      * a `sha256sum -c` style command, as the pipeline or redirected statement
+        around it, since the digest and the file name usually arrive on stdin;
+      * a comparison of what a checksum tool, or a function HASHERS names,
+        prints for a file (`_comparison_scopes` lists the two shapes)."""
     found = []
     for command, unit in namespace.executed:
         words = tokens(command)
-        if not words or not _DIGEST_TOOLS.fullmatch(program_name(words[0])):
+        if not words:
             continue
-        if not any(_CHECK_FLAG.match(word) for word in words[1:]):
-            continue
-        scope = command
-        while scope.parent is not None and scope.parent.type in _CHECK_SCOPES:
-            scope = scope.parent
-        found.append((scope, unit))
+        tool = _runs_digest_tool(command, namespace)
+        if tool and any(_CHECK_FLAG.match(word) for word in words[1:]):
+            scope = command
+            while scope.parent is not None and scope.parent.type in _CHECK_SCOPES:
+                scope = scope.parent
+            found.append((scope, unit))
+        elif tool or words[0] in hashers:
+            found += [(scope, unit) for scope in _comparison_scopes(command, unit)]
     return found
 
 
 def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set[str]:
     """The base names of the files the digest checks name, as far as the text
-    fixes them, from argument words and here-strings:
-    `echo "$SHA  tool" | sha256sum -c -` names `tool`, and
-    `sha256sum -c tool.tgz.sha256` names `tool.tgz` through its checksum file."""
+    fixes them, from argument words, here-strings and stdin redirects:
+    `echo "$SHA  tool" | sha256sum -c -` names `tool`,
+    `sha256sum -c tool.tgz.sha256` names `tool.tgz` through its checksum file,
+    and `[[ "$(sha256sum <tool)" == "$SHA" ]]` names `tool`."""
     names = set()
     for scope, unit in checks:
         nodes = [
@@ -415,6 +557,12 @@ def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set
             child
             for here in iter_nodes(scope, "herestring_redirect")
             for child in here.named_children
+        ]
+        nodes += [
+            destination
+            for redirect in iter_nodes(scope, "file_redirect")
+            if redirect_parts(redirect).operator == "<"
+            and (destination := redirect.child_by_field_name("destination"))
         ]
         for node in nodes:
             for word in _spelled(node, namespace, unit).split():
@@ -549,24 +697,37 @@ def _stdout_redirects(command: Node) -> set[str]:
 
 
 class _Shell(NamedTuple):
-    """What a namespace knows that every command in it shares: its downloader
-    functions, the pins its digest checks read, and the base names of the
-    files those checks name."""
+    """What a namespace knows that every command in it shares: the functions
+    each function calls, its downloader functions, the downloader functions
+    that check a digest, the pins its digest checks read, and the base names of
+    the files those checks name."""
 
     namespace: Namespace
+    callees: dict[str, frozenset[str]]
     downloaders: frozenset[str]
+    checked_downloaders: frozenset[str]
     digest_pins: frozenset[str]
     checked_names: frozenset[str]
 
 
 def _shell_context(namespace: Namespace) -> _Shell:
-    checks = _digest_checks(namespace)
+    callees = _callees(namespace)
+    downloaders = _functions_running(namespace, callees, _runs_downloader)
+    hashers = _functions_running(
+        namespace, callees, lambda command: _runs_digest_tool(command, namespace)
+    )
+    checks = _digest_checks(namespace, hashers)
     pins: set[str] = set()
     for node, unit in checks:
         pins |= _pins_of([node], namespace, unit)
+    checking = _callers_of(
+        {name for node, _ in checks if (name := _enclosing_function(node))}, callees
+    )
     return _Shell(
         namespace,
-        _downloader_functions(namespace),
+        callees,
+        downloaders,
+        downloaders & checking,
         frozenset(pins),
         frozenset(_checked_names(checks, namespace)),
     )
@@ -927,16 +1088,56 @@ def _local_imports(tree: ast.Module, path: Path) -> list[Path]:
     return found
 
 
+def _checked_call(
+    command: Node, unit: Unit, shell: _Shell, reported: frozenset[str]
+) -> list[Fetch]:
+    """The pinned download COMMAND makes by calling a downloader function that
+    checks a digest, at the outermost such call: a call inside another such
+    function's body is that function's own work. A function that REPORTED
+    names already yields a fetch from a command inside it, so it adds none."""
+    called = set(callable_words(command)) & shell.checked_downloaders
+    if not called or called & reported:
+        return []
+    if _enclosing_function(command) in shell.checked_downloaders:
+        return []
+    namespace = shell.namespace
+    chain, pending = set(), list(called)
+    while pending:
+        name = pending.pop()
+        if name not in chain:
+            chain.add(name)
+            pending += shell.callees[name] & shell.checked_downloaders
+    pins = _pins_of(command_arguments(command)[1:], namespace, unit)
+    sources = _sources_of(pins, namespace, unit) | {
+        rel
+        for name in chain
+        for _, owner in namespace.functions[name]
+        if (rel := _relative(owner.path))
+    }
+    where = f" in {rel}" if (rel := _relative(unit.path)) else ""
+    label = " ".join(tokens(command)) + " (digest-checked)" + where
+    return [Fetch(label, frozenset(pins), frozenset(sources), frozenset())]
+
+
 @functools.lru_cache(maxsize=1024)
 def _namespace_fetches(namespace: Namespace) -> list[Fetch]:
     """Every pinned download NAMESPACE makes, computed once per namespace: a
     shared script is reached from many jobs."""
     shell = _shell_context(namespace)
-    return [
-        fetch
-        for command, unit in namespace.executed
-        for fetch in _command_fetches(command, unit, shell)
-    ]
+    found: list[Fetch] = []
+    unmatched: list[tuple[Node, Unit]] = []
+    holders = set()
+    for command, unit in namespace.executed:
+        fetches = _command_fetches(command, unit, shell)
+        found += fetches
+        if not fetches:
+            unmatched.append((command, unit))
+        elif name := _enclosing_function(command):
+            holders.add(name)
+    reported = _callers_of(holders, shell.callees)
+    for command, unit in unmatched:
+        found += _checked_call(command, unit, shell, reported)
+    return found
 
 
 def _script_fetches(

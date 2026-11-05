@@ -12,7 +12,8 @@ Functions and variables are shared across it. Three edges are followed:
   * `source X` and `. X` add X to the namespace;
   * a call to a function the namespace defines walks that function's body;
   * `bash X`, `sh X` and `./X.sh` start a child namespace, and a Python
-    interpreter handed `X.py` records X for the caller.
+    interpreter handed `X.py` records X for the caller. A wrapper in front
+    (`timeout 900 bash X`, `sudo bash X`) does not hide the script.
 
 `Namespace.value` lists the path forms that resolve. Any other path ends the
 walk silently, because a guessed path judges a file the step never runs. The
@@ -37,6 +38,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     _literal,
     command_arguments,
     command_words,
+    is_lookup,
     iter_nodes,
     node_text,
     parse,
@@ -46,12 +48,18 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import MESSAGE_PREFIX  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_imports import _PY_INTERPRETER, interpreter_scripts  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from check_embedded_program_length import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    _ENV_BINDING,
+    TRANSPARENT_PREFIXES,
+    WRAPPER_VALUE_OPTIONS,
+)
 from check_shell_source_declarations import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _DIRECTIVE,
     _comment_block_above,
     _directive_line,
     resolve_target,
 )
+from check_soft_timeout import _TIMEOUT_NAMES, _read_bound  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # How many `bash X` / interpreter hops a walk follows from the `run:` body.
 MAX_HOPS = 6
@@ -739,10 +747,44 @@ def _uv_run_target(rest: list[str | None]) -> str | None:
     return None
 
 
+def _launched(words: list[str | None]) -> list[str | None]:
+    """The words of the program WORDS run, after each wrapper in front of it:
+    `timeout --kill-after=30 900 bash x.sh` and `sudo -E bash x.sh` both run
+    `bash x.sh`. Each wrapper's own options go too, with the value of an option
+    that takes one. The result is [] when WORDS run nothing (`command -v`)."""
+    rest = list(words)
+    while rest and rest[0] is not None:
+        name = program_name(rest[0])
+        if name in _TIMEOUT_NAMES:
+            # A word only the run knows can still be the duration.
+            bound = _read_bound(["$" if word is None else word for word in rest[1:]])
+            if bound.duration is None:
+                return []
+            rest = rest[1 + bound.consumed :]
+            continue
+        if name not in TRANSPARENT_PREFIXES:
+            break
+        if name == "command" and is_lookup([word or "" for word in rest]):
+            return []
+        takes_value = WRAPPER_VALUE_OPTIONS.get(name, frozenset())
+        rest = rest[1:]
+        while rest and rest[0] is not None:
+            option = rest[0]
+            if not option.startswith("-") and not (
+                name == "env" and _ENV_BINDING.match(option)
+            ):
+                break
+            rest = rest[2 if option in takes_value else 1 :]
+            if option == "--":
+                break
+    return rest
+
+
 def _shell_target(words: list[str | None]) -> str | None:
     """The shell script WORDS run: the command word itself (`./x.sh`), or the
-    first script a shell is handed (`bash -e x.sh`). A `-c` hands the shell a
-    string, so nothing after it is a file."""
+    first script a shell is handed (`bash -e x.sh`), after any wrapper in front
+    of either. A `-c` hands the shell a string, so nothing after it is a file."""
+    words = _launched(words)
     if not words or words[0] is None:
         return None
     if _SHELL_SUFFIX.search(words[0]):
