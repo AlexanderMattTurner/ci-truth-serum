@@ -214,6 +214,19 @@ _INSTALLER_STORES = {
 _FLOATING = re.compile(r"[=@](?:latest|next|stable|\*|main|master)$", re.IGNORECASE)
 
 _DOWNLOADERS = frozenset({"curl", "wget"})
+# The nodes whose body runs only on some runs: a `list` is `a && b` or `a || b`.
+_CONDITIONAL_NODES = frozenset(
+    {
+        "if_statement",
+        "elif_clause",
+        "else_clause",
+        "case_item",
+        "while_statement",
+        "for_statement",
+        "c_style_for_statement",
+        "list",
+    }
+)
 # The commands that copy a file's bytes to another path.
 _COPIERS = frozenset({"cp", "install", "mv"})
 # A URL whose path carries a concrete release: a `v1.2.3` style segment, or a
@@ -1054,13 +1067,13 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
         return []
     where = f" in {rel}" if (rel := _relative(unit.path)) else ""
     fetches = []
-    installer, specs = _pinned_install(words, args)
+    install_args = _with_array_elements(args, namespace)
+    install_words = [unquote(node_text(node)) for node in install_args]
+    installer, specs = _pinned_install(install_words, install_args)
     store = _INSTALLER_STORES.get(installer, "")
     for spec in specs:
-        pins = _pins_of(
-            [args[words.index(spec)]] if spec in words else [], namespace, unit
-        )
-        pins |= _literals(spec)
+        node = install_args[install_words.index(spec)]
+        pins = _pins_of([node], namespace, unit) | _literals(spec)
         fetches.append(
             Fetch(
                 spec + where,
@@ -1163,6 +1176,52 @@ def _pinned_install(words: list[str], args: list) -> tuple[str, list[str]]:
         for spec in pinned
         if not _FLOATING.search(spec) and not spec.startswith("$")
     ]
+
+
+def _with_array_elements(args: list[Node], namespace: Namespace) -> list[Node]:
+    """ARGS with each argument that expands a whole array (`"${specs[@]}"`)
+    replaced by the elements the array's assignments give it. Thus
+    `specs+=("ruff==$V")` and then `pip install "${specs[@]}"` installs
+    `ruff==$V`. An array that one assignment sets to anything but a list
+    stays as written. An assignment under a condition or in a loop is left
+    out: `case "$tool" in pre-commit) specs+=(…)` adds its element only on
+    the runs that pass `pre-commit`, so the text does not fix that the
+    install fetches it."""
+    expanded = []
+    for node in args:
+        elements = _array_elements(node, namespace)
+        expanded += [node] if elements is None else elements
+    return expanded
+
+
+def _array_elements(word: Node, namespace: Namespace) -> list[Node] | None:
+    """The elements of the array WORD expands whole, across every assignment
+    of it, or None when WORD is not such an expansion."""
+    if word.type == "string" and len(word.named_children) == 1:
+        word = word.named_children[0]
+    names = list(iter_nodes(word, "variable_name")) if word.type == "expansion" else []
+    name = node_text(names[0]) if names else ""
+    if not name or node_text(word) not in (f"${{{name}[@]}}", f"${{{name}[*]}}"):
+        return None
+    elements = []
+    for assignment, _ in namespace.assignments.get(name, []):
+        value = assignment.child_by_field_name("value")
+        if value is None or value.type != "array":
+            return None
+        if not _conditional(assignment):
+            elements += value.named_children
+    return elements
+
+
+def _conditional(node: Node) -> bool:
+    """True when NODE runs only on some runs of the body that holds it: under
+    an `if`, a `case` item, a loop, or after `&&` or `||`."""
+    parent = node.parent
+    while parent is not None and parent.type not in ("function_definition", "program"):
+        if parent.type in _CONDITIONAL_NODES:
+            return True
+        parent = parent.parent
+    return False
 
 
 def _installer(words: list[str], index: int) -> str:

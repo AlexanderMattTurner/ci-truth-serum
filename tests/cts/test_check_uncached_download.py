@@ -2074,3 +2074,41 @@ def test_a_setup_actions_cache_input_reads_the_composite_input(rooted, passed, f
     uses = "      - uses: ./.github/actions/uv\n" + with_block
     path = _write(rooted, _job(uses + _run("uv tool install ruff==0.14.0")))
     assert len(_messages(path)) == fires
+
+
+@pytest.mark.parametrize(
+    ("script", "named"),
+    [
+        ('specs=("ruff==0.14.0")\npip install "${specs[@]}"', "ruff==0.14.0"),
+        (
+            'specs=()\nspecs+=("ruff==${RUFF_VERSION}")\npip install "${specs[@]}"',
+            "ruff==${RUFF_VERSION}",
+        ),
+        ('specs=(ruff==0.14.0 black)\npip install "${specs[@]}"', None),
+        (
+            'specs=()\nif [[ -n "$X" ]]; then specs+=(ruff==0.14.0); fi\npip install "${specs[@]}"',
+            None,
+        ),
+        (
+            'specs=()\nfor t in "$@"; do\n  case "$t" in\n  ruff) specs+=(ruff==0.14.0) ;;\n  esac\n'
+            'done\npip install "${specs[@]}"',
+            None,
+        ),
+        ('specs="ruff==0.14.0"\npip install "${specs[@]}"', None),
+    ],
+    ids=[
+        "literal",
+        "appended",
+        "one-unpinned",
+        "under-an-if",
+        "under-a-case",
+        "not-a-list",
+    ],
+)
+def test_an_install_reads_the_specs_an_array_holds(tmp_path, script, named):
+    """`pip install "${specs[@]}"` installs what every assignment of `specs`
+    gives it. An unpinned element makes the install the versionless lint's
+    concern, and an element added under a condition is not fixed by the
+    text."""
+    messages = _messages(_write(tmp_path, _job(_run(script))))
+    assert [named in m for m in messages] == ([True] if named else [])
