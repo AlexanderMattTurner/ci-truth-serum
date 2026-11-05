@@ -55,6 +55,7 @@ def test_parse_reads_literals_properties_and_calls(text, tree):
         "a[b]",
         "'unterminated",
         "a.'b'",
+        "fromJSON(x).version",
         "(" * 100 + "a" + ")" * 100,
     ],
 )

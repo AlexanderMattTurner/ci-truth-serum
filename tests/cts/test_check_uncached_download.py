@@ -133,8 +133,31 @@ def test_a_cache_below_the_install_still_exempts_the_job(tmp_path):
             "uv pip install ruff==0.14.0",
         ),
         (
-            "      - uses: astral-sh/setup-uv@v5\n        with:\n          enable-cache: true\n",
+            "      - uses: astral-sh/setup-uv@v5\n        with:\n          enable-cache: true\n"
+            '          prune-cache: "false"\n',
             "uv tool install ruff==0.14.0",
+            "pip install ruff==0.14.0",
+        ),
+        (
+            "      - uses: astral-sh/setup-uv@v6\n        with:\n"
+            "          prune-cache: false\n",
+            "uv tool install ruff==0.14.0",
+            "uv tool install --no-cache ruff==0.14.0",
+        ),
+        (
+            "      - uses: astral-sh/setup-uv@v6\n        with:\n"
+            "          enable-cache: true\n",
+            None,
+            "uv tool install ruff==0.14.0",
+        ),
+        (
+            "      - uses: actions/setup-python@v5\n        with:\n          cache: pip\n",
+            None,
+            "pip install --no-cache-dir ruff==0.14.0",
+        ),
+        (
+            "      - uses: actions/setup-python@v5\n        with:\n          cache:\n",
+            None,
             "pip install ruff==0.14.0",
         ),
         (
@@ -154,6 +177,10 @@ def test_a_cache_below_the_install_still_exempts_the_job(tmp_path):
         "setup-node-pnpm",
         "setup-python",
         "setup-uv",
+        "setup-uv-on-by-default",
+        "setup-uv-prunes-its-downloads",
+        "an-install-that-skips-the-store",
+        "an-empty-cache-input",
         "computed",
         "rust-cache",
     ],
@@ -161,12 +188,15 @@ def test_a_cache_below_the_install_still_exempts_the_job(tmp_path):
 def test_a_setup_action_caches_only_its_own_installer(tmp_path, step, covered, other):
     """A setup action caches one package manager's store. That store holds the
     installs of that manager, and nothing a different manager or a download
-    fetches. A cache input set by an expression may name any manager."""
+    fetches. A cache input set by an expression may name any manager. setup-uv
+    caches by default, but it prunes the wheels uv downloaded unless
+    `prune-cache` is false. An install told to skip the store leaves nothing
+    in it, and an empty cache input turns the cache off."""
     if covered:
         path = _write(tmp_path, _job(step + _run(covered)))
         assert uc.check_file(path) == []
     path = _write(tmp_path, _job(step + _run(other)))
-    assert "no cache in the job keyed on its pin" in _finding(path)
+    assert other.split()[-1] in _finding(path)
 
 
 def test_a_setup_action_with_caching_off_does_not_exempt_the_job(tmp_path):
@@ -1130,6 +1160,8 @@ def test_a_checksum_file_names_the_file_it_vouches_for(tmp_path):
         'echo "$sha  t" | sha256sum -c -',
         'sha="$(git ls-remote https://example.com/r HEAD)"\n'
         '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$sha" ]] || exit 1',
+        'curl -fsSLo t.sha256 "$URL.sha256"\nsha="$(<t.sha256)"\n'
+        'echo "$sha  t" | sha256sum -c -',
     ],
     ids=[
         "downloaded-checksum-file",
@@ -1138,6 +1170,7 @@ def test_a_checksum_file_names_the_file_it_vouches_for(tmp_path):
         "here-string-from-curl",
         "from-gh",
         "from-git-ls-remote",
+        "read-by-redirect",
     ],
 )
 def test_a_check_against_a_digest_the_run_fetches_pins_nothing(tmp_path, check):
@@ -1148,6 +1181,31 @@ def test_a_check_against_a_digest_the_run_fetches_pins_nothing(tmp_path, check):
     same download."""
     script = DIGEST_SCRIPT.format(check=check)
     assert _messages(_write(tmp_path, _job(_run(script)))) == []
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        'name="$(curl -fsSL "$URL/name")"\nsha="$(grep "$name" pins.sums | cut -d" " -f1)"',
+        'sha="$(grep -F -- "$URL" pins.sums | cut -d" " -f1)"',
+        'sha="$(grep -F -- "$SRC" pins.sums | cut -d" " -f1)"',
+    ],
+    ids=["an-argument-from-a-download", "keyed-by-the-url", "keyed-by-a-url-variable"],
+)
+def test_a_digest_looked_up_in_a_committed_file_pins(tmp_path, lookup):
+    """A digest read from a committed file pins the download, whatever words
+    pick its line. A variable that is only an argument of the lookup is no
+    part of the digest. A URL names no file, though its last segment matches
+    the file the download writes. A variable that holds the URL another
+    download reads names no file either."""
+    script = (
+        'URL=https://example.com/tool/latest\ncurl -fsSLo t "$URL"\n'
+        'SRC="https://example.com/notes"\n'
+        '[[ -z "${MIRROR:-}" ]] || SRC="$MIRROR/notes"\n'
+        'curl -fsSLo notes "$SRC"\n'
+        f'{lookup}\necho "$sha  t" | sha256sum -c -\n'
+    )
+    assert "(digest-checked)" in _finding(_write(tmp_path, _job(_run(script))))
 
 
 @pytest.mark.parametrize(
@@ -1796,6 +1854,7 @@ def _pin_step(script: str, step_id: str = "pin") -> str:
         ('echo "v=$(cat .tool-version)" >> "$GITHUB_OUTPUT"', 0),
         ('echo "v=$A" >> "$GITHUB_OUTPUT"\necho "v=$B" >> "$GITHUB_OUTPUT"', 0),
         ('echo "other=$TOOL_VERSION" >> "$GITHUB_OUTPUT"', 0),
+        ('printf \'v=%s\\n\' "$TOOL_VERSION" >> "$GITHUB_OUTPUT"', 0),
     ],
     ids=[
         "echo-names-the-pin",
@@ -1807,6 +1866,7 @@ def _pin_step(script: str, step_id: str = "pin") -> str:
         "computed",
         "two-values",
         "no-such-output",
+        "printf-format",
     ],
 )
 def test_a_step_output_in_a_key_reads_what_the_step_writes(rooted, writer, fires):
@@ -1933,6 +1993,15 @@ def test_a_composite_actions_key_reads_the_inputs_its_caller_passes(
         ("${{ runner.temp }}/other-cache", "", 1),
         ("/tmp/${{ runner.os }}", "", 0),
         ("${{ env.STORE_PATH }}", "", 1),
+        ("${{ steps.none.outputs.dir }}/tool-cache", "", 0),
+        ("${{ fromJSON('[]') }}/other-cache", "", 1),
+        (
+            "${{ env.TOOL_CACHE }}",
+            "env:\n  TOOL_CACHE: ${{ runner.temp }}/tool-cache\n",
+            0,
+        ),
+        ("${{ env.TOOL_CACHE }}", "env:\n  TOOL_CACHE: ${{ runner.temp }}/other\n", 1),
+        ("${{ env.TOOL_CACHE }}", "env:\n  TOOL_CACHE: ${{ env.TOOL_CACHE }}/x\n", 1),
     ],
     ids=[
         "env-holds-it",
@@ -1941,14 +2010,20 @@ def test_a_composite_actions_key_reads_the_inputs_its_caller_passes(
         "computed-root-elsewhere",
         "computed-leaf",
         "computed-whole",
+        "unreadable-root",
+        "unreadable-root-elsewhere",
+        "env-computed-root",
+        "env-computed-root-elsewhere",
+        "env-names-itself",
     ],
 )
 def test_a_cache_path_reads_the_env_and_globs_the_rest(rooted, cache_path, env, fires):
     """`env.*` in a path reads the workflow's `env:`. A part the text does not
     fix is a `**`, so `/tmp/${{ runner.os }}` and `${{ runner.temp }}/tool-cache`
     can hold `/tmp/tool-cache/tool`, and `${{ runner.temp }}/other-cache`
-    cannot. A path the text fixes no part of holds nothing the lint can
-    tie to a download."""
+    cannot. An expression the lint cannot read is a `**` too, and so is the
+    computed part of an `env:` value. A path the text fixes no part of holds
+    nothing the lint can tie to a download."""
     _tree(rooted, PIN_LIB)
     body = _job(_cache("deps-${{ runner.os }}", cache_path) + _run(PIN_FETCH))
     path = _write(rooted, body.replace("jobs:\n", env + "jobs:\n"))
@@ -1967,24 +2042,42 @@ def test_an_expression_with_an_operator_covers_every_download(rooted):
 @pytest.mark.parametrize(
     ("read", "hashed", "fires"),
     [
-        ("jq -r .version pins/tool.json", "pins/tool.json", 0),
-        ("jq -r .version pins/tool.json", "pins/other.json", 1),
-        ('jq -r .version "pins/$name.json"', "pins/tool.json", 0),
-        ('jq -r .version "$file"', "pins/tool.json", 1),
-        ("cat <pins/tool.txt", "pins/tool.txt", 0),
+        ('TOOL_VERSION="$(jq -r .version pins/tool.json)"', "pins/tool.json", 0),
+        ('TOOL_VERSION="$(jq -r .version pins/tool.json)"', "pins/other.json", 1),
+        ('TOOL_VERSION="$(jq -r .version "pins/$name.json")"', "pins/tool.json", 0),
+        ('TOOL_VERSION="$(jq -r .version "$file")"', "pins/tool.json", 1),
+        ('TOOL_VERSION="$(cat <pins/tool.txt)"', "pins/tool.txt", 0),
+        ('TOOL_VERSION="$(<pins/tool.txt)"', "pins/tool.txt", 0),
+        ('TOOL_VERSION="$(<pins/tool.txt)"', "pins/other.txt", 1),
+        ('cd pins\nTOOL_VERSION="$(cat tool.txt)"', "pins/tool.txt", 0),
+        ('cd pins\nTOOL_VERSION="$(cat tool.txt)"', "tool.txt", 1),
+        ('raw="$(cat pins/tool.txt)"\nTOOL_VERSION="${raw#v}"', "pins/tool.txt", 0),
+        ('TOOL_VERSION="$(jq -r .version -- -)"', "-", 1),
     ],
-    ids=["the-file", "another-file", "a-glob", "any-file", "stdin"],
+    ids=[
+        "the-file",
+        "another-file",
+        "a-glob",
+        "any-file",
+        "stdin",
+        "redirect-only",
+        "redirect-only-another-file",
+        "after-cd",
+        "after-cd-another-file",
+        "through-a-variable",
+        "a-flag",
+    ],
 )
 def test_a_pin_read_from_a_file_is_named_by_a_hash_of_that_file(
     rooted, read, hashed, fires
 ):
-    """`TOOL_VERSION="$(jq -r .version pins/tool.json)"` takes the pin from that file, so a
-    key that hashes it names the pin. A part of the path the text does not fix
-    reads as `*`. A word the text fixes no part of could be any file."""
-    script = (
-        f'TOOL_VERSION="$({read})"\n'
-        'curl -fsSLo /tmp/t "https://example.com/v${TOOL_VERSION}/tool"'
-    )
+    """`TOOL_VERSION="$(jq -r .version pins/tool.json)"` takes the pin from
+    that file, so a key that hashes it names the pin. A part of the path the
+    text does not fix reads as `*`, and a word the text fixes no part of could
+    be any file. A relative path lands in the directory the `cd` left, and a
+    variable the pin is computed from counts as the pin's source. A flag
+    names no file."""
+    script = read + '\ncurl -fsSLo /tmp/t "https://example.com/v${TOOL_VERSION}/tool"'
     path = _write(
         rooted, _job(_cache(f"t-${{{{ hashFiles('{hashed}') }}}}") + _run(script))
     )
@@ -2039,8 +2132,19 @@ def test_a_download_lands_where_its_copies_and_calls_put_it(rooted, script, fire
         ("npm install -g pre-commit@4.6.1", "~/.npm", 0),
         ("pnpm add --global pre-commit@4.6.1", "/github/home/.local/share/pnpm", 0),
         ("sudo apt-get install -y jq=1.6-2", "/var/cache/apt/archives", 0),
+        ("pip install ruff==0.14.0", "web/node_modules/.cache", 1),
+        ("pip install ruff==0.14.0", "/home/runner/.cache", 0),
     ],
-    ids=["pip", "pip-not-npm", "uv", "npm", "pnpm-in-a-container", "apt"],
+    ids=[
+        "pip",
+        "pip-not-npm",
+        "uv",
+        "npm",
+        "pnpm-in-a-container",
+        "apt",
+        "pip-not-a-project-cache",
+        "pip-under-the-runner-home",
+    ],
 )
 def test_a_cache_of_an_installers_store_holds_its_installs(
     tmp_path, install, cache_path, fires
@@ -2061,7 +2165,8 @@ def test_a_setup_actions_cache_input_reads_the_composite_input(rooted, passed, f
     _action(
         rooted,
         "uv",
-        "    - uses: astral-sh/setup-uv@v5\n      with:\n        enable-cache: ${{ inputs.cache }}\n",
+        "    - uses: astral-sh/setup-uv@v5\n      with:\n        enable-cache: ${{ inputs.cache }}\n"
+        "        prune-cache: false\n",
     )
     action = rooted / ".github" / "actions" / "uv" / "action.yaml"
     action.write_text(
@@ -2095,6 +2200,24 @@ def test_a_setup_actions_cache_input_reads_the_composite_input(rooted, passed, f
             None,
         ),
         ('specs="ruff==0.14.0"\npip install "${specs[@]}"', None),
+        (
+            'specs=(ruff==0.14.0)\nif [[ -n "$X" ]]; then specs+=(black); fi\n'
+            'pip install "${specs[@]}"',
+            None,
+        ),
+        (
+            'specs=(ruff==0.14.0)\nif [[ -n "$X" ]]; then specs+=(black==24.1.0); fi\n'
+            'pip install "${specs[@]}"',
+            "ruff==0.14.0",
+        ),
+        (
+            'specs=()\n[[ -n "$X" ]] && specs+=(ruff==0.14.0)\npip install "${specs[@]}"',
+            None,
+        ),
+        (
+            'specs=()\nspecs+=(ruff==0.14.0) || exit 1\npip install "${specs[@]}"',
+            "ruff==0.14.0",
+        ),
     ],
     ids=[
         "literal",
@@ -2103,12 +2226,17 @@ def test_a_setup_actions_cache_input_reads_the_composite_input(rooted, passed, f
         "under-an-if",
         "under-a-case",
         "not-a-list",
+        "unpinned-under-an-if",
+        "pinned-under-an-if",
+        "after-and",
+        "before-or",
     ],
 )
 def test_an_install_reads_the_specs_an_array_holds(tmp_path, script, named):
     """`pip install "${specs[@]}"` installs what every assignment of `specs`
     gives it. An unpinned element makes the install the versionless lint's
-    concern, and an element added under a condition is not fixed by the
-    text."""
+    concern, even when a condition adds it. A pinned element added under a
+    condition is not fixed by the text, so no finding names it."""
     messages = _messages(_write(tmp_path, _job(_run(script))))
     assert [named in m for m in messages] == ([True] if named else [])
+    assert not any("black" in m for m in messages)

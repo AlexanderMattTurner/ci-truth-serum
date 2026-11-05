@@ -7,6 +7,7 @@ function calls, parentheses, and the operators `!`, `<`, `<=`, `>`, `>=`, `==`,
 tree. An operator computes its value by GitHub's own coercion rules, which a
 lint must not re-implement, so `parse` raises `Unsupported` for an expression
 that holds one. A caller then treats that expression as a value it cannot know.
+Property access reads only from a name, so `fromJSON(x).version` raises too.
 
 Identifiers may hold `-` (`steps.pnpm-store.outputs.cache-primary-key`), which
 is why Python's `ast` cannot stand in for this grammar.

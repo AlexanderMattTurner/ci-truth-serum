@@ -178,36 +178,56 @@ NO_COVER = "no cache in the job keyed on its pin or holding its output path"
 
 # An action that caches. `actions/cache` and its `restore`/`save` sub-actions
 # cache whatever their `path` names. A setup action caches one package manager's
-# own store, and only when its cache input is set, so each row names that input
-# and the installer whose downloads the store holds. None means the input's
-# VALUE names the installer (`cache: pnpm`).
+# own store, and only when its cache input is on.
 _CACHE_ACTIONS = ("actions/cache", "buildjet/cache")
-_SETUP_CACHES: dict[str, tuple[str | None, str | None]] = {
-    "actions/setup-node": ("cache", None),
-    "actions/setup-python": ("cache", None),
-    "actions/setup-java": ("cache", None),
-    "actions/setup-go": ("cache", "go"),
-    "actions/setup-dotnet": ("cache", "dotnet"),
-    "astral-sh/setup-uv": ("enable-cache", "uv"),
-    "ruby/setup-ruby": ("bundler-cache", "bundle"),
-    "Swatinem/rust-cache": (None, "cargo"),
+
+
+class _SetupCache(NamedTuple):
+    """How one setup action caches. INPUT turns the cache on, and DEFAULT is
+    its value when the step passes none. INSTALLER is the package manager
+    whose downloads the store holds, or None when the input's VALUE names it
+    (`cache: pnpm`)."""
+
+    input: str | None
+    installer: str | None
+    default: str
+
+
+_SETUP_CACHES = {
+    "actions/setup-node": _SetupCache("cache", None, ""),
+    "actions/setup-python": _SetupCache("cache", None, ""),
+    "actions/setup-java": _SetupCache("cache", None, ""),
+    "actions/setup-go": _SetupCache("cache", "go", "true"),
+    "actions/setup-dotnet": _SetupCache("cache", "dotnet", ""),
+    "astral-sh/setup-uv": _SetupCache("enable-cache", "uv", "auto"),
+    "ruby/setup-ruby": _SetupCache("bundler-cache", "bundle", ""),
+    "Swatinem/rust-cache": _SetupCache(None, "cargo", "true"),
 }
+# A setup action that prunes its store before it saves, unless this input is
+# "false". setup-uv runs `uv cache prune --ci`, which deletes every wheel the
+# installs downloaded and keeps only the ones uv built.
+_PRUNING_SETUPS = {"astral-sh/setup-uv": "prune-cache"}
+# The install flags that keep an installer from writing its store.
+_NO_STORE_FLAGS = frozenset({"--no-cache-dir", "--no-cache"})
 # The installer a setup cache serves when its input is an expression.
 _ANY_INSTALLER = "*"
-# Where each installer keeps the files it downloads, under the home directory
-# (or from the root, for an absolute path). A cache whose path holds this
-# directory holds the install's bytes.
+# Where each installer keeps the files it downloads. A cache whose path holds
+# this directory holds the install's bytes. `~` is the home directory of the
+# job, which is one of _HOMES.
 _INSTALLER_STORES = {
-    "pip": ".cache/pip",
-    "pipx": ".cache/pip",
-    "uv": ".cache/uv",
-    "npm": ".npm",
-    "pnpm": ".local/share/pnpm/store",
-    "yarn": ".cache/yarn",
+    "pip": "~/.cache/pip",
+    "pipx": "~/.cache/pip",
+    "uv": "~/.cache/uv",
+    "npm": "~/.npm",
+    "pnpm": "~/.local/share/pnpm/store",
+    "yarn": "~/.cache/yarn",
     "apt-get": "/var/cache/apt/archives",
     "apt": "/var/cache/apt/archives",
     "aptitude": "/var/cache/apt/archives",
 }
+# The home directories a GitHub job runs in: the hosted runner's user, root,
+# and the home a container job gets.
+_HOMES = ("~", "/home/runner", "/root", "/github/home")
 
 # A version that is not a version: the registry still resolves it fresh, so the
 # download has no stable cache key and this lint must leave it alone.
@@ -224,7 +244,6 @@ _CONDITIONAL_NODES = frozenset(
         "while_statement",
         "for_statement",
         "c_style_for_statement",
-        "list",
     }
 )
 # The commands that copy a file's bytes to another path.
@@ -458,11 +477,9 @@ def _is_pin_name(name: str, value: str | None) -> bool:
     return bool(_PIN_NAME.search(name)) or bool(value and _literals(value))
 
 
-def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
-    """The words a cache key may carry to name what NODES pin: each version or
-    digest written in them, and each pin variable they expand. A variable
-    assigned from another one adds that one too, so `version="${TOOL_VERSION#v}"`
-    lets a key name `TOOL_VERSION`."""
+def _followed(nodes: list[Node], namespace: Namespace) -> set[str]:
+    """The variables NODES expand, and each variable an assignment of one of
+    them expands, to a fixed point."""
     names: set[str] = set()
     pending = [name for node in nodes for name in _expanded_names(node)]
     while pending:
@@ -472,6 +489,15 @@ def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
         names.add(name)
         for assignment, _ in namespace.assignments.get(name, []):
             pending += _expanded_names(assignment)
+    return names
+
+
+def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
+    """The words a cache key may carry to name what NODES pin: each version or
+    digest written in them, and each pin variable they expand. A variable
+    assigned from another one adds that one too, so `version="${TOOL_VERSION#v}"`
+    lets a key name `TOOL_VERSION`."""
+    names = _followed(nodes, namespace)
     values = {name: namespace.variable(name, unit) for name in names}
     pins = {name for name, value in values.items() if _is_pin_name(name, value)}
     texts = [node_text(node) for node in nodes]
@@ -482,16 +508,18 @@ def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
     return pins
 
 
-def _sources_of(pins: set[str], namespace: Namespace, unit: Unit) -> set[str]:
-    """The files a `hashFiles()` key may hash to name a fetch: the file that
-    holds it, each file that assigns one of its pins, and each file a pin's
-    value is read from. `_RUN_BODY` stands for the workflow or action file
-    when that file is one of them."""
+def _sources_of(
+    nodes: list[Node], pins: set[str], namespace: Namespace, unit: Unit
+) -> set[str]:
+    """The files a `hashFiles()` key may hash to name the fetch that NODES
+    spell: the file that holds it, each file that assigns one of its PINS, and
+    each file a variable it uses is read from. `_RUN_BODY` stands for the
+    workflow or action file when that file is one of them."""
     paths = {unit.path} if unit.path else set()
     for pin in pins:
         paths |= namespace.assigned_in(pin)
     sources = {rel for path in paths if (rel := _relative(path))}
-    sources |= _read_globs(pins, namespace)
+    sources |= _read_globs(_followed(nodes, namespace) | pins, namespace)
     in_body = unit.path is None or any(
         owner.path is None
         for pin in pins
@@ -500,27 +528,64 @@ def _sources_of(pins: set[str], namespace: Namespace, unit: Unit) -> set[str]:
     return sources | {_RUN_BODY} if in_body else sources
 
 
-def _read_globs(pins: set[str], namespace: Namespace) -> set[str]:
-    """The files the values of PINS are read from, as globs relative to the
+def _read_globs(names: set[str], namespace: Namespace) -> set[str]:
+    """The files the values of NAMES are read from, as globs relative to the
     repo root. `v="$(jq -r .version "$dir/$tool.json")"` reads
     `<dir>/*.json`: a part the text does not fix reads as `*`. A word the text
-    fixes no part of could be any file, so it is left out."""
+    fixes no part of could be any file, so it is left out, and so is a flag.
+    A relative path lands in the reading command's directory, or in any
+    directory (`**/`) when the text does not fix that."""
     globs = set()
-    for pin in pins:
-        for assignment, owner in namespace.assignments.get(pin, []):
+    for name in names:
+        for assignment, owner in namespace.assignments.get(name, []):
             value = assignment.child_by_field_name("value")
-            for command in iter_nodes(value, "command") if value is not None else []:
-                words = command_arguments(command)[1:]
-                words += _redirect_targets(command, ("<",), "0")
+            for command, words in _reads(value):
+                directory = namespace.directory_at(command, owner) if command else None
                 for word in words:
                     spelled = _spelled(word, namespace, owner, unknown="*")
-                    if not spelled.replace("*", "").strip("/"):
+                    if spelled.startswith("-") or not spelled.replace("*", "").strip(
+                        "/"
+                    ):
                         continue
-                    path = Path(posixpath.normpath(spelled))
-                    rel = _relative(path) if path.is_absolute() else path.as_posix()
-                    if rel:
+                    if rel := _read_glob(spelled, directory):
                         globs.add(rel)
     return globs
+
+
+def _reads(value: Node | None) -> list[tuple[Node | None, list[Node]]]:
+    """Each command in VALUE with the words that may name a file it reads, its
+    arguments and its `<` targets. A `$(<f)` runs no command, so it pairs
+    None with its target."""
+    if value is None:
+        return []
+    found: list[tuple[Node | None, list[Node]]] = [
+        (command, _file_words(command, ("<",), "0"))
+        for command in iter_nodes(value, "command")
+    ]
+    for substitution in iter_nodes(value, "command_substitution"):
+        if targets := _substituted_files(substitution):
+            found.append((None, targets))
+    return found
+
+
+def _substituted_files(substitution: Node) -> list[Node]:
+    """The file a `$(<f)` SUBSTITUTION reads, which runs no command."""
+    return [
+        target
+        for child in substitution.named_children
+        if child.type == "file_redirect"
+        and (target := child.child_by_field_name("destination")) is not None
+    ]
+
+
+def _read_glob(spelled: str, directory: Path | None) -> str | None:
+    """The repo-relative glob of the file SPELLED names, read from DIRECTORY,
+    or None when it lies outside the repo."""
+    if spelled.startswith(("/", "~", "$")):
+        return _relative(Path(posixpath.normpath(spelled)))
+    if directory is None:
+        return "**/" + posixpath.normpath(spelled)
+    return _relative(Path(posixpath.normpath(posixpath.join(str(directory), spelled))))
 
 
 def _array_programs(word: Node, namespace: Namespace) -> set[str] | None:
@@ -564,7 +629,9 @@ class _Floats:
     for, so a check against it pins nothing. A digest read from a committed
     file (`want="$(pinned_sha256 kata)"`) is fixed by the tree, and stays a
     pin. A variable is followed through each assignment it takes its value
-    from, so `sha="${line%% *}"` floats when `line` does."""
+    from, so `sha="${line%% *}"` floats when `line` does. A variable that is
+    only an argument inside a substitution (`$(pinned_sha256 "$tool")`) is
+    no part of the value, so it is not followed."""
 
     def __init__(self, namespace: Namespace, downloaders: frozenset[str]):
         self.namespace = namespace
@@ -584,25 +651,34 @@ class _Floats:
             name
             for command, _ in namespace.executed
             if _runs_downloader(command)
-            for name in _held_variables(_file_words(command, _WRITE_OPERATORS, "1"))
+            for name in _held_variables(_output_words(command))
         }
 
-    def __call__(self, node: Node) -> bool:
-        values, followed, pending = [node], set(), _expanded_names(node)
+    def __call__(self, node: Node, unit: Unit) -> bool:
+        """True when NODE, read in UNIT, holds a value a download gives."""
+        values, followed, pending = [(node, unit)], set(), _direct_names(node)
         while pending:
             name = pending.pop()
             followed.add(name)
-            for assignment, _ in self.namespace.assignments.get(name, []):
+            for assignment, owner in self.namespace.assignments.get(name, []):
                 value = assignment.child_by_field_name("value")
                 if value is not None:
-                    values.append(value)
-                    pending |= _expanded_names(value) - followed
+                    values.append((value, owner))
+                    pending |= _direct_names(value) - followed
         return any(
-            self._reads_a_download(command, unit)
-            for value in values
+            self._substitution_reads(substitution, owner)
+            for value, owner in values
             for substitution in iter_nodes(value, "command_substitution")
+        )
+
+    def _substitution_reads(self, substitution: Node, unit: Unit) -> bool:
+        """True when SUBSTITUTION reads a download: through a command it runs,
+        or as `$(<f)`, which runs none and reads F."""
+        files = _substituted_files(substitution)
+        return self._names_a_download(files, unit) or any(
+            self._reads_a_download(command, owner)
             for command in iter_nodes(substitution, "command")
-            if (unit := self.units.get(command.id)) is not None
+            if (owner := self.units.get(command.id)) is not None
         )
 
     def _reads_a_download(self, command: Node, unit: Unit) -> bool:
@@ -613,7 +689,14 @@ class _Floats:
         return self._names_a_download(_file_words(command, ("<",), "0"), unit)
 
     def _names_a_download(self, nodes: list[Node], unit: Unit) -> bool:
-        names = _base_names(nodes, self.namespace, unit) | _held_variables(nodes)
+        """True when one of NODES names a file a download writes. A URL names
+        no file on disk, though its last segment may match one."""
+        files = [
+            node
+            for node in nodes
+            if not _URL.match(_spelled(node, self.namespace, unit))
+        ]
+        names = _base_names(files, self.namespace, unit) | _held_variables(files)
         return bool(names & self.downloaded)
 
     def feeds(self, checker: Node, scope: Node, unit: Unit) -> bool:
@@ -630,12 +713,12 @@ class _Floats:
             if command.id == checker.id or not words:
                 continue
             if MESSAGE_PREFIX.match(words[0]):
-                if any(self(arg) for arg in command_arguments(command)[1:]):
+                if any(self(arg, unit) for arg in command_arguments(command)[1:]):
                     return True
             elif self._reads_a_download(command, unit):
                 return True
         return any(
-            self(child)
+            self(child, unit)
             for here in iter_nodes(scope, "herestring_redirect")
             for child in here.named_children
         )
@@ -649,6 +732,38 @@ def _file_words(
     return command_arguments(command)[1:] + _redirect_targets(
         command, operators, descriptor
     )
+
+
+def _output_words(command: Node) -> list[Node]:
+    """The words that name the file the curl or wget COMMAND writes: the value
+    after a separate output flag (`-o "$sums"`), and each stdout redirect
+    target. A value attached to its flag is never one whole variable."""
+    words = tokens(command)
+    program = next((p for w in words if (p := program_name(w)) in _OUTPUT_FLAGS), "")
+    if not program:
+        return []
+    short, long = _OUTPUT_FLAGS[program]
+    args = command_arguments(command)
+    found = [
+        node
+        for flag, node in zip(words, args[1:])
+        if flag == long or ((match := short.match(flag)) and not match["value"])
+    ]
+    return found + _redirect_targets(command, _WRITE_OPERATORS, "1")
+
+
+def _direct_names(node: Node) -> set[str]:
+    """The variables NODE expands outside every command substitution in it:
+    the ones its value is made of."""
+    names = set()
+    for expansion in iter_nodes(node, "simple_expansion", "expansion"):
+        between, parent = [], expansion.parent
+        while parent is not None and parent.id != node.id:
+            between.append(parent.type)
+            parent = parent.parent
+        if "command_substitution" not in [*between, node.type]:
+            names |= _expanded_names(expansion)
+    return names
 
 
 def _held_variables(nodes: list[Node]) -> set[str]:
@@ -757,8 +872,10 @@ def _digest_checks(
             if not floats.feeds(command, scope, unit):
                 found.append((scope, unit))
         elif tool or words[0] in hashers:
+            floats_here = functools.partial(floats, unit=unit)
             found += [
-                (scope, unit) for scope in _comparison_scopes(command, unit, floats)
+                (scope, unit)
+                for scope in _comparison_scopes(command, unit, floats_here)
             ]
     return found
 
@@ -1067,20 +1184,24 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
         return []
     where = f" in {rel}" if (rel := _relative(unit.path)) else ""
     fetches = []
-    install_args = _with_array_elements(args, namespace)
+    install_args, sometimes = _with_array_elements(args, namespace)
     install_words = [unquote(node_text(node)) for node in install_args]
     installer, specs = _pinned_install(install_words, install_args)
+    if _NO_STORE_FLAGS & set(install_words):
+        installer = ""  # the bytes reach no store, so no store cache holds them
     store = _INSTALLER_STORES.get(installer, "")
     for spec in specs:
         node = install_args[install_words.index(spec)]
+        if node.id in sometimes:
+            continue
         pins = _pins_of([node], namespace, unit) | _literals(spec)
         fetches.append(
             Fetch(
                 spec + where,
                 frozenset(pins),
-                frozenset(_sources_of(pins, namespace, unit)),
-                frozenset({store} if store.startswith("/") else ()),
-                frozenset({store} if store and not store.startswith("/") else ()),
+                frozenset(_sources_of([node], pins, namespace, unit)),
+                frozenset(_at_each_home(store)),
+                frozenset(),
                 installer,
             )
         )
@@ -1108,12 +1229,19 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
             Fetch(
                 label + where,
                 frozenset(pins),
-                frozenset(_sources_of(pins, namespace, unit)),
+                frozenset(_sources_of([node], pins, namespace, unit)),
                 held,
                 held_names,
             )
         )
     return fetches
+
+
+def _at_each_home(store: str) -> set[str]:
+    """STORE at each of _HOMES when it lies under `~`, else STORE alone."""
+    if not store.startswith("~/"):
+        return {store} if store else set()
+    return {home + store[1:] for home in _HOMES}
 
 
 def _held_paths(command: Node, spelled: list[str]) -> set[str]:
@@ -1178,25 +1306,36 @@ def _pinned_install(words: list[str], args: list) -> tuple[str, list[str]]:
     ]
 
 
-def _with_array_elements(args: list[Node], namespace: Namespace) -> list[Node]:
+def _with_array_elements(
+    args: list[Node], namespace: Namespace
+) -> tuple[list[Node], set[int]]:
     """ARGS with each argument that expands a whole array (`"${specs[@]}"`)
-    replaced by the elements the array's assignments give it. Thus
-    `specs+=("ruff==$V")` and then `pip install "${specs[@]}"` installs
-    `ruff==$V`. An array that one assignment sets to anything but a list
-    stays as written. An assignment under a condition or in a loop is left
-    out: `case "$tool" in pre-commit) specs+=(…)` adds its element only on
-    the runs that pass `pre-commit`, so the text does not fix that the
-    install fetches it."""
-    expanded = []
+    replaced by the elements the array's assignments give it, and the ids of
+    the elements only some runs add. Thus `specs+=("ruff==$V")` and then
+    `pip install "${specs[@]}"` installs `ruff==$V`. An array that one
+    assignment sets to anything but a list stays as written. An assignment
+    under a condition or in a loop adds its elements only on some runs:
+    `case "$tool" in pre-commit) specs+=(…)` adds its element only on the
+    runs that pass `pre-commit`, so the text does not fix that the install
+    fetches it. Such an element that names no version still makes the
+    install float."""
+    expanded, sometimes = [], set()
     for node in args:
         elements = _array_elements(node, namespace)
-        expanded += [node] if elements is None else elements
-    return expanded
+        if elements is None:
+            expanded.append(node)
+            continue
+        for element, conditional in elements:
+            expanded.append(element)
+            if conditional:
+                sometimes.add(element.id)
+    return expanded, sometimes
 
 
-def _array_elements(word: Node, namespace: Namespace) -> list[Node] | None:
+def _array_elements(word: Node, namespace: Namespace) -> list[tuple[Node, bool]] | None:
     """The elements of the array WORD expands whole, across every assignment
-    of it, or None when WORD is not such an expansion."""
+    of it, each with whether its assignment is conditional. None when WORD is
+    not such an expansion."""
     if word.type == "string" and len(word.named_children) == 1:
         word = word.named_children[0]
     names = list(iter_nodes(word, "variable_name")) if word.type == "expansion" else []
@@ -1208,19 +1347,22 @@ def _array_elements(word: Node, namespace: Namespace) -> list[Node] | None:
         value = assignment.child_by_field_name("value")
         if value is None or value.type != "array":
             return None
-        if not _conditional(assignment):
-            elements += value.named_children
+        conditional = _conditional(assignment)
+        elements += [(element, conditional) for element in value.named_children]
     return elements
 
 
 def _conditional(node: Node) -> bool:
     """True when NODE runs only on some runs of the body that holds it: under
-    an `if`, a `case` item, a loop, or after `&&` or `||`."""
-    parent = node.parent
+    an `if`, a `case` item, a loop, or after `&&` or `||`. The command before
+    the operator always runs."""
+    child, parent = node, node.parent
     while parent is not None and parent.type not in ("function_definition", "program"):
         if parent.type in _CONDITIONAL_NODES:
             return True
-        parent = parent.parent
+        if parent.type == "list" and parent.named_children[0].id != child.id:
+            return True
+        child, parent = parent, parent.parent
     return False
 
 
@@ -1622,7 +1764,9 @@ def _checked_fetch(call: _CheckedCall, shell: _Shell) -> Fetch:
     pins = set(call.pins)
     for name in chain:
         pins |= shell.function_digest_pins.get(name, frozenset())
-    sources = _sources_of(pins, namespace, call.unit) | {
+    sources = _sources_of(
+        command_arguments(call.command)[1:], pins, namespace, call.unit
+    ) | {
         rel
         for name in chain
         for _, owner in namespace.functions[name]
@@ -1696,6 +1840,9 @@ class _Text(NamedTuple):
     literal: bool = True
 
 
+_ANY_DIRECTORY = _Text("**", literal=False)
+
+
 def _joined(pieces: list[_Text]) -> _Text:
     return _Text(
         "".join(piece.text for piece in pieces),
@@ -1735,7 +1882,7 @@ def _render(
     """TEMPLATE in pieces, with each `${{ }}` read in STEP's CONTEXT. None when
     an expression holds a value the lint cannot read. PATH reads `env.*` from
     the `env:` blocks, because a path needs the value and a key needs only the
-    name."""
+    name, and it reads an expression it cannot read as `**`, any directory."""
     if isinstance(template, bool):
         template = "true" if template else "false"
     if not isinstance(template, (str, int, float)):
@@ -1747,10 +1894,10 @@ def _render(
         try:
             value = _evaluate(parse_expression(match["body"]), step, context, path)
         except Unsupported:
+            value = None
+        if value is None and not path:
             return None
-        if value is None:
-            return None
-        pieces.append(value)
+        pieces.append(_ANY_DIRECTORY if value is None else value)
     pieces.append(_Text(text[last:]))
     return pieces
 
@@ -1789,8 +1936,11 @@ def _evaluate(
         return _step_output(tree.path[1], tree.path[3], step, context)
     if head == "env" and path and len(tree.path) == 2:
         value = {**context.env, **_env_of(step)}.get(tree.path[1])
-        if value is not None:
-            return _rendered(value, step, context)
+        # The value renders without PATH, so an `env.*` inside it is `**`
+        # and an `env:` entry that names itself ends.
+        pieces = _render(value, step, context) if value is not None else None
+        if pieces is not None:
+            return _Text(_path_text(pieces))
     return _computed(tree.path) if head in _KEPT_CONTEXTS else None
 
 
@@ -1825,7 +1975,8 @@ def _written_output(script: str, name: str) -> _Text | None:
     one, and how a helper such as `gha_output "NAME=…"` does. A variable in
     VALUE reads as `env.<variable>`, so a key that holds the output names the
     pin the step wrote. None when no such argument, or two different ones,
-    write NAME, or when VALUE holds a command substitution."""
+    write NAME, or when VALUE holds a command substitution or is a `printf`
+    format."""
     values = set()
     for command in iter_nodes(parse_shell(script), "command"):
         for argument in command_arguments(command):
@@ -1835,6 +1986,9 @@ def _written_output(script: str, name: str) -> _Text | None:
                 continue
             first = _literal_piece(head)
             if not first.startswith(f"{name}="):
+                continue
+            if program_name(tokens(command)[0]) == "printf":
+                values.add(None)  # the value is a format, not the text
                 continue
             rest = [_Text(first[len(name) + 1 :])]
             rest += [_shell_piece(piece) for piece in pieces[1:]]
@@ -1872,18 +2026,34 @@ def _setup_installers(step: dict, context: "_Context") -> frozenset[str] | None:
     """The installers whose store STEP's setup action caches, or None when it
     is no setup action or its cache input is off. An input the lint cannot
     read may turn the cache on for any installer."""
-    row = _SETUP_CACHES.get(_action_name(step))
+    action = _action_name(step)
+    row = _SETUP_CACHES.get(action)
     if row is None:
         return None
-    name, installer = row
+    name, installer, default = row
     with_block = step.get("with")
-    value = with_block.get(name, "") if isinstance(with_block, dict) and name else ""
-    text = _rendered(value, step, context) if name else _Text("true")
+    with_block = with_block if isinstance(with_block, dict) else {}
+    text = _setup_input(with_block, name, default, step, context)
     if text is not None and text.literal and text.text.strip() in ("", "false"):
         return None
+    if action in _PRUNING_SETUPS:
+        prune = _setup_input(with_block, _PRUNING_SETUPS[action], "true", step, context)
+        if prune is not None and prune.literal and prune.text.strip() != "false":
+            return None
     if text is None or not text.literal:
         return frozenset({_ANY_INSTALLER})
     return frozenset({installer or text.text.strip()})
+
+
+def _setup_input(
+    with_block: dict, name: str | None, default: str, step: dict, context: "_Context"
+) -> _Text | None:
+    """The setup input NAME as STEP passes it, or DEFAULT when STEP passes none.
+    A key with no value passes the empty string."""
+    if name is None:
+        return _Text(default)
+    value = with_block.get(name, default)
+    return _rendered("" if value is None else value, step, context)
 
 
 class CacheScope(NamedTuple):
@@ -1923,18 +2093,23 @@ def _cache_paths(path: object, step: dict, context: _Context) -> tuple[str, ...]
     """The paths a cache's PATH saves, with each value the text does not fix
     read as `**`. A line the text fixes no part of is left out. It could be
     any directory, and reading it as every directory lets one computed store
-    path (`${{ env.STORE_PATH }}`) cover every download in the job. Such a
-    cache still covers a fetch through its key."""
+    path (`${{ steps.store.outputs.dir }}`) cover every download in the job.
+    Such a cache still covers a fetch through its key."""
     paths = []
     for line in path.splitlines() if isinstance(path, str) else []:
         line = line.strip()
         pieces = _render(line, step, context, path=True)
         if not line or line.startswith("!") or pieces is None:
-            continue
-        text = "".join(piece.text if piece.literal else "**" for piece in pieces)
+            continue  # a `!` line excludes, and pieces is None for no string
+        text = _path_text(pieces)
         if text.replace("**", "").strip("/"):
             paths.append(posixpath.normpath(_home(text)))
     return tuple(paths)
+
+
+def _path_text(pieces: list[_Text]) -> str:
+    """PIECES as a path glob: each part computed at run time is `**`."""
+    return "".join(piece.text if piece.literal else "**" for piece in pieces)
 
 
 def _home(path: str) -> str:
