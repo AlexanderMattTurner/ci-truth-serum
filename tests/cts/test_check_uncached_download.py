@@ -1112,11 +1112,42 @@ def test_a_digest_pins_only_the_file_a_download_writes(tmp_path, download, fires
 
 
 def test_a_checksum_file_names_the_file_it_vouches_for(tmp_path):
-    script = DIGEST_SCRIPT.format(check="sha256sum -c t.sha256").replace(
-        "curl -fsSLo t ", 'curl -fsSLo t.sha256 "$URL.sha256"\ncurl -fsSLo t '
-    )
-    messages = _messages(_write(tmp_path, _job(_run(script))))
-    assert ["$URL (digest-checked)" in m for m in messages] == [True]
+    """`sha256sum -c t.sha256` checks `t` against the committed `t.sha256`."""
+    script = DIGEST_SCRIPT.format(check="sha256sum -c t.sha256")
+    assert "$URL (digest-checked)" in _finding(_write(tmp_path, _job(_run(script))))
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        'curl -fsSLo t.sha256 "$URL.sha256"\nsha256sum -c t.sha256',
+        'curl -fsSLo sums "$URL.sums"\ngrep " t$" sums | sha256sum -c -',
+        'sums="$(mktemp)"\ncurl -fsSLo "$sums" "$URL.sums"\n'
+        'line="$(grep " t$" "$sums")"\nsha="${line%% *}"\n'
+        "printf '%s  %s\\n' \"$sha\" t | sha256sum -c -",
+        'sha256sum -c <<< "$(curl -fsSL "$URL.sha256")  t"',
+        'sha="$(gh api repos/o/r/releases/latest --jq .body)"\n'
+        'echo "$sha  t" | sha256sum -c -',
+        'sha="$(git ls-remote https://example.com/r HEAD)"\n'
+        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$sha" ]] || exit 1',
+    ],
+    ids=[
+        "downloaded-checksum-file",
+        "piped-from-a-download",
+        "through-two-assignments",
+        "here-string-from-curl",
+        "from-gh",
+        "from-git-ls-remote",
+    ],
+)
+def test_a_check_against_a_digest_the_run_fetches_pins_nothing(tmp_path, check):
+    """A digest the run downloads, or asks GitHub or a git remote for, changes
+    with the bytes it vouches for. Each `-c` input is followed: the checksum
+    file, the commands that pipe into the check, and each assignment a printed
+    value takes its value from. The `$SHA` control in the suite above pins the
+    same download."""
+    script = DIGEST_SCRIPT.format(check=check)
+    assert _messages(_write(tmp_path, _job(_run(script)))) == []
 
 
 @pytest.mark.parametrize(

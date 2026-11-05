@@ -546,10 +546,12 @@ def _runs_digest_tool(command: Node, namespace: Namespace) -> bool:
 
 class _Floats:
     """Asks whether a value comes from a download. A digest that the run
-    downloads (`want="$(curl …/latest/t.sha256)"`, or `$(cat t.sha256)` after
-    a curl writes that file) changes with the bytes it vouches for, so a
-    comparison with it pins nothing. A digest read from a committed file
-    (`want="$(pinned_sha256 kata)"`) is fixed by the tree, and stays a pin."""
+    downloads (`want="$(curl …/latest/t.sha256)"`, `$(cat t.sha256)` after a
+    curl writes that file, or `$(gh api …)`) changes with the bytes it vouches
+    for, so a check against it pins nothing. A digest read from a committed
+    file (`want="$(pinned_sha256 kata)"`) is fixed by the tree, and stays a
+    pin. A variable is followed through each assignment it takes its value
+    from, so `sha="${line%% *}"` floats when `line` does."""
 
     def __init__(self, namespace: Namespace, downloaders: frozenset[str]):
         self.namespace = namespace
@@ -558,21 +560,30 @@ class _Floats:
         self.units = {command.id: unit for command, unit in namespace.executed}
         # Only curl and wget count: an argument of a downloader function
         # (`fetch_verified kata …`) names a tool as often as a file. A name
-        # only the run decides (`-o "$2"`) matches nothing, since two unknown
-        # names are no evidence of one file.
+        # only the run decides matches by the variable that holds it
+        # (`-o "$sums"` and `grep x "$sums"`), and a positional parameter
+        # matches nothing, since `$2` in two functions is two values.
         self.downloaded = {
             name
             for name in _written_names(namespace.executed, namespace, frozenset())
             if not name.startswith("$")
+        } | {
+            name
+            for command, _ in namespace.executed
+            if _runs_downloader(command)
+            for name in _held_variables(_file_words(command, _WRITE_OPERATORS, "1"))
         }
 
     def __call__(self, node: Node) -> bool:
-        values = [node] + [
-            value
-            for name in _expanded_names(node)
-            for assignment, _ in self.namespace.assignments.get(name, [])
-            if (value := assignment.child_by_field_name("value")) is not None
-        ]
+        values, followed, pending = [node], set(), _expanded_names(node)
+        while pending:
+            name = pending.pop()
+            followed.add(name)
+            for assignment, _ in self.namespace.assignments.get(name, []):
+                value = assignment.child_by_field_name("value")
+                if value is not None:
+                    values.append(value)
+                    pending |= _expanded_names(value) - followed
         return any(
             self._reads_a_download(command, unit)
             for value in values
@@ -582,11 +593,74 @@ class _Floats:
         )
 
     def _reads_a_download(self, command: Node, unit: Unit) -> bool:
-        """True when COMMAND downloads, or reads a file a download writes."""
-        if _downloads(command, self.downloaders):
+        """True when COMMAND downloads, asks a remote, or reads a file a
+        download writes."""
+        if _downloads(command, self.downloaders) or _asks_a_remote(command):
             return True
-        read = command_arguments(command)[1:] + _redirect_targets(command, ("<",), "0")
-        return bool(_base_names(read, self.namespace, unit) & self.downloaded)
+        return self._names_a_download(_file_words(command, ("<",), "0"), unit)
+
+    def _names_a_download(self, nodes: list[Node], unit: Unit) -> bool:
+        names = _base_names(nodes, self.namespace, unit) | _held_variables(nodes)
+        return bool(names & self.downloaded)
+
+    def feeds(self, checker: Node, scope: Node, unit: Unit) -> bool:
+        """True when the digests the `sha256sum -c` CHECKER reads come from a
+        download. SCOPE is the pipeline or redirected statement around it.
+        They do when the checksum file it names is one a download writes,
+        when a command that pipes into it reads a download, or when a printed
+        line or a here-string carries a value that floats. A printed line
+        names the file it checks too, so only its values are followed."""
+        if self._names_a_download(_file_words(checker, ("<",), "0"), unit):
+            return True
+        for command in iter_nodes(scope, "command"):
+            words = tokens(command)
+            if command.id == checker.id or not words:
+                continue
+            if MESSAGE_PREFIX.match(words[0]):
+                if any(self(arg) for arg in command_arguments(command)[1:]):
+                    return True
+            elif self._reads_a_download(command, unit):
+                return True
+        return any(
+            self(child)
+            for here in iter_nodes(scope, "herestring_redirect")
+            for child in here.named_children
+        )
+
+
+def _file_words(
+    command: Node, operators: tuple[str, ...], descriptor: str
+) -> list[Node]:
+    """COMMAND's argument words and the targets of its redirects with one of
+    OPERATORS on DESCRIPTOR: the words that may name a file it touches."""
+    return command_arguments(command)[1:] + _redirect_targets(
+        command, operators, descriptor
+    )
+
+
+def _held_variables(nodes: list[Node]) -> set[str]:
+    """`$NAME` for each of NODES that is one whole named variable (`"$sums"`,
+    `${sums}`). Positional and special parameters are left out."""
+    held = set()
+    for node in nodes:
+        if node.type == "string" and len(node.named_children) == 1:
+            node = node.named_children[0]
+        names = list(iter_nodes(node, "variable_name"))
+        plain = node.type in ("simple_expansion", "expansion") and len(names) == 1
+        if plain and node_text(node) in (
+            f"${node_text(names[0])}",
+            f"${{{node_text(names[0])}}}",
+        ):
+            held.add(f"${node_text(names[0])}")
+    return held
+
+
+def _asks_a_remote(command: Node) -> bool:
+    """True when COMMAND reads a remote: every `gh` subcommand asks GitHub,
+    and `git ls-remote` asks a remote which commit a ref names now."""
+    words = _launched(tokens(command))
+    name = program_name(words[0] or "") if words else ""
+    return name == "gh" or (name == "git" and "ls-remote" in words[1:])
 
 
 def _against_a_value(expression: Node, hashed: _NodeTest, floats: _NodeTest) -> bool:
@@ -648,7 +722,7 @@ def _comparison_scopes(command: Node, unit: Unit, floats: _NodeTest) -> list[Nod
 
 
 def _digest_checks(
-    namespace: Namespace, hashers: frozenset[str], floats: _NodeTest
+    namespace: Namespace, hashers: frozenset[str], floats: _Floats
 ) -> list[tuple[Node, Unit]]:
     """The digest checks the namespace runs, each as the nodes that hold its
     digest and its file name:
@@ -667,7 +741,8 @@ def _digest_checks(
             scope = command
             while scope.parent is not None and scope.parent.type in _CHECK_SCOPES:
                 scope = scope.parent
-            found.append((scope, unit))
+            if not floats.feeds(command, scope, unit):
+                found.append((scope, unit))
         elif tool or words[0] in hashers:
             found += [
                 (scope, unit) for scope in _comparison_scopes(command, unit, floats)
