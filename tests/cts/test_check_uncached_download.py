@@ -115,20 +115,58 @@ def test_a_cache_below_the_install_still_exempts_the_job(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "step",
+    ("step", "covered", "other"),
     [
-        "      - uses: actions/setup-node@v4\n        with:\n          cache: npm\n",
-        "      - uses: astral-sh/setup-uv@v5\n        with:\n          enable-cache: true\n",
-        "      - uses: Swatinem/rust-cache@v2\n",
-        "      - uses: actions/cache/restore@v4\n",
+        (
+            "      - uses: actions/setup-node@v4\n        with:\n          cache: npm\n",
+            "npm install -g pre-commit@4.6.1",
+            "pip install ruff==0.14.0",
+        ),
+        (
+            "      - uses: actions/setup-node@v4\n        with:\n          cache: pnpm\n",
+            "pnpm add --global pre-commit@4.6.1",
+            "npm install -g pre-commit@4.6.1",
+        ),
+        (
+            "      - uses: actions/setup-python@v5\n        with:\n          cache: pip\n",
+            "python -m pip install ruff==0.14.0",
+            "uv pip install ruff==0.14.0",
+        ),
+        (
+            "      - uses: astral-sh/setup-uv@v5\n        with:\n          enable-cache: true\n",
+            "uv tool install ruff==0.14.0",
+            "pip install ruff==0.14.0",
+        ),
+        (
+            "      - uses: actions/setup-node@v4\n        with:\n"
+            "          cache: ${{ inputs.manager }}\n",
+            "yarn global add pre-commit@4.6.1",
+            "curl -fsSLo t https://example.com/v2.7.0/tool",
+        ),
+        (
+            "      - uses: Swatinem/rust-cache@v2\n",
+            None,
+            "pip install ruff==0.14.0",
+        ),
     ],
-    ids=["setup-node", "setup-uv", "rust-cache", "cache-restore"],
+    ids=[
+        "setup-node",
+        "setup-node-pnpm",
+        "setup-python",
+        "setup-uv",
+        "computed",
+        "rust-cache",
+    ],
 )
-def test_each_caching_action_exempts_the_job(tmp_path, step):
-    assert (
-        uc.check_file(_write(tmp_path, _job(step + _run("pip install ruff==0.14.0"))))
-        == []
-    )
+def test_a_setup_action_caches_only_its_own_installer(tmp_path, step, covered, other):
+    """A setup action caches one package manager's store. That store holds the
+    installs of that manager, and nothing a different manager or a download
+    fetches. A cache input set by an expression may name any manager."""
+    if covered:
+        path = _write(tmp_path, _job(step + _run(covered)))
+        assert uc.check_file(path) == []
+    path = _write(tmp_path, _job(step + _run(other)))
+    assert "no cache in the job keyed on its pin" in _finding(path)
 
 
 def test_a_setup_action_with_caching_off_does_not_exempt_the_job(tmp_path):
@@ -1693,3 +1731,315 @@ def test_the_glovebox_osv_scanner_job(rooted, cache, fires):
             "osv-scanner_linux_amd64 in .github/scripts/lib/osv-scanner.bash" in message
         )
         assert "no cache step anywhere in the job" in message
+
+
+# ── a cache key or path that holds an expression ───────────────────────────
+
+PIN_LIB = {"scripts/pin.bash": "TOOL_VERSION=2.7.0\n"}
+PIN_FETCH = (
+    "source scripts/pin.bash\n"
+    'curl -fsSLo /tmp/tool-cache/tool "https://example.com/v${TOOL_VERSION}/tool"'
+)
+
+
+def _step(body: str, **fields: str) -> str:
+    """A step with FIELDS (an `id`, a `uses`) and an indented BODY of YAML."""
+    head = "".join(f"        {name}: {value}\n" for name, value in fields.items())
+    return "      - " + head.lstrip() + body
+
+
+def _pin_step(script: str, step_id: str = "pin") -> str:
+    lines = "".join(f"          {line}\n" for line in script.splitlines())
+    return _step(f"        run: |\n{lines}", id=step_id)
+
+
+@pytest.mark.parametrize(
+    ("writer", "fires"),
+    [
+        ('echo "v=$TOOL_VERSION" >> "$GITHUB_OUTPUT"', 0),
+        ('gha_output "v=${TOOL_VERSION}"', 0),
+        ('{ echo "v=$TOOL_VERSION"; } >> "$GITHUB_OUTPUT"', 0),
+        ('echo "v=$OTHER" >> "$GITHUB_OUTPUT"', 1),
+        ('echo "v=2.7.0" >> "$GITHUB_OUTPUT"', 0),
+        ('echo "v=1.0.0" >> "$GITHUB_OUTPUT"', 1),
+        ('echo "v=$(cat .tool-version)" >> "$GITHUB_OUTPUT"', 0),
+        ('echo "v=$A" >> "$GITHUB_OUTPUT"\necho "v=$B" >> "$GITHUB_OUTPUT"', 0),
+        ('echo "other=$TOOL_VERSION" >> "$GITHUB_OUTPUT"', 0),
+    ],
+    ids=[
+        "echo-names-the-pin",
+        "helper-names-the-pin",
+        "grouped-echo-names-the-pin",
+        "names-another-variable",
+        "the-pinned-version",
+        "another-version",
+        "computed",
+        "two-values",
+        "no-such-output",
+    ],
+)
+def test_a_step_output_in_a_key_reads_what_the_step_writes(rooted, writer, fires):
+    """`steps.pin.outputs.v` is the value the step's script gives `v`. A key that
+    holds it names the pin when the script writes `v=$TOOL_VERSION`. A value the
+    lint cannot fix (a command substitution, two writes, no write) could be the
+    pin, so that cache covers every download in the job."""
+    _tree(rooted, PIN_LIB)
+    path = _write(
+        rooted,
+        _job(
+            _pin_step(writer)
+            + _cache("tool-${{ steps.pin.outputs.v }}")
+            + _run(PIN_FETCH)
+        ),
+    )
+    assert len(_messages(path)) == fires
+
+
+def test_a_step_output_only_a_later_step_writes_is_not_read(rooted):
+    """A step after the cache cannot set its key, so the key reads no pin from
+    it and covers like any key the lint cannot read."""
+    _tree(rooted, PIN_LIB)
+    cache = _cache("tool-${{ steps.pin.outputs.v }}")
+    late = _pin_step('echo "v=$OTHER" >> "$GITHUB_OUTPUT"')
+    path = _write(rooted, _job(cache + late + _run(PIN_FETCH)))
+    assert _messages(path) == []
+
+
+@pytest.mark.parametrize(
+    ("restore_key", "save_key", "fires"),
+    [
+        (
+            "tool-${{ env.TOOL_VERSION }}",
+            "${{ steps.restore.outputs.cache-primary-key }}",
+            0,
+        ),
+        ("deps-${{ runner.os }}", "${{ steps.restore.outputs.cache-primary-key }}", 1),
+        ("deps-${{ runner.os }}", "deps-${{ steps.restore.outputs.cache-hit }}", 1),
+    ],
+    ids=["primary-key-names-the-pin", "primary-key-names-nothing", "cache-hit-flag"],
+)
+def test_a_cache_steps_outputs_read_as_its_own_key(
+    rooted, restore_key, save_key, fires
+):
+    """A save step keyed on the restore step's primary key has the restore
+    step's key. `cache-hit` reports how the restore went and names no pin."""
+    _tree(rooted, PIN_LIB)
+    restore = _step(
+        f"        with:\n          path: /tmp/elsewhere\n          key: {restore_key}\n",
+        id="restore",
+        uses="actions/cache/restore@v4",
+    )
+    save = _step(
+        f"        with:\n          path: /tmp/elsewhere\n          key: {save_key}\n",
+        uses="actions/cache/save@v4",
+    )
+    path = _write(
+        rooted,
+        _job(_step("", uses="actions/checkout@v4") + _run(PIN_FETCH) + save).replace(
+            "      - uses: actions/checkout@v4\n", restore
+        ),
+    )
+    assert len(_messages(path)) == fires
+
+
+ACTION_CACHE = (
+    "    - uses: actions/cache@v4\n"
+    "      with:\n"
+    "        path: /tmp/elsewhere\n"
+    "        key: ${{ inputs.tool }}-${{ hashFiles(format('scripts/{0}.bash', inputs.tool)) }}\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("with_block", "default", "fires"),
+    [
+        ("        with:\n          tool: pin\n", "", 0),
+        ("        with:\n          tool: other\n", "", 1),
+        ("", "pin", 0),
+        ("", "other", 1),
+        ("        with:\n          tool: ${{ matrix.tool }}\n", "", 0),
+    ],
+    ids=[
+        "passed-the-pin-file",
+        "passed-another",
+        "default",
+        "other-default",
+        "computed",
+    ],
+)
+def test_a_composite_actions_key_reads_the_inputs_its_caller_passes(
+    rooted, with_block, default, fires
+):
+    """`inputs.tool` in a composite action is what the step that uses it passes,
+    or the input's default. `format()` and `hashFiles()` then read the file
+    that sets the pin. An input the caller computes covers every download."""
+    _tree(rooted, PIN_LIB)
+    directory = rooted / ".github" / "actions" / "cache-tool"
+    directory.mkdir(parents=True)
+    (directory / "action.yaml").write_text(
+        "name: cache-tool\ninputs:\n  tool:\n    description: x\n"
+        f"    default: '{default}'\n"
+        f"runs:\n  using: composite\n  steps:\n{ACTION_CACHE}",
+        encoding="utf-8",
+    )
+    path = _write(
+        rooted,
+        _job(
+            "      - uses: ./.github/actions/cache-tool\n"
+            + with_block
+            + _run(PIN_FETCH)
+        ),
+    )
+    assert len(_messages(path)) == fires
+
+
+@pytest.mark.parametrize(
+    ("cache_path", "env", "fires"),
+    [
+        ("${{ env.TOOL_CACHE }}", "env:\n  TOOL_CACHE: /tmp/tool-cache\n", 0),
+        ("${{ env.TOOL_CACHE }}", "env:\n  TOOL_CACHE: /tmp/other\n", 1),
+        ("${{ runner.temp }}/tool-cache", "", 0),
+        ("${{ runner.temp }}/other-cache", "", 1),
+        ("/tmp/${{ runner.os }}", "", 0),
+        ("${{ env.STORE_PATH }}", "", 1),
+    ],
+    ids=[
+        "env-holds-it",
+        "env-holds-another",
+        "computed-root",
+        "computed-root-elsewhere",
+        "computed-leaf",
+        "computed-whole",
+    ],
+)
+def test_a_cache_path_reads_the_env_and_globs_the_rest(rooted, cache_path, env, fires):
+    """`env.*` in a path reads the workflow's `env:`. A part the text does not
+    fix is a `**`, so `/tmp/${{ runner.os }}` and `${{ runner.temp }}/tool-cache`
+    can hold `/tmp/tool-cache/tool`, and `${{ runner.temp }}/other-cache`
+    cannot. A path the text fixes no part of holds nothing the lint can
+    tie to a download."""
+    _tree(rooted, PIN_LIB)
+    body = _job(_cache("deps-${{ runner.os }}", cache_path) + _run(PIN_FETCH))
+    path = _write(rooted, body.replace("jobs:\n", env + "jobs:\n"))
+    assert len(_messages(path)) == fires
+
+
+def test_an_expression_with_an_operator_covers_every_download(rooted):
+    """GitHub's operators coerce by rules the lint does not re-implement, so the
+    key's value is unknown and could name the pin."""
+    _tree(rooted, PIN_LIB)
+    cache = _cache("tool-${{ inputs.a || 'x' }}")
+    path = _write(rooted, _job(cache + _run(PIN_FETCH)))
+    assert _messages(path) == []
+
+
+@pytest.mark.parametrize(
+    ("read", "hashed", "fires"),
+    [
+        ("jq -r .version pins/tool.json", "pins/tool.json", 0),
+        ("jq -r .version pins/tool.json", "pins/other.json", 1),
+        ('jq -r .version "pins/$name.json"', "pins/tool.json", 0),
+        ('jq -r .version "$file"', "pins/tool.json", 1),
+        ("cat <pins/tool.txt", "pins/tool.txt", 0),
+    ],
+    ids=["the-file", "another-file", "a-glob", "any-file", "stdin"],
+)
+def test_a_pin_read_from_a_file_is_named_by_a_hash_of_that_file(
+    rooted, read, hashed, fires
+):
+    """`TOOL_VERSION="$(jq -r .version pins/tool.json)"` takes the pin from that file, so a
+    key that hashes it names the pin. A part of the path the text does not fix
+    reads as `*`. A word the text fixes no part of could be any file."""
+    script = (
+        f'TOOL_VERSION="$({read})"\n'
+        'curl -fsSLo /tmp/t "https://example.com/v${TOOL_VERSION}/tool"'
+    )
+    path = _write(
+        rooted, _job(_cache(f"t-${{{{ hashFiles('{hashed}') }}}}") + _run(script))
+    )
+    assert len(_messages(path)) == fires
+
+
+@pytest.mark.parametrize(
+    ("script", "fires"),
+    [
+        (
+            f'w="$(mktemp -d)"\ncurl -fsSLo "$w/t" {PINNED}\ninstall -m 0755 "$w/t" /tmp/tool-cache/t',
+            0,
+        ),
+        (
+            f'w="$(mktemp -d)"\ncurl -fsSLo "$w/t" {PINNED}\nsudo cp "$w/t" /tmp/tool-cache/',
+            0,
+        ),
+        (
+            f'w="$(mktemp -d)"\ncurl -fsSLo "$w/t" {PINNED}\ninstall -m 0755 "$w/t" /tmp/other/t',
+            1,
+        ),
+        (f'f() {{ curl -fsSLo "$1" "$2"; }}\nf /tmp/tool-cache/t {PINNED}', 0),
+        (f'f() {{ curl -fsSLo "$1" "$2"; }}\nf /tmp/other/t {PINNED}', 1),
+        (f'd="${{TOOL_CACHE:-$HOME/.cache/tool}}"\ncurl -fsSLo "$d/t" {PINNED}', 0),
+    ],
+    ids=[
+        "installed-into-it",
+        "copied-into-it",
+        "installed-elsewhere",
+        "handed-to-a-downloader",
+        "handed-elsewhere",
+        "unset-default",
+    ],
+)
+def test_a_download_lands_where_its_copies_and_calls_put_it(rooted, script, fires):
+    """A download copied into the cache path, or handed to a downloader function
+    as an absolute path under it, is held by that cache. `${X:-$HOME/…}` with no
+    file that assigns X spells its default."""
+    cache = _cache("deps-${{ runner.os }}", "/tmp/tool-cache")
+    if "HOME" in script:
+        cache = _cache("deps-${{ runner.os }}", "~/.cache/tool")
+    path = _write(rooted, _job(cache + _run(script)))
+    assert len(_messages(path)) == fires
+
+
+@pytest.mark.parametrize(
+    ("install", "cache_path", "fires"),
+    [
+        ("pip install ruff==0.14.0", "~/.cache/pip", 0),
+        ("pip install ruff==0.14.0", "~/.npm", 1),
+        ("uv tool install ruff==0.14.0", "~/.cache/uv", 0),
+        ("npm install -g pre-commit@4.6.1", "~/.npm", 0),
+        ("pnpm add --global pre-commit@4.6.1", "/github/home/.local/share/pnpm", 0),
+        ("sudo apt-get install -y jq=1.6-2", "/var/cache/apt/archives", 0),
+    ],
+    ids=["pip", "pip-not-npm", "uv", "npm", "pnpm-in-a-container", "apt"],
+)
+def test_a_cache_of_an_installers_store_holds_its_installs(
+    tmp_path, install, cache_path, fires
+):
+    """An installer keeps each download in its own store, so a cache whose path
+    holds that store holds the install, whatever its key."""
+    path = _write(
+        tmp_path, _job(_cache("deps-${{ runner.os }}", cache_path) + _run(install))
+    )
+    assert len(_messages(path)) == fires
+
+
+@pytest.mark.parametrize(
+    ("passed", "fires"), [("", 0), ('          cache: "false"\n', 1)]
+)
+def test_a_setup_actions_cache_input_reads_the_composite_input(rooted, passed, fires):
+    """`enable-cache: ${{ inputs.cache }}` is on or off as the caller says."""
+    _action(
+        rooted,
+        "uv",
+        "    - uses: astral-sh/setup-uv@v5\n      with:\n        enable-cache: ${{ inputs.cache }}\n",
+    )
+    action = rooted / ".github" / "actions" / "uv" / "action.yaml"
+    action.write_text(
+        action.read_text(encoding="utf-8").replace(
+            "runs:", "inputs:\n  cache:\n    default: 'true'\nruns:"
+        ),
+        encoding="utf-8",
+    )
+    with_block = "        with:\n" + passed if passed else ""
+    uses = "      - uses: ./.github/actions/uv\n" + with_block
+    path = _write(rooted, _job(uses + _run("uv tool install ruff==0.14.0")))
+    assert len(_messages(path)) == fires

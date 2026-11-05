@@ -125,6 +125,7 @@ FUZZ_REQUIRED = {
     "check_test_predicate_shadow": "pure_predicates",
     "_cts_py_imports": "interpreter_scripts",
     "_cts_step_reach": "reach",
+    "_cts_gha_expr": "parse",
     "check_bare_mkdir": "violations",
     "check_big_tuple_annotations": "violations",
     "check_curl_retry": "violations",
