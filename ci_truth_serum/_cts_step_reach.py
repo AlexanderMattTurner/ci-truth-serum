@@ -62,11 +62,12 @@ from check_shell_source_declarations import (  # noqa: E402,I001  # pylint: disa
 from check_soft_timeout import _TIMEOUT_NAMES, _read_bound  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
 # The wrapper options that move the program to another directory before it
-# starts (`env -C sub`, `sudo -D sub`), so a relative script path names a file
-# under that directory, not under the one the walk knows.
+# starts (`env -C sub`, `sudo -D sub`, and `sudo -i`, whose login shell starts
+# in the target user's home), so a relative script path names a file under
+# that directory, not under the one the walk knows.
 _CHANGES_DIRECTORY = {
     "env": re.compile(r"^(?:-[^-]*C|--chdir(?:=|$))"),
-    "sudo": re.compile(r"^(?:-[^-]*D|--chdir(?:=|$))"),
+    "sudo": re.compile(r"^(?:-[^-]*[Di]|--chdir(?:=|$)|--login$)"),
 }
 
 # How many `bash X` / interpreter hops a walk follows from the `run:` body.
@@ -716,7 +717,9 @@ class Reach(NamedTuple):
 
 
 def _python_target(words: list[str | None]) -> str | None:
-    """The `.py` file, or `-m` module as a path, that WORDS hand to Python."""
+    """The `.py` file, or `-m` module as a path, that WORDS hand to Python,
+    after any wrapper in front of the interpreter."""
+    words = _launched(words)
     found = interpreter_scripts(words)
     if found:
         return found[0]

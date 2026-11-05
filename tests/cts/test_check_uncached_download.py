@@ -1144,6 +1144,9 @@ def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
         'got="$(sha256sum t)"\nif [[ "${got%% *}" != "$SHA" ]]; then exit 1; fi',
         'ARGV=(sha256sum)\n[[ "$("${ARGV[@]}" <t | cut -d\' \' -f1)" == "$SHA" ]]',
         'h() { sha256sum | cut -d\' \' -f1; }\n[[ "$(h <t)" == "$SHA" ]]',
+        'pin() { echo "$SHA"; }\nwant="$(pin kata)"\n'
+        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$want" ]]',
+        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$(cat pins/t.sha256)" ]]',
     ],
     ids=[
         "double-bracket",
@@ -1151,11 +1154,14 @@ def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
         "assigned-first",
         "tool-array",
         "function",
+        "digest-from-a-function",
+        "digest-from-a-committed-file",
     ],
 )
 def test_a_download_compared_against_a_digest_is_pinned(tmp_path, check):
     """`sha256sum -c` is one spelling of a digest check. Comparing the hash a
-    tool prints for the downloaded file is another."""
+    tool prints for the downloaded file is another. A digest that the run
+    reads from the tree, and does not download, is still a pin."""
     path = _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check=check))))
     messages = _messages(path)
     assert len(messages) == 1, messages
@@ -1174,6 +1180,10 @@ def test_a_download_compared_against_a_digest_is_pinned(tmp_path, check):
         '[[ "$(sha256sum <t)" != "" ]] || exit 1',
         'got="$(sha256sum t)"\n[ "$got" != "" ] || exit 1',
         'got="$(sha256sum t)"\nverify() { [[ "$got" == "$SHA" ]]; }',
+        'want="$(curl -fsSL https://example.com/latest/t.sha256)"\n'
+        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$want" ]] || exit 1',
+        'curl -fsSLo t.sha256 "$URL.sha256"\n'
+        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$(cat t.sha256)" ]] || exit 1',
     ],
     ids=[
         "another-file",
@@ -1185,9 +1195,13 @@ def test_a_download_compared_against_a_digest_is_pinned(tmp_path, check):
         "against-an-empty-string",
         "assigned-against-an-empty-string",
         "compared-in-a-function-that-never-runs",
+        "against-a-downloaded-digest",
+        "against-a-downloaded-checksum-file",
     ],
 )
 def test_a_comparison_that_is_no_digest_check_pins_nothing(tmp_path, check):
+    """The last two compare against a digest the run downloads. That digest
+    changes with the bytes, so no cache key can name them."""
     path = _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check=check))))
     assert uc.check_file(path) == []
 
@@ -1406,6 +1420,49 @@ def test_the_digest_inside_a_checking_function_is_a_pin_of_its_call(
     )
     path = _write(tmp_path, _job(_cache(key) + _run(script)))
     assert len(_messages(path)) == (1 if fires else 0)
+
+
+VERIFIED_FETCH = (
+    f"SHA={DIGEST}\n"
+    'fetch() { curl -fsSL -o "$2" "$1"; echo "$SHA  $2" | sha256sum -c -; }\n'
+)
+
+
+def test_a_wrapper_that_also_installs_still_reports_its_checked_call(tmp_path):
+    """The key covers the ruff install, and nothing covers the checked
+    download that the same wrapper calls."""
+    script = (
+        VERIFIED_FETCH
+        + 'provision() { pip install ruff==0.14.0; fetch "$URL" t; }\nprovision\n'
+    )
+    messages = _messages(_write(tmp_path, _job(_cache("k-ruff-0.14.0") + _run(script))))
+    assert len(messages) == 1, messages
+    assert "provision (digest-checked)" in messages[0]
+
+
+def test_a_call_cycle_reports_the_download_once(tmp_path):
+    script = VERIFIED_FETCH + 'a() { fetch "$URL" t; b; }\nb() { a; }\na\n'
+    messages = _messages(_write(tmp_path, _job(_run(script))))
+    assert len(messages) == 1, messages
+    assert "a (digest-checked)" in messages[0]
+
+
+def test_with_a_pin_on_each_call_the_outermost_call_is_the_fetch(tmp_path):
+    script = VERIFIED_FETCH + 'prov() { fetch "$URL" "t-$V"; }\nprov "$TOOL_VERSION"\n'
+    messages = _messages(_write(tmp_path, _job(_run(script))))
+    assert len(messages) == 1, messages
+    assert "prov $TOOL_VERSION (digest-checked)" in messages[0]
+
+
+def test_a_file_that_receives_only_stderr_is_no_download(tmp_path):
+    """`2>"$2"` writes curl's messages to the file, and the bytes go to
+    stdout, so the check of that file vouches for no download."""
+    script = (
+        f"SHA={DIGEST}\n"
+        'fetch() { curl -fsSL "$1" 2>"$2"; echo "$SHA  $2" | sha256sum -c -; }\n'
+        'fetch "$URL" tool\n'
+    )
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
 
 
 def test_a_checked_downloader_with_a_pinned_url_inside_is_reported_once(tmp_path):

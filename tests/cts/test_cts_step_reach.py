@@ -222,6 +222,9 @@ def test_an_executed_script_starts_a_child_namespace(tmp_path, run, name):
         "env -C sub bash a.sh",
         "env --chdir=sub bash a.sh",
         "sudo -D sub bash a.sh",
+        "env -iC sub bash a.sh",
+        "sudo -i bash a.sh",
+        "sudo --login bash a.sh",
     ],
     ids=[
         "lookup",
@@ -231,12 +234,16 @@ def test_an_executed_script_starts_a_child_namespace(tmp_path, run, name):
         "env-chdir",
         "env-chdir-long",
         "sudo-chdir",
+        "env-chdir-in-a-cluster",
+        "sudo-login",
+        "sudo-login-long",
     ],
 )
 def test_a_wrapper_hides_no_script_and_invents_none(tmp_path, run):
     """`command -v` only prints, `grep` reads the file as text, `-c` hands the
     shell a string, and a `timeout` with no duration runs nothing. A wrapper
-    that changes directory runs `sub/a.sh`, which the walk does not track."""
+    that changes directory runs `sub/a.sh`, which the walk does not track. A
+    `sudo -i` login shell starts in the target user's home."""
     write(tmp_path, "a.sh", "curl one\n")
     reached = sr.reach(run, tmp_path, None)
     assert len(reached.namespaces) == 1
@@ -272,6 +279,7 @@ def test_a_script_that_runs_itself_is_walked_once(tmp_path):
         ("uv run python3 tools/x.py", "tools/x.py"),
         ("uv run python -m tools.x", "tools/x.py"),
         ("python -m tools.x", "tools/x.py"),
+        ("sudo -E python3 tools/x.py", "tools/x.py"),
     ],
     ids=[
         "python3",
@@ -282,6 +290,7 @@ def test_a_script_that_runs_itself_is_walked_once(tmp_path):
         "uv-run-python",
         "uv-run-module",
         "module",
+        "behind-a-wrapper",
     ],
 )
 def test_a_python_file_handed_to_an_interpreter_is_recorded(tmp_path, run, expected):
@@ -298,8 +307,18 @@ def test_a_python_file_handed_to_an_interpreter_is_recorded(tmp_path, run, expec
         "python3 tools/gone.py",
         "uv run pytest tools/x.py",
         "uv run --frozen ruff check tools/x.py",
+        "env -C sub python3 tools/x.py",
+        "sudo -i python3 tools/x.py",
     ],
-    ids=["dash-c", "unresolvable", "missing", "uv-run-pytest", "uv-run-ruff"],
+    ids=[
+        "dash-c",
+        "unresolvable",
+        "missing",
+        "uv-run-pytest",
+        "uv-run-ruff",
+        "env-chdir",
+        "sudo-login",
+    ],
 )
 def test_a_python_file_the_text_does_not_fix_is_not_recorded(tmp_path, run):
     write(tmp_path, "tools/x.py", "")

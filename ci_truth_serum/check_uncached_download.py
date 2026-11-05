@@ -24,7 +24,8 @@ A download is pinned in one of three ways:
   * the same shell process checks the download against a digest. The check is
     a `sha256sum -c` command, or a test that compares the hash of the file
     (`[[ "$(sha256sum <f)" == "$SHA" ]]`). The tool can sit in an array or in
-    a function. In Python, the same function hashes the bytes and compares the
+    a function. A digest that the run computes, such as the output of a
+    `curl`, can change, so a comparison with it is no check. In Python, the same function hashes the bytes and compares the
     hash. A job that refuses every other byte has immutable input by its own
     rule;
   * the step calls a function whose body downloads a file and checks the
@@ -328,7 +329,9 @@ def _callees(namespace: Namespace) -> dict[str, frozenset[str]]:
     }
 
 
-def _callers_of(found: set[str], callees: dict[str, frozenset[str]]) -> frozenset[str]:
+def _callers_of(
+    found: set[str] | frozenset[str], callees: dict[str, frozenset[str]]
+) -> frozenset[str]:
     """FOUND, and each function that calls one of them at any depth."""
     found = set(found)
     changed = True
@@ -477,10 +480,60 @@ def _runs_digest_tool(command: Node, namespace: Namespace) -> bool:
     return bool(programs) and all(_DIGEST_TOOLS.fullmatch(p) for p in programs)
 
 
-def _against_a_value(expression: Node, hashed: _NodeTest) -> bool:
+class _Floats:
+    """Asks whether a value comes from a download. A digest that the run
+    downloads (`want="$(curl …/latest/t.sha256)"`, or `$(cat t.sha256)` after
+    a curl writes that file) changes with the bytes it vouches for, so a
+    comparison with it pins nothing. A digest read from a committed file
+    (`want="$(pinned_sha256 kata)"`) is fixed by the tree, and stays a pin."""
+
+    def __init__(self, namespace: Namespace, downloaders: frozenset[str]):
+        self.namespace = namespace
+        self.downloaders = downloaders
+        # A command no walk runs (in a function nothing calls) reads nothing.
+        self.units = {command.id: unit for command, unit in namespace.executed}
+        # A name only the run decides (`-o "$2"`) matches nothing: two
+        # unknown names are no evidence of one file.
+        self.downloaded = {
+            name
+            for command, unit in namespace.executed
+            if _runs_downloader(command)
+            for name in _base_names(_written_nodes(command), namespace, unit)
+            if not name.startswith("$")
+        }
+
+    def __call__(self, node: Node) -> bool:
+        values = [node] + [
+            value
+            for name in _expanded_names(node)
+            for assignment, _ in self.namespace.assignments.get(name, [])
+            if (value := assignment.child_by_field_name("value")) is not None
+        ]
+        return any(
+            self._downloads(command, unit)
+            for value in values
+            for substitution in iter_nodes(value, "command_substitution")
+            for command in iter_nodes(substitution, "command")
+            if (unit := self.units.get(command.id)) is not None
+        )
+
+    def _downloads(self, command: Node, unit: Unit) -> bool:
+        """True when COMMAND downloads, or reads a file a download writes."""
+        if _runs_downloader(command) or set(callable_words(command)) & self.downloaders:
+            return True
+        read = command_arguments(command)[1:] + [
+            destination
+            for redirect in _stdin_redirects(command)
+            if (destination := redirect.child_by_field_name("destination"))
+        ]
+        return bool(_base_names(read, self.namespace, unit) & self.downloaded)
+
+
+def _against_a_value(expression: Node, hashed: _NodeTest, floats: _NodeTest) -> bool:
     """True when EXPRESSION compares, with `==`, `=` or `!=`, a side that
-    HASHED accepts against a side that is not empty. `!= ""` accepts every
-    file a checksum tool prints a line for, so it is no digest check."""
+    HASHED accepts against a fixed value. `!= ""` accepts every file a
+    checksum tool prints a line for, and a value that FLOATS changes with
+    the download, so neither is a digest check."""
     operator = expression.child_by_field_name("operator")
     if operator is None or operator.type not in _COMPARE_OPERATORS:
         return False
@@ -489,21 +542,21 @@ def _against_a_value(expression: Node, hashed: _NodeTest) -> bool:
     if left is None or right is None:
         return False
     return any(
-        hashed(side) and unquote(node_text(other)) != ""
+        hashed(side) and unquote(node_text(other)) != "" and not floats(other)
         for side, other in ((left, right), (right, left))
     )
 
 
-def _compares(test: Node, name: str) -> bool:
+def _compares(test: Node, name: str, floats: _NodeTest) -> bool:
     """True when the `[[ ]]` or `[ ]` TEST compares the variable NAME with a
-    value that is not empty."""
+    fixed value."""
     return any(
-        _against_a_value(expression, lambda side: name in _expanded_names(side))
+        _against_a_value(expression, lambda side: name in _expanded_names(side), floats)
         for expression in iter_nodes(test, "binary_expression")
     )
 
 
-def _comparison_scopes(command: Node, unit: Unit) -> list[Node]:
+def _comparison_scopes(command: Node, unit: Unit, floats: _NodeTest) -> list[Node]:
     """The nodes that compare what the hashing COMMAND prints, with the node
     that names its input file first. Two shapes count:
     `[[ "$(sha256sum <f)" == "$want" ]]` comes back as its test, and
@@ -521,8 +574,7 @@ def _comparison_scopes(command: Node, unit: Unit) -> list[Node]:
         test = parent
         while test is not None and test.type != "test_command":
             test = test.parent
-        held = node
-        compared = _against_a_value(parent, lambda side: side.id == held.id)
+        compared = _against_a_value(parent, lambda side: side.id == node.id, floats)
         return [test] if test is not None and compared else []
     if parent.type != "variable_assignment":
         return []
@@ -532,20 +584,21 @@ def _comparison_scopes(command: Node, unit: Unit) -> list[Node]:
     tests = [
         test
         for test in iter_nodes(scope, "test_command")
-        if not _inside_definition(test, scope) and _compares(test, name)
+        if not _inside_definition(test, scope) and _compares(test, name, floats)
     ]
     return [parent, *tests] if tests else []
 
 
 def _digest_checks(
-    namespace: Namespace, hashers: frozenset[str]
+    namespace: Namespace, hashers: frozenset[str], floats: _NodeTest
 ) -> list[tuple[Node, Unit]]:
     """The digest checks the namespace runs, each as the nodes that hold its
     digest and its file name:
       * a `sha256sum -c` style command, as the pipeline or redirected statement
         around it, since the digest and the file name usually arrive on stdin;
       * a comparison of what a checksum tool, or a function HASHERS names,
-        prints for a file (`_comparison_scopes` lists the two shapes)."""
+        prints for a file with a value that does not FLOAT
+        (`_comparison_scopes` lists the two shapes)."""
     found = []
     for command, unit in namespace.executed:
         words = tokens(command)
@@ -558,7 +611,9 @@ def _digest_checks(
                 scope = scope.parent
             found.append((scope, unit))
         elif tool or words[0] in hashers:
-            found += [(scope, unit) for scope in _comparison_scopes(command, unit)]
+            found += [
+                (scope, unit) for scope in _comparison_scopes(command, unit, floats)
+            ]
     return found
 
 
@@ -586,13 +641,22 @@ def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set
             if redirect_parts(redirect).operator == "<"
             and (destination := redirect.child_by_field_name("destination"))
         ]
-        for node in nodes:
-            for word in _spelled(node, namespace, unit).split():
-                if word.startswith("-"):
-                    continue  # an option, or stdin
-                name = posixpath.basename(word)
-                names |= {name, _CHECKSUM_SUFFIX.sub("", name)}
+        names |= {
+            name
+            for base in _base_names(nodes, namespace, unit)
+            for name in (base, _CHECKSUM_SUFFIX.sub("", base))
+        }
     return names
+
+
+def _base_names(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
+    """The base names of the words NODES spell, minus options and stdin."""
+    return {
+        posixpath.basename(word)
+        for node in nodes
+        for word in _spelled(node, namespace, unit).split()
+        if not word.startswith("-")
+    }
 
 
 def _spelled(
@@ -703,31 +767,50 @@ def _placed(
     return frozenset(placed), frozenset(names)
 
 
-def _stdout_redirects(command: Node) -> set[str]:
-    """The files COMMAND's `>`/`>>` redirects write its stdout to."""
+def _file_redirects(command: Node, operators: tuple[str, ...]) -> list[Node]:
+    """COMMAND's file redirects on its own standard stream: stdin for `<`,
+    stdout for `>`, `>>` and `>|`."""
     parent = command.parent
     if parent is None or parent.type != "redirected_statement":
-        return set()
-    found = set()
-    for child in parent.children:
-        if child.type != "file_redirect":
-            continue
-        parts = redirect_parts(child)
-        if parts.operator in (">", ">>", ">|") and parts.descriptor in (None, "1"):
-            found.add(parts.destination)
+        return []
+    standard = "0" if operators == ("<",) else "1"
+    return [
+        child
+        for child in parent.children
+        if child.type == "file_redirect"
+        and (parts := redirect_parts(child)).operator in operators
+        and parts.descriptor in (None, standard)
+    ]
+
+
+def _stdout_redirect_nodes(command: Node) -> list[Node]:
+    """COMMAND's redirects that write its stdout to a file."""
+    return _file_redirects(command, (">", ">>", ">|"))
+
+
+def _stdin_redirects(command: Node) -> list[Node]:
+    """COMMAND's redirects that read its stdin from a file."""
+    return _file_redirects(command, ("<",))
+
+
+def _stdout_redirects(command: Node) -> set[str]:
+    """The files COMMAND's `>`/`>>` redirects write its stdout to."""
+    found = {redirect_parts(r).destination for r in _stdout_redirect_nodes(command)}
     return found - {""}
 
 
 class _Shell(NamedTuple):
     """What a namespace knows that every command in it shares: the functions
-    each function calls, its downloader functions, the downloader functions
-    that check a digest, the pins its digest checks read (all of them, and by
-    the function whose body holds the check), and the base names of the files
-    those checks name."""
+    each function calls, its downloader functions, the functions whose own
+    body downloads a file and checks its digest, those functions with every
+    function that calls them, the pins its digest checks read (all of them,
+    and by the function whose body holds the check), and the base names of
+    the files those checks name."""
 
     namespace: Namespace
     callees: dict[str, frozenset[str]]
     downloaders: frozenset[str]
+    verifiers: frozenset[str]
     checked_downloaders: frozenset[str]
     digest_pins: frozenset[str]
     function_digest_pins: dict[str, frozenset[str]]
@@ -747,21 +830,18 @@ def _written_names(
             downloaders
         ):
             continue
-        nodes = command_arguments(command)[1:]
-        if command.parent is not None and command.parent.type == "redirected_statement":
-            nodes += [
-                destination
-                for redirect in command.parent.children
-                if redirect.type == "file_redirect"
-                and redirect_parts(redirect).operator in (">", ">>", ">|")
-                and (destination := redirect.child_by_field_name("destination"))
-            ]
-        for node in nodes:
-            names |= {
-                posixpath.basename(word)
-                for word in _spelled(node, namespace, unit).split()
-            }
+        names |= _base_names(_written_nodes(command), namespace, unit)
     return names
+
+
+def _written_nodes(command: Node) -> list[Node]:
+    """The words that may name a file a download COMMAND writes: each
+    argument, and the file its stdout goes to."""
+    return command_arguments(command)[1:] + [
+        destination
+        for redirect in _stdout_redirect_nodes(command)
+        if (destination := redirect.child_by_field_name("destination"))
+    ]
 
 
 def _shell_context(namespace: Namespace) -> _Shell:
@@ -770,37 +850,36 @@ def _shell_context(namespace: Namespace) -> _Shell:
     hashers = _functions_running(
         namespace, callees, lambda command: _runs_digest_tool(command, namespace)
     )
-    checks = _digest_checks(namespace, hashers)
+    checks = _digest_checks(namespace, hashers, _Floats(namespace, downloaders))
     pins: set[str] = set()
     by_function: dict[str, frozenset[str]] = {}
+    checked: dict[str, set[str]] = {}
     for node, unit in checks:
         found = _pins_of([node], namespace, unit)
         pins |= found
-        if name := _enclosing_function(node):
-            by_function[name] = by_function.get(name, frozenset()) | found
+        name = _enclosing_function(node)
+        if name is None:
+            continue
+        by_function[name] = by_function.get(name, frozenset()) | found
+        if name in downloaders:
+            checked.setdefault(name, set()).update(
+                _checked_names([(node, unit)], namespace)
+            )
     # The check names a file that a download in the same body writes, so a
     # check of some other file, in that body or a sibling, pins nothing. Every
     # caller of such a function also downloads, so the closure stays inside
     # DOWNLOADERS.
-    checked: dict[str, set[str]] = {}
-    for node, unit in checks:
-        if (name := _enclosing_function(node)) in downloaders:
-            checked.setdefault(name, set()).update(
-                _checked_names([(node, unit)], namespace)
-            )
-    checking = _callers_of(
-        {
-            name
-            for name, names in checked.items()
-            if names & _written_names(name, namespace, downloaders)
-        },
-        callees,
+    verifiers = frozenset(
+        name
+        for name, names in checked.items()
+        if names & _written_names(name, namespace, downloaders)
     )
     return _Shell(
         namespace,
         callees,
         downloaders,
-        checking,
+        verifiers,
+        _callers_of(verifiers, callees),
         frozenset(pins),
         by_function,
         frozenset(_checked_names(checks, namespace)),
@@ -1294,13 +1373,19 @@ def _namespace_fetches(namespace: Namespace) -> list[Fetch]:
     shell = _shell_context(namespace)
     found: list[Fetch] = []
     unmatched: list[tuple[Node, Unit]] = []
+    # A verifier whose own download already yields a fetch (its URL carries a
+    # pin) needs no second fetch from each call of it. Only that case: a
+    # wrapper that also runs `pip install x==1` still owes the fetch of the
+    # checked download it calls.
     holders = set()
     for command, unit in namespace.executed:
         fetches = _command_fetches(command, unit, shell)
         found += fetches
         if not fetches:
             unmatched.append((command, unit))
-        elif name := _enclosing_function(command):
+        elif _runs_downloader(command) and (
+            (name := _enclosing_function(command)) in shell.verifiers
+        ):
             holders.add(name)
     reported = _callers_of(holders, shell.callees)
     return found + _checked_calls(unmatched, shell, reported)
