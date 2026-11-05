@@ -1171,6 +1171,9 @@ def test_a_download_compared_against_a_digest_is_pinned(tmp_path, check):
         '[[ "$(cat t)" == "$SHA" ]]',
         'got="$(sha256sum t)"\necho "$got"',
         'ARGV=(cat)\n[[ "$("${ARGV[@]}" <t)" == "$SHA" ]]',
+        '[[ "$(sha256sum <t)" != "" ]] || exit 1',
+        'got="$(sha256sum t)"\n[ "$got" != "" ] || exit 1',
+        'got="$(sha256sum t)"\nverify() { [[ "$got" == "$SHA" ]]; }',
     ],
     ids=[
         "another-file",
@@ -1179,6 +1182,9 @@ def test_a_download_compared_against_a_digest_is_pinned(tmp_path, check):
         "no-hash",
         "never-compared",
         "array-of-another-tool",
+        "against-an-empty-string",
+        "assigned-against-an-empty-string",
+        "compared-in-a-function-that-never-runs",
     ],
 )
 def test_a_comparison_that_is_no_digest_check_pins_nothing(tmp_path, check):
@@ -1320,6 +1326,25 @@ def test_with_no_pin_in_the_chain_the_outermost_call_is_the_fetch(rooted):
     assert len(messages) == 1, messages
     assert "provision (digest-checked) in provision.bash" in messages[0]
     assert "fetch_verified" not in messages[0]
+
+
+@pytest.mark.parametrize(
+    ("key", "fires"),
+    [(f"k-{DIGEST}", False), ("k-${{ env.SHA }}", False), ("k-other", True)],
+    ids=["digest", "digest-variable", "unrelated"],
+)
+def test_the_digest_inside_a_checking_function_is_a_pin_of_its_call(
+    tmp_path, key, fires
+):
+    """The call passes only a URL the run decides, but the function checks
+    the bytes against `$SHA`, so a key that names that digest holds them."""
+    script = (
+        f"SHA={DIGEST}\n"
+        'fetch() { curl -fsSL -o "$2" "$1"; echo "$SHA  $2" | sha256sum -c -; }\n'
+        'fetch "$URL" tool\n'
+    )
+    path = _write(tmp_path, _job(_cache(key) + _run(script)))
+    assert len(_messages(path)) == (1 if fires else 0)
 
 
 def test_a_checked_downloader_with_a_pinned_url_inside_is_reported_once(tmp_path):

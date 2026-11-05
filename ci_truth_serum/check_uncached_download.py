@@ -101,6 +101,7 @@ from tree_sitter import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
+    _inside_definition,
     command_arguments,
     iter_nodes,
     node_text,
@@ -336,14 +337,14 @@ def _callers_of(found: set[str], callees: dict[str, frozenset[str]]) -> frozense
     return frozenset(found)
 
 
-class _CommandTest(Protocol):
-    """A question about one command node."""
+class _NodeTest(Protocol):
+    """A question about one syntax node."""
 
-    def __call__(self, command: Node, /) -> bool: ...
+    def __call__(self, node: Node, /) -> bool: ...
 
 
 def _functions_running(
-    namespace: Namespace, callees: dict[str, frozenset[str]], runs: _CommandTest
+    namespace: Namespace, callees: dict[str, frozenset[str]], runs: _NodeTest
 ) -> frozenset[str]:
     """The functions whose bodies run a command that RUNS accepts, directly or
     through another such function. With `_runs_downloader`,
@@ -465,21 +466,29 @@ def _runs_digest_tool(command: Node, namespace: Namespace) -> bool:
     return bool(programs) and all(_DIGEST_TOOLS.fullmatch(p) for p in programs)
 
 
-def _is_comparison(expression: Node) -> bool:
-    """True when EXPRESSION is a `binary_expression` with `==`, `=` or `!=`."""
+def _against_a_value(expression: Node, hashed: _NodeTest) -> bool:
+    """True when EXPRESSION compares, with `==`, `=` or `!=`, a side that
+    HASHED accepts against a side that is not empty. `!= ""` accepts every
+    file a checksum tool prints a line for, so it is no digest check."""
     operator = expression.child_by_field_name("operator")
-    return operator is not None and operator.type in _COMPARE_OPERATORS
+    if operator is None or operator.type not in _COMPARE_OPERATORS:
+        return False
+    left = expression.child_by_field_name("left")
+    right = expression.child_by_field_name("right")
+    if left is None or right is None:
+        return False
+    return any(
+        hashed(side) and unquote(node_text(other)) != ""
+        for side, other in ((left, right), (right, left))
+    )
 
 
 def _compares(test: Node, name: str) -> bool:
-    """True when the `[[ ]]` or `[ ]` TEST compares the variable NAME: one side
-    of an `==`, `=` or `!=` in it expands NAME."""
+    """True when the `[[ ]]` or `[ ]` TEST compares the variable NAME with a
+    value that is not empty."""
     return any(
-        name in _expanded_names(side)
+        _against_a_value(expression, lambda side: name in _expanded_names(side))
         for expression in iter_nodes(test, "binary_expression")
-        if _is_comparison(expression)
-        for side in (expression.child_by_field_name(f) for f in ("left", "right"))
-        if side is not None
     )
 
 
@@ -487,8 +496,9 @@ def _comparison_scopes(command: Node, unit: Unit) -> list[Node]:
     """The nodes that compare what the hashing COMMAND prints, with the node
     that names its input file first. Two shapes count:
     `[[ "$(sha256sum <f)" == "$want" ]]` comes back as its test, and
-    `got="$(sha256sum f)"` comes back as that assignment and each test in the
-    same function (or file) that compares `$got`."""
+    `got="$(sha256sum f)"` comes back as that assignment and each test that
+    compares `$got` and runs where the assignment runs: in the same function
+    body, or at the top level of the same file."""
     node, substituted = command, False
     while node.parent is not None and node.parent.type in _HASH_OUTPUT_PATH:
         node = node.parent
@@ -500,17 +510,20 @@ def _comparison_scopes(command: Node, unit: Unit) -> list[Node]:
         test = parent
         while test is not None and test.type != "test_command":
             test = test.parent
-        return [test] if test is not None and _is_comparison(parent) else []
+        held = node
+        compared = _against_a_value(parent, lambda side: side.id == held.id)
+        return [test] if test is not None and compared else []
     if parent.type != "variable_assignment":
         return []
     name = node_text(parent.child_by_field_name("name"))
     region = parent.parent
     while region is not None and region.type != "function_definition":
         region = region.parent
+    scope = region.child_by_field_name("body") if region is not None else unit.root
     tests = [
         test
-        for test in iter_nodes(region or unit.root, "test_command")
-        if _compares(test, name)
+        for test in iter_nodes(scope, "test_command")
+        if not _inside_definition(test, scope) and _compares(test, name)
     ]
     return [parent, *tests] if tests else []
 
@@ -699,14 +712,16 @@ def _stdout_redirects(command: Node) -> set[str]:
 class _Shell(NamedTuple):
     """What a namespace knows that every command in it shares: the functions
     each function calls, its downloader functions, the downloader functions
-    that check a digest, the pins its digest checks read, and the base names of
-    the files those checks name."""
+    that check a digest, the pins its digest checks read (all of them, and by
+    the function whose body holds the check), and the base names of the files
+    those checks name."""
 
     namespace: Namespace
     callees: dict[str, frozenset[str]]
     downloaders: frozenset[str]
     checked_downloaders: frozenset[str]
     digest_pins: frozenset[str]
+    function_digest_pins: dict[str, frozenset[str]]
     checked_names: frozenset[str]
 
 
@@ -718,8 +733,12 @@ def _shell_context(namespace: Namespace) -> _Shell:
     )
     checks = _digest_checks(namespace, hashers)
     pins: set[str] = set()
+    by_function: dict[str, frozenset[str]] = {}
     for node, unit in checks:
-        pins |= _pins_of([node], namespace, unit)
+        found = _pins_of([node], namespace, unit)
+        pins |= found
+        if name := _enclosing_function(node):
+            by_function[name] = by_function.get(name, frozenset()) | found
     # The check and a download share one body, so a sibling function that
     # hashes some other file pins nothing. Every caller of such a function
     # also downloads, so the closure stays inside DOWNLOADERS.
@@ -734,6 +753,7 @@ def _shell_context(namespace: Namespace) -> _Shell:
         downloaders,
         checking,
         frozenset(pins),
+        by_function,
         frozenset(_checked_names(checks, namespace)),
     )
 
@@ -1163,9 +1183,10 @@ def _checked_calls(
 
 
 def _checked_fetch(call: _CheckedCall, shell: _Shell) -> Fetch:
-    """The fetch CALL makes. A `hashFiles()` key may hash the calling file, a
-    file that assigns one of its pins, or a file that defines a checking
-    function the call reaches."""
+    """The fetch CALL makes. Its pins are the ones its arguments carry and the
+    ones the digest checks in the checking functions it reaches read. A
+    `hashFiles()` key may hash the calling file, a file that assigns one of its
+    pins, or a file that defines a checking function the call reaches."""
     namespace = shell.namespace
     chain, pending = set(), list(call.called)
     while pending:
@@ -1173,7 +1194,10 @@ def _checked_fetch(call: _CheckedCall, shell: _Shell) -> Fetch:
         if name not in chain:
             chain.add(name)
             pending += shell.callees[name] & shell.checked_downloaders
-    sources = _sources_of(set(call.pins), namespace, call.unit) | {
+    pins = set(call.pins)
+    for name in chain:
+        pins |= shell.function_digest_pins.get(name, frozenset())
+    sources = _sources_of(pins, namespace, call.unit) | {
         rel
         for name in chain
         for _, owner in namespace.functions[name]
@@ -1181,7 +1205,7 @@ def _checked_fetch(call: _CheckedCall, shell: _Shell) -> Fetch:
     }
     where = f" in {rel}" if (rel := _relative(call.unit.path)) else ""
     label = " ".join(tokens(call.command)) + " (digest-checked)" + where
-    return Fetch(label, call.pins, frozenset(sources), frozenset())
+    return Fetch(label, frozenset(pins), frozenset(sources), frozenset())
 
 
 @functools.lru_cache(maxsize=1024)

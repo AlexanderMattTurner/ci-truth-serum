@@ -61,6 +61,14 @@ from check_shell_source_declarations import (  # noqa: E402,I001  # pylint: disa
 )
 from check_soft_timeout import _TIMEOUT_NAMES, _read_bound  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
+# The wrapper options that move the program to another directory before it
+# starts (`env -C sub`, `sudo -D sub`), so a relative script path names a file
+# under that directory, not under the one the walk knows.
+_CHANGES_DIRECTORY = {
+    "env": re.compile(r"^(?:-[^-]*C|--chdir(?:=|$))"),
+    "sudo": re.compile(r"^(?:-[^-]*D|--chdir(?:=|$))"),
+}
+
 # How many `bash X` / interpreter hops a walk follows from the `run:` body.
 MAX_HOPS = 6
 
@@ -774,6 +782,9 @@ def _launched(words: list[str | None]) -> list[str | None]:
                 name == "env" and _ENV_BINDING.match(option)
             ):
                 break
+            moves = _CHANGES_DIRECTORY.get(name)
+            if moves is not None and moves.match(option):
+                return []  # the script resolves against a directory the walk does not track
             rest = rest[2 if option in takes_value else 1 :]
             if option == "--":
                 break

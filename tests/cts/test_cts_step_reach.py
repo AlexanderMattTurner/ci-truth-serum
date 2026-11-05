@@ -219,12 +219,24 @@ def test_an_executed_script_starts_a_child_namespace(tmp_path, run, name):
         "grep bash a.sh",
         "sudo bash -c a.sh",
         "timeout bash a.sh",
+        "env -C sub bash a.sh",
+        "env --chdir=sub bash a.sh",
+        "sudo -D sub bash a.sh",
     ],
-    ids=["lookup", "argument-of-another-program", "string", "timeout-with-no-duration"],
+    ids=[
+        "lookup",
+        "argument-of-another-program",
+        "string",
+        "timeout-with-no-duration",
+        "env-chdir",
+        "env-chdir-long",
+        "sudo-chdir",
+    ],
 )
 def test_a_wrapper_hides_no_script_and_invents_none(tmp_path, run):
     """`command -v` only prints, `grep` reads the file as text, `-c` hands the
-    shell a string, and a `timeout` with no duration runs nothing."""
+    shell a string, and a `timeout` with no duration runs nothing. A wrapper
+    that changes directory runs `sub/a.sh`, which the walk does not track."""
     write(tmp_path, "a.sh", "curl one\n")
     reached = sr.reach(run, tmp_path, None)
     assert len(reached.namespaces) == 1
