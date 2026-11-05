@@ -190,6 +190,8 @@ def test_an_absolute_directive_is_not_followed(tmp_path):
         ("sudo -u root -E bash a.sh", "a.sh"),
         ("env -u HOME A=1 bash a.sh", "a.sh"),
         ("nohup exec bash a.sh", "a.sh"),
+        ("sudo -uadmin bash a.sh", "a.sh"),
+        ("sudo -Eu admin bash a.sh", "a.sh"),
     ],
     ids=[
         "bash",
@@ -203,6 +205,8 @@ def test_an_absolute_directive_is_not_followed(tmp_path):
         "sudo",
         "env",
         "two-wrappers",
+        "sudo-attached-value",
+        "sudo-value-ends-a-cluster",
     ],
 )
 def test_an_executed_script_starts_a_child_namespace(tmp_path, run, name):

@@ -66,8 +66,8 @@ from check_soft_timeout import _TIMEOUT_NAMES, _read_bound  # noqa: E402,I001  #
 # in the target user's home), so a relative script path names a file under
 # that directory, not under the one the walk knows.
 _CHANGES_DIRECTORY = {
-    "env": re.compile(r"^(?:-[^-]*C|--chdir(?:=|$))"),
-    "sudo": re.compile(r"^(?:-[^-]*[Di]|--chdir(?:=|$)|--login$)"),
+    "env": frozenset({"-C", "--chdir"}),
+    "sudo": frozenset({"-D", "--chdir", "-i", "--login"}),
 }
 
 # How many `bash X` / interpreter hops a walk follows from the `run:` body.
@@ -758,6 +758,22 @@ def _uv_run_target(rest: list[str | None]) -> str | None:
     return None
 
 
+def _read_option(word: str, takes_value: frozenset[str]) -> tuple[set[str], bool]:
+    """The options WORD spells, and whether the value of the last one is the
+    next word. A short cluster ends at the first letter that TAKES_VALUE
+    names, as getopt reads it: `-iu root` is `-i` and `-u root`, and in
+    `-uadmin` the letters after `-u` are its value."""
+    if word.startswith("--"):
+        name, joined, _ = word.partition("=")
+        return {name}, not joined and name in takes_value
+    names = set()
+    for end, letter in enumerate(word[1:], start=2):
+        names.add(f"-{letter}")
+        if f"-{letter}" in takes_value:
+            return names, end == len(word)
+    return names, False
+
+
 def _launched(words: list[str | None]) -> list[str | None]:
     """The words of the program WORDS run, after each wrapper in front of it:
     `timeout --kill-after=30 900 bash x.sh` and `sudo -E bash x.sh` both run
@@ -785,10 +801,10 @@ def _launched(words: list[str | None]) -> list[str | None]:
                 name == "env" and _ENV_BINDING.match(option)
             ):
                 break
-            moves = _CHANGES_DIRECTORY.get(name)
-            if moves is not None and moves.match(option):
+            options, value_follows = _read_option(option, takes_value)
+            if options & _CHANGES_DIRECTORY.get(name, frozenset()):
                 return []  # the script resolves against a directory the walk does not track
-            rest = rest[2 if option in takes_value else 1 :]
+            rest = rest[2 if value_follows else 1 :]
             if option == "--":
                 break
     return rest

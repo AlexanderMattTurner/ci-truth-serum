@@ -1136,6 +1136,13 @@ def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
 # ── a comparison against a digest pins the bytes ───────────────────────────
 
 
+def _finding(path: Path) -> str:
+    """The one finding the workflow at PATH gets."""
+    messages = _messages(path)
+    assert len(messages) == 1, messages
+    return messages[0]
+
+
 @pytest.mark.parametrize(
     "check",
     [
@@ -1143,6 +1150,7 @@ def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
         '[ "$(sha256sum t | cut -d\' \' -f1)" = "$SHA" ] || exit 1',
         'got="$(sha256sum t)"\nif [[ "${got%% *}" != "$SHA" ]]; then exit 1; fi',
         'ARGV=(sha256sum)\n[[ "$("${ARGV[@]}" <t | cut -d\' \' -f1)" == "$SHA" ]]',
+        'H=(shasum)\nH+=(-a 256)\n[[ "$("${H[@]}" <t | cut -d\' \' -f1)" == "$SHA" ]]',
         'h() { sha256sum | cut -d\' \' -f1; }\n[[ "$(h <t)" == "$SHA" ]]',
         'pin() { echo "$SHA"; }\nwant="$(pin kata)"\n'
         '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$want" ]]',
@@ -1153,6 +1161,7 @@ def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
         "single-bracket",
         "assigned-first",
         "tool-array",
+        "tool-array-that-appends-options",
         "function",
         "digest-from-a-function",
         "digest-from-a-committed-file",
@@ -1160,12 +1169,11 @@ def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
 )
 def test_a_download_compared_against_a_digest_is_pinned(tmp_path, check):
     """`sha256sum -c` is one spelling of a digest check. Comparing the hash a
-    tool prints for the downloaded file is another. A digest that the run
-    reads from the tree, and does not download, is still a pin."""
+    tool prints for the downloaded file is another. A `+=` only appends
+    options, so the array still names its tool. A digest that the run reads
+    from the tree, and does not download, is still a pin."""
     path = _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check=check))))
-    messages = _messages(path)
-    assert len(messages) == 1, messages
-    assert "$URL (digest-checked)" in messages[0]
+    assert "$URL (digest-checked)" in _finding(path)
 
 
 @pytest.mark.parametrize(
@@ -1206,6 +1214,8 @@ def test_a_comparison_that_is_no_digest_check_pins_nothing(tmp_path, check):
     assert uc.check_file(path) == []
 
 
+# ── a function that downloads a file and checks its digest ─────────────────
+
 # The shape agent-glovebox downloads through: the URL arrives as a variable a
 # helper binds at run time, and the digest check sits in a function the call
 # reaches two levels down.
@@ -1226,15 +1236,38 @@ download_pinned() {
   mv -f -- "$file.part" "$file"
 }
 """
-CHECKED_PROVISION = """\
+KATA_CALL = 'fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst\n'
+CHECKED_PROVISION = f"""\
 source "$(dirname "$0")/lib.bash"
-fetch_verified() {
+fetch_verified() {{
   local tool="$1" version="$2" url="$3" dest="$4"
   download_pinned "$url" "$(pin_of "$tool")" "$dest"
-}
+}}
 eval "$(python3 pins.py)"
-fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst
-"""
+{KATA_CALL}"""
+WRAPPED_PROVISION = CHECKED_PROVISION.replace(
+    KATA_CALL,
+    f'provision() {{\n  {KATA_CALL}  fetch_verified fc "$fc_version" "$fc_url" fc.tar\n}}\n'
+    "provision\n",
+)
+# A downloader that checks the file it wrote against a digest in its body.
+VERIFIED_FETCH = (
+    f"SHA={DIGEST}\n"
+    'fetch() { curl -fsSL -o "$2" "$1"; echo "$SHA  $2" | sha256sum -c -; }\n'
+)
+
+
+def _provision(
+    rooted: Path,
+    provision: str = CHECKED_PROVISION,
+    lib: str = CHECKED_LIB,
+    key: str | None = None,
+) -> Path:
+    """A workflow whose step runs PROVISION beside LIB, under a cache on KEY."""
+    _tree(rooted, {"lib.bash": lib, "provision.bash": provision})
+    return _write(
+        rooted, _job((_cache(key) if key else "") + _run("bash provision.bash"))
+    )
 
 
 def test_a_call_to_a_downloader_that_checks_a_digest_is_pinned_where_it_is_called(
@@ -1242,170 +1275,165 @@ def test_a_call_to_a_downloader_that_checks_a_digest_is_pinned_where_it_is_calle
 ):
     """The call names the tool and its version, so that call is the site. The
     calls inside the two functions are their own plumbing, not more fetches."""
-    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": CHECKED_PROVISION})
-    path = _write(rooted, _job(_run("bash provision.bash")))
-    messages = _messages(path)
-    assert len(messages) == 1, messages
+    finding = _finding(_provision(rooted))
     assert (
         "fetch_verified kata $kata_version $kata_url kata.tar.zst (digest-checked)"
-        " in provision.bash" in messages[0]
+        " in provision.bash" in finding
     )
-    assert "download_pinned" not in messages[0]
-    assert "retry get" not in messages[0]
+    assert "download_pinned" not in finding
+    assert "retry get" not in finding
 
 
 @pytest.mark.parametrize(
     ("key", "fires"),
     [
-        ("k-${{ env.kata_version }}", False),
-        ("k-${{ hashFiles('lib.bash') }}", False),
-        ("k-${{ hashFiles('provision.bash') }}", False),
-        ("k-${{ hashFiles('other.bash') }}", True),
+        ("k-${{ env.kata_version }}", 0),
+        ("k-${{ hashFiles('lib.bash') }}", 0),
+        ("k-${{ hashFiles('provision.bash') }}", 0),
+        ("k-${{ hashFiles('other.bash') }}", 1),
     ],
     ids=["version", "the-checking-file", "the-calling-file", "an-unrelated-file"],
 )
 def test_a_cache_keyed_on_the_call_or_the_checking_function_covers_it(
     rooted, key, fires
 ):
-    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": CHECKED_PROVISION})
-    path = _write(rooted, _job(_cache(key) + _run("bash provision.bash")))
-    assert len(_messages(path)) == (1 if fires else 0)
+    assert len(_messages(_provision(rooted, key=key))) == fires
 
 
 @pytest.mark.parametrize(
-    "lib",
+    ("provision", "lib"),
     [
-        CHECKED_LIB.replace(
-            '[[ "$(hash_of <"$file.part")" == "$want" ]] || return 1\n', ""
+        (
+            CHECKED_PROVISION,
+            CHECKED_LIB.replace(
+                '[[ "$(hash_of <"$file.part")" == "$want" ]] || return 1\n', ""
+            ),
         ),
-        CHECKED_LIB.replace("retry get", "retry cp"),
+        (CHECKED_PROVISION, CHECKED_LIB.replace("retry get", "retry cp")),
+        (
+            CHECKED_PROVISION.replace(
+                KATA_CALL, "command -v fetch_verified >/dev/null || exit 1\n"
+            ),
+            CHECKED_LIB,
+        ),
+        (CHECKED_PROVISION.replace(KATA_CALL, "type -t fetch_verified\n"), CHECKED_LIB),
     ],
-    ids=["no-digest-check", "no-download"],
+    ids=["no-digest-check", "no-download", "lookup-command-v", "lookup-type"],
 )
-def test_a_function_that_does_not_both_download_and_check_pins_nothing(rooted, lib):
-    _tree(rooted, {"lib.bash": lib, "provision.bash": CHECKED_PROVISION})
-    path = _write(rooted, _job(_run("bash provision.bash")))
-    assert uc.check_file(path) == []
+def test_a_function_that_does_not_both_download_and_check_pins_nothing(
+    rooted, provision, lib
+):
+    """A lookup of the checked downloader runs nothing, so it downloads
+    nothing either."""
+    assert uc.check_file(_provision(rooted, provision, lib)) == []
 
 
-def test_a_digest_check_in_a_sibling_function_pins_nothing(tmp_path):
-    """The check hashes another file, in a function that downloads nothing, so
-    the floating download beside it stays unpinned."""
-    script = (
+@pytest.mark.parametrize(
+    "script",
+    [
         "get_latest() { curl -fsSL -o tool https://example.com/latest/tool; }\n"
         'verify_config() { [[ "$(sha256sum <cfg)" == "$CFG_SHA" ]]; }\n'
         "install() { get_latest; verify_config; }\n"
-        "install\n"
-    )
-    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
-
-
-@pytest.mark.parametrize(
-    "check",
-    [
-        '[[ "$(sha256sum <other)" == "$SHA" ]]',
-        '[[ "$(sha256sum <package.json)" == "$STAMP" ]]',
-    ],
-    ids=["another-file", "a-cache-stamp"],
-)
-def test_a_check_of_another_file_in_the_same_body_pins_nothing(tmp_path, check):
-    """The function downloads `t` and hashes a different file, so the
-    floating download is not pinned by that check."""
-    script = (
+        "install\n",
         "get_tool() {\n"
         "  curl -fsSL https://example.com/latest/t -o t\n"
-        f"  {check}\n"
+        '  [[ "$(sha256sum <other)" == "$SHA" ]]\n'
         "}\n"
-        "get_tool\n"
-    )
+        "get_tool\n",
+        "get_tool() {\n"
+        "  curl -fsSL https://example.com/latest/t -o t\n"
+        '  [[ "$(sha256sum <package.json)" == "$STAMP" ]]\n'
+        "}\n"
+        "get_tool\n",
+        f"SHA={DIGEST}\n"
+        'fetch() { curl -fsSL "$1" 2>"$2"; echo "$SHA  $2" | sha256sum -c -; }\n'
+        'fetch "$URL" tool\n',
+    ],
+    ids=[
+        "check-in-a-sibling-function",
+        "check-of-another-file-in-the-body",
+        "check-of-a-cache-stamp-in-the-body",
+        "checked-file-gets-only-stderr",
+    ],
+)
+def test_a_check_of_a_file_no_download_writes_pins_nothing(tmp_path, script):
+    """Each check hashes a file other than the one the download writes: a file
+    in a sibling function, another file in the same body, or a file that
+    gets only curl's messages (`2>`) while the bytes go to stdout."""
     assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
-
-
-@pytest.mark.parametrize(
-    "lookup",
-    ["command -v fetch_verified >/dev/null || exit 1", "type -t fetch_verified"],
-    ids=["command-v", "type"],
-)
-def test_a_lookup_of_a_checked_downloader_downloads_nothing(rooted, lookup):
-    provision = CHECKED_PROVISION.replace(
-        'fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst\n',
-        f"{lookup}\n",
-    )
-    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": provision})
-    path = _write(rooted, _job(_run("bash provision.bash")))
-    assert uc.check_file(path) == []
-
-
-def test_an_array_that_appends_options_still_names_its_tool(tmp_path):
-    check = (
-        'H=(shasum)\nH+=(-a 256)\n[[ "$("${H[@]}" <t | cut -d\' \' -f1)" == "$SHA" ]]'
-    )
-    messages = _messages(
-        _write(tmp_path, _job(_run(DIGEST_SCRIPT.format(check=check))))
-    )
-    assert len(messages) == 1, messages
-    assert "$URL (digest-checked)" in messages[0]
-
-
-WRAPPED_PROVISION = CHECKED_PROVISION.replace(
-    'fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst\n',
-    "provision() {\n"
-    '  fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst\n'
-    '  fetch_verified fc "$fc_version" "$fc_url" fc.tar\n'
-    "}\n"
-    "provision\n",
-)
 
 
 @pytest.mark.parametrize(
     ("key", "fires"),
     [
-        ("k-${{ env.kata_version }}-${{ env.fc_version }}", False),
-        ("k-${{ env.kata_version }}", True),
+        ("k-${{ env.kata_version }}-${{ env.fc_version }}", 0),
+        ("k-${{ env.kata_version }}", 1),
     ],
     ids=["both-pins", "one-pin"],
 )
 def test_a_wrapper_with_no_arguments_does_not_hide_the_pinned_calls(rooted, key, fires):
     """`provision` is the outermost call, but it carries no pin. The calls
     inside it name each tool and its version, so they are the fetches."""
-    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": WRAPPED_PROVISION})
-    uncached = _messages(_write(rooted, _job(_run("bash provision.bash"))))
-    assert len(uncached) == 1, uncached
-    assert "fetch_verified kata $kata_version" in uncached[0]
-    assert "fetch_verified fc $fc_version" in uncached[0]
-    assert "provision (digest-checked)" not in uncached[0]
-    path = _write(rooted, _job(_cache(key) + _run("bash provision.bash")))
-    assert len(_messages(path)) == (1 if fires else 0)
+    finding = _finding(_provision(rooted, WRAPPED_PROVISION))
+    assert "fetch_verified kata $kata_version" in finding
+    assert "fetch_verified fc $fc_version" in finding
+    assert "provision (digest-checked)" not in finding
+    assert len(_messages(_provision(rooted, WRAPPED_PROVISION, key=key))) == fires
 
 
-def test_an_unpinned_call_beside_a_pinned_one_is_reported_by_the_wrapper(rooted):
-    """`kata` names its pin, `extra` names none. A key on the kata pin alone
-    leaves `extra` downloading on every run, so the wrapper reports it."""
-    provision = WRAPPED_PROVISION.replace('"$fc_version"', '"$rel"')
-    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": provision})
-    key = "k-${{ env.kata_version }}"
-    messages = _messages(
-        _write(rooted, _job(_cache(key) + _run("bash provision.bash")))
-    )
-    assert len(messages) == 1, messages
-    assert "provision (digest-checked) in provision.bash" in messages[0]
-    assert "fetch_verified kata" not in messages[0]
+@pytest.mark.parametrize(
+    ("provision", "key"),
+    [
+        (
+            WRAPPED_PROVISION.replace('"$fc_version"', '"$rel"'),
+            "k-${{ env.kata_version }}",
+        ),
+        (
+            WRAPPED_PROVISION.replace('"$kata_version"', '"$a"').replace(
+                '"$fc_version"', '"$b"'
+            ),
+            None,
+        ),
+    ],
+    ids=["one-call-names-no-pin", "no-call-names-a-pin"],
+)
+def test_the_outermost_call_reports_a_download_no_call_pins(rooted, provision, key):
+    """When `fc` names no pin, a key on the kata pin alone leaves `fc`
+    downloading on every run, so the wrapper reports it."""
+    finding = _finding(_provision(rooted, provision, key=key))
+    assert "provision (digest-checked) in provision.bash" in finding
+    assert "fetch_verified" not in finding
 
 
-def test_with_no_pin_in_the_chain_the_outermost_call_is_the_fetch(rooted):
-    provision = WRAPPED_PROVISION.replace('"$kata_version"', '"$a"').replace(
-        '"$fc_version"', '"$b"'
-    )
-    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": provision})
-    messages = _messages(_write(rooted, _job(_run("bash provision.bash"))))
-    assert len(messages) == 1, messages
-    assert "provision (digest-checked) in provision.bash" in messages[0]
-    assert "fetch_verified" not in messages[0]
+@pytest.mark.parametrize(
+    ("calls", "key", "label"),
+    [
+        (
+            'provision() { pip install ruff==0.14.0; fetch "$URL" t; }\nprovision\n',
+            "k-ruff-0.14.0",
+            "provision (digest-checked)",
+        ),
+        ('a() { fetch "$URL" t; b; }\nb() { a; }\na\n', None, "a (digest-checked)"),
+        (
+            'prov() { fetch "$URL" "t-$V"; }\nprov "$TOOL_VERSION"\n',
+            None,
+            "prov $TOOL_VERSION (digest-checked)",
+        ),
+    ],
+    ids=["wrapper-that-also-installs", "call-cycle", "pin-on-each-call"],
+)
+def test_one_call_reports_a_chain_of_checked_calls(tmp_path, calls, key, label):
+    """The key covers the ruff install and leaves the checked download the
+    same wrapper calls. A cycle is one download. With a pin on each call,
+    the outermost one is the fetch."""
+    script = VERIFIED_FETCH + calls
+    path = _write(tmp_path, _job((_cache(key) if key else "") + _run(script)))
+    assert label in _finding(path)
 
 
 @pytest.mark.parametrize(
     ("key", "fires"),
-    [(f"k-{DIGEST}", False), ("k-${{ env.SHA }}", False), ("k-other", True)],
+    [(f"k-{DIGEST}", 0), ("k-${{ env.SHA }}", 0), ("k-other", 1)],
     ids=["digest", "digest-variable", "unrelated"],
 )
 def test_the_digest_inside_a_checking_function_is_a_pin_of_its_call(
@@ -1413,56 +1441,9 @@ def test_the_digest_inside_a_checking_function_is_a_pin_of_its_call(
 ):
     """The call passes only a URL the run decides, but the function checks
     the bytes against `$SHA`, so a key that names that digest holds them."""
-    script = (
-        f"SHA={DIGEST}\n"
-        'fetch() { curl -fsSL -o "$2" "$1"; echo "$SHA  $2" | sha256sum -c -; }\n'
-        'fetch "$URL" tool\n'
-    )
+    script = VERIFIED_FETCH + 'fetch "$URL" tool\n'
     path = _write(tmp_path, _job(_cache(key) + _run(script)))
-    assert len(_messages(path)) == (1 if fires else 0)
-
-
-VERIFIED_FETCH = (
-    f"SHA={DIGEST}\n"
-    'fetch() { curl -fsSL -o "$2" "$1"; echo "$SHA  $2" | sha256sum -c -; }\n'
-)
-
-
-def test_a_wrapper_that_also_installs_still_reports_its_checked_call(tmp_path):
-    """The key covers the ruff install, and nothing covers the checked
-    download that the same wrapper calls."""
-    script = (
-        VERIFIED_FETCH
-        + 'provision() { pip install ruff==0.14.0; fetch "$URL" t; }\nprovision\n'
-    )
-    messages = _messages(_write(tmp_path, _job(_cache("k-ruff-0.14.0") + _run(script))))
-    assert len(messages) == 1, messages
-    assert "provision (digest-checked)" in messages[0]
-
-
-def test_a_call_cycle_reports_the_download_once(tmp_path):
-    script = VERIFIED_FETCH + 'a() { fetch "$URL" t; b; }\nb() { a; }\na\n'
-    messages = _messages(_write(tmp_path, _job(_run(script))))
-    assert len(messages) == 1, messages
-    assert "a (digest-checked)" in messages[0]
-
-
-def test_with_a_pin_on_each_call_the_outermost_call_is_the_fetch(tmp_path):
-    script = VERIFIED_FETCH + 'prov() { fetch "$URL" "t-$V"; }\nprov "$TOOL_VERSION"\n'
-    messages = _messages(_write(tmp_path, _job(_run(script))))
-    assert len(messages) == 1, messages
-    assert "prov $TOOL_VERSION (digest-checked)" in messages[0]
-
-
-def test_a_file_that_receives_only_stderr_is_no_download(tmp_path):
-    """`2>"$2"` writes curl's messages to the file, and the bytes go to
-    stdout, so the check of that file vouches for no download."""
-    script = (
-        f"SHA={DIGEST}\n"
-        'fetch() { curl -fsSL "$1" 2>"$2"; echo "$SHA  $2" | sha256sum -c -; }\n'
-        'fetch "$URL" tool\n'
-    )
-    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+    assert len(_messages(path)) == fires
 
 
 def test_a_checked_downloader_with_a_pinned_url_inside_is_reported_once(tmp_path):
@@ -1476,10 +1457,9 @@ def test_a_checked_downloader_with_a_pinned_url_inside_is_reported_once(tmp_path
         "}\n"
         "download t\n"
     )
-    messages = _messages(_write(tmp_path, _job(_run(script))))
-    assert len(messages) == 1, messages
-    assert "https://example.com/v1.2.3/t" in messages[0]
-    assert "(digest-checked)" not in messages[0]
+    finding = _finding(_write(tmp_path, _job(_run(script))))
+    assert "https://example.com/v1.2.3/t" in finding
+    assert "(digest-checked)" not in finding
 
 
 def test_a_setup_script_behind_a_timeout_is_followed(rooted):
@@ -1495,10 +1475,9 @@ def test_a_setup_script_behind_a_timeout_is_followed(rooted):
             "fresh-setup.sh": "timeout --kill-after=30 900 bash setup.bash </dev/null\n",
         },
     )
-    path = _write(rooted, _job(_run("bash fresh-setup.sh")))
-    messages = _messages(path)
-    assert len(messages) == 1, messages
-    assert "fetch_verified kata" in messages[0]
+    assert "fetch_verified kata" in _finding(
+        _write(rooted, _job(_run("bash fresh-setup.sh")))
+    )
 
 
 # ── Python the shell runs ───────────────────────────────────────────────────

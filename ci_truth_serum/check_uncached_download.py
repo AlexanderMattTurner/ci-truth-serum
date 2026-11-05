@@ -362,19 +362,25 @@ def _functions_running(
     return _callers_of(seeds, callees)
 
 
-def _enclosing_definition(node: Node) -> Node | None:
-    """The innermost `function_definition` whose body holds NODE, if any."""
+def _ancestor(node: Node, kind: str) -> Node | None:
+    """The innermost node of type KIND above NODE, if any."""
     scope = node.parent
-    while scope is not None and scope.type != "function_definition":
+    while scope is not None and scope.type != kind:
         scope = scope.parent
     return scope
 
 
 def _enclosing_function(node: Node) -> str | None:
     """The name of the innermost function whose body holds NODE, if any."""
-    scope = _enclosing_definition(node)
+    scope = _ancestor(node, "function_definition")
     name = scope.child_by_field_name("name") if scope is not None else None
     return node_text(name) if name is not None else None
+
+
+def _downloads(command: Node, downloaders: frozenset[str]) -> bool:
+    """True when COMMAND runs curl or wget, or calls a function DOWNLOADERS
+    names."""
+    return _runs_downloader(command) or bool(set(callable_words(command)) & downloaders)
 
 
 @functools.lru_cache(maxsize=65536)
@@ -492,13 +498,13 @@ class _Floats:
         self.downloaders = downloaders
         # A command no walk runs (in a function nothing calls) reads nothing.
         self.units = {command.id: unit for command, unit in namespace.executed}
-        # A name only the run decides (`-o "$2"`) matches nothing: two
-        # unknown names are no evidence of one file.
+        # Only curl and wget count: an argument of a downloader function
+        # (`fetch_verified kata …`) names a tool as often as a file. A name
+        # only the run decides (`-o "$2"`) matches nothing, since two unknown
+        # names are no evidence of one file.
         self.downloaded = {
             name
-            for command, unit in namespace.executed
-            if _runs_downloader(command)
-            for name in _base_names(_written_nodes(command), namespace, unit)
+            for name in _written_names(namespace.executed, namespace, frozenset())
             if not name.startswith("$")
         }
 
@@ -510,22 +516,18 @@ class _Floats:
             if (value := assignment.child_by_field_name("value")) is not None
         ]
         return any(
-            self._downloads(command, unit)
+            self._reads_a_download(command, unit)
             for value in values
             for substitution in iter_nodes(value, "command_substitution")
             for command in iter_nodes(substitution, "command")
             if (unit := self.units.get(command.id)) is not None
         )
 
-    def _downloads(self, command: Node, unit: Unit) -> bool:
+    def _reads_a_download(self, command: Node, unit: Unit) -> bool:
         """True when COMMAND downloads, or reads a file a download writes."""
-        if _runs_downloader(command) or set(callable_words(command)) & self.downloaders:
+        if _downloads(command, self.downloaders):
             return True
-        read = command_arguments(command)[1:] + [
-            destination
-            for redirect in _file_redirects(command, ("<",), "0")
-            if (destination := redirect.child_by_field_name("destination"))
-        ]
+        read = command_arguments(command)[1:] + _redirect_targets(command, ("<",), "0")
         return bool(_base_names(read, self.namespace, unit) & self.downloaded)
 
 
@@ -571,15 +573,13 @@ def _comparison_scopes(command: Node, unit: Unit, floats: _NodeTest) -> list[Nod
     if not substituted or parent is None:
         return []
     if parent.type == "binary_expression":
-        test = parent
-        while test is not None and test.type != "test_command":
-            test = test.parent
+        test = _ancestor(node, "test_command")
         compared = _against_a_value(parent, lambda side: side.id == node.id, floats)
         return [test] if test is not None and compared else []
     if parent.type != "variable_assignment":
         return []
     name = node_text(parent.child_by_field_name("name"))
-    region = _enclosing_definition(parent)
+    region = _ancestor(parent, "function_definition")
     scope = region.child_by_field_name("body") if region is not None else unit.root
     tests = [
         test
@@ -770,29 +770,30 @@ def _placed(
 _WRITE_OPERATORS = (">", ">>", ">|")
 
 
-def _file_redirects(
+def _redirect_targets(
     command: Node, operators: tuple[str, ...], descriptor: str
 ) -> list[Node]:
-    """COMMAND's file redirects with one of OPERATORS on the stream DESCRIPTOR
-    names, written with that number or with none: `<f` reads stdin ("0") and
-    `>f` writes stdout ("1")."""
+    """The files COMMAND's redirects name, for each redirect with one of
+    OPERATORS on the stream DESCRIPTOR names (that number, or none written):
+    `<f` reads stdin ("0") and `>f` writes stdout ("1")."""
     parent = command.parent
     if parent is None or parent.type != "redirected_statement":
         return []
     return [
-        child
+        target
         for child in parent.children
         if child.type == "file_redirect"
         and (parts := redirect_parts(child)).operator in operators
         and parts.descriptor in (None, descriptor)
+        and (target := child.child_by_field_name("destination")) is not None
     ]
 
 
 def _stdout_redirects(command: Node) -> set[str]:
     """The files COMMAND's `>`/`>>` redirects write its stdout to."""
     found = {
-        redirect_parts(r).destination
-        for r in _file_redirects(command, _WRITE_OPERATORS, "1")
+        unquote(node_text(target))
+        for target in _redirect_targets(command, _WRITE_OPERATORS, "1")
     }
     return found - {""}
 
@@ -816,30 +817,23 @@ class _Shell(NamedTuple):
 
 
 def _written_names(
-    function: str, namespace: Namespace, downloaders: frozenset[str]
+    commands: list[tuple[Node, Unit]], namespace: Namespace, downloaders: frozenset[str]
 ) -> set[str]:
-    """The base names of the files the downloads in FUNCTION's own body may
-    write: each argument word of a command that runs curl or wget or calls a
-    downloader function, and each file its stdout goes to. They are spelled
-    as `_checked_names` spells a check's files, so the two sets compare."""
-    names = set()
-    for command, unit in namespace.function_commands(function):
-        if not _runs_downloader(command) and not set(callable_words(command)) & (
-            downloaders
-        ):
-            continue
-        names |= _base_names(_written_nodes(command), namespace, unit)
-    return names
-
-
-def _written_nodes(command: Node) -> list[Node]:
-    """The words that may name a file a download COMMAND writes: each
-    argument, and the file its stdout goes to."""
-    return command_arguments(command)[1:] + [
-        destination
-        for redirect in _file_redirects(command, _WRITE_OPERATORS, "1")
-        if (destination := redirect.child_by_field_name("destination"))
-    ]
+    """The base names of the files the downloads among COMMANDS may write:
+    each argument word of a command that runs curl or wget or calls a
+    function DOWNLOADERS names, and each file its stdout goes to. They are
+    spelled as `_checked_names` spells a check's files, so the two compare."""
+    return {
+        name
+        for command, unit in commands
+        if _downloads(command, downloaders)
+        for name in _base_names(
+            command_arguments(command)[1:]
+            + _redirect_targets(command, _WRITE_OPERATORS, "1"),
+            namespace,
+            unit,
+        )
+    }
 
 
 def _shell_context(namespace: Namespace) -> _Shell:
@@ -870,7 +864,8 @@ def _shell_context(namespace: Namespace) -> _Shell:
     verifiers = frozenset(
         name
         for name, names in checked.items()
-        if names & _written_names(name, namespace, downloaders)
+        if names
+        & _written_names(namespace.function_commands(name), namespace, downloaders)
     )
     return _Shell(
         namespace,
