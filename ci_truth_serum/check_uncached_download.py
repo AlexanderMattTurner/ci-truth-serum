@@ -27,9 +27,9 @@ A download is pinned in one of three ways:
     a function. In Python, the same function hashes the bytes and compares the
     hash. A job that refuses every other byte has immutable input by its own
     rule;
-  * the step calls a downloader function that checks a digest in its body or
-    in a function it calls. The outermost such call is the fetch, because it
-    names the tool and its version.
+  * the step calls a function whose body both downloads and checks a digest,
+    directly or through a wrapper. The outermost call that carries a pin is
+    the fetch, because it names the tool and its version.
 
 The lint reads more than the `run:` text. `_cts_step_reach` follows each repo
 script the step runs or sources, and each function call into that function's
@@ -720,14 +720,19 @@ def _shell_context(namespace: Namespace) -> _Shell:
     pins: set[str] = set()
     for node, unit in checks:
         pins |= _pins_of([node], namespace, unit)
+    # The check and a download share one body, so a sibling function that
+    # hashes some other file pins nothing. Every caller of such a function
+    # also downloads, so the closure stays inside DOWNLOADERS.
     checking = _callers_of(
-        {name for node, _ in checks if (name := _enclosing_function(node))}, callees
+        downloaders
+        & {name for node, _ in checks if (name := _enclosing_function(node))},
+        callees,
     )
     return _Shell(
         namespace,
         callees,
         downloaders,
-        downloaders & checking,
+        checking,
         frozenset(pins),
         frozenset(_checked_names(checks, namespace)),
     )
@@ -1088,35 +1093,95 @@ def _local_imports(tree: ast.Module, path: Path) -> list[Path]:
     return found
 
 
-def _checked_call(
-    command: Node, unit: Unit, shell: _Shell, reported: frozenset[str]
+class _CheckedCall(NamedTuple):
+    """A command that calls a downloader function that checks a digest: the
+    checking functions it CALLS, the PINS its arguments carry, and the
+    function whose body holds it (None at the top level)."""
+
+    command: Node
+    unit: Unit
+    called: frozenset[str]
+    pins: frozenset[str]
+    enclosing: str | None
+
+
+def _checked_calls(
+    commands: list[tuple[Node, Unit]], shell: _Shell, reported: frozenset[str]
 ) -> list[Fetch]:
-    """The pinned download COMMAND makes by calling a downloader function that
-    checks a digest, at the outermost such call: a call inside another such
-    function's body is that function's own work. A function that REPORTED
-    names already yields a fetch from a command inside it, so it adds none."""
-    called = set(callable_words(command)) & shell.checked_downloaders
-    if not called or called & reported:
-        return []
-    if _enclosing_function(command) in shell.checked_downloaders:
-        return []
+    """The pinned downloads COMMANDS make by calling a downloader function that
+    checks a digest. A function that REPORTED names already yields a fetch from
+    a command inside it, so a call to it adds none.
+
+    One chain of calls is one download, so one call reports it: the outermost
+    call whose arguments carry a pin, since that call names the tool and its
+    version. An argument-less wrapper above it (`provision() { fetch_verified
+    kata "$kata_version" …; }`) does not take its place. When no call in the
+    chain carries a pin, the outermost call reports it."""
     namespace = shell.namespace
-    chain, pending = set(), list(called)
+    calls = []
+    for command, unit in commands:
+        called = set(callable_words(command)) & shell.checked_downloaders
+        if called and not called & reported:
+            pins = _pins_of(command_arguments(command)[1:], namespace, unit)
+            calls.append(
+                _CheckedCall(
+                    command,
+                    unit,
+                    frozenset(called),
+                    frozenset(pins),
+                    _enclosing_function(command),
+                )
+            )
+
+    def pinned_above(name: str | None, seen: frozenset[str]) -> bool:
+        """True when a call of the function NAME, or of a function that holds
+        such a call, carries a pin."""
+        if name not in shell.checked_downloaders or name in seen:
+            return False
+        return any(
+            call.pins or pinned_above(call.enclosing, seen | {name})
+            for call in calls
+            if name in call.called
+        )
+
+    def pinned_below(names: frozenset[str], seen: frozenset[str]) -> bool:
+        """True when a call inside the functions NAMES, at any depth, carries
+        a pin."""
+        return any(
+            call.pins or pinned_below(call.called, seen | names)
+            for call in calls
+            if call.enclosing in names - seen
+        )
+
+    return [
+        _checked_fetch(call, shell)
+        for call in calls
+        if not pinned_above(call.enclosing, frozenset())
+        and (call.pins or call.enclosing not in shell.checked_downloaders)
+        and (call.pins or not pinned_below(call.called, frozenset()))
+    ]
+
+
+def _checked_fetch(call: _CheckedCall, shell: _Shell) -> Fetch:
+    """The fetch CALL makes. A `hashFiles()` key may hash the calling file, a
+    file that assigns one of its pins, or a file that defines a checking
+    function the call reaches."""
+    namespace = shell.namespace
+    chain, pending = set(), list(call.called)
     while pending:
         name = pending.pop()
         if name not in chain:
             chain.add(name)
             pending += shell.callees[name] & shell.checked_downloaders
-    pins = _pins_of(command_arguments(command)[1:], namespace, unit)
-    sources = _sources_of(pins, namespace, unit) | {
+    sources = _sources_of(set(call.pins), namespace, call.unit) | {
         rel
         for name in chain
         for _, owner in namespace.functions[name]
         if (rel := _relative(owner.path))
     }
-    where = f" in {rel}" if (rel := _relative(unit.path)) else ""
-    label = " ".join(tokens(command)) + " (digest-checked)" + where
-    return [Fetch(label, frozenset(pins), frozenset(sources), frozenset())]
+    where = f" in {rel}" if (rel := _relative(call.unit.path)) else ""
+    label = " ".join(tokens(call.command)) + " (digest-checked)" + where
+    return Fetch(label, call.pins, frozenset(sources), frozenset())
 
 
 @functools.lru_cache(maxsize=1024)
@@ -1135,9 +1200,7 @@ def _namespace_fetches(namespace: Namespace) -> list[Fetch]:
         elif name := _enclosing_function(command):
             holders.add(name)
     reported = _callers_of(holders, shell.callees)
-    for command, unit in unmatched:
-        found += _checked_call(command, unit, shell, reported)
-    return found
+    return found + _checked_calls(unmatched, shell, reported)
 
 
 def _script_fetches(

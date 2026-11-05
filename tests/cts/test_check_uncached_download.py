@@ -1268,6 +1268,60 @@ def test_a_function_that_does_not_both_download_and_check_pins_nothing(rooted, l
     assert uc.check_file(path) == []
 
 
+def test_a_digest_check_in_a_sibling_function_pins_nothing(tmp_path):
+    """The check hashes another file, in a function that downloads nothing, so
+    the floating download beside it stays unpinned."""
+    script = (
+        "get_latest() { curl -fsSL -o tool https://example.com/latest/tool; }\n"
+        'verify_config() { [[ "$(sha256sum <cfg)" == "$CFG_SHA" ]]; }\n'
+        "install() { get_latest; verify_config; }\n"
+        "install\n"
+    )
+    assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
+
+
+WRAPPED_PROVISION = CHECKED_PROVISION.replace(
+    'fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst\n',
+    "provision() {\n"
+    '  fetch_verified kata "$kata_version" "$kata_url" kata.tar.zst\n'
+    '  fetch_verified fc "$fc_version" "$fc_url" fc.tar\n'
+    "}\n"
+    "provision\n",
+)
+
+
+@pytest.mark.parametrize(
+    ("key", "fires"),
+    [
+        ("k-${{ env.kata_version }}-${{ env.fc_version }}", False),
+        ("k-${{ env.kata_version }}", True),
+    ],
+    ids=["both-pins", "one-pin"],
+)
+def test_a_wrapper_with_no_arguments_does_not_hide_the_pinned_calls(rooted, key, fires):
+    """`provision` is the outermost call, but it carries no pin. The calls
+    inside it name each tool and its version, so they are the fetches."""
+    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": WRAPPED_PROVISION})
+    uncached = _messages(_write(rooted, _job(_run("bash provision.bash"))))
+    assert len(uncached) == 1, uncached
+    assert "fetch_verified kata $kata_version" in uncached[0]
+    assert "fetch_verified fc $fc_version" in uncached[0]
+    assert "provision (digest-checked)" not in uncached[0]
+    path = _write(rooted, _job(_cache(key) + _run("bash provision.bash")))
+    assert len(_messages(path)) == (1 if fires else 0)
+
+
+def test_with_no_pin_in_the_chain_the_outermost_call_is_the_fetch(rooted):
+    provision = WRAPPED_PROVISION.replace('"$kata_version"', '"$a"').replace(
+        '"$fc_version"', '"$b"'
+    )
+    _tree(rooted, {"lib.bash": CHECKED_LIB, "provision.bash": provision})
+    messages = _messages(_write(rooted, _job(_run("bash provision.bash"))))
+    assert len(messages) == 1, messages
+    assert "provision (digest-checked) in provision.bash" in messages[0]
+    assert "fetch_verified" not in messages[0]
+
+
 def test_a_checked_downloader_with_a_pinned_url_inside_is_reported_once(tmp_path):
     """The URL inside the function already names the pin, so the call to the
     function adds no second fetch."""
