@@ -65,7 +65,7 @@ def _lex(text: str) -> list[tuple[str, str]]:
     return tokens
 
 
-class _Parser:
+class _ExpressionParser:
     def __init__(self, tokens: list[tuple[str, str]]) -> None:
         self.tokens = tokens
         self.at = 0
@@ -141,7 +141,7 @@ class _Parser:
 def parse(text: str) -> Expression:
     """The tree of the expression TEXT, the body of one `${{ }}`. Raises
     `Unsupported` for an operator or for text that is not an expression."""
-    parser = _Parser(_lex(text))
+    parser = _ExpressionParser(_lex(text))
     tree = parser.expression()
     if parser.peek() is not None:
         raise Unsupported(f"unsupported syntax after the first term of {text!r}")
