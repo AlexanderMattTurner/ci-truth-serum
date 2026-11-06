@@ -133,7 +133,8 @@ def parse(script: str) -> Node:
     ``PathologicalInputError`` (loud, never a silent pass) rather than letting
     the C parser's quadratic allocation kill the process. Supplementary-plane
     characters, which segfault that same C parser, are folded to U+FFFD up front
-    (see ``_neutralize_supplementary``)."""
+    (see ``_neutralize_supplementary``). A ``!`` the grammar cannot hold is blanked,
+    so the tree can differ from SCRIPT by that byte (see ``_unheld_negations``)."""
     if script.count("|") > _MAX_PIPE_BYTES:
         raise PathologicalInputError(
             f"input carries more than {_MAX_PIPE_BYTES} pipe bytes; "
@@ -141,7 +142,55 @@ def parse(script: str) -> Node:
             "parsing it could exhaust memory. Split the file or reduce the "
             "pipeline chain to lint it."
         )
-    return _parser().parse(_neutralize_supplementary(script).encode("utf-8")).root_node
+    source = bytearray(_neutralize_supplementary(script).encode("utf-8"))
+    root = _parser().parse(bytes(source)).root_node
+    while bangs := _unheld_negations(root):
+        for bang in bangs:
+            source[bang] = ord(" ")
+        root = _parser().parse(bytes(source)).root_node
+    return root
+
+
+# The reserved words that open a compound command. tree-sitter-bash 0.25.1 lets a
+# `!` hold only a `command`, a `variable_assignment`, a `test_command` or a
+# `subshell`, so it reads `! { a; }` as a command named `{` with `a` as its
+# argument, and `if`, `while`, `until`, `for`, `select` and `case` the same way.
+_COMPOUND_OPENERS = frozenset({"{", "if", "while", "until", "for", "select", "case"})
+
+
+def _unheld_negations(root: Node) -> list[int]:
+    """The byte offset of each `!` under ROOT whose operand the grammar cannot hold.
+
+    This works around `negated_command` in tree-sitter-bash 0.25.1's
+    `grammar.js`. `parse` blanks each of these bytes and parses again, so the
+    statement after the `!` gets its real tree. Two operands fail:
+
+    * a compound command (`! { a; }`, `! if …`). Every check that reads a
+      command's name sees `{` and never `a`, and reports nothing for `a`.
+    * two or more prefix assignments with no command (`! A=1 B=$(c)`). The
+      grammar wants a command name, leaves a MISSING node, and `assert_parseable`
+      refuses a file that bash runs.
+
+    The cost is the `!` itself: a check that asks whether a statement is
+    negated reads these statements as not negated. A blank is one byte for one
+    byte, so every offset and line number stays true."""
+    bangs = []
+    for negation in iter_nodes(root, "negated_command"):
+        operands = negation.named_children
+        if not operands or operands[0].type != "command":
+            continue
+        name = next((c for c in operands[0].children if c.type == "command_name"), None)
+        if name is None or not (
+            node_text(name) in _COMPOUND_OPENERS or next(_walk_missing(name), None)
+        ):
+            continue
+        if negation.text[:1] != b"!":
+            raise AssertionError(
+                f"a negated_command at byte {negation.start_byte} does not "
+                "start with `!`; the tree-sitter-bash grammar changed shape"
+            )
+        bangs.append(negation.start_byte)
+    return bangs
 
 
 def assert_parseable(script: str) -> None:
@@ -514,6 +563,9 @@ CONDITION_STATEMENTS = frozenset({"if_statement", "elif_clause", "while_statemen
 _CONDITION_END_TYPES = frozenset({"then", "do_group"})
 
 
+_GROUPS = frozenset({"compound_statement", "subshell"})
+
+
 def condition_parts(statement: Node) -> list[Node]:
     """The statements that form STATEMENT's condition, or [] when STATEMENT is
     not in `CONDITION_STATEMENTS`.
@@ -537,6 +589,18 @@ def in_condition(node: Node) -> bool:
     return parent is not None and any(
         part.id == node.id for part in condition_parts(parent)
     )
+
+
+def status_carrier(node: Node) -> Node:
+    """NODE, or the outermost `{ …; }` or `( … )` whose exit status is NODE's.
+    A group exits with the status of its last statement, so `if { a; }` tests
+    the status of `a` as surely as `if a` does."""
+    while (parent := node.parent) is not None and parent.type in _GROUPS:
+        statements = [c for c in parent.named_children if c.type != "comment"]
+        if statements[-1].id != node.id:
+            break
+        node = parent
+    return node
 
 
 def condition_commands(root: Node, statements: frozenset[str]) -> list[Node]:

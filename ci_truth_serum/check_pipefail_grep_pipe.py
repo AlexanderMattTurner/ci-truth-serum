@@ -20,7 +20,9 @@ WHAT IS FLAGGED — a pipeline where all of these hold:
 * pipefail is in effect where the pipeline runs (see ``_pipefail_start``);
 * the pipeline's exit status is READ (``_status_read``): the condition of an
   ``if``/``while``/``until``/``elif``, an operand of ``&&``/``||``, or under
-  ``!``. A trailing ``|| true`` / ``|| :`` discards the status, so it is not read;
+  ``!``. A ``{ …; }`` or ``( … )`` that ends with the pipeline has the same status,
+  so a test of that group reads it too. A trailing ``|| true`` / ``|| :`` discards
+  the status, so it is not read;
 * the LAST stage is one of the readers in ``_EARLY_EXIT_READERS``;
 * the stage feeding that reader is not a bounded builtin (see below).
 
@@ -87,6 +89,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     iter_nodes,
     node_text,
     parse,
+    status_carrier,
     unquote,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -318,13 +321,14 @@ def _status_read(pipeline, negated: bool) -> bool:
     text cannot say. That gate is the precision lever for the wider reader set — it cut
     a naive trigger from 43 hits to 14 over the consumer tree, losing no true positive.
     """
-    if _status_discarded(pipeline):
+    carrier = status_carrier(pipeline)
+    if _status_discarded(carrier):
         return False
-    parent = pipeline.parent
+    parent = carrier.parent
     return (
         negated
-        or in_condition(pipeline)
-        or (parent is not None and parent.type == "list")
+        or in_condition(carrier)
+        or (parent is not None and parent.type in ("list", "negated_command"))
     )
 
 

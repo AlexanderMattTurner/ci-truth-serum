@@ -82,6 +82,117 @@ def test_parse_refuses_quadratic_pipe_chains_loudly() -> None:
     assert bash_ast.parse("x | x").type == "program"
 
 
+# ── a `!` whose operand the grammar cannot hold ───────────────────────────
+@pytest.mark.parametrize(
+    "script, expected",
+    [
+        (
+            "! { a; }",
+            "(program (compound_statement (command name: (command_name (word)))))",
+        ),
+        (
+            "! if a; then b; fi",
+            "(program (if_statement condition: (command name: (command_name (word)))"
+            " (command name: (command_name (word)))))",
+        ),
+        (
+            "! until a; do b; done",
+            "(program (while_statement condition: (command name: (command_name"
+            " (word))) body: (do_group (command name: (command_name (word))))))",
+        ),
+        (
+            "! for x in a; do b; done",
+            "(program (for_statement variable: (variable_name) value: (word)"
+            " body: (do_group (command name: (command_name (word))))))",
+        ),
+        (
+            "! case x in y) a;; esac",
+            "(program (case_statement value: (word) (case_item value: (word)"
+            " (command name: (command_name (word))))))",
+        ),
+        (
+            "! { ! { a; }; }",
+            "(program (compound_statement (compound_statement"
+            " (command name: (command_name (word))))))",
+        ),
+        (
+            "! A=1 B=$(c)",
+            "(program (variable_assignments (variable_assignment name: (variable_name)"
+            " value: (number)) (variable_assignment name: (variable_name)"
+            " value: (command_substitution (command name: (command_name (word)))))))",
+        ),
+    ],
+)
+def test_parse_reads_the_statement_after_an_unheld_negation(
+    script: str, expected: str
+) -> None:
+    assert str(bash_ast.parse(script + "\n")) == expected
+
+
+@pytest.mark.parametrize(
+    "script, operand",
+    [
+        ("! a", "command"),
+        ("! A=1 c", "command"),
+        ("! A=1", "variable_assignment"),
+        ("! [[ a ]]", "test_command"),
+        ("! ( a )", "subshell"),
+    ],
+)
+def test_parse_keeps_a_negation_the_grammar_holds(script: str, operand: str) -> None:
+    (negation,) = bash_ast.parse(script + "\n").named_children
+    assert (negation.type, negation.named_children[0].type) == (
+        "negated_command",
+        operand,
+    )
+
+
+def test_the_grammar_still_reads_a_negated_brace_group_as_a_command() -> None:
+    """Pins the grammar defect `_unheld_negations` works around. When this
+    fails, tree-sitter-bash holds a compound command after `!`: delete the
+    work-around and this test."""
+    raw = bash_ast._parser().parse(b"! { a; }\n").root_node
+    (negation, _closer) = raw.named_children
+    assert bash_ast.command_name(negation.named_children[0]) == "{"
+
+
+def test_an_unheld_negation_keeps_every_line_and_column() -> None:
+    root = bash_ast.parse("x\nif ! { timeout 5; }; then :; fi\n")
+    (timeout,) = (
+        node
+        for node in bash_ast.iter_nodes(root, "command")
+        if bash_ast.command_name(node) == "timeout"
+    )
+    assert timeout.start_point == (1, 7)
+
+
+def test_assert_parseable_accepts_negated_prefix_assignments() -> None:
+    bash_ast.assert_parseable("if ! IFS=$'\\n' REPLY=$(cat r); then :; fi\n")
+
+
+# ── status_carrier ────────────────────────────────────────────────────────
+@pytest.mark.parametrize(
+    "script, carrier",
+    [
+        ("a\n", "a"),
+        ("{ a; }\n", "{ a; }"),
+        ("( a )\n", "( a )"),
+        ("{ ( a ); }\n", "{ ( a ); }"),
+        ("{ a # note\n}\n", "{ a # note\n}"),
+        ("{ a; b; }\n", "a"),
+    ],
+)
+def test_status_carrier_climbs_only_while_a_is_the_last_statement(
+    script: str, carrier: str
+) -> None:
+    (a,) = (
+        node
+        for node in bash_ast.iter_nodes(bash_ast.parse(script), "command")
+        if bash_ast.command_name(node) == "a"
+    )
+    assert bash_ast.node_text(bash_ast.status_carrier(a)) == carrier
+
+
 # ── supplementary-plane (non-BMP) neutralization ──────────────────────────
 # tree-sitter-bash 0.25's C scanner corrupts the heap on an astral codepoint
 # (≥ U+10000) next to a word-opening token like `{`, segfaulting the process

@@ -1,0 +1,3 @@
+- The shell checks now see the commands inside a negated compound command, such as `if ! { docker build . >/dev/null 2>&1; }`. tree-sitter-bash 0.25.1 reads the word after a `!` as the name of a plain command when that word is `{`, `if`, `while`, `until`, `for`, `select` or `case`. Each check then saw that word and missed the real command. For this reason, `check-stderr-suppression` missed the line above.
+- The shell checks now accept `! A=1 B=$(cmd)`, a negation of two or more prefix assignments with no command. The grammar left a missing node there, so each check refused the file as unparseable.
+- `check-pipefail-grep-pipe` now reads the status of a `{ …; }` or `( … )` group that ends with the pipeline, so it flags `if { producer | grep -q pat; }; then`.
