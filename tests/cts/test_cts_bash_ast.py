@@ -146,6 +146,10 @@ def test_parse_reads_the_compound_command_after_a_bang(opener: str) -> None:
             "destination: (word))))",
         ),
         ("! {\na\n}", "(program (negated_command (subshell " + _CMD + ")))"),
+        (
+            "! { { a; }; }",
+            "(program (negated_command (subshell (compound_statement " + _CMD + "))))",
+        ),
     ],
 )
 def test_a_negated_group_keeps_its_negation(script: str, expected: str) -> None:
@@ -192,6 +196,15 @@ def test_a_negated_group_keeps_every_line_and_column() -> None:
         if bash_ast.command_name(node) == "timeout"
     )
     assert timeout.start_point == (1, 7)
+
+
+def test_a_rewrite_that_breaks_the_parse_keeps_the_original_tree() -> None:
+    """tree-sitter-bash 0.25.1 puts an ERROR node on a here-string after any
+    group, so a rewritten `! ( … ) <<<` would make a valid file unparseable."""
+    script = 'if ! { grep -q x; } <<<"$v"; then :; fi\n'
+    bash_ast.assert_parseable(script)
+    raw = bash_ast._parser().parse(script.encode()).root_node
+    assert str(bash_ast.parse(script)) == str(raw)
 
 
 def test_parse_refuses_negated_groups_nested_past_the_cap_loudly() -> None:

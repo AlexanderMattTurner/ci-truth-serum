@@ -166,7 +166,8 @@ def _hold_negations(source: bytearray, root: Node) -> Node:
       asks about negation reads those statements as not negated.
 
     A probe copy with every such `!` blanked shows the real brace structure,
-    which is where each `{` finds its own `}`."""
+    which is where each `{` finds its own `}`. When the rewrite holds a syntax
+    error that ROOT did not, such as a here-string after a group, ROOT stands."""
     found, probe, tree = [], bytearray(source), root
     for _ in range(_MAX_NEGATION_ROUNDS + 1):
         unheld = _unheld_negations(tree, probe)
@@ -193,10 +194,11 @@ def _hold_negations(source: bytearray, root: Node) -> Node:
             source[bang] = ord(" ")
         else:
             source[opener], source[closer] = ord("("), ord(")")
-    return _parser().parse(bytes(source)).root_node
+    held = _parser().parse(bytes(source)).root_node
+    return root if held.has_error and not root.has_error else held
 
 
-def _unheld_negations(root: Node, source: bytearray) -> list[tuple[int, int]]:
+def _unheld_negations(root: Node, probe: bytearray) -> list[tuple[int, int]]:
     """(`!` offset, operand offset) for each `!` under ROOT that negates a
     compound command the grammar read as a plain command."""
     found = []
@@ -208,9 +210,9 @@ def _unheld_negations(root: Node, source: bytearray) -> list[tuple[int, int]]:
         bang = negation.start_byte
         # Bash reads `!{` as one word: only a `!` that stands alone negates. The
         # test also keeps the probe loop finite, since it blanks only a `!`.
-        if source[bang : bang + 2] not in (b"! ", b"!\t") or name is None:
+        if probe[bang : bang + 2] not in (b"! ", b"!\t") or name is None:
             continue
-        if node_text(name) in _COMPOUND_OPENERS:
+        if (node_text(name).split() or [""])[0] in _COMPOUND_OPENERS:
             found.append((bang, name.start_byte))
     return found
 
@@ -585,9 +587,6 @@ CONDITION_STATEMENTS = frozenset({"if_statement", "elif_clause", "while_statemen
 _CONDITION_END_TYPES = frozenset({"then", "do_group"})
 
 
-_GROUPS = frozenset({"compound_statement", "subshell"})
-
-
 def condition_parts(statement: Node) -> list[Node]:
     """The statements that form STATEMENT's condition, or [] when STATEMENT is
     not in `CONDITION_STATEMENTS`.
@@ -611,6 +610,9 @@ def in_condition(node: Node) -> bool:
     return parent is not None and any(
         part.id == node.id for part in condition_parts(parent)
     )
+
+
+_GROUPS = frozenset({"compound_statement", "subshell"})
 
 
 def status_carrier(node: Node) -> Node:
