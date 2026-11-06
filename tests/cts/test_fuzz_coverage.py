@@ -126,6 +126,7 @@ FUZZ_REQUIRED = {
     "_cts_py_imports": "interpreter_scripts",
     "_cts_step_reach": "reach",
     "_cts_gha_expr": "parse",
+    "_cts_cache_scope": "cache_scope",
     "check_bare_mkdir": "violations",
     "check_big_tuple_annotations": "violations",
     "check_curl_retry": "violations",

@@ -57,15 +57,10 @@ A variable is a pin only when its name says so (`*VERSION*`, `*SHA*`, …), or
 when the text gives it a fixed version or digest. Thus a key that names
 `env.ARCH` does not cover a download whose URL also reads `$ARCH`.
 
-The lint reads each `${{ }}` in a key or path with `_cts_gha_expr`, and it
-resolves what the workflow text fixes. These are a composite action's
-`inputs.*`, `format()`, a `run:` step's output (the `NAME=VALUE` argument its
-script writes), a cache step's `cache-primary-key`, and `env.*` in a path. An
-expression that the lint cannot read in a key could be the pin, so that cache
-covers every download in the job. A part of a path that the lint cannot read
-is a `**`. A path that the text does not fix at all is left out, because it
-could be any directory. Local composite actions (`uses: ./.github/actions/foo`)
-are inlined first.
+`_cts_cache_scope` reads each cache step's key and path, and the installers a
+setup action caches. A key with a value it cannot read could name the pin, so
+that cache covers every download in the job. Local composite actions
+(`uses: ./.github/actions/foo`) are inlined first.
 
 A fetcher can check a cache directory before it downloads. The `actions/cache`
 step that restores that directory then covers it, when the key of that step
@@ -117,7 +112,6 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     is_lookup,
     iter_nodes,
     node_text,
-    parse as parse_shell,
     program_name,
     redirect_parts,
     unquote,
@@ -130,16 +124,18 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _job_blocks,
     yaml_script_view,
 )
-from _cts_gha_expr import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    Call,
-    Expression,
-    Literal,
-    Unsupported,
-    format_string,
-    parse as parse_expression,
-)
 from _cts_py_ast import name_of  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_imports import local_files, sys_path_roots  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_cache_scope import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ANY_INSTALLER,
+    CacheScope,
+    Context,
+    Text,
+    cache_scope,
+    env_of,
+    home,
+    rendered,
+)
 from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Namespace,
     Unit,
@@ -176,41 +172,8 @@ MESSAGE = (
 NO_CACHE = "no cache step anywhere in the job"
 NO_COVER = "no cache in the job keyed on its pin or holding its output path"
 
-# An action that caches. `actions/cache` and its `restore`/`save` sub-actions
-# cache whatever their `path` names. A setup action caches one package manager's
-# own store, and only when its cache input is on.
-_CACHE_ACTIONS = ("actions/cache", "buildjet/cache")
-
-
-class _SetupCache(NamedTuple):
-    """How one setup action caches. INPUT turns the cache on, and DEFAULT is
-    its value when the step passes none. INSTALLER is the package manager
-    whose downloads the store holds, or None when the input's VALUE names it
-    (`cache: pnpm`)."""
-
-    input: str | None
-    installer: str | None
-    default: str
-
-
-_SETUP_CACHES = {
-    "actions/setup-node": _SetupCache("cache", None, ""),
-    "actions/setup-python": _SetupCache("cache", None, ""),
-    "actions/setup-java": _SetupCache("cache", None, ""),
-    "actions/setup-go": _SetupCache("cache", "go", "true"),
-    "actions/setup-dotnet": _SetupCache("cache", "dotnet", ""),
-    "astral-sh/setup-uv": _SetupCache("enable-cache", "uv", "auto"),
-    "ruby/setup-ruby": _SetupCache("bundler-cache", "bundle", ""),
-    "Swatinem/rust-cache": _SetupCache(None, "cargo", "true"),
-}
-# A setup action that prunes its store before it saves, unless this input is
-# "false". setup-uv runs `uv cache prune --ci`, which deletes every wheel the
-# installs downloaded and keeps only the ones uv built.
-_PRUNING_SETUPS = {"astral-sh/setup-uv": "prune-cache"}
 # The install flags that keep an installer from writing its store.
 _NO_STORE_FLAGS = frozenset({"--no-cache-dir", "--no-cache"})
-# The installer a setup cache serves when its input is an expression.
-_ANY_INSTALLER = "*"
 # Where each installer keeps the files it downloads. A cache whose path holds
 # this directory holds the install's bytes. `~` is the home directory of the
 # job, which is one of _HOMES.
@@ -314,22 +277,10 @@ _DIRECTORY_FLAGS = {
 # written in, until `_script_fetches` knows which file that is.
 _RUN_BODY = "<run body>"
 
-_EXPRESSION = re.compile(r"\$\{\{(?P<body>.*?)\}\}", re.DOTALL)
-# The contexts a cache key keeps as written when the lint cannot fix their
-# value. `env`, `vars`, `matrix` and a workflow's own `inputs` can hold a pin,
-# and `_pin_in_key` names one by the variable it reads. The runner, the event,
-# the strategy and the job hold none.
-_KEPT_CONTEXTS = frozenset(
-    {"env", "vars", "matrix", "inputs", "runner", "github", "strategy", "job"}
-)
-# The outputs of a cache step that report how its restore went.
-_CACHE_STATUS_OUTPUTS = frozenset({"cache-hit", "cache-matched-key"})
 # The bash nodes whose value a command computes.
 _COMPUTED_WORDS = frozenset(
     {"command_substitution", "process_substitution", "arithmetic_expansion"}
 )
-# The bash nodes of an argument that are literal text.
-_LITERAL_PIECES = frozenset({"word", "string_content", "raw_string"})
 
 # The Python calls that fetch bytes over the network.
 _PY_FETCHERS = frozenset(
@@ -362,12 +313,6 @@ class Fetch(NamedTuple):
     outputs: frozenset[str]
     output_names: frozenset[str] = frozenset()
     installer: str = ""
-
-
-def _action_name(step: dict) -> str:
-    """The action STEP uses, without its `@ref` (`actions/cache@0057852…`)."""
-    uses = step.get("uses")
-    return uses.split("@", 1)[0].strip() if isinstance(uses, str) else ""
 
 
 # ── shell: what a namespace downloads ───────────────────────────────────────
@@ -1037,7 +982,7 @@ def _placed(
     placed, names = set(), set()
     root = str(root_path)
     for output in outputs:
-        out = posixpath.normpath(_home(output))
+        out = posixpath.normpath(home(output))
         if out == root or out.startswith(root + "/"):
             placed.add(posixpath.relpath(out, root))
         elif out.startswith(("/", "~")):
@@ -1829,296 +1774,6 @@ def _script_fetches(
 # ── caches: which download a cache can hold ─────────────────────────────────
 
 
-class _Text(NamedTuple):
-    """Workflow text once the lint has read its expressions. TEXT holds each
-    value the text fixes, and the spelling of each value computed at run time
-    (`${{ env.UV_VERSION }}`). HASHED are the patterns its `hashFiles()` calls
-    read. LITERAL is True when no part of it is computed at run time."""
-
-    text: str
-    hashed: tuple[str, ...] = ()
-    literal: bool = True
-
-
-_ANY_DIRECTORY = _Text("**", literal=False)
-
-
-def _joined(pieces: list[_Text]) -> _Text:
-    return _Text(
-        "".join(piece.text for piece in pieces),
-        tuple(pattern for piece in pieces for pattern in piece.hashed),
-        all(piece.literal for piece in pieces),
-    )
-
-
-def _computed(path: tuple[str, ...]) -> _Text:
-    return _Text("${{ " + ".".join(path) + " }}", literal=False)
-
-
-class _Context(NamedTuple):
-    """What an expression in one list of steps can read. STEPS are the steps of
-    its job or composite action, for `steps.<id>.outputs`. INPUTS are a
-    composite action's inputs as its caller passes them, or None in a
-    workflow, where `inputs.*` is the run's own and stays as written. ENV is
-    the `env:` the steps inherit."""
-
-    steps: tuple[dict, ...]
-    inputs: dict[str, "_Text | None"] | None
-    env: dict
-
-
-def _env_of(container: object) -> dict:
-    env = container.get("env") if isinstance(container, dict) else None
-    return (
-        {k: v for k, v in env.items() if k != "__line__"}
-        if isinstance(env, dict)
-        else {}
-    )
-
-
-def _render(
-    template: object, step: dict, context: _Context, *, path: bool = False
-) -> list[_Text] | None:
-    """TEMPLATE in pieces, with each `${{ }}` read in STEP's CONTEXT. None when
-    an expression holds a value the lint cannot read. PATH reads `env.*` from
-    the `env:` blocks, because a path needs the value and a key needs only the
-    name, and it reads an expression it cannot read as `**`, any directory."""
-    if isinstance(template, bool):
-        template = "true" if template else "false"
-    if not isinstance(template, (str, int, float)):
-        return None
-    text, pieces, last = str(template), [], 0
-    for match in _EXPRESSION.finditer(text):
-        pieces.append(_Text(text[last : match.start()]))
-        last = match.end()
-        try:
-            value = _evaluate(parse_expression(match["body"]), step, context, path)
-        except Unsupported:
-            value = None
-        if value is None and not path:
-            return None
-        pieces.append(_ANY_DIRECTORY if value is None else value)
-    pieces.append(_Text(text[last:]))
-    return pieces
-
-
-def _rendered(template: object, step: dict, context: _Context) -> _Text | None:
-    pieces = _render(template, step, context)
-    return None if pieces is None else _joined(pieces)
-
-
-def _evaluate(
-    tree: Expression, step: dict, context: _Context, path: bool
-) -> _Text | None:
-    """The value of the expression TREE in STEP's CONTEXT, or None."""
-    if isinstance(tree, Literal):
-        value = tree.value
-        if isinstance(value, bool):
-            return _Text("true" if value else "false")
-        if isinstance(value, float) and value.is_integer():
-            return _Text(str(int(value)))
-        return _Text("" if value is None else str(value))
-    if isinstance(tree, Call):
-        args = [_evaluate(arg, step, context, path) for arg in tree.args]
-        if any(arg is None or not arg.literal for arg in args):
-            return None
-        texts = [arg.text for arg in args if arg is not None]
-        if tree.name.lower() == "hashfiles":
-            quoted = ", ".join("'" + text.replace("'", "''") + "'" for text in texts)
-            return _Text(f"${{{{ hashFiles({quoted}) }}}}", tuple(texts), False)
-        if tree.name.lower() == "format" and texts:
-            return _Text(format_string(texts[0], texts[1:]))
-        return None
-    head = tree.path[0].lower()
-    if head == "inputs" and context.inputs is not None and len(tree.path) == 2:
-        return context.inputs.get(tree.path[1], _Text(""))
-    if head == "steps" and len(tree.path) == 4 and tree.path[2] == "outputs":
-        return _step_output(tree.path[1], tree.path[3], step, context)
-    if head == "env" and path and len(tree.path) == 2:
-        value = {**context.env, **_env_of(step)}.get(tree.path[1])
-        # The value renders without PATH, so an `env.*` inside it is `**`
-        # and an `env:` entry that names itself ends.
-        pieces = _render(value, step, context) if value is not None else None
-        if pieces is not None:
-            return _Text(_path_text(pieces))
-    return _computed(tree.path) if head in _KEPT_CONTEXTS else None
-
-
-def _step_output(
-    step_id: str, name: str, consumer: dict, context: _Context
-) -> _Text | None:
-    """`steps.<STEP_ID>.outputs.<NAME>`, read in CONSUMER's CONTEXT. Only a
-    step that runs before CONSUMER can set it, which also ends any cycle. A
-    cache step's primary key is its own key, and its other outputs report how
-    the restore went. A `run:` step's output is what its script writes."""
-    index = next((i for i, s in enumerate(context.steps) if s is consumer), 0)
-    producer = next((s for s in context.steps[:index] if s.get("id") == step_id), None)
-    if producer is None:
-        return None
-    if _action_name(producer).startswith(_CACHE_ACTIONS):
-        if name == "cache-primary-key":
-            with_block = producer.get("with")
-            key = with_block.get("key") if isinstance(with_block, dict) else None
-            return _rendered(key, producer, context)
-        return (
-            _computed(("steps", step_id, "outputs", name))
-            if (name in _CACHE_STATUS_OUTPUTS)
-            else None
-        )
-    script = producer.get("run")
-    return _written_output(script, name) if isinstance(script, str) else None
-
-
-def _written_output(script: str, name: str) -> _Text | None:
-    """The value the `run:` SCRIPT gives output NAME: the argument `NAME=VALUE`
-    of a command in it. That is how `echo "NAME=…" >> "$GITHUB_OUTPUT"` writes
-    one, and how a helper such as `gha_output "NAME=…"` does. A variable in
-    VALUE reads as `env.<variable>`, so a key that holds the output names the
-    pin the step wrote. None when no such argument, or two different ones,
-    write NAME, or when VALUE holds a command substitution or is a `printf`
-    format."""
-    values = set()
-    for command in iter_nodes(parse_shell(script), "command"):
-        for argument in command_arguments(command):
-            pieces = _pieces(argument)
-            head = pieces[0] if pieces else None
-            if head is None or head.type not in _LITERAL_PIECES:
-                continue
-            first = _literal_piece(head)
-            if not first.startswith(f"{name}="):
-                continue
-            if program_name(tokens(command)[0]) == "printf":
-                values.add(None)  # the value is a format, not the text
-                continue
-            rest = [_Text(first[len(name) + 1 :])]
-            rest += [_shell_piece(piece) for piece in pieces[1:]]
-            values.add(None if None in rest else _joined(rest))
-    return values.pop() if len(values) == 1 else None
-
-
-def _pieces(node: Node) -> list[Node]:
-    """NODE's parts in order, with quotes and concatenation opened."""
-    if node.type in ("string", "concatenation"):
-        return [piece for child in node.named_children for piece in _pieces(child)]
-    return [node]
-
-
-def _literal_piece(node: Node) -> str:
-    return (
-        node_text(node) if node.type == "string_content" else unquote(node_text(node))
-    )
-
-
-def _shell_piece(node: Node) -> _Text | None:
-    """One part of a shell word as workflow text: literal text, or a variable
-    spelled as the `env.*` it reads. None for anything computed."""
-    if node.type in _LITERAL_PIECES:
-        return _Text(_literal_piece(node))
-    names = (
-        list(iter_nodes(node, "variable_name"))
-        if node.type in ("simple_expansion", "expansion")
-        else []
-    )
-    return _computed(("env", node_text(names[0]))) if names else None
-
-
-def _setup_installers(step: dict, context: "_Context") -> frozenset[str] | None:
-    """The installers whose store STEP's setup action caches, or None when it
-    is no setup action or its cache input is off. An input the lint cannot
-    read may turn the cache on for any installer."""
-    action = _action_name(step)
-    row = _SETUP_CACHES.get(action)
-    if row is None:
-        return None
-    name, installer, default = row
-    with_block = step.get("with")
-    with_block = with_block if isinstance(with_block, dict) else {}
-    text = _setup_input(with_block, name, default, step, context)
-    if text is not None and text.literal and text.text.strip() in ("", "false"):
-        return None
-    if action in _PRUNING_SETUPS:
-        prune = _setup_input(with_block, _PRUNING_SETUPS[action], "true", step, context)
-        if prune is not None and prune.literal and prune.text.strip() != "false":
-            return None
-    if text is None or not text.literal:
-        return frozenset({_ANY_INSTALLER})
-    return frozenset({installer or text.text.strip()})
-
-
-def _setup_input(
-    with_block: dict, name: str | None, default: str, step: dict, context: "_Context"
-) -> _Text | None:
-    """The setup input NAME as STEP passes it, or DEFAULT when STEP passes none.
-    A key with no value passes the empty string."""
-    if name is None:
-        return _Text(default)
-    value = with_block.get(name, default)
-    return _rendered("" if value is None else value, step, context)
-
-
-class CacheScope(NamedTuple):
-    """What one cache step can hold. KEY is its key with each expression the
-    lint could read resolved, HASHED the patterns its `hashFiles()` calls read,
-    PATHS the paths it saves as far as the text fixes them, and INSTALLERS the
-    package managers whose store a setup action caches. KEY is None when the
-    key holds a value the lint cannot read: that value could name any pin, so
-    the cache covers every fetch in the job."""
-
-    key: str | None
-    hashed: tuple[str, ...] = ()
-    paths: tuple[str, ...] = ()
-    installers: frozenset[str] = frozenset()
-
-
-def _cache_scope(step: dict, context: _Context) -> CacheScope | None:
-    """What the cache STEP can hold, read in its CONTEXT, or None when STEP
-    restores and saves no cache."""
-    installers = _setup_installers(step, context)
-    if installers is not None:
-        return CacheScope("", installers=installers)
-    if not _action_name(step).startswith(_CACHE_ACTIONS):
-        return None
-    with_block = step.get("with")
-    if not isinstance(with_block, dict):
-        return CacheScope(None)
-    key = _rendered(with_block.get("key"), step, context)
-    if key is None:
-        return CacheScope(None)
-    return CacheScope(
-        key.text, key.hashed, _cache_paths(with_block.get("path"), step, context)
-    )
-
-
-def _cache_paths(path: object, step: dict, context: _Context) -> tuple[str, ...]:
-    """The paths a cache's PATH saves, with each value the text does not fix
-    read as `**`. A line the text fixes no part of is left out. It could be
-    any directory, and reading it as every directory lets one computed store
-    path (`${{ steps.store.outputs.dir }}`) cover every download in the job.
-    Such a cache still covers a fetch through its key."""
-    paths = []
-    for line in path.splitlines() if isinstance(path, str) else []:
-        line = line.strip()
-        pieces = _render(line, step, context, path=True)
-        if not line or line.startswith("!") or pieces is None:
-            continue  # a `!` line excludes, and pieces is None for no string
-        text = _path_text(pieces)
-        if text.replace("**", "").strip("/"):
-            paths.append(posixpath.normpath(_home(text)))
-    return tuple(paths)
-
-
-def _path_text(pieces: list[_Text]) -> str:
-    """PIECES as a path glob: each part computed at run time is `**`."""
-    return "".join(piece.text if piece.literal else "**" for piece in pieces)
-
-
-def _home(path: str) -> str:
-    for spelling in ("${HOME}", "$HOME"):
-        if path.startswith(spelling):
-            return "~" + path[len(spelling) :]
-    return path
-
-
 @functools.lru_cache(maxsize=4096)
 def _pin_in_key(pin: str) -> re.Pattern[str]:
     """PIN as it can appear in a cache key. A version or digest is a literal
@@ -2168,7 +1823,7 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
     path holds FETCH's output, or it is the store of FETCH's installer."""
     if scope.key is None:
         return True
-    if fetch.installer and scope.installers & {fetch.installer, _ANY_INSTALLER}:
+    if fetch.installer and scope.installers & {fetch.installer, ANY_INSTALLER}:
         return True
     if any(_pin_in_key(pin).search(scope.key) for pin in fetch.pins):
         return True
@@ -2236,11 +1891,11 @@ class FlatStep(NamedTuple):
     step: dict
     line: int
     origin: str
-    context: _Context
+    context: Context
 
 
 def flatten(
-    steps: list[dict], anchor: int, origin: str, seen: frozenset, context: _Context
+    steps: list[dict], anchor: int, origin: str, seen: frozenset, context: Context
 ) -> list[FlatStep]:
     """Every step a job really runs, with the workflow line to report it at.
 
@@ -2276,24 +1931,24 @@ def flatten(
 
 
 def _action_context(
-    doc: dict, steps: list[dict], caller: dict, context: _Context
-) -> _Context:
+    doc: dict, steps: list[dict], caller: dict, context: Context
+) -> Context:
     """The context of a composite action's STEPS when the step CALLER uses it.
     Each input is what CALLER's `with:` passes, read in the caller's CONTEXT,
     or else the input's default. The environment is the caller's."""
-    env = {**context.env, **_env_of(caller)}
-    own = _Context(tuple(steps), {}, env)
+    env = {**context.env, **env_of(caller)}
+    own = Context(tuple(steps), {}, env)
     declared, passed = doc.get("inputs"), caller.get("with")
     passed = passed if isinstance(passed, dict) else {}
-    inputs: dict[str, _Text | None] = {}
+    inputs: dict[str, Text | None] = {}
     for name, spec in declared.items() if isinstance(declared, dict) else []:
         if name == "__line__":
             continue
         if name in passed:
-            inputs[name] = _rendered(passed[name], caller, context)
+            inputs[name] = rendered(passed[name], caller, context)
             continue
         default = spec.get("default", "") if isinstance(spec, dict) else ""
-        inputs[name] = _rendered(default, caller, own)
+        inputs[name] = rendered(default, caller, own)
     return own._replace(inputs=inputs)
 
 
@@ -2348,7 +2003,7 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         if not steps:
             continue  # a `uses:` job runs another workflow's steps, not its own
         key_line, block = blocks.get(str(name), (1, ""))
-        context = _Context(tuple(steps), None, {**_env_of(doc), **_env_of(job)})
+        context = Context(tuple(steps), None, {**env_of(doc), **env_of(job)})
         flat = flatten(steps, key_line, "", frozenset({path}), context)
         # The job-scoped marker reads the surfaces a `#` may open a comment on:
         # a real YAML comment, and a `run:` value. A `#` inside any other scalar
@@ -2358,9 +2013,7 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         if any(annotated(line, OPT_OUT) for line in yaml_script_view(block)):
             continue
         scopes = [
-            scope
-            for f in flat
-            if (scope := _cache_scope(f.step, f.context)) is not None
+            scope for f in flat if (scope := cache_scope(f.step, f.context)) is not None
         ]
         default_directory = _default_directory(doc, job)
         for step, line, origin, _ in flat:
