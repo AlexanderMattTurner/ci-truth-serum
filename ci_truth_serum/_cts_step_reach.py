@@ -12,7 +12,8 @@ Functions and variables are shared across it. Three edges are followed:
   * `source X` and `. X` add X to the namespace;
   * a call to a function the namespace defines walks that function's body;
   * `bash X`, `sh X` and `./X.sh` start a child namespace, and a Python
-    interpreter handed `X.py` records X for the caller.
+    interpreter handed `X.py` records X for the caller. A wrapper in front
+    (`timeout 900 bash X`, `sudo bash X`) does not hide the script.
 
 `Namespace.value` lists the path forms that resolve. Any other path ends the
 walk silently, because a guessed path judges a file the step never runs. The
@@ -37,6 +38,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     _literal,
     command_arguments,
     command_words,
+    is_lookup,
     iter_nodes,
     node_text,
     parse,
@@ -46,12 +48,27 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import MESSAGE_PREFIX  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_imports import _PY_INTERPRETER, interpreter_scripts  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from check_embedded_program_length import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    _ENV_BINDING,
+    TRANSPARENT_PREFIXES,
+    WRAPPER_VALUE_OPTIONS,
+)
 from check_shell_source_declarations import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _DIRECTIVE,
     _comment_block_above,
     _directive_line,
     resolve_target,
 )
+from check_soft_timeout import _TIMEOUT_NAMES, _read_bound  # noqa: E402,I001  # pylint: disable=wrong-import-position
+
+# The wrapper options that move the program to another directory before it
+# starts (`env -C sub`, `sudo -D sub`, and `sudo -i`, whose login shell starts
+# in the target user's home), so a relative script path names a file under
+# that directory, not under the one the walk knows.
+_CHANGES_DIRECTORY = {
+    "env": frozenset({"-C", "--chdir"}),
+    "sudo": frozenset({"-D", "--chdir", "-i", "--login"}),
+}
 
 # How many `bash X` / interpreter hops a walk follows from the `run:` body.
 MAX_HOPS = 6
@@ -700,7 +717,9 @@ class Reach(NamedTuple):
 
 
 def _python_target(words: list[str | None]) -> str | None:
-    """The `.py` file, or `-m` module as a path, that WORDS hand to Python."""
+    """The `.py` file, or `-m` module as a path, that WORDS hand to Python,
+    after any wrapper in front of the interpreter."""
+    words = _launched(words)
     found = interpreter_scripts(words)
     if found:
         return found[0]
@@ -739,10 +758,63 @@ def _uv_run_target(rest: list[str | None]) -> str | None:
     return None
 
 
+def _read_option(word: str, takes_value: frozenset[str]) -> tuple[set[str], bool]:
+    """The options WORD spells, and whether the value of the last one is the
+    next word. A short cluster ends at the first letter that TAKES_VALUE
+    names, as getopt reads it: `-iu root` is `-i` and `-u root`, and in
+    `-uadmin` the letters after `-u` are its value."""
+    if word.startswith("--"):
+        name, joined, _ = word.partition("=")
+        return {name}, not joined and name in takes_value
+    names = set()
+    for end, letter in enumerate(word[1:], start=2):
+        names.add(f"-{letter}")
+        if f"-{letter}" in takes_value:
+            return names, end == len(word)
+    return names, False
+
+
+def _launched(words: list[str | None]) -> list[str | None]:
+    """The words of the program WORDS run, after each wrapper in front of it:
+    `timeout --kill-after=30 900 bash x.sh` and `sudo -E bash x.sh` both run
+    `bash x.sh`. Each wrapper's own options go too, with the value of an option
+    that takes one. The result is [] when WORDS run nothing (`command -v`)."""
+    rest = list(words)
+    while rest and rest[0] is not None:
+        name = program_name(rest[0])
+        if name in _TIMEOUT_NAMES:
+            # A word only the run knows can still be the duration.
+            bound = _read_bound(["$" if word is None else word for word in rest[1:]])
+            if bound.duration is None:
+                return []
+            rest = rest[1 + bound.consumed :]
+            continue
+        if name not in TRANSPARENT_PREFIXES:
+            break
+        if name == "command" and is_lookup([word or "" for word in rest]):
+            return []
+        takes_value = WRAPPER_VALUE_OPTIONS.get(name, frozenset())
+        rest = rest[1:]
+        while rest and rest[0] is not None:
+            option = rest[0]
+            if not option.startswith("-") and not (
+                name == "env" and _ENV_BINDING.match(option)
+            ):
+                break
+            options, value_follows = _read_option(option, takes_value)
+            if options & _CHANGES_DIRECTORY.get(name, frozenset()):
+                return []  # the script resolves against a directory the walk does not track
+            rest = rest[2 if value_follows else 1 :]
+            if option == "--":
+                break
+    return rest
+
+
 def _shell_target(words: list[str | None]) -> str | None:
     """The shell script WORDS run: the command word itself (`./x.sh`), or the
-    first script a shell is handed (`bash -e x.sh`). A `-c` hands the shell a
-    string, so nothing after it is a file."""
+    first script a shell is handed (`bash -e x.sh`), after any wrapper in front
+    of either. A `-c` hands the shell a string, so nothing after it is a file."""
+    words = _launched(words)
     if not words or words[0] is None:
         return None
     if _SHELL_SUFFIX.search(words[0]):

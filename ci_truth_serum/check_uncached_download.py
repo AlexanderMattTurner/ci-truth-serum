@@ -11,24 +11,32 @@ minutes on a job's clock rather than as a failure anyone reads.
 The failure it does produce is a timeout, and a timeout does not say so. GitHub
 reports a job that runs past `timeout-minutes` with the conclusion **cancelled**,
 and its log holds one line: "The operation was canceled." Worked case from the
-repo this lint came out of: a test shard with a 15-minute budget spent 7.9 of
-those minutes on one `npm install -g` of a pinned package, because the registry
+repo this lint came out of: a test shard had a 15-minute budget. One `npm
+install -g` of a pinned package used 7.9 of those minutes, because the registry
 was slow that hour. Three shards went "cancelled" at once. Nobody reads
 "cancelled" as "your uncached download ran long", so the hunt went to the tests.
 A cache keyed on the pinned version turns that 7.9 minutes into seconds.
 
-A download is pinned in one of two ways:
+A download is pinned in one of three ways:
 
   * the URL or the package spec names a fixed release (`/v2.7.0/`, `==0.14.0`,
     or a `*VERSION*` variable);
-  * the same shell process checks the download against a digest
-    (`sha256sum -c`, `shasum -a 256 -c`), or the same Python function hashes
-    the bytes and compares the hash. A job that refuses every other byte has
-    immutable input by its own rule.
+  * the same shell process checks the download against a digest. The check is
+    a `sha256sum -c` command, or a test that compares the hash of the file
+    (`[[ "$(sha256sum <f)" == "$SHA" ]]`). The tool can sit in an array or in
+    a function. A digest that the run downloads changes with the bytes, so a
+    comparison with it is no check. In Python, the same function hashes the
+    bytes and compares the hash. A job that refuses every other byte has
+    immutable input by its own rule;
+  * the step calls a function whose body downloads a file and checks the
+    digest of that file, directly or through a wrapper. The outermost call
+    that carries a pin is the fetch, because it names the tool and its
+    version.
 
 The lint reads more than the `run:` text. `_cts_step_reach` follows each repo
 script the step runs or sources, and each function call into that function's
-body. It also records a Python file the step hands an interpreter, which this
+body. A wrapper in front of a script (`timeout 900 bash setup.bash`) does not
+hide it. It also records a Python file the step hands an interpreter, which this
 module parses with `ast`. A path that the text does not fix ends the walk with
 no finding, because a guessed path judges a file the step never runs. Measured
 on agent-glovebox: both osv-scanner jobs download a pinned binary on every run
@@ -36,31 +44,34 @@ through a two-file chain, and only a walk that follows scripts sees it.
 
 A cache in the job covers a download only when the cache can hold it:
 
-  * its `key:` names the pin — the version, the digest, the version variable
-    as `env.NAME`, or a `hashFiles()` of a file that holds the fetch or
-    assigns its pin;
-  * or its `path:` holds the file the download writes.
+  * its `key:` names the pin. That is the version, the digest, the version
+    variable as `env.NAME`, or a `hashFiles()` of a file that holds the fetch,
+    assigns its pin, or is read to compute its pin (`$(jq -r .v pins.json)`);
+  * its `path:` holds the file the download writes, a path a later `cp`,
+    `install` or `mv` copies it to, or an absolute path the step hands a
+    downloader function;
+  * it is the store of the installer: `~/.cache/pip` for pip, or the cache of
+    a setup action whose cache input names the installer (`cache: pnpm`).
 
-A variable counts as a pin only when its name says it holds one (`*VERSION*`,
-`*SHA*`, …) or the text fixes a version or digest as its value, so a key that
-names `env.ARCH` does not cover a download whose URL also reads `$ARCH`.
+A variable is a pin only when its name says so (`*VERSION*`, `*SHA*`, …), or
+when the text gives it a fixed version or digest. Thus a key that names
+`env.ARCH` does not cover a download whose URL also reads `$ARCH`.
 
-A cache whose key or path the lint cannot read statically (a setup action's own
-cache, a key from a step output) still covers every download in the job. A miss
-there costs less than a false positive. Local composite actions
+`_cts_cache_scope` reads each cache step's key and path, and the installers a
+setup action caches. A key with a value it cannot read could name the pin, so
+that cache covers every download in the job. Local composite actions
 (`uses: ./.github/actions/foo`) are inlined first.
 
-A fetcher that checks a cache directory before it downloads satisfies the lint
-through the `actions/cache` step that restores that directory, when the key of
-that step names the pin or hashes the fetcher. The lint cannot read where a
-Python fetch writes, so a `path:` alone does not cover one.
+A fetcher can check a cache directory before it downloads. The `actions/cache`
+step that restores that directory then covers it, when the key of that step
+names the pin or hashes the fetcher. The lint cannot read where a Python fetch
+writes, so a `path:` alone does not cover one.
 
 Deliberately NOT reported, because the download is the point or has no stable key:
 
   * an install with any unpinned spec — `check-versionless-install` owns that, and
     a floating install has no cache key that could stay correct;
-  * a `docker pull`, and any install inside a job whose purpose is to prove a
-    fresh machine can install the thing;
+  * a `docker pull`;
   * a program the job does not run from the repo, such as a pip-installed CLI.
 
 Fix it by adding `actions/cache` keyed on the pinned version, and by making the
@@ -88,7 +99,7 @@ import posixpath
 import re
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Protocol
 
 import yaml
 from tree_sitter import Node
@@ -96,7 +107,9 @@ from tree_sitter import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
+    _inside_definition,
     command_arguments,
+    is_lookup,
     iter_nodes,
     node_text,
     program_name,
@@ -113,9 +126,20 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 )
 from _cts_py_ast import name_of  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_imports import local_files, sys_path_roots  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_cache_scope import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    ANY_INSTALLER,
+    CacheScope,
+    Context,
+    Text,
+    cache_scope,
+    env_of,
+    home,
+    rendered,
+)
 from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Namespace,
     Unit,
+    _launched,
     body_start,
     callable_words,
     definitions,
@@ -126,6 +150,7 @@ from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import
 from check_path_gate_deps import glob_to_regex  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from check_versionless_install import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     NODE,
+    _PIP_ALIAS,
     _find_install,
     spec_scan,
     writes_outside_the_lockfile,
@@ -147,27 +172,45 @@ MESSAGE = (
 NO_CACHE = "no cache step anywhere in the job"
 NO_COVER = "no cache in the job keyed on its pin or holding its output path"
 
-# An action that caches. `actions/cache` and its `restore`/`save` sub-actions do
-# so by definition; the language setup actions do so only when their cache input
-# is set, which is why the input name is part of the table rather than assumed.
-_CACHE_ACTIONS = ("actions/cache", "buildjet/cache")
-_SETUP_CACHE_INPUTS: dict[str, tuple[str, ...]] = {
-    "actions/setup-node": ("cache",),
-    "actions/setup-python": ("cache",),
-    "actions/setup-go": ("cache",),
-    "actions/setup-java": ("cache",),
-    "actions/setup-dotnet": ("cache",),
-    "astral-sh/setup-uv": ("enable-cache",),
-    "ruby/setup-ruby": ("bundler-cache",),
+# The install flags that keep an installer from writing its store.
+_NO_STORE_FLAGS = frozenset({"--no-cache-dir", "--no-cache"})
+# Where each installer keeps the files it downloads. A cache whose path holds
+# this directory holds the install's bytes. `~` is the home directory of the
+# job, which is one of _HOMES.
+_INSTALLER_STORES = {
+    "pip": "~/.cache/pip",
+    "pipx": "~/.cache/pip",
+    "uv": "~/.cache/uv",
+    "npm": "~/.npm",
+    "pnpm": "~/.local/share/pnpm/store",
+    "yarn": "~/.cache/yarn",
+    "apt-get": "/var/cache/apt/archives",
+    "apt": "/var/cache/apt/archives",
+    "aptitude": "/var/cache/apt/archives",
 }
-# An action whose whole job is to cache, so it carries no enabling input.
-_ALWAYS_CACHING_ACTIONS = ("Swatinem/rust-cache",)
+# The home directories a GitHub job runs in: the hosted runner's user, root,
+# and the home a container job gets.
+_HOMES = ("~", "/home/runner", "/root", "/github/home")
 
 # A version that is not a version: the registry still resolves it fresh, so the
 # download has no stable cache key and this lint must leave it alone.
 _FLOATING = re.compile(r"[=@](?:latest|next|stable|\*|main|master)$", re.IGNORECASE)
 
 _DOWNLOADERS = frozenset({"curl", "wget"})
+# The nodes whose body runs only on some runs: a `list` is `a && b` or `a || b`.
+_CONDITIONAL_NODES = frozenset(
+    {
+        "if_statement",
+        "elif_clause",
+        "else_clause",
+        "case_item",
+        "while_statement",
+        "for_statement",
+        "c_style_for_statement",
+    }
+)
+# The commands that copy a file's bytes to another path.
+_COPIERS = frozenset({"cp", "install", "mv"})
 # A URL whose path carries a concrete release: a `v1.2.3` style segment, or a
 # shell variable whose NAME says it holds one. Without that the fetch resolves to
 # whatever the host serves today, which no cache key can track.
@@ -198,6 +241,18 @@ _DIGEST_TOOLS = re.compile(r"sha(?:1|224|256|384|512)sum|shasum|b2sum")
 _CHECK_FLAG = re.compile(r"^(?:--check|-[A-Za-z]*c[A-Za-z]*)$")
 # The nodes around a checksum command that carry its stdin.
 _CHECK_SCOPES = frozenset({"pipeline", "redirected_statement"})
+# The nodes a checksum command's output passes through on its way to a
+# comparison or an assignment, and the operators that compare it.
+_HASH_OUTPUT_PATH = frozenset(
+    {
+        "redirected_statement",
+        "pipeline",
+        "command_substitution",
+        "string",
+        "concatenation",
+    }
+)
+_COMPARE_OPERATORS = frozenset({"==", "=", "!="})
 
 # The short flags of curl and wget that take no value. Only these may come
 # before a value flag in one word: in `-Ttool.tgz` the letters after `-T`
@@ -222,15 +277,10 @@ _DIRECTORY_FLAGS = {
 # written in, until `_script_fetches` knows which file that is.
 _RUN_BODY = "<run body>"
 
-# A cache key expression this lint can read: the runner, the env, the matrix,
-# the event context, and `hashFiles()`. Anything else (a step output, an input)
-# is computed at run time, so the cache reads as covering everything.
-_READABLE_EXPRESSION = re.compile(
-    r"^\s*(?:(?:runner|env|matrix|github)\.[\w.-]+|hashFiles\(.*\))\s*$", re.DOTALL
+# The bash nodes whose value a command computes.
+_COMPUTED_WORDS = frozenset(
+    {"command_substitution", "process_substitution", "arithmetic_expansion"}
 )
-_EXPRESSION = re.compile(r"\$\{\{(?P<body>.*?)\}\}", re.DOTALL)
-_HASHFILES = re.compile(r"hashFiles\((?P<args>[^)]*)\)")
-_QUOTED = re.compile(r"'(?P<single>[^']*)'|\"(?P<double>[^\"]*)\"")
 
 # The Python calls that fetch bytes over the network.
 _PY_FETCHERS = frozenset(
@@ -253,35 +303,16 @@ class Fetch(NamedTuple):
     name it: variable names, versions, digests. SOURCES are the repo-relative
     files a `hashFiles()` key may hash to name it. OUTPUTS are the paths the
     bytes land at, as far as the text fixes them. OUTPUT_NAMES are the
-    relative paths the bytes land at in a directory the text does not fix."""
+    relative paths the bytes land at in a directory the text does not fix.
+    INSTALLER is the package manager that makes the fetch, empty for a
+    download."""
 
     what: str
     pins: frozenset[str]
     sources: frozenset[str]
     outputs: frozenset[str]
     output_names: frozenset[str] = frozenset()
-
-
-def _action_name(step: dict) -> str:
-    """The action STEP uses, without its `@ref` (`actions/cache@0057852…`)."""
-    uses = step.get("uses")
-    return uses.split("@", 1)[0].strip() if isinstance(uses, str) else ""
-
-
-def _caches(step: dict) -> bool:
-    """True when STEP restores or saves a cache."""
-    action = _action_name(step)
-    if not action:
-        return False
-    if action.startswith(_CACHE_ACTIONS) or action in _ALWAYS_CACHING_ACTIONS:
-        return True
-    inputs = _SETUP_CACHE_INPUTS.get(action)
-    with_block = step.get("with")
-    if not inputs or not isinstance(with_block, dict):
-        return False
-    return any(
-        str(with_block.get(key, "")).strip() not in ("", "false") for key in inputs
-    )
+    installer: str = ""
 
 
 # ── shell: what a namespace downloads ───────────────────────────────────────
@@ -293,23 +324,73 @@ def _relative(path: Path | None) -> str | None:
     return path.relative_to(REPO_ROOT).as_posix()
 
 
-def _downloader_functions(namespace: Namespace) -> frozenset[str]:
-    """The functions whose bodies run curl or wget, directly or through another
-    such function. `pinned_curl() { curl … "$url"; }` is one."""
-    callees: dict[str, set[str]] = {}
-    found: set[str] = set()
-    for name in namespace.functions:
-        callees[name] = set()
-        for command, _ in namespace.function_commands(name):
-            if _runs_downloader(command):
-                found.add(name)
-            callees[name] |= set(callable_words(command)) & namespace.functions.keys()
+def _callees(namespace: Namespace) -> dict[str, frozenset[str]]:
+    """Each function the namespace defines, mapped to the functions its body
+    may call."""
+    defined = namespace.functions.keys()
+    return {
+        name: frozenset(
+            word
+            for command, _ in namespace.function_commands(name)
+            for word in callable_words(command)
+            if word in defined
+        )
+        for name in namespace.functions
+    }
+
+
+def _callers_of(
+    found: set[str] | frozenset[str], callees: dict[str, frozenset[str]]
+) -> frozenset[str]:
+    """FOUND, and each function that calls one of them at any depth."""
+    found = set(found)
     changed = True
     while changed:
         before = len(found)
         found |= {name for name, called in callees.items() if called & found}
         changed = len(found) != before
     return frozenset(found)
+
+
+class _NodeTest(Protocol):
+    """A question about one syntax node."""
+
+    def __call__(self, node: Node, /) -> bool: ...
+
+
+def _functions_running(
+    namespace: Namespace, callees: dict[str, frozenset[str]], runs: _NodeTest
+) -> frozenset[str]:
+    """The functions whose bodies run a command that RUNS accepts, directly or
+    through another such function. With `_runs_downloader`,
+    `pinned_curl() { curl … "$url"; }` is one."""
+    seeds = {
+        name
+        for name in namespace.functions
+        if any(runs(command) for command, _ in namespace.function_commands(name))
+    }
+    return _callers_of(seeds, callees)
+
+
+def _ancestor(node: Node, kind: str) -> Node | None:
+    """The innermost node of type KIND above NODE, if any."""
+    scope = node.parent
+    while scope is not None and scope.type != kind:
+        scope = scope.parent
+    return scope
+
+
+def _enclosing_function(node: Node) -> str | None:
+    """The name of the innermost function whose body holds NODE, if any."""
+    scope = _ancestor(node, "function_definition")
+    name = scope.child_by_field_name("name") if scope is not None else None
+    return node_text(name) if name is not None else None
+
+
+def _downloads(command: Node, downloaders: frozenset[str]) -> bool:
+    """True when COMMAND runs curl or wget, or calls a function DOWNLOADERS
+    names."""
+    return _runs_downloader(command) or bool(set(callable_words(command)) & downloaders)
 
 
 @functools.lru_cache(maxsize=65536)
@@ -341,11 +422,9 @@ def _is_pin_name(name: str, value: str | None) -> bool:
     return bool(_PIN_NAME.search(name)) or bool(value and _literals(value))
 
 
-def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
-    """The words a cache key may carry to name what NODES pin: each version or
-    digest written in them, and each pin variable they expand. A variable
-    assigned from another one adds that one too, so `version="${TOOL_VERSION#v}"`
-    lets a key name `TOOL_VERSION`."""
+def _followed(nodes: list[Node], namespace: Namespace) -> set[str]:
+    """The variables NODES expand, and each variable an assignment of one of
+    them expands, to a fixed point."""
     names: set[str] = set()
     pending = [name for node in nodes for name in _expanded_names(node)]
     while pending:
@@ -355,6 +434,15 @@ def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
         names.add(name)
         for assignment, _ in namespace.assignments.get(name, []):
             pending += _expanded_names(assignment)
+    return names
+
+
+def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
+    """The words a cache key may carry to name what NODES pin: each version or
+    digest written in them, and each pin variable they expand. A variable
+    assigned from another one adds that one too, so `version="${TOOL_VERSION#v}"`
+    lets a key name `TOOL_VERSION`."""
+    names = _followed(nodes, namespace)
     values = {name: namespace.variable(name, unit) for name in names}
     pins = {name for name, value in values.items() if _is_pin_name(name, value)}
     texts = [node_text(node) for node in nodes]
@@ -365,14 +453,18 @@ def _pins_of(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
     return pins
 
 
-def _sources_of(pins: set[str], namespace: Namespace, unit: Unit) -> set[str]:
-    """The files a `hashFiles()` key may hash to name a fetch: the file that
-    holds it, and each file that assigns one of its pins. `_RUN_BODY` stands
-    for the workflow or action file when that file is one of them."""
+def _sources_of(
+    nodes: list[Node], pins: set[str], namespace: Namespace, unit: Unit
+) -> set[str]:
+    """The files a `hashFiles()` key may hash to name the fetch that NODES
+    spell: the file that holds it, each file that assigns one of its PINS, and
+    each file a variable it uses is read from. `_RUN_BODY` stands for the
+    workflow or action file when that file is one of them."""
     paths = {unit.path} if unit.path else set()
     for pin in pins:
         paths |= namespace.assigned_in(pin)
     sources = {rel for path in paths if (rel := _relative(path))}
+    sources |= _read_globs(_followed(nodes, namespace) | pins, namespace)
     in_body = unit.path is None or any(
         owner.path is None
         for pin in pins
@@ -381,29 +473,364 @@ def _sources_of(pins: set[str], namespace: Namespace, unit: Unit) -> set[str]:
     return sources | {_RUN_BODY} if in_body else sources
 
 
-def _digest_checks(namespace: Namespace) -> list[tuple[Node, Unit]]:
-    """The `sha256sum -c` style commands the namespace runs. Each comes back as
-    the pipeline or redirected statement around it, since the digest and the
-    file name usually arrive on stdin."""
+def _read_globs(names: set[str], namespace: Namespace) -> set[str]:
+    """The files the values of NAMES are read from, as globs relative to the
+    repo root. `v="$(jq -r .version "$dir/$tool.json")"` reads
+    `<dir>/*.json`: a part the text does not fix reads as `*`. A word the text
+    fixes no part of could be any file, so it is left out, and so is a flag.
+    A relative path lands in the reading command's directory, or in any
+    directory (`**/`) when the text does not fix that."""
+    globs = set()
+    for name in names:
+        for assignment, owner in namespace.assignments.get(name, []):
+            value = assignment.child_by_field_name("value")
+            for command, words in _reads(value):
+                directory = namespace.directory_at(command, owner) if command else None
+                for word in words:
+                    spelled = _spelled(word, namespace, owner, unknown="*")
+                    if spelled.startswith("-") or not spelled.replace("*", "").strip(
+                        "/"
+                    ):
+                        continue
+                    if rel := _read_glob(spelled, directory):
+                        globs.add(rel)
+    return globs
+
+
+def _reads(value: Node | None) -> list[tuple[Node | None, list[Node]]]:
+    """Each command in VALUE with the words that may name a file it reads, its
+    arguments and its `<` targets. A `$(<f)` runs no command, so it pairs
+    None with its target."""
+    if value is None:
+        return []
+    found: list[tuple[Node | None, list[Node]]] = [
+        (command, _file_words(command, ("<",), "0"))
+        for command in iter_nodes(value, "command")
+    ]
+    for substitution in iter_nodes(value, "command_substitution"):
+        if targets := _substituted_files(substitution):
+            found.append((None, targets))
+    return found
+
+
+def _substituted_files(substitution: Node) -> list[Node]:
+    """The file a `$(<f)` SUBSTITUTION reads, which runs no command."""
+    return [
+        target
+        for child in substitution.named_children
+        if child.type == "file_redirect"
+        and (target := child.child_by_field_name("destination")) is not None
+    ]
+
+
+def _read_glob(spelled: str, directory: Path | None) -> str | None:
+    """The repo-relative glob of the file SPELLED names, read from DIRECTORY,
+    or None when it lies outside the repo."""
+    if spelled.startswith(("/", "~", "$")):
+        return _relative(Path(posixpath.normpath(spelled)))
+    if directory is None:
+        return "**/" + posixpath.normpath(spelled)
+    return _relative(Path(posixpath.normpath(posixpath.join(str(directory), spelled))))
+
+
+def _array_programs(word: Node, namespace: Namespace) -> set[str] | None:
+    """The programs a command word that expands one array may name:
+    `"${SHA_ARGV[@]}"` names `sha256sum` when each assignment of `SHA_ARGV` is
+    an array that starts with it. A `+=` only appends options, so it names no
+    program. None when the word is anything else."""
+    if word.type == "string" and len(word.named_children) == 1:
+        word = word.named_children[0]
+    if word.type not in ("simple_expansion", "expansion"):
+        return None
+    names = list(iter_nodes(word, "variable_name"))
+    assignments = namespace.assignments.get(node_text(names[0]), []) if names else []
+    programs = set()
+    for assignment, _ in assignments:
+        if any(child.type == "+=" for child in assignment.children):
+            continue
+        value = assignment.child_by_field_name("value")
+        if value is None or value.type != "array" or not value.named_children:
+            return None
+        programs.add(program_name(node_text(value.named_children[0])))
+    return programs or None
+
+
+def _runs_digest_tool(command: Node, namespace: Namespace) -> bool:
+    """True when COMMAND runs a checksum tool: by name, or through an array
+    that holds the tool and its options."""
+    args = command_arguments(command)
+    if not args:
+        return False
+    if _DIGEST_TOOLS.fullmatch(program_name(tokens(command)[0])):
+        return True
+    programs = _array_programs(args[0], namespace)
+    return bool(programs) and all(_DIGEST_TOOLS.fullmatch(p) for p in programs)
+
+
+class _Floats:
+    """Asks whether a value comes from a download. A digest that the run
+    downloads (`want="$(curl …/latest/t.sha256)"`, `$(cat t.sha256)` after a
+    curl writes that file, or `$(gh api …)`) changes with the bytes it vouches
+    for, so a check against it pins nothing. A digest read from a committed
+    file (`want="$(pinned_sha256 kata)"`) is fixed by the tree, and stays a
+    pin. A variable is followed through each assignment it takes its value
+    from, so `sha="${line%% *}"` floats when `line` does. A variable that is
+    only an argument inside a substitution (`$(pinned_sha256 "$tool")`) is
+    no part of the value, so it is not followed."""
+
+    def __init__(self, namespace: Namespace, downloaders: frozenset[str]):
+        self.namespace = namespace
+        self.downloaders = downloaders
+        # A command no walk runs (in a function nothing calls) reads nothing.
+        self.units = {command.id: unit for command, unit in namespace.executed}
+        # Only curl and wget count: an argument of a downloader function
+        # (`fetch_verified kata …`) names a tool as often as a file. A name
+        # only the run decides matches by the variable that holds it
+        # (`-o "$sums"` and `grep x "$sums"`), and a positional parameter
+        # matches nothing, since `$2` in two functions is two values.
+        self.downloaded = {
+            name
+            for name in _written_names(namespace.executed, namespace, frozenset())
+            if not name.startswith("$")
+        } | {
+            name
+            for command, _ in namespace.executed
+            if _runs_downloader(command)
+            for name in _held_variables(_output_words(command))
+        }
+
+    def __call__(self, node: Node, unit: Unit) -> bool:
+        """True when NODE, read in UNIT, holds a value a download gives."""
+        values, followed, pending = [(node, unit)], set(), _direct_names(node)
+        while pending:
+            name = pending.pop()
+            followed.add(name)
+            for assignment, owner in self.namespace.assignments.get(name, []):
+                value = assignment.child_by_field_name("value")
+                if value is not None:
+                    values.append((value, owner))
+                    pending |= _direct_names(value) - followed
+        return any(
+            self._substitution_reads(substitution, owner)
+            for value, owner in values
+            for substitution in iter_nodes(value, "command_substitution")
+        )
+
+    def _substitution_reads(self, substitution: Node, unit: Unit) -> bool:
+        """True when SUBSTITUTION reads a download: through a command it runs,
+        or as `$(<f)`, which runs none and reads F."""
+        files = _substituted_files(substitution)
+        return self._names_a_download(files, unit) or any(
+            self._reads_a_download(command, owner)
+            for command in iter_nodes(substitution, "command")
+            if (owner := self.units.get(command.id)) is not None
+        )
+
+    def _reads_a_download(self, command: Node, unit: Unit) -> bool:
+        """True when COMMAND downloads, asks a remote, or reads a file a
+        download writes."""
+        if _downloads(command, self.downloaders) or _asks_a_remote(command):
+            return True
+        return self._names_a_download(_file_words(command, ("<",), "0"), unit)
+
+    def _names_a_download(self, nodes: list[Node], unit: Unit) -> bool:
+        """True when one of NODES names a file a download writes. A URL names
+        no file on disk, though its last segment may match one."""
+        files = [
+            node
+            for node in nodes
+            if not _URL.match(_spelled(node, self.namespace, unit))
+        ]
+        names = _base_names(files, self.namespace, unit) | _held_variables(files)
+        return bool(names & self.downloaded)
+
+    def feeds(self, checker: Node, scope: Node, unit: Unit) -> bool:
+        """True when the digests the `sha256sum -c` CHECKER reads come from a
+        download. SCOPE is the pipeline or redirected statement around it.
+        They do when the checksum file it names is one a download writes,
+        when a command that pipes into it reads a download, or when a printed
+        line or a here-string carries a value that floats. A printed line
+        names the file it checks too, so only its values are followed."""
+        if self._names_a_download(_file_words(checker, ("<",), "0"), unit):
+            return True
+        for command in iter_nodes(scope, "command"):
+            words = tokens(command)
+            if command.id == checker.id or not words:
+                continue
+            if MESSAGE_PREFIX.match(words[0]):
+                if any(self(arg, unit) for arg in command_arguments(command)[1:]):
+                    return True
+            elif self._reads_a_download(command, unit):
+                return True
+        return any(
+            self(child, unit)
+            for here in iter_nodes(scope, "herestring_redirect")
+            for child in here.named_children
+        )
+
+
+def _file_words(
+    command: Node, operators: tuple[str, ...], descriptor: str
+) -> list[Node]:
+    """COMMAND's argument words and the targets of its redirects with one of
+    OPERATORS on DESCRIPTOR: the words that may name a file it touches."""
+    return command_arguments(command)[1:] + _redirect_targets(
+        command, operators, descriptor
+    )
+
+
+def _output_words(command: Node) -> list[Node]:
+    """The words that name the file the curl or wget COMMAND writes: the value
+    after a separate output flag (`-o "$sums"`), and each stdout redirect
+    target. A value attached to its flag is never one whole variable."""
+    words = tokens(command)
+    program = next((p for w in words if (p := program_name(w)) in _OUTPUT_FLAGS), "")
+    if not program:
+        return []
+    short, long = _OUTPUT_FLAGS[program]
+    args = command_arguments(command)
+    found = [
+        node
+        for flag, node in zip(words, args[1:])
+        if flag == long or ((match := short.match(flag)) and not match["value"])
+    ]
+    return found + _redirect_targets(command, _WRITE_OPERATORS, "1")
+
+
+def _direct_names(node: Node) -> set[str]:
+    """The variables NODE expands outside every command substitution in it:
+    the ones its value is made of."""
+    names = set()
+    for expansion in iter_nodes(node, "simple_expansion", "expansion"):
+        between, parent = [], expansion.parent
+        while parent is not None and parent.id != node.id:
+            between.append(parent.type)
+            parent = parent.parent
+        if "command_substitution" not in [*between, node.type]:
+            names |= _expanded_names(expansion)
+    return names
+
+
+def _held_variables(nodes: list[Node]) -> set[str]:
+    """`$NAME` for each of NODES that is one whole named variable (`"$sums"`,
+    `${sums}`). Positional and special parameters are left out."""
+    held = set()
+    for node in nodes:
+        if node.type == "string" and len(node.named_children) == 1:
+            node = node.named_children[0]
+        names = list(iter_nodes(node, "variable_name"))
+        plain = node.type in ("simple_expansion", "expansion") and len(names) == 1
+        if plain and node_text(node) in (
+            f"${node_text(names[0])}",
+            f"${{{node_text(names[0])}}}",
+        ):
+            held.add(f"${node_text(names[0])}")
+    return held
+
+
+def _asks_a_remote(command: Node) -> bool:
+    """True when COMMAND reads a remote: every `gh` subcommand asks GitHub,
+    and `git ls-remote` asks a remote which commit a ref names now."""
+    words = _launched(tokens(command))
+    name = program_name(words[0] or "") if words else ""
+    return name == "gh" or (name == "git" and "ls-remote" in words[1:])
+
+
+def _against_a_value(expression: Node, hashed: _NodeTest, floats: _NodeTest) -> bool:
+    """True when EXPRESSION compares, with `==`, `=` or `!=`, a side that
+    HASHED accepts against a fixed value. `!= ""` accepts every file a
+    checksum tool prints a line for, and a value that FLOATS changes with
+    the download, so neither is a digest check."""
+    operator = expression.child_by_field_name("operator")
+    if operator is None or operator.type not in _COMPARE_OPERATORS:
+        return False
+    left = expression.child_by_field_name("left")
+    right = expression.child_by_field_name("right")
+    if left is None or right is None:
+        return False
+    return any(
+        hashed(side) and unquote(node_text(other)) != "" and not floats(other)
+        for side, other in ((left, right), (right, left))
+    )
+
+
+def _compares(test: Node, name: str, floats: _NodeTest) -> bool:
+    """True when the `[[ ]]` or `[ ]` TEST compares the variable NAME with a
+    fixed value."""
+    return any(
+        _against_a_value(expression, lambda side: name in _expanded_names(side), floats)
+        for expression in iter_nodes(test, "binary_expression")
+    )
+
+
+def _comparison_scopes(command: Node, unit: Unit, floats: _NodeTest) -> list[Node]:
+    """The nodes that compare what the hashing COMMAND prints, with the node
+    that names its input file first. Two shapes count:
+    `[[ "$(sha256sum <f)" == "$want" ]]` comes back as its test, and
+    `got="$(sha256sum f)"` comes back as that assignment and each test that
+    compares `$got` and runs where the assignment runs: in the same function
+    body, or at the top level of the same file."""
+    node, substituted = command, False
+    while node.parent is not None and node.parent.type in _HASH_OUTPUT_PATH:
+        node = node.parent
+        substituted |= node.type == "command_substitution"
+    parent = node.parent
+    if not substituted or parent is None:
+        return []
+    if parent.type == "binary_expression":
+        test = _ancestor(node, "test_command")
+        compared = _against_a_value(parent, lambda side: side.id == node.id, floats)
+        return [test] if test is not None and compared else []
+    if parent.type != "variable_assignment":
+        return []
+    name = node_text(parent.child_by_field_name("name"))
+    region = _ancestor(parent, "function_definition")
+    scope = region.child_by_field_name("body") if region is not None else unit.root
+    tests = [
+        test
+        for test in iter_nodes(scope, "test_command")
+        if not _inside_definition(test, scope) and _compares(test, name, floats)
+    ]
+    return [parent, *tests] if tests else []
+
+
+def _digest_checks(
+    namespace: Namespace, hashers: frozenset[str], floats: _Floats
+) -> list[tuple[Node, Unit]]:
+    """The digest checks the namespace runs, each as the nodes that hold its
+    digest and its file name:
+      * a `sha256sum -c` style command, as the pipeline or redirected statement
+        around it, since the digest and the file name usually arrive on stdin;
+      * a comparison of what a checksum tool, or a function HASHERS names,
+        prints for a file with a value that does not FLOAT
+        (`_comparison_scopes` lists the two shapes)."""
     found = []
     for command, unit in namespace.executed:
         words = tokens(command)
-        if not words or not _DIGEST_TOOLS.fullmatch(program_name(words[0])):
+        if not words:
             continue
-        if not any(_CHECK_FLAG.match(word) for word in words[1:]):
-            continue
-        scope = command
-        while scope.parent is not None and scope.parent.type in _CHECK_SCOPES:
-            scope = scope.parent
-        found.append((scope, unit))
+        tool = _runs_digest_tool(command, namespace)
+        if tool and any(_CHECK_FLAG.match(word) for word in words[1:]):
+            scope = command
+            while scope.parent is not None and scope.parent.type in _CHECK_SCOPES:
+                scope = scope.parent
+            if not floats.feeds(command, scope, unit):
+                found.append((scope, unit))
+        elif tool or words[0] in hashers:
+            floats_here = functools.partial(floats, unit=unit)
+            found += [
+                (scope, unit)
+                for scope in _comparison_scopes(command, unit, floats_here)
+            ]
     return found
 
 
 def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set[str]:
     """The base names of the files the digest checks name, as far as the text
-    fixes them, from argument words and here-strings:
-    `echo "$SHA  tool" | sha256sum -c -` names `tool`, and
-    `sha256sum -c tool.tgz.sha256` names `tool.tgz` through its checksum file."""
+    fixes them, from argument words, here-strings and stdin redirects:
+    `echo "$SHA  tool" | sha256sum -c -` names `tool`,
+    `sha256sum -c tool.tgz.sha256` names `tool.tgz` through its checksum file,
+    and `[[ "$(sha256sum <tool)" == "$SHA" ]]` names `tool`."""
     names = set()
     for scope, unit in checks:
         nodes = [
@@ -416,13 +843,28 @@ def _checked_names(checks: list[tuple[Node, Unit]], namespace: Namespace) -> set
             for here in iter_nodes(scope, "herestring_redirect")
             for child in here.named_children
         ]
-        for node in nodes:
-            for word in _spelled(node, namespace, unit).split():
-                if word.startswith("-"):
-                    continue  # an option, or stdin
-                name = posixpath.basename(word)
-                names |= {name, _CHECKSUM_SUFFIX.sub("", name)}
+        nodes += [
+            destination
+            for redirect in iter_nodes(scope, "file_redirect")
+            if redirect_parts(redirect).operator == "<"
+            and (destination := redirect.child_by_field_name("destination"))
+        ]
+        names |= {
+            name
+            for base in _base_names(nodes, namespace, unit)
+            for name in (base, _CHECKSUM_SUFFIX.sub("", base))
+        }
     return names
+
+
+def _base_names(nodes: list[Node], namespace: Namespace, unit: Unit) -> set[str]:
+    """The base names of the words NODES spell, minus options and stdin."""
+    return {
+        posixpath.basename(word)
+        for node in nodes
+        for word in _spelled(node, namespace, unit).split()
+        if not word.startswith("-")
+    }
 
 
 def _spelled(
@@ -430,28 +872,37 @@ def _spelled(
     namespace: Namespace,
     unit: Unit,
     following: frozenset[str] = frozenset(),
+    unknown: str | None = None,
 ) -> str:
     """NODE's value when the text fixes it. Otherwise its text after quote
     removal. A variable with one assignment spells that assignment, so
     `D="$HOME/bin"` makes `$D/tool` read `$HOME/bin/tool`. Any other expansion
     is spelled `$NAME`, so one variable reads the same in an output flag and
-    in a here-string. FOLLOWING holds the names being spelled, to stop a cycle."""
+    in a here-string, or UNKNOWN when it is set. FOLLOWING holds the names
+    being spelled, to stop a cycle."""
     value = namespace.value(node, unit)
     if value is not None:
         return value
     if node.type in ("simple_expansion", "expansion"):
         name_node = next(iter_nodes(node, "variable_name"), None)
         if name_node is None:
-            return node_text(node)
+            return node_text(node) if unknown is None else unknown
         name = node_text(name_node)
         assignments = namespace.assignments.get(name, [])
+        default = _unset_default(node)
+        if default is not None and not assignments:
+            return "".join(
+                _spelled(part, namespace, unit, following, unknown) for part in default
+            )
         plain = node_text(node).strip() in (f"${name}", f"${{{name}}}")
         if plain and name not in following and len(assignments) == 1:
             assignment, owner = assignments[0]
             assigned = assignment.child_by_field_name("value")
             if assigned is not None:
-                return _spelled(assigned, namespace, owner, following | {name})
-        return f"${name}"
+                return _spelled(assigned, namespace, owner, following | {name}, unknown)
+        return f"${name}" if unknown is None else unknown
+    if unknown is not None and node.type in _COMPUTED_WORDS:
+        return unknown
     if node.type not in ("string", "concatenation"):
         return unquote(node_text(node))
     raw, base = node.text or b"", node.start_byte
@@ -462,10 +913,23 @@ def _spelled(
         if child.type == "string_content":
             continue
         pieces += [raw[start : body_start(child) - base].decode()]
-        pieces += [_spelled(child, namespace, unit, following)]
+        pieces += [_spelled(child, namespace, unit, following, unknown)]
         start = child.end_byte - base
     pieces.append(raw[start:end].decode())
     return "".join(pieces)
+
+
+def _unset_default(expansion: Node) -> list[Node] | None:
+    """The parts of the default in `${X:-default}` or `${X-default}`, or None
+    for any other expansion. The shell uses the default when no file assigns X."""
+    inner = expansion.children[1:-1]
+    if (
+        len(inner) < 2
+        or inner[0].type != "variable_name"
+        or node_text(inner[1]) not in (":-", "-")
+    ):
+        return None
+    return inner[2:]
 
 
 def _flag_values(words: list[str], spelled: list[str], short, long: str) -> list[str]:
@@ -518,7 +982,7 @@ def _placed(
     placed, names = set(), set()
     root = str(root_path)
     for output in outputs:
-        out = posixpath.normpath(_home(output))
+        out = posixpath.normpath(home(output))
         if out == root or out.startswith(root + "/"):
             placed.add(posixpath.relpath(out, root))
         elif out.startswith(("/", "~")):
@@ -533,41 +997,114 @@ def _placed(
     return frozenset(placed), frozenset(names)
 
 
-def _stdout_redirects(command: Node) -> set[str]:
-    """The files COMMAND's `>`/`>>` redirects write its stdout to."""
+_WRITE_OPERATORS = (">", ">>", ">|")
+
+
+def _redirect_targets(
+    command: Node, operators: tuple[str, ...], descriptor: str
+) -> list[Node]:
+    """The files COMMAND's redirects name, for each redirect with one of
+    OPERATORS on the stream DESCRIPTOR names (that number, or none written):
+    `<f` reads stdin ("0") and `>f` writes stdout ("1")."""
     parent = command.parent
     if parent is None or parent.type != "redirected_statement":
-        return set()
-    found = set()
-    for child in parent.children:
-        if child.type != "file_redirect":
-            continue
-        parts = redirect_parts(child)
-        if parts.operator in (">", ">>", ">|") and parts.descriptor in (None, "1"):
-            found.add(parts.destination)
+        return []
+    return [
+        target
+        for child in parent.children
+        if child.type == "file_redirect"
+        and (parts := redirect_parts(child)).operator in operators
+        and parts.descriptor in (None, descriptor)
+        and (target := child.child_by_field_name("destination")) is not None
+    ]
+
+
+def _stdout_redirects(command: Node) -> set[str]:
+    """The files COMMAND's `>`/`>>` redirects write its stdout to."""
+    found = {
+        unquote(node_text(target))
+        for target in _redirect_targets(command, _WRITE_OPERATORS, "1")
+    }
     return found - {""}
 
 
 class _Shell(NamedTuple):
-    """What a namespace knows that every command in it shares: its downloader
-    functions, the pins its digest checks read, and the base names of the
-    files those checks name."""
+    """What a namespace knows that every command in it shares: the functions
+    each function calls, its downloader functions, the functions whose own
+    body downloads a file and checks its digest, those functions with every
+    function that calls them, the pins its digest checks read (all of them,
+    and by the function whose body holds the check), and the base names of
+    the files those checks name."""
 
     namespace: Namespace
+    callees: dict[str, frozenset[str]]
     downloaders: frozenset[str]
+    verifiers: frozenset[str]
+    checked_downloaders: frozenset[str]
     digest_pins: frozenset[str]
+    function_digest_pins: dict[str, frozenset[str]]
     checked_names: frozenset[str]
 
 
+def _written_names(
+    commands: list[tuple[Node, Unit]], namespace: Namespace, downloaders: frozenset[str]
+) -> set[str]:
+    """The base names of the files the downloads among COMMANDS may write:
+    each argument word of a command that runs curl or wget or calls a
+    function DOWNLOADERS names, and each file its stdout goes to. They are
+    spelled as `_checked_names` spells a check's files, so the two compare."""
+    return {
+        name
+        for command, unit in commands
+        if _downloads(command, downloaders)
+        for name in _base_names(
+            command_arguments(command)[1:]
+            + _redirect_targets(command, _WRITE_OPERATORS, "1"),
+            namespace,
+            unit,
+        )
+    }
+
+
 def _shell_context(namespace: Namespace) -> _Shell:
-    checks = _digest_checks(namespace)
+    callees = _callees(namespace)
+    downloaders = _functions_running(namespace, callees, _runs_downloader)
+    hashers = _functions_running(
+        namespace, callees, lambda command: _runs_digest_tool(command, namespace)
+    )
+    checks = _digest_checks(namespace, hashers, _Floats(namespace, downloaders))
     pins: set[str] = set()
+    by_function: dict[str, frozenset[str]] = {}
+    checked: dict[str, set[str]] = {}
     for node, unit in checks:
-        pins |= _pins_of([node], namespace, unit)
+        found = _pins_of([node], namespace, unit)
+        pins |= found
+        name = _enclosing_function(node)
+        if name is None:
+            continue
+        by_function[name] = by_function.get(name, frozenset()) | found
+        if name in downloaders:
+            checked.setdefault(name, set()).update(
+                _checked_names([(node, unit)], namespace)
+            )
+    # The check names a file that a download in the same body writes, so a
+    # check of some other file, in that body or a sibling, pins nothing. Every
+    # caller of such a function also downloads, so the closure stays inside
+    # DOWNLOADERS.
+    verifiers = frozenset(
+        name
+        for name, names in checked.items()
+        if names
+        & _written_names(namespace.function_commands(name), namespace, downloaders)
+    )
     return _Shell(
         namespace,
-        _downloader_functions(namespace),
+        callees,
+        downloaders,
+        verifiers,
+        _callers_of(verifiers, callees),
         frozenset(pins),
+        by_function,
         frozenset(_checked_names(checks, namespace)),
     )
 
@@ -592,27 +1129,38 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
         return []
     where = f" in {rel}" if (rel := _relative(unit.path)) else ""
     fetches = []
-    for spec in _pinned_install(words, args):
-        pins = _pins_of(
-            [args[words.index(spec)]] if spec in words else [], namespace, unit
-        )
-        pins |= _literals(spec)
+    install_args, sometimes = _with_array_elements(args, namespace)
+    install_words = [unquote(node_text(node)) for node in install_args]
+    installer, specs = _pinned_install(install_words, install_args)
+    if _NO_STORE_FLAGS & set(install_words):
+        installer = ""  # the bytes reach no store, so no store cache holds them
+    store = _INSTALLER_STORES.get(installer, "")
+    for spec in specs:
+        node = install_args[install_words.index(spec)]
+        if node.id in sometimes:
+            continue
+        pins = _pins_of([node], namespace, unit) | _literals(spec)
         fetches.append(
             Fetch(
                 spec + where,
                 frozenset(pins),
-                frozenset(_sources_of(pins, namespace, unit)),
+                frozenset(_sources_of([node], pins, namespace, unit)),
+                frozenset(_at_each_home(store)),
                 frozenset(),
+                installer,
             )
         )
     if not _runs_downloader(command) and not shell.downloaders & set(words):
         return fetches
     values = [namespace.value(node, unit) for node in args]
     spelled = [_spelled(node, namespace, unit) for node in args]
-    outputs, output_names = _placed(
-        _outputs(command, words, spelled),
+    written = _outputs(command, words, spelled)
+    directory = namespace.directory_at(command, unit)
+    outputs, output_names = _placed(written, namespace.repo_root, directory)
+    held, held_names = _placed(
+        _copies(written | _held_paths(command, spelled), namespace),
         namespace.repo_root,
-        namespace.directory_at(command, unit),
+        directory,
     )
     for node, token, value in zip(args, words, values):
         if _PINNED_URL.match(token) or (value and _PINNED_URL.match(value)):
@@ -626,32 +1174,152 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
             Fetch(
                 label + where,
                 frozenset(pins),
-                frozenset(_sources_of(pins, namespace, unit)),
-                outputs,
-                output_names,
+                frozenset(_sources_of([node], pins, namespace, unit)),
+                held,
+                held_names,
             )
         )
     return fetches
 
 
-def _pinned_install(words: list[str], args: list) -> list[str]:
-    """The pinned package specs of an install invocation in WORDS."""
+def _at_each_home(store: str) -> set[str]:
+    """STORE at each of _HOMES when it lies under `~`, else STORE alone."""
+    if not store.startswith("~/"):
+        return {store} if store else set()
+    return {home + store[1:] for home in _HOMES}
+
+
+def _held_paths(command: Node, spelled: list[str]) -> set[str]:
+    """Where a call to a downloader function may leave its bytes: each
+    absolute path among its arguments (`pinned_fetch /tmp/c/t.tgz URL`). Its
+    body decides where it writes, and a path it is handed is where a cache
+    can find them. A curl or wget command says where it writes in its flags."""
+    if _runs_downloader(command):
+        return set()
+    return {word for word in spelled[1:] if word.startswith(("/", "~", "$HOME/"))}
+
+
+def _copies(paths: set[str], namespace: Namespace) -> set[str]:
+    """PATHS plus each path a `cp`, `install` or `mv` in NAMESPACE copies one
+    of them to, followed to a fixed point. `curl -o "$work/t" …` and then
+    `install "$work/t" "$cache/t"` leave the bytes where a cache of `$cache`
+    holds them."""
+    copies = []
+    for command, unit in namespace.executed:
+        words = tokens(command)
+        launched = _launched(words)
+        if not launched or program_name(launched[0] or "") not in _COPIERS:
+            continue
+        nodes = command_arguments(command)[len(words) - len(launched) + 1 :]
+        named = [_spelled(node, namespace, unit) for node in nodes]
+        named = [word for word in named if not word.startswith("-")]
+        if len(named) >= 2:
+            copies.append((frozenset(named[:-1]), named[-1]))
+    found, pending = set(paths), True
+    while pending:
+        pending = False
+        for sources, target in copies:
+            copied = sources & found
+            if copied and target not in found:
+                found.add(target)
+                found |= {posixpath.join(target, posixpath.basename(s)) for s in copied}
+                pending = True
+    return found
+
+
+def _pinned_install(words: list[str], args: list) -> tuple[str, list[str]]:
+    """The installer of the install invocation in WORDS, and its pinned
+    package specs."""
     invocation = _find_install(words)
     if not invocation:
-        return []
+        return "", []
     family, index = invocation
     if family == NODE and not writes_outside_the_lockfile(words, index):
-        return []  # a local install is covered by the lockfile and setup-node's cache
+        return (
+            "",
+            [],
+        )  # a local install is covered by the lockfile and setup-node's cache
     pinned, unpinned = spec_scan(args[index:], family)
     if unpinned:
-        return []
+        return "", []
     # A spec that opens with an expansion (`"$@"`, `${ARGS[@]}`) names no
     # package the text fixes, so it is no download this lint can name.
-    return [
+    return _installer(words, index), [
         spec
         for spec in pinned
         if not _FLOATING.search(spec) and not spec.startswith("$")
     ]
+
+
+def _with_array_elements(
+    args: list[Node], namespace: Namespace
+) -> tuple[list[Node], set[int]]:
+    """ARGS with each argument that expands a whole array (`"${specs[@]}"`)
+    replaced by the elements the array's assignments give it, and the ids of
+    the elements only some runs add. Thus `specs+=("ruff==$V")` and then
+    `pip install "${specs[@]}"` installs `ruff==$V`. An array that one
+    assignment sets to anything but a list stays as written. An assignment
+    under a condition or in a loop adds its elements only on some runs:
+    `case "$tool" in pre-commit) specs+=(…)` adds its element only on the
+    runs that pass `pre-commit`, so the text does not fix that the install
+    fetches it. Such an element that names no version still makes the
+    install float."""
+    expanded, sometimes = [], set()
+    for node in args:
+        elements = _array_elements(node, namespace)
+        if elements is None:
+            expanded.append(node)
+            continue
+        for element, conditional in elements:
+            expanded.append(element)
+            if conditional:
+                sometimes.add(element.id)
+    return expanded, sometimes
+
+
+def _array_elements(word: Node, namespace: Namespace) -> list[tuple[Node, bool]] | None:
+    """The elements of the array WORD expands whole, across every assignment
+    of it, each with whether its assignment is conditional. None when WORD is
+    not such an expansion."""
+    if word.type == "string" and len(word.named_children) == 1:
+        word = word.named_children[0]
+    names = list(iter_nodes(word, "variable_name")) if word.type == "expansion" else []
+    name = node_text(names[0]) if names else ""
+    if not name or node_text(word) not in (f"${{{name}[@]}}", f"${{{name}[*]}}"):
+        return None
+    elements = []
+    for assignment, _ in namespace.assignments.get(name, []):
+        value = assignment.child_by_field_name("value")
+        if value is None or value.type != "array":
+            return None
+        conditional = _conditional(assignment)
+        elements += [(element, conditional) for element in value.named_children]
+    return elements
+
+
+def _conditional(node: Node) -> bool:
+    """True when NODE runs only on some runs of the body that holds it: under
+    an `if`, a `case` item, a loop, or after `&&` or `||`. The command before
+    the operator always runs."""
+    child, parent = node, node.parent
+    while parent is not None and parent.type not in ("function_definition", "program"):
+        if parent.type in _CONDITIONAL_NODES:
+            return True
+        if parent.type == "list" and parent.named_children[0].id != child.id:
+            return True
+        child, parent = parent, parent.parent
+    return False
+
+
+def _installer(words: list[str], index: int) -> str:
+    """The package manager of an install whose command words end at INDEX:
+    `uv` for `uv pip install` and `uv tool install`, `yarn` for `yarn global
+    add`, and `pip` for `pip3 install` or `python -m pip install`."""
+    first = words[index - 3] if index >= 3 else ""
+    if first in ("uv", "yarn"):
+        return first
+    second = program_name(words[index - 2])
+    return "pip" if _PIP_ALIAS.match(second) else second
 
 
 # ── Python: what a followed file downloads ──────────────────────────────────
@@ -927,16 +1595,156 @@ def _local_imports(tree: ast.Module, path: Path) -> list[Path]:
     return found
 
 
+class _CheckedCall(NamedTuple):
+    """A command that calls a downloader function that checks a digest: the
+    checking functions it CALLS, the PINS its arguments carry, and the
+    function whose body holds it (None at the top level)."""
+
+    command: Node
+    unit: Unit
+    called: frozenset[str]
+    pins: frozenset[str]
+    enclosing: str | None
+
+
+class _CallChains:
+    """The checked calls of one namespace, indexed by each function they call
+    and by the function whose body holds them. CHECKING names the downloader
+    functions that check a digest."""
+
+    def __init__(self, calls: list[_CheckedCall], checking: frozenset[str]):
+        self.checking = checking
+        self.by_callee: dict[str, list[_CheckedCall]] = {}
+        self.by_holder: dict[str | None, list[_CheckedCall]] = {}
+        for call in calls:
+            self.by_holder.setdefault(call.enclosing, []).append(call)
+            for name in call.called:
+                self.by_callee.setdefault(name, []).append(call)
+        self._above: dict[str, bool] = {}
+        self._covered: dict[frozenset[str], bool] = {}
+
+    def pinned_above(self, name: str | None) -> bool:
+        """True when a call of the checking function NAME, or of a checking
+        function that holds such a call, carries a pin."""
+        if name not in self.checking:
+            return False
+        if name not in self._above:
+            self._above[name] = False  # a call cycle adds no pin
+            self._above[name] = any(
+                call.pins or self.pinned_above(call.enclosing)
+                for call in self.by_callee.get(name, [])
+            )
+        return self._above[name]
+
+    def covered(self, call: _CheckedCall) -> bool:
+        """True when CALL names the pin of each download under it: it carries
+        a pin itself, or the functions it calls hold checked calls and every
+        one of them is covered."""
+        if call.pins:
+            return True
+        if call.called not in self._covered:
+            self._covered[call.called] = False  # a call cycle covers nothing
+            inner = [c for name in call.called for c in self.by_holder.get(name, [])]
+            self._covered[call.called] = bool(inner) and all(
+                self.covered(c) for c in inner
+            )
+        return self._covered[call.called]
+
+    def reports(self, call: _CheckedCall) -> bool:
+        """True when CALL is the site that reports its download: no call above
+        it names a pin, and it carries a pin itself, or it is the outermost
+        call and some download under it has no call that names a pin."""
+        if self.pinned_above(call.enclosing):
+            return False
+        if call.pins:
+            return True
+        return call.enclosing not in self.checking and not self.covered(call)
+
+
+def _checked_calls(
+    commands: list[tuple[Node, Unit]], shell: _Shell, reported: frozenset[str]
+) -> list[Fetch]:
+    """The pinned downloads COMMANDS make by calling a downloader function that
+    checks a digest. A function that REPORTED names already yields a fetch from
+    a command inside it, so a call to it adds none. A lookup
+    (`command -v fetch_verified`) runs nothing.
+
+    One chain of calls is one download, so one call reports it: the outermost
+    call whose arguments carry a pin, since that call names the tool and its
+    version. An argument-less wrapper above it (`provision() { fetch_verified
+    kata "$kata_version" …; }`) does not take its place. The outermost call
+    reports any download under it that no call names a pin for."""
+    namespace = shell.namespace
+    calls = []
+    for command, unit in commands:
+        called = set(callable_words(command)) & shell.checked_downloaders
+        if not called or called & reported or is_lookup(tokens(command)):
+            continue
+        pins = _pins_of(command_arguments(command)[1:], namespace, unit)
+        calls.append(
+            _CheckedCall(
+                command,
+                unit,
+                frozenset(called),
+                frozenset(pins),
+                _enclosing_function(command),
+            )
+        )
+    chains = _CallChains(calls, shell.checked_downloaders)
+    return [_checked_fetch(call, shell) for call in calls if chains.reports(call)]
+
+
+def _checked_fetch(call: _CheckedCall, shell: _Shell) -> Fetch:
+    """The fetch CALL makes. Its pins are the ones its arguments carry and the
+    ones the digest checks in the checking functions it reaches read. A
+    `hashFiles()` key may hash the calling file, a file that assigns one of its
+    pins, or a file that defines a checking function the call reaches."""
+    namespace = shell.namespace
+    chain, pending = set(), list(call.called)
+    while pending:
+        name = pending.pop()
+        if name not in chain:
+            chain.add(name)
+            pending += shell.callees[name] & shell.checked_downloaders
+    pins = set(call.pins)
+    for name in chain:
+        pins |= shell.function_digest_pins.get(name, frozenset())
+    sources = _sources_of(
+        command_arguments(call.command)[1:], pins, namespace, call.unit
+    ) | {
+        rel
+        for name in chain
+        for _, owner in namespace.functions[name]
+        if (rel := _relative(owner.path))
+    }
+    where = f" in {rel}" if (rel := _relative(call.unit.path)) else ""
+    label = " ".join(tokens(call.command)) + " (digest-checked)" + where
+    return Fetch(label, frozenset(pins), frozenset(sources), frozenset())
+
+
 @functools.lru_cache(maxsize=1024)
 def _namespace_fetches(namespace: Namespace) -> list[Fetch]:
     """Every pinned download NAMESPACE makes, computed once per namespace: a
     shared script is reached from many jobs."""
     shell = _shell_context(namespace)
-    return [
-        fetch
-        for command, unit in namespace.executed
-        for fetch in _command_fetches(command, unit, shell)
-    ]
+    found: list[Fetch] = []
+    unmatched: list[tuple[Node, Unit]] = []
+    # A verifier whose own download already yields a fetch (its URL carries a
+    # pin) needs no second fetch from each call of it. Only that case: a
+    # wrapper that also runs `pip install x==1` still owes the fetch of the
+    # checked download it calls.
+    holders = set()
+    for command, unit in namespace.executed:
+        fetches = _command_fetches(command, unit, shell)
+        found += fetches
+        if not fetches:
+            unmatched.append((command, unit))
+        elif _runs_downloader(command) and (
+            (name := _enclosing_function(command)) in shell.verifiers
+        ):
+            holders.add(name)
+    reported = _callers_of(holders, shell.callees)
+    return found + _checked_calls(unmatched, shell, reported)
 
 
 def _script_fetches(
@@ -964,41 +1772,6 @@ def _script_fetches(
 
 
 # ── caches: which download a cache can hold ─────────────────────────────────
-
-
-class CacheScope(NamedTuple):
-    """A cache step's key, and the paths it saves, as written."""
-
-    key: str
-    paths: tuple[str, ...]
-
-
-def _cache_scope(step: dict) -> CacheScope | None:
-    """STEP's key and paths, or None when the lint cannot read them statically.
-    A None scope covers every download in the job."""
-    with_block = step.get("with")
-    if not _action_name(step).startswith(_CACHE_ACTIONS) or not isinstance(
-        with_block, dict
-    ):
-        return None
-    key, path = with_block.get("key"), with_block.get("path")
-    if not isinstance(key, str) or not isinstance(path, str) or "${{" in path:
-        return None
-    if not all(_READABLE_EXPRESSION.match(e) for e in _EXPRESSION.findall(key)):
-        return None
-    paths = tuple(
-        posixpath.normpath(_home(line.strip()))
-        for line in path.splitlines()
-        if line.strip() and not line.strip().startswith("!")
-    )
-    return CacheScope(key, paths)
-
-
-def _home(path: str) -> str:
-    for spelling in ("${HOME}", "$HOME"):
-        if path.startswith(spelling):
-            return "~" + path[len(spelling) :]
-    return path
 
 
 @functools.lru_cache(maxsize=4096)
@@ -1046,25 +1819,28 @@ def _hashed_assignments(root: Path, pattern: str) -> frozenset[str]:
 
 
 def _covers(scope: CacheScope, fetch: Fetch) -> bool:
-    """True when SCOPE's key names FETCH's pin or a file that sets it, or its
-    path holds FETCH's output."""
+    """True when SCOPE's key names FETCH's pin or a file that sets it, its
+    path holds FETCH's output, or it is the store of FETCH's installer."""
+    if scope.key is None:
+        return True
+    if fetch.installer and scope.installers & {fetch.installer, ANY_INSTALLER}:
+        return True
     if any(_pin_in_key(pin).search(scope.key) for pin in fetch.pins):
         return True
-    for match in _HASHFILES.finditer(scope.key):
-        patterns = [a or b for a, b in _QUOTED.findall(match["args"])]
-        for pattern in patterns:
-            pattern = pattern.removeprefix("./")
-            if any(glob_to_regex(pattern).match(src) for src in fetch.sources):
-                return True
-            if fetch.pins & _hashed_assignments(REPO_ROOT, pattern):
-                return True
+    for pattern in scope.hashed:
+        pattern = pattern.removeprefix("./")
+        if any(
+            glob_to_regex(pattern).match(src) or glob_to_regex(src).match(pattern)
+            for src in fetch.sources
+        ):
+            return True
+        if fetch.pins & _hashed_assignments(REPO_ROOT, pattern):
+            return True
     for out in fetch.outputs:
         for path in scope.paths:
-            if (
-                out == path
-                or out.startswith(path + "/")
-                or glob_to_regex(path).match(out)
-            ):
+            if glob_to_regex(path).match(out) or glob_to_regex(
+                path.rstrip("/") + "/**"
+            ).match(out):
                 return True
     # A relative output in a directory the text does not fix: a cache path
     # that ends in it, or in one of its leading directories, can hold it.
@@ -1109,16 +1885,17 @@ def _action_path(uses: str) -> Path | None:
 
 class FlatStep(NamedTuple):
     """One step a job really runs: the step mapping, the workflow line to
-    report it at, and the composite action file it came from (empty for a
-    step written directly in the workflow)."""
+    report it at, the composite action file it came from (empty for a step
+    written directly in the workflow), and what its expressions can read."""
 
     step: dict
     line: int
     origin: str
+    context: Context
 
 
 def flatten(
-    steps: list[dict], anchor: int, origin: str, seen: frozenset
+    steps: list[dict], anchor: int, origin: str, seen: frozenset, context: Context
 ) -> list[FlatStep]:
     """Every step a job really runs, with the workflow line to report it at.
 
@@ -1127,12 +1904,13 @@ def flatten(
     the ANCHOR line of the workflow step that reached it — the cache a finding asks
     for belongs to the job, which lives in the workflow — and carries ORIGIN, the
     action file, so the message can still say where the install is written. SEEN
-    breaks a cycle between two actions that use each other.
+    breaks a cycle between two actions that use each other. CONTEXT is what the
+    expressions in STEPS can read.
     """
     flat: list[FlatStep] = []
     for step in steps:
         line = step.get("__line__", anchor) if not origin else anchor
-        flat.append(FlatStep(step, line, origin))
+        flat.append(FlatStep(step, line, origin, context))
         uses = step.get("uses")
         if not isinstance(uses, str) or not uses.startswith("./"):
             continue
@@ -1141,10 +1919,37 @@ def flatten(
             continue
         doc = _load(target)
         if doc is not None:
+            inner = _steps(doc.get("runs"))
             flat += flatten(
-                _steps(doc.get("runs")), line, uses.rstrip("/"), seen | {target}
+                inner,
+                line,
+                uses.rstrip("/"),
+                seen | {target},
+                _action_context(doc, inner, step, context),
             )
     return flat
+
+
+def _action_context(
+    doc: dict, steps: list[dict], caller: dict, context: Context
+) -> Context:
+    """The context of a composite action's STEPS when the step CALLER uses it.
+    Each input is what CALLER's `with:` passes, read in the caller's CONTEXT,
+    or else the input's default. The environment is the caller's."""
+    env = {**context.env, **env_of(caller)}
+    own = Context(tuple(steps), {}, env)
+    declared, passed = doc.get("inputs"), caller.get("with")
+    passed = passed if isinstance(passed, dict) else {}
+    inputs: dict[str, Text | None] = {}
+    for name, spec in declared.items() if isinstance(declared, dict) else []:
+        if name == "__line__":
+            continue
+        if name in passed:
+            inputs[name] = rendered(passed[name], caller, context)
+            continue
+        default = spec.get("default", "") if isinstance(spec, dict) else ""
+        inputs[name] = rendered(default, caller, own)
+    return own._replace(inputs=inputs)
 
 
 def check_file(path: Path) -> list[tuple[int, str]]:
@@ -1198,7 +2003,8 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         if not steps:
             continue  # a `uses:` job runs another workflow's steps, not its own
         key_line, block = blocks.get(str(name), (1, ""))
-        flat = flatten(steps, key_line, "", frozenset({path}))
+        context = Context(tuple(steps), None, {**env_of(doc), **env_of(job)})
+        flat = flatten(steps, key_line, "", frozenset({path}), context)
         # The job-scoped marker reads the surfaces a `#` may open a comment on:
         # a real YAML comment, and a `run:` value. A `#` inside any other scalar
         # is content. The step-scoped read below keeps the raw script, because
@@ -1206,11 +2012,11 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         # whose text this job's BLOCK does not hold.
         if any(annotated(line, OPT_OUT) for line in yaml_script_view(block)):
             continue
-        scopes = [_cache_scope(step) for step, _, _ in flat if _caches(step)]
-        if None in scopes:
-            continue  # a cache the lint cannot read covers the whole job
+        scopes = [
+            scope for f in flat if (scope := cache_scope(f.step, f.context)) is not None
+        ]
         default_directory = _default_directory(doc, job)
-        for step, line, origin in flat:
+        for step, line, origin, _ in flat:
             script = step.get("run")
             if not isinstance(script, str):
                 continue
