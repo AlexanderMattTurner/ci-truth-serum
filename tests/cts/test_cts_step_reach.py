@@ -389,6 +389,25 @@ def test_a_cd_in_a_process_substitution_does_not_move_the_shell(tmp_path):
     ]
 
 
+@pytest.mark.parametrize(
+    "script",
+    [
+        "if ! { cd a; }; then bash install.sh; fi\n",
+        "! { cd a; } && bash install.sh\n",
+    ],
+)
+def test_a_negated_cd_runs_its_arm_from_the_old_directory(tmp_path, script):
+    """The arm runs only when the `cd` failed, so the shell has not moved."""
+    (tmp_path / "a").mkdir()
+    (tmp_path / "install.sh").write_text("true\n", encoding="utf-8")
+    (tmp_path / "a" / "install.sh").write_text("true\n", encoding="utf-8")
+    reached = sr.reach(script, tmp_path, None)
+    assert [ns.units[0].path for ns in reached.namespaces] == [
+        None,
+        tmp_path / "install.sh",
+    ]
+
+
 def test_a_call_chain_deeper_than_the_limit_has_no_directory(tmp_path):
     """Asked cold, a chain of calls deeper than `_MAX_CALL_DEPTH` gives no
     directory instead of running out of Python stack."""

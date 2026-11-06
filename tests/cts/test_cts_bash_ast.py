@@ -83,49 +83,72 @@ def test_parse_refuses_quadratic_pipe_chains_loudly() -> None:
 
 
 # ── a `!` whose operand the grammar cannot hold ───────────────────────────
+_CMD = "(command name: (command_name (word)))"
+_BLANKED = "(program (if_statement condition: " + _CMD + " " + _CMD + "))"
+_LOOP = "body: (do_group " + _CMD + ")"
+
+# One case per word in `_COMPOUND_OPENERS`: what `parse` gives for `! <word> …`.
+_NEGATED_OPENERS = {
+    "{": ("! { a; }", "(program (negated_command (subshell " + _CMD + ")))"),
+    "if": ("! if a; then b; fi", _BLANKED),
+    "while": (
+        "! while a; do b; done",
+        "(program (while_statement condition: " + _CMD + " " + _LOOP + "))",
+    ),
+    "until": (
+        "! until a; do b; done",
+        "(program (while_statement condition: " + _CMD + " " + _LOOP + "))",
+    ),
+    "for": (
+        "! for x in a; do b; done",
+        "(program (for_statement variable: (variable_name) value: (word) "
+        + _LOOP
+        + "))",
+    ),
+    "select": (
+        "! select x in a; do b; done",
+        "(program (for_statement variable: (variable_name) value: (word) "
+        + _LOOP
+        + "))",
+    ),
+    "case": (
+        "! case x in y) a;; esac",
+        "(program (case_statement value: (word) (case_item value: (word) "
+        + _CMD
+        + ")))",
+    ),
+}
+
+
+def test_every_compound_opener_has_a_case() -> None:
+    assert set(_NEGATED_OPENERS) == bash_ast._COMPOUND_OPENERS
+
+
+@pytest.mark.parametrize("opener", sorted(_NEGATED_OPENERS))
+def test_parse_reads_the_compound_command_after_a_bang(opener: str) -> None:
+    script, expected = _NEGATED_OPENERS[opener]
+    assert str(bash_ast.parse(script + "\n")) == expected
+
+
 @pytest.mark.parametrize(
     "script, expected",
     [
         (
-            "! { a; }",
-            "(program (compound_statement (command name: (command_name (word)))))",
-        ),
-        (
-            "! if a; then b; fi",
-            "(program (if_statement condition: (command name: (command_name (word)))"
-            " (command name: (command_name (word)))))",
-        ),
-        (
-            "! until a; do b; done",
-            "(program (while_statement condition: (command name: (command_name"
-            " (word))) body: (do_group (command name: (command_name (word))))))",
-        ),
-        (
-            "! for x in a; do b; done",
-            "(program (for_statement variable: (variable_name) value: (word)"
-            " body: (do_group (command name: (command_name (word))))))",
-        ),
-        (
-            "! case x in y) a;; esac",
-            "(program (case_statement value: (word) (case_item value: (word)"
-            " (command name: (command_name (word))))))",
-        ),
-        (
             "! { ! { a; }; }",
-            "(program (compound_statement (compound_statement"
-            " (command name: (command_name (word))))))",
+            "(program (negated_command (subshell (negated_command (subshell "
+            + _CMD
+            + ")))))",
         ),
         (
-            "! A=1 B=$(c)",
-            "(program (variable_assignments (variable_assignment name: (variable_name)"
-            " value: (number)) (variable_assignment name: (variable_name)"
-            " value: (command_substitution (command name: (command_name (word)))))))",
+            "x | ! { a; } >f",
+            "(program (redirected_statement body: (pipeline " + _CMD + " "
+            "(negated_command (subshell " + _CMD + "))) redirect: (file_redirect "
+            "destination: (word))))",
         ),
+        ("! {\na\n}", "(program (negated_command (subshell " + _CMD + ")))"),
     ],
 )
-def test_parse_reads_the_statement_after_an_unheld_negation(
-    script: str, expected: str
-) -> None:
+def test_a_negated_group_keeps_its_negation(script: str, expected: str) -> None:
     assert str(bash_ast.parse(script + "\n")) == expected
 
 
@@ -137,10 +160,15 @@ def test_parse_reads_the_statement_after_an_unheld_negation(
         ("! A=1", "variable_assignment"),
         ("! [[ a ]]", "test_command"),
         ("! ( a )", "subshell"),
+        # bash reads `!{` as one word, so this `!` negates nothing
+        ("!{ a; }", "command"),
+        # a quoted or escaped `{` is the name of a real command
+        ('! "{" a', "command"),
+        ("! \\{ a", "command"),
     ],
 )
 def test_parse_keeps_a_negation_the_grammar_holds(script: str, operand: str) -> None:
-    (negation,) = bash_ast.parse(script + "\n").named_children
+    negation = bash_ast.parse(script + "\n").named_children[0]
     assert (negation.type, negation.named_children[0].type) == (
         "negated_command",
         operand,
@@ -148,7 +176,7 @@ def test_parse_keeps_a_negation_the_grammar_holds(script: str, operand: str) -> 
 
 
 def test_the_grammar_still_reads_a_negated_brace_group_as_a_command() -> None:
-    """Pins the grammar defect `_unheld_negations` works around. When this
+    """Pins the grammar defect `_hold_negations` works around. When this
     fails, tree-sitter-bash holds a compound command after `!`: delete the
     work-around and this test."""
     raw = bash_ast._parser().parse(b"! { a; }\n").root_node
@@ -156,7 +184,7 @@ def test_the_grammar_still_reads_a_negated_brace_group_as_a_command() -> None:
     assert bash_ast.command_name(negation.named_children[0]) == "{"
 
 
-def test_an_unheld_negation_keeps_every_line_and_column() -> None:
+def test_a_negated_group_keeps_every_line_and_column() -> None:
     root = bash_ast.parse("x\nif ! { timeout 5; }; then :; fi\n")
     (timeout,) = (
         node
@@ -166,8 +194,16 @@ def test_an_unheld_negation_keeps_every_line_and_column() -> None:
     assert timeout.start_point == (1, 7)
 
 
-def test_assert_parseable_accepts_negated_prefix_assignments() -> None:
-    bash_ast.assert_parseable("if ! IFS=$'\\n' REPLY=$(cat r); then :; fi\n")
+def test_parse_refuses_negated_groups_nested_past_the_cap_loudly() -> None:
+    def nested(depth: int) -> str:
+        return "! { " * depth + "a; " + "}; " * depth + "\n"
+
+    cap = bash_ast._MAX_NEGATION_ROUNDS
+    assert (
+        len(list(bash_ast.iter_nodes(bash_ast.parse(nested(cap)), "subshell"))) == cap
+    )
+    with pytest.raises(bash_ast.PathologicalInputError):
+        bash_ast.parse(nested(cap + 1))
 
 
 # ── status_carrier ────────────────────────────────────────────────────────
@@ -180,6 +216,9 @@ def test_assert_parseable_accepts_negated_prefix_assignments() -> None:
         ("{ ( a ); }\n", "{ ( a ); }"),
         ("{ a # note\n}\n", "{ a # note\n}"),
         ("{ a; b; }\n", "a"),
+        ("{ a & }\n", "a"),
+        ("{ a; } 2>/dev/null\n", "{ a; } 2>/dev/null"),
+        ("a >f\n", "a >f"),
     ],
 )
 def test_status_carrier_climbs_only_while_a_is_the_last_statement(

@@ -128,13 +128,13 @@ def parse(script: str) -> Node:
 
     tree-sitter NEVER raises on malformed input — a syntax error surfaces as
     ``ERROR`` nodes in the tree, so callers fail OPEN (treat unparseable spans as
-    benign) instead of crashing a pre-commit hook on an unrelated commit. The one
-    exception is a pipe-byte count past ``_MAX_PIPE_BYTES``, which raises
-    ``PathologicalInputError`` (loud, never a silent pass) rather than letting
-    the C parser's quadratic allocation kill the process. Supplementary-plane
-    characters, which segfault that same C parser, are folded to U+FFFD up front
-    (see ``_neutralize_supplementary``). A ``!`` the grammar cannot hold is blanked,
-    so the tree can differ from SCRIPT by that byte (see ``_unheld_negations``)."""
+    benign) instead of crashing a pre-commit hook on an unrelated commit. The
+    exceptions are a pipe-byte count past ``_MAX_PIPE_BYTES`` and negated groups
+    nested past ``_MAX_NEGATION_ROUNDS``, which raise ``PathologicalInputError``
+    (loud, never a silent pass). Supplementary-plane characters, which segfault
+    that same C parser, are folded to U+FFFD up front (see
+    ``_neutralize_supplementary``), and a ``!`` the grammar cannot hold is
+    rewritten one byte for one byte (see ``_hold_negations``)."""
     if script.count("|") > _MAX_PIPE_BYTES:
         raise PathologicalInputError(
             f"input carries more than {_MAX_PIPE_BYTES} pipe bytes; "
@@ -143,54 +143,76 @@ def parse(script: str) -> Node:
             "pipeline chain to lint it."
         )
     source = bytearray(_neutralize_supplementary(script).encode("utf-8"))
-    root = _parser().parse(bytes(source)).root_node
-    while bangs := _unheld_negations(root):
-        for bang in bangs:
-            source[bang] = ord(" ")
-        root = _parser().parse(bytes(source)).root_node
-    return root
+    return _hold_negations(source, _parser().parse(bytes(source)).root_node)
 
 
-# The reserved words that open a compound command. tree-sitter-bash 0.25.1 lets a
-# `!` hold only a `command`, a `variable_assignment`, a `test_command` or a
-# `subshell`, so it reads `! { a; }` as a command named `{` with `a` as its
-# argument, and `if`, `while`, `until`, `for`, `select` and `case` the same way.
+# A `! {` nested inside another one shows in the tree only once its parent's `!`
+# is blanked, so `_hold_negations` needs one probe parse per level of nesting.
+_MAX_NEGATION_ROUNDS = 32
+
 _COMPOUND_OPENERS = frozenset({"{", "if", "while", "until", "for", "select", "case"})
 
 
-def _unheld_negations(root: Node) -> list[int]:
-    """The byte offset of each `!` under ROOT whose operand the grammar cannot hold.
+def _hold_negations(source: bytearray, root: Node) -> Node:
+    """ROOT, or the tree of SOURCE (ROOT's text) rewritten so that each `!` before
+    a compound command gets its real tree. Every rewrite is one byte for one
+    byte, so every offset and line number stays true.
 
-    This works around `negated_command` in tree-sitter-bash 0.25.1's
-    `grammar.js`. `parse` blanks each of these bytes and parses again, so the
-    statement after the `!` gets its real tree. Two operands fail:
+    * `! { a; }` becomes `! ( a; )`: the grammar holds a subshell, so the tree
+      keeps its `negated_command`. A check that asks whether a group runs in
+      its own shell reads this one as if it did.
+    * Before `if`, `while`, `until`, `for`, `select` or `case`, the `!` itself
+      is blanked, because no spelling of the same length keeps it. A check that
+      asks about negation reads those statements as not negated.
 
-    * a compound command (`! { a; }`, `! if …`). Every check that reads a
-      command's name sees `{` and never `a`, and reports nothing for `a`.
-    * two or more prefix assignments with no command (`! A=1 B=$(c)`). The
-      grammar wants a command name, leaves a MISSING node, and `assert_parseable`
-      refuses a file that bash runs.
+    A probe copy with every such `!` blanked shows the real brace structure,
+    which is where each `{` finds its own `}`."""
+    found, probe, tree = [], bytearray(source), root
+    for _ in range(_MAX_NEGATION_ROUNDS + 1):
+        unheld = _unheld_negations(tree, probe)
+        if not unheld:
+            break
+        found += unheld
+        for bang, _ in unheld:
+            probe[bang] = ord(" ")
+        tree = _parser().parse(bytes(probe)).root_node
+    else:
+        raise PathologicalInputError(
+            f"input nests more than {_MAX_NEGATION_ROUNDS} negated compound "
+            "commands (`! { ! {`); each level costs one more parse. Flatten the "
+            "nesting to lint it."
+        )
+    if not found:
+        return root
+    closers = {
+        g.start_byte: g.end_byte - 1 for g in iter_nodes(tree, "compound_statement")
+    }
+    for bang, opener in found:
+        closer = closers.get(opener) if source[opener] == ord("{") else None
+        if closer is None or probe[closer] != ord("}"):
+            source[bang] = ord(" ")
+        else:
+            source[opener], source[closer] = ord("("), ord(")")
+    return _parser().parse(bytes(source)).root_node
 
-    The cost is the `!` itself: a check that asks whether a statement is
-    negated reads these statements as not negated. A blank is one byte for one
-    byte, so every offset and line number stays true."""
-    bangs = []
+
+def _unheld_negations(root: Node, source: bytearray) -> list[tuple[int, int]]:
+    """(`!` offset, operand offset) for each `!` under ROOT that negates a
+    compound command the grammar read as a plain command."""
+    found = []
     for negation in iter_nodes(root, "negated_command"):
         operands = negation.named_children
         if not operands or operands[0].type != "command":
             continue
         name = next((c for c in operands[0].children if c.type == "command_name"), None)
-        if name is None or not (
-            node_text(name) in _COMPOUND_OPENERS or next(_walk_missing(name), None)
-        ):
+        bang = negation.start_byte
+        # Bash reads `!{` as one word: only a `!` that stands alone negates. The
+        # test also keeps the probe loop finite, since it blanks only a `!`.
+        if source[bang : bang + 2] not in (b"! ", b"!\t") or name is None:
             continue
-        if negation.text[:1] != b"!":
-            raise AssertionError(
-                f"a negated_command at byte {negation.start_byte} does not "
-                "start with `!`; the tree-sitter-bash grammar changed shape"
-            )
-        bangs.append(negation.start_byte)
-    return bangs
+        if node_text(name) in _COMPOUND_OPENERS:
+            found.append((bang, name.start_byte))
+    return found
 
 
 def assert_parseable(script: str) -> None:
@@ -592,12 +614,22 @@ def in_condition(node: Node) -> bool:
 
 
 def status_carrier(node: Node) -> Node:
-    """NODE, or the outermost `{ …; }` or `( … )` whose exit status is NODE's.
-    A group exits with the status of its last statement, so `if { a; }` tests
-    the status of `a` as surely as `if a` does."""
-    while (parent := node.parent) is not None and parent.type in _GROUPS:
-        statements = [c for c in parent.named_children if c.type != "comment"]
-        if statements[-1].id != node.id:
+    """NODE, or the outermost statement whose exit status is NODE's. A `{ …; }` or
+    `( … )` exits with the status of its last statement, unless it backgrounds
+    it, and a redirected statement exits with the status of its body."""
+    while (parent := node.parent) is not None:
+        if parent.type == "redirected_statement":
+            body = parent.child_by_field_name("body")
+            if body is None or body.id != node.id:
+                break
+        elif parent.type in _GROUPS:
+            statements = [c for c in parent.named_children if c.type != "comment"]
+            after = node.next_sibling
+            if statements[-1].id != node.id or (
+                after is not None and after.type == "&"
+            ):
+                break
+        else:
             break
         node = parent
     return node

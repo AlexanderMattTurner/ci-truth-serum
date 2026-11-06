@@ -351,6 +351,8 @@ def test_a_real_fallback_still_counts_as_reading_the_status() -> None:
         "if ! { producer | grep -q pat; }; then :; fi",
         "if ( producer | grep -q pat ); then :; fi",
         "! ( producer | grep -q pat )",
+        "! { producer | grep -q pat; }",
+        "if { producer | grep -q pat; } 2>/dev/null; then :; fi",
         "{ producer | grep -q pat; } && next",
     ],
 )
@@ -366,9 +368,13 @@ def test_a_group_hands_on_the_status_of_its_last_pipeline(body: str) -> None:
         "if { producer | grep -q pat; other; }; then :; fi",
         "{ producer | grep -q pat; } || true",
         "{ producer | grep -q pat; }",
+        "if { producer | grep -q pat & }; then :; fi",
+        "if ( producer | grep -q pat & ); then :; fi",
     ],
 )
 def test_a_group_whose_status_is_not_the_pipeline_s_is_not_read(body: str) -> None:
+    """A later statement, a discard, no test at all, or a background job: none
+    of these hands the pipeline's status to anything that reads it."""
     assert mod.violations(_PIPEFAIL + body + "\n") == []
 
 
