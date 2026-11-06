@@ -344,6 +344,40 @@ def test_a_real_fallback_still_counts_as_reading_the_status() -> None:
     assert _flag("producer | grep -q pat || handle_missing\n") == [2]
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "if { producer | grep -q pat; }; then :; fi",
+        "if ! { producer | grep -q pat; }; then :; fi",
+        "if ( producer | grep -q pat ); then :; fi",
+        "! ( producer | grep -q pat )",
+        "! { producer | grep -q pat; }",
+        "if { producer | grep -q pat; } 2>/dev/null; then :; fi",
+        "{ producer | grep -q pat; } && next",
+    ],
+)
+def test_a_group_hands_on_the_status_of_its_last_pipeline(body: str) -> None:
+    """A `{ …; }` or `( … )` exits with its last statement's status, so a test
+    of the group reads the pipeline's 141."""
+    assert mod.violations(_PIPEFAIL + body + "\n") == [2]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "if { producer | grep -q pat; other; }; then :; fi",
+        "{ producer | grep -q pat; } || true",
+        "{ producer | grep -q pat; }",
+        "if { producer | grep -q pat & }; then :; fi",
+        "if ( producer | grep -q pat & ); then :; fi",
+    ],
+)
+def test_a_group_whose_status_is_not_the_pipeline_s_is_not_read(body: str) -> None:
+    """A later statement, a discard, no test at all, or a background job: none
+    of these hands the pipeline's status to anything that reads it."""
+    assert mod.violations(_PIPEFAIL + body + "\n") == []
+
+
 def test_only_the_last_stage_answers() -> None:
     """A reader that is not the last stage does not decide the pipeline's status, so
     its early exit is not what an enclosing `if` reads."""
