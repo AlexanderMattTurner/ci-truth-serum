@@ -214,8 +214,32 @@ def comment_block_above(lines: list[str], lineno: int) -> range:
     return range(start, lineno)
 
 
+class CommentMap(dict[int, str]):
+    """1-based line -> the comment text on it, plus where constructs OPEN.
+
+    OPENS holds each line whose trailing comment speaks for the next line too.
+    That is true when the construct that the line's last code token belongs to
+    continues onto the next line: `if` opens an `if` statement, `key:` opens
+    its value, and `>-` opens a block scalar. A separator (`;`, `&`, `,`)
+    belongs to the list it separates, so its line opens nothing.
+
+    Only a language's own parser can say this, so each comment reader that has
+    one fills OPENS. A plain dict carries none, and ``annotation_window`` then
+    reads no code line above a finding: an opt-out can be lost, never invented.
+    """
+
+    def __init__(
+        self, items: Iterable[tuple[int, str]] = (), opens: Iterable[int] = ()
+    ) -> None:
+        super().__init__(items)
+        self.opens = frozenset(opens)
+
+
 def annotation_window(
-    lines: list[str], start: int, end: int | None = None
+    lines: list[str],
+    start: int,
+    end: int | None = None,
+    opens: "frozenset[int] | set[int]" = frozenset(),
 ) -> list[int]:
     """The 1-based lines that may carry the opt-out for a construct spanning
     START..END (1-based, inclusive; END defaults to START).
@@ -238,14 +262,15 @@ def annotation_window(
     the first line that is not a comment. A blank line therefore ends it, so an
     annotation written about something else cannot drift down onto a later
     construct.
+
+    The code line directly above counts only when it is in OPENS (see
+    ``CommentMap``). `if  # pin-exempt: …` opens the statement that holds the
+    `curl` below it, so its reason covers that `curl`. `- macos-latest  # …`
+    closes its entry, so its reason does not cover the sibling entry below.
     """
     end = start if end is None else end
     span = range(start, min(end, len(lines)) + 1)
-    # The line DIRECTLY above always counts, whether or not it is comment-only.
-    # A trailing comment on a code line is where a reason goes when the construct
-    # opens on the line before it (`if  # pin-exempt: …` above a `curl`), and
-    # `comment_block_above` stops at that line because it carries code.
-    direct = [start - 1] if start >= 2 else []
+    direct = [start - 1] if start - 1 in opens else []
     candidates = {*comment_block_above(lines, start), *direct, *span}
     return sorted(n for n in candidates if 1 <= n <= len(lines))
 
@@ -275,10 +300,12 @@ def annotated_near(
     language's own grammar reports it — ``_cts_comments.comment_lines`` (or
     ``shell_comments`` / ``py_comments`` for a text with no path), and
     ``yaml_marker_comments`` for a workflow. A line it leaves out says nothing.
+    A ``CommentMap`` also says which code lines open a construct (OPENS).
     """
+    opens = comments.opens if isinstance(comments, CommentMap) else frozenset()
     return any(
         annotated(comments.get(n, ""), token, require_reason)
-        for n in annotation_window(lines, lineno, span_end)
+        for n in annotation_window(lines, lineno, span_end, opens)
     )
 
 
@@ -2907,7 +2934,7 @@ def _yaml_script_text(text: str, scripts: "list[RunScalar] | None" = None) -> st
 
 def yaml_marker_comments(
     text: str, scripts: "list[RunScalar] | None" = None
-) -> dict[int, str]:
+) -> CommentMap:
     """1-based line -> the marker surface on that line of a workflow TEXT.
 
     ``yaml_script_view`` as the mapping ``annotated_near`` reads, numbered by
@@ -2917,13 +2944,130 @@ def yaml_marker_comments(
     SCRIPTS names the `run:` values whose comments count, and defaults to the
     bash steps. A check that reports findings in some other set of scripts
     passes that same list, so every step it can flag is a step that can carry
-    its opt-out.
+    its opt-out. OPENS comes from ``yaml_opening_lines``, plus each bash
+    script's own ``opening_lines`` at its offset in TEXT.
     """
-    return {
-        n: line
-        for n, line in enumerate(_yaml_script_text(text, scripts).split("\n"), 1)
-        if line.strip()
-    }
+    if scripts is None:
+        try:
+            scripts = bash_run_scripts(text)
+        except yaml.YAMLError:
+            scripts = []
+    return CommentMap(
+        (
+            (n, line)
+            for n, line in enumerate(_yaml_script_text(text, scripts).split("\n"), 1)
+            if line.strip()
+        ),
+        workflow_opening_lines(text, scripts),
+    )
+
+
+def workflow_opening_lines(text: str, scripts: "list[RunScalar]") -> frozenset[int]:
+    """``yaml_opening_lines`` of TEXT, plus the bash ``opening_lines`` of each
+    script in SCRIPTS at its own line offset in TEXT.
+
+    A workflow holds two languages, and a line of a `run:` value opens a
+    construct only as the bash grammar reads it.
+    """
+    # Imported here for the reason `unparseable_shell_reason` gives: most
+    # checks that load this module never read a workflow script.
+    from _cts_bash_ast import (  # pylint: disable=import-outside-toplevel
+        opening_lines,
+        parse,
+    )
+
+    opens = set(yaml_opening_lines(text))
+    for scalar in scripts:
+        offset = text.count("\n", 0, scalar.start)
+        opens |= {
+            offset + n for n in opening_lines(parse(yaml_run_script(text, scalar)))
+        }
+    return frozenset(opens)
+
+
+# The YAML tokens that hold no source text: the scanner emits them at the
+# position of a neighbouring token, so none is ever the last token of a line.
+_SYNTHETIC_YAML_TOKENS = (
+    yaml.StreamStartToken,
+    yaml.StreamEndToken,
+    yaml.BlockMappingStartToken,
+    yaml.BlockSequenceStartToken,
+    yaml.BlockEndToken,
+    yaml.KeyToken,
+)
+
+
+def _last_content_line(text: str, end: int) -> int:
+    """The 1-based line of the last non-blank character before offset END.
+
+    A block node's end mark often sits at the start of the next line, which
+    no content of the node reaches.
+    """
+    index = end - 1
+    while index >= 0 and text[index] in " \t\r\n":
+        index -= 1
+    return text.count("\n", 0, max(index, 0)) + 1
+
+
+def yaml_opening_lines(text: str) -> frozenset[int]:
+    """The 1-based lines of TEXT whose last token opens a construct that
+    continues onto the next line (see ``CommentMap``).
+
+    The construct a token belongs to is the smallest node, or key-value pair,
+    whose span holds it. `key:` ends in the pair's `:`, whose value may start
+    below. `- macos-latest` ends in a scalar that ends on its own line. A `,`
+    in a flow collection separates siblings. An alias (`*x`) ends where it is
+    written: its node's marks point at the anchor, so no span here holds it. A text PyYAML cannot read opens
+    nothing, so the window stays narrow.
+    """
+    try:
+        root = compose(text)
+        tokens = [t for t in scan(text) if not isinstance(t, _SYNTHETIC_YAML_TOKENS)]
+    except yaml.YAMLError:
+        return frozenset()
+    spans: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    stack = [root] if root is not None else []
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        spans.append((node.start_mark.index, node.end_mark.index))
+        if isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+        elif isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                spans.append(
+                    (
+                        key.start_mark.index,
+                        max(key.end_mark.index, value.end_mark.index),
+                    )
+                )
+                stack.extend((key, value))
+    last: dict[int, yaml.Token] = {}
+    for token in tokens:
+        last[token.start_mark.line + 1] = token
+    # One sweep in source order. ACTIVE holds the spans that start at or
+    # before the token; a span that ended before it drops out. The spans nest,
+    # so ACTIVE is as deep as the tree, never as long as the file.
+    spans.sort()
+    active: list[tuple[int, int]] = []
+    following = iter(spans)
+    upcoming = next(following, None)
+    opens: set[int] = set()
+    for line, token in sorted(last.items(), key=lambda item: item[1].start_mark.index):
+        at = token.start_mark.index
+        while upcoming is not None and upcoming[0] <= at:
+            active.append(upcoming)
+            upcoming = next(following, None)
+        active = [span for span in active if span[1] > at]
+        if isinstance(token, (yaml.FlowEntryToken, yaml.AliasToken)) or not active:
+            continue
+        smallest = min(active, key=lambda span: span[1] - span[0])
+        if _last_content_line(text, smallest[1]) > line:
+            opens.add(line)
+    return frozenset(opens)
 
 
 def default_run_shell(*scopes: object) -> str | None:

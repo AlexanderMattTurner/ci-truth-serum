@@ -12,6 +12,8 @@ of action files outside `.github/actions/` reads the index.
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from tests._helpers import init_test_repo, load_hook
 
 ulu = load_hook("check_unreferenced_local_uses.py", "check_unreferenced_local_uses")
@@ -584,6 +586,22 @@ def test_a_reasoned_opt_out_above_the_on_key_suppresses(tmp_path, monkeypatch):
         "on:\n  workflow_call:\njobs: {}\n"
     )
     assert _check(tmp_path, monkeypatch, {".github/workflows/c.yaml": callee}) == []
+
+
+@pytest.mark.parametrize(
+    ("head", "suppressed"),
+    [
+        (f"name: c\non:  # {ulu.OPT_OUT}: the sibling repository calls it\n", True),
+        # `name: c` ends on its own line, so its comment speaks for that key.
+        (f"name: c  # {ulu.OPT_OUT}: the sibling repository calls it\non:\n", False),
+    ],
+)
+def test_a_trailing_opt_out_on_another_key_does_not_cover_the_on_key(
+    tmp_path, monkeypatch, head: str, suppressed: bool
+):
+    callee = head + "  workflow_call:\njobs: {}\n"
+    found = _check(tmp_path, monkeypatch, {".github/workflows/c.yaml": callee})
+    assert (found == []) is suppressed
 
 
 def test_an_opt_out_with_no_reason_suppresses_nothing_and_is_reported(

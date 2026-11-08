@@ -21,7 +21,9 @@ enumerating with it would slide every later line number off by the difference.
 """
 
 import ast
+import io
 import re
+import tokenize
 import warnings
 from functools import lru_cache
 
@@ -147,6 +149,59 @@ def trees(source: str) -> list[ast.Module]:
         return [parse_whole(normalized)]
     except (SyntaxError, ValueError):
         return _line_trees(normalized)
+
+
+# Token types that hold no code: a comment, or the layout tokenize reports.
+_LAYOUT = frozenset(
+    {
+        tokenize.COMMENT,
+        tokenize.NL,
+        tokenize.NEWLINE,
+        tokenize.INDENT,
+        tokenize.DEDENT,
+        tokenize.ENDMARKER,
+    }
+)
+
+
+def opening_lines(source: str) -> frozenset[int]:
+    """The 1-based lines of SOURCE whose last token opens a construct that
+    continues onto the next line (see ``_cts_linecheck.CommentMap``).
+
+    The construct a token belongs to is the smallest node whose span holds it.
+    `foo(` belongs to a call and `if x:` to its statement, and both continue.
+    `a = 1` ends in a constant that ends on its own line. A `,` or `;`
+    separates siblings, so it opens nothing. Raises what ``ast.parse`` and
+    ``tokenize`` raise on SOURCE that is not Python.
+    """
+    rows = source.split("\n")
+    # A line whose last token is a separator maps to None.
+    last: dict[int, tuple[int, int] | None] = {}
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type in _LAYOUT:
+            continue
+        line, col = token.start
+        # `ast` counts columns in UTF-8 bytes, and `tokenize` in characters.
+        at = (line, len(rows[line - 1][:col].encode("utf-8")))
+        last[line] = None if token.string in {",", ";"} else at
+    # Each span is a (start, end) pair of (line, byte column) points.
+    holding: dict[int, list[tuple[tuple[int, int], tuple[int, int]]]] = {}
+    for node in ast.walk(_parse(source)):
+        end = getattr(node, "end_lineno", None)
+        if end is None:
+            continue
+        span = ((node.lineno, node.col_offset), (end, node.end_col_offset))
+        for line in range(node.lineno, end + 1):
+            if line in last:
+                holding.setdefault(line, []).append(span)
+    opens = set()
+    for line, at in last.items():
+        if at is None:
+            continue
+        ends = [end[0] for start, end in holding.get(line, []) if start <= at < end]
+        if ends and min(ends) > line:
+            opens.add(line)
+    return frozenset(opens)
 
 
 def name_of(node: ast.AST) -> str | None:
