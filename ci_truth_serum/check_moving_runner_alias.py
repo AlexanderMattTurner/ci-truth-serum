@@ -23,6 +23,10 @@ The check skips three kinds of text, because none of them picks a runner:
   * a shell comment inside a `run:` value that GitHub hands to bash. The bash
     grammar decides where that comment starts, so `echo "a # b"` stays code.
 
+A `run:` in another shell (`pwsh`, `python`) is read whole, because the bash
+grammar cannot find its comments. Its findings land on the `run:` line, where
+a YAML comment can carry the opt-out.
+
 The larger-runner forms (`ubuntu-latest-4-cores`, `macos-latest-xlarge`) move
 with their alias, so the check flags them too. A third-party label that holds
 an alias inside a longer name (`acme-ubuntu-latest`) belongs to its vendor, and
@@ -41,7 +45,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _cts_bash_ast import strip_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import PathologicalInputError, strip_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import compose  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     RunScalar,
@@ -120,49 +124,65 @@ def _value_scalars(root: yaml.Node) -> list[yaml.ScalarNode]:
     return found
 
 
-def _texts(
+def _scalar_hits(
     text: str, scalar: yaml.ScalarNode, run: RunScalar | None
-) -> tuple[str, str]:
-    """SCALAR as written in TEXT, and as YAML decodes it, without bash comments.
+) -> list[tuple[int, str]]:
+    """(1-based line, alias) for each alias that SCALAR hands to GitHub.
 
-    The written form keeps every offset, so a match in it gives a line. The
-    decoded form is what GitHub receives, so an escape such as
-    `"ubuntu\\u002dlatest"` cannot hide an alias from the check.
+    The written form keeps every offset, so a match in it lands on its own line.
+    The decoded form is what GitHub receives, so an escape such as
+    `"ubuntu\\u002dlatest"` cannot hide an alias: when only that form holds one,
+    it lands on the scalar's first line. RUN is the step SCALAR is the script
+    of, if any. A bash script loses its comments first.
     """
-    if run is None:
-        return text[scalar.start_mark.index : scalar.end_mark.index], scalar.value
-    return strip_comments(yaml_run_script(text, run)), strip_comments(run.value)
+    start = scalar.start_mark.index
+    first_line = scalar.start_mark.line + 1
+    written = text[start : scalar.end_mark.index]
+    decoded = scalar.value
+    # A shortlist only: for a script, the grammar below decides what is code.
+    if not (ALIAS.search(written) or ALIAS.search(decoded)):
+        return []
+    if run is not None and not run.is_bash:
+        return [(first_line, m.group()) for m in ALIAS.finditer(decoded)]
+    if run is not None:
+        written = strip_comments(yaml_run_script(text, run))
+        decoded = strip_comments(decoded)
+    hits = [
+        (text.count("\n", 0, start + m.start()) + 1, m.group())
+        for m in ALIAS.finditer(written)
+    ]
+    hidden = ALIAS.search(decoded)
+    if hidden and not hits:
+        hits.append((first_line, hidden.group()))
+    return hits
 
 
 def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for each moving alias in a workflow or action TEXT.
 
-    A match in the written text reports its own line, so a finding inside a
-    multi-line value lands where it is. An alias that only the decoded value
-    holds reports the line where the scalar starts. A file PyYAML cannot parse
-    is itself a finding: a clean result on a file nobody read is a false pass.
+    A file PyYAML cannot parse is itself a finding: a clean result on a file
+    nobody read is a false pass.
     """
+    # libyaml counts its offsets after a byte-order mark, so every slice of a
+    # text that keeps one starts a character early.
+    text = text.removeprefix("\ufeff")
     try:
         root = compose(text)
-        bash_runs = {s.start: s for s in yaml_run_scalars(text) if s.is_bash}
+        runs = {s.start: s for s in yaml_run_scalars(text)}
     except yaml.YAMLError as err:
         first = str(err).partition("\n")[0]
         return [(1, f"could not parse as YAML ({first}); cannot check its runners.")]
     if root is None:
         return []
+    hits = [
+        hit
+        for scalar in _value_scalars(root)
+        for hit in _scalar_hits(text, scalar, runs.get(scalar.start_mark.index))
+    ]
+    if not hits:
+        return []
     lines = source_lines(text)
-    comments = yaml_marker_comments(text)
-    hits: list[tuple[int, str]] = []
-    for scalar in _value_scalars(root):
-        start = scalar.start_mark.index
-        written, decoded = _texts(text, scalar, bash_runs.get(start))
-        hits += [
-            (text.count("\n", 0, start + m.start()) + 1, m.group())
-            for m in ALIAS.finditer(written)
-        ]
-        hidden = ALIAS.search(decoded)
-        if hidden and not ALIAS.search(written):
-            hits.append((scalar.start_mark.line + 1, hidden.group()))
+    comments = yaml_marker_comments(text, [s for s in runs.values() if s.is_bash])
     found: dict[int, str] = {}
     for line, alias in hits:
         if line in found or annotated_near(lines, line, ALLOW, comments=comments):
@@ -184,11 +204,19 @@ def main() -> None:
     total = 0
     for path in workflow_files():
         rel = path.relative_to(REPO_ROOT)
-        for line, message in check_file(path):
+        try:
+            findings = check_file(path)
+        except PathologicalInputError as err:
+            # A `run:` the bash grammar refuses is a file this check did not
+            # read. Report it, and read the files after it.
+            print(f"::error file={rel}::{err}")
+            total += 1
+            continue
+        for line, message in findings:
             print(f"::error file={rel},line={line}::{message}")
             total += 1
     if total:
-        print(f"\nERROR: {total} moving runner alias(es) found.")
+        print(f"\nERROR: {total} finding(s). Name the OS release of each runner.")
         raise SystemExit(1)
 
 

@@ -88,7 +88,8 @@ def test_an_input_default_and_an_env_value_fire() -> None:
 def test_every_hosted_alias_fires(label: str) -> None:
     text = _workflow(f"    runs-on: {label}\n" + _STEPS)
     [(line, message)] = mra.violations(text)
-    assert (line, f"`{label}`" in message) == (5, True)
+    assert line == 5
+    assert f"`{label}`" in message
 
 
 @pytest.mark.parametrize(
@@ -121,8 +122,10 @@ def test_two_aliases_on_one_line_report_once() -> None:
 def test_a_value_reached_through_a_yaml_alias_reports_once() -> None:
     text = (
         "name: w\non: push\njobs:\n"
-        "  a:\n    runs-on: &hosted ubuntu-latest\n" + _STEPS + ""
-        "  b:\n    runs-on: *hosted\n" + _STEPS
+        "  a:\n    runs-on: &hosted ubuntu-latest\n"
+        + _STEPS
+        + "  b:\n    runs-on: *hosted\n"
+        + _STEPS
     )
     assert _lines(text) == [5]
 
@@ -219,7 +222,8 @@ def test_an_alias_spelled_with_yaml_escapes_fires_on_the_scalar_line(
     value: str, alias: str
 ) -> None:
     [(line, message)] = mra.violations(_workflow(f"    runs-on: {value}\n" + _STEPS))
-    assert (line, f"`{alias}`" in message) == (5, True)
+    assert line == 5
+    assert f"`{alias}`" in message
 
 
 def test_an_escaped_alias_inside_a_bash_comment_is_skipped() -> None:
@@ -257,14 +261,43 @@ def test_a_quoted_run_value_keeps_its_comment_offsets() -> None:
     assert _lines(text) == [8]
 
 
-def test_a_run_in_a_shell_bash_cannot_read_is_scanned_whole() -> None:
+_PWSH = _workflow(
+    "    runs-on: windows-2025\n    steps:\n      - shell: pwsh\n"
+    "        run: |\n          # windows-latest ships pwsh 7\n"
+    "          gh workflow run t.yaml -f os=macos-latest\n"
+)
+
+
+def test_a_run_in_a_shell_bash_cannot_read_reports_on_its_run_line() -> None:
     # The bash grammar cannot say where a PowerShell comment starts, so the
-    # check reads the whole script. A finding there is the safe direction.
-    text = _workflow(
-        "    runs-on: windows-2025\n    steps:\n      - shell: pwsh\n"
-        "        run: |\n          # windows-latest ships pwsh 7\n"
+    # check reads the whole script, and reports where a YAML comment can sit.
+    assert _lines(_PWSH) == [8]
+
+
+def test_a_marker_on_a_non_bash_run_line_exempts_the_script() -> None:
+    text = _PWSH.replace(
+        "run: |\n", "run: |  # allow-moving-runner-alias: probes the alias\n"
     )
-    assert _lines(text) == [9]
+    assert _lines(text) == []
+
+
+def test_a_bash_run_whose_decoded_lines_differ_reports_the_hidden_alias() -> None:
+    # Written, the whole value is one comment. Decoded, line 2 is code.
+    text = _workflow(
+        "    runs-on: ubuntu-24.04\n    steps:\n"
+        '      - run: "# note\\ngh workflow run t.yaml -f os=ubuntu-latest"\n'
+    )
+    assert _lines(text) == [7]
+
+
+def test_a_byte_order_mark_keeps_every_offset() -> None:
+    # The alias ends the value, so a slice one character early cuts it off,
+    # and the finding would fall back to the `LABELS:` line.
+    text = "\ufeff" + _workflow(
+        "    runs-on: ubuntu-24.04\n    env:\n      LABELS: self-hosted\n"
+        "        macos-latest\n" + _STEPS
+    )
+    assert _lines(text) == [8]
 
 
 # ── the opt-out ─────────────────────────────────────────────────────────────
@@ -368,7 +401,28 @@ def test_main_reports_workflows_and_actions_and_exits_nonzero(
     out = capsys.readouterr().out
     assert "::error file=.github/workflows/bad.yml,line=5::" in out
     assert "::error file=.github/actions/setup/action.yaml,line=5::" in out
-    assert "2 moving runner alias(es) found" in out
+    assert "ERROR: 2 finding(s)." in out
+
+
+def test_main_reports_a_script_the_grammar_refuses_and_reads_the_next_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    wf, _actions = _point_at(tmp_path, monkeypatch)
+    # One more pipe than the grammar's cap, in a script that names an alias.
+    pipes = " | ".join(["echo ubuntu-latest"] + ["cat"] * 2001)
+    (wf / "a.yaml").write_text(
+        _workflow(f"    runs-on: ubuntu-24.04\n    steps:\n      - run: {pipes}\n"),
+        encoding="utf-8",
+    )
+    (wf / "b.yaml").write_text(_FIRING, encoding="utf-8")
+    with pytest.raises(SystemExit) as stop:
+        mra.main()
+    assert stop.value.code == 1
+    out = capsys.readouterr().out
+    assert "::error file=.github/workflows/a.yaml::input carries more than" in out
+    assert "::error file=.github/workflows/b.yaml,line=5::" in out
 
 
 def test_main_passes_a_clean_tree(
