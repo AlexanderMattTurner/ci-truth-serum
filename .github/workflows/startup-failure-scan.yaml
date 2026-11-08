@@ -36,7 +36,7 @@ permissions:
 jobs:
   scan:
     name: Scan for runs that started no job
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read

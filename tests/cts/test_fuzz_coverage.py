@@ -155,6 +155,7 @@ FUZZ_REQUIRED = {
     "check_bash32_portability": "violations",
     "check_counted_repo_root": "violations",
     "check_container_job_shell": "violations",
+    "check_moving_runner_alias": "violations",
     "check_artifact_pattern_overlap": "violations",
     "check_rename_onto_symlink": "violations",
     "trace_ci": "shell_calls",

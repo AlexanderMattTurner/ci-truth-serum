@@ -20,7 +20,7 @@ jobs:
   # from its first sync onwards. An absent .pre-commit-config.yaml means there
   # are no hooks to run, which is not-applicable rather than unverifiable.
   pre-commit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,7 +62,7 @@ jobs:
   pre-commit-passed: # required-check: true
     if: always()
     needs: [pre-commit]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

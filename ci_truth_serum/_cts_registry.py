@@ -168,6 +168,7 @@ CHECKS: tuple[Check, ...] = (
     _check("check_frozen_head_sha", "1", WORKFLOW, HONESTY, SECURITY),
     _check("check_ready_for_review", "1", WORKFLOW, HONESTY, REQUIRED_CHECKS),
     _check("check_provenance_repo_url", "1", WORKFLOW, SUPPLY_CHAIN),
+    _check("check_moving_runner_alias", "1", WORKFLOW, SUPPLY_CHAIN, CORRECTNESS),
     _check("check_trusted_base", "1", WORKFLOW, SECURITY),
     _check("check_untrusted_exec", "1", WORKFLOW, SECURITY),
     _check("check_unscoped_tool_grant", "1", WORKFLOW, SECURITY, AGENTS),

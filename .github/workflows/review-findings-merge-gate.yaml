@@ -32,7 +32,7 @@ jobs:
     # and review-findings-gate.sh posts its PR-head statuses under the SAME
     # name — one context, two reporting surfaces (queue sha here, PR head sha
     # from review-findings-gate.yaml's evaluate job and the resolver step).
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read # sparse-checkout the trusted gate script

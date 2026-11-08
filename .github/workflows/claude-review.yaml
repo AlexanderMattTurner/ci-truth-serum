@@ -197,7 +197,7 @@ jobs:
           )
         )
       )
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read # sparse-checkout the trusted approval script
@@ -265,7 +265,7 @@ jobs:
       contains(fromJSON('["opened","ready_for_review","synchronize"]'), github.event.action) &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.type != 'Bot'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # One review per PR at a time; a newer push supersedes an in-flight run (latest
     # head wins). Keyed by PR number, so it never strands a required check.
@@ -401,7 +401,7 @@ jobs:
       github.event.action == 'synchronize' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.type != 'Bot'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # One resolver per PR at a time; a newer push supersedes an in-flight run
     # (latest head wins). Keyed by PR number, so it never strands a required check.

@@ -53,7 +53,7 @@ jobs:
   # Skip a scheduled run when main has not moved since the last passing run. Its
   # verdicts would repeat that run's, and so would the issue it writes.
   gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -77,7 +77,7 @@ jobs:
   plan:
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.shards.outputs.shards }}
@@ -96,7 +96,7 @@ jobs:
   mutation:
     needs: plan
     if: needs.plan.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -149,7 +149,7 @@ jobs:
   aggregate: # required-check: false  # rolled up by mutation-passed (which needs: aggregate)
     needs: [gate, plan, mutation]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       # `ran` is the only condition under which reports are owed. The gate has to
@@ -183,7 +183,7 @@ jobs:
           pattern: mutation-report-*
           path: shard-reports
 
-      # aggregate-mutation.py is stdlib-only (json + tomllib); ubuntu-latest ships
+      # aggregate-mutation.py is stdlib-only (json + tomllib); ubuntu-24.04 ships
       # Python 3.12, so no toolchain setup is needed to enforce the coverage gate.
       - name: Aggregate and enforce one report per shard
         if: steps.owed.outputs.ran == 'true'
@@ -202,7 +202,7 @@ jobs:
   mutation-js:
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -234,7 +234,7 @@ jobs:
   mutation-passed: # required-check: false  # the workflow has no pull_request trigger, so no pull request can wait on it
     if: always()
     needs: [gate, plan, mutation, aggregate, mutation-js]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Fail if any required job did not pass
@@ -247,7 +247,7 @@ jobs:
     needs: [gate, plan, mutation, aggregate, mutation-js]
     # A gate that failed before it chose is red too, so the issue records it.
     if: always() && github.ref == 'refs/heads/main' && (needs.gate.outputs.run == 'true' || needs.gate.result == 'failure')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     concurrency:
       # GitHub claims the group when it creates the job, before it reads `if:`, so
