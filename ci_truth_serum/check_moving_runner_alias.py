@@ -40,6 +40,7 @@ Globs every workflow and composite action; the passed file list is ignored.
 
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 import yaml
@@ -62,17 +63,18 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 ACTIONS_DIR = REPO_ROOT / ".github" / "actions"
 ALLOW = "allow-moving-runner-alias"
 
-# A GitHub-hosted alias, with any larger-runner suffix (`-4-cores`, `-xlarge`).
-# GitHub matches runner labels without regard to case. The lookarounds keep a
-# vendor label that only CONTAINS an alias (`acme-ubuntu-latest`) and a dotted
-# word (`ubuntu-latest.txt`) out of the match.
+# A GitHub-hosted alias, with any larger-runner suffix (`-4-cores`, `-xlarge`),
+# including one an expression computes (`-${{ inputs.size }}`). GitHub matches
+# runner labels without regard to case. The lookarounds keep a vendor label
+# that only CONTAINS an alias (`acme-ubuntu-latest`) and a dotted word
+# (`ubuntu-latest.txt`) out of the match.
 ALIAS = re.compile(
-    r"(?<![\w.-])(?:ubuntu|macos|windows)-latest(?:-[a-z0-9]+)*(?![\w.-])",
+    r"(?<![\w.-])(?:ubuntu|macos|windows)-latest(?:-[a-z0-9]+)*(?![\w.]|-(?!\$))",
     re.IGNORECASE,
 )
 
 # The maps whose entries each carry a `description:` that GitHub shows as text:
-# an input, output or secret of a workflow_call, workflow_dispatch or action.
+# the inputs, outputs and secrets of a workflow trigger or of an action.
 _DESCRIBED = frozenset({"inputs", "outputs", "secrets"})
 
 
@@ -88,14 +90,23 @@ def _message(alias: str) -> str:
 def _is_prose(path: tuple[str, ...], key: str) -> bool:
     """True when KEY holds a `description:` text that GitHub shows and never runs.
 
-    PATH holds the keys from the root down to the mapping that holds KEY. Only
-    the action's own description and the description of an input, output or
-    secret qualify. An input or a matrix axis whose NAME is `description` sits
-    at another depth, so it is still read.
+    PATH holds the keys from the root down to the mapping that holds KEY. Three
+    places qualify, each at a fixed depth:
+
+      * the action's own description, at the root;
+      * an action input or output: `inputs.<id>.description`;
+      * a trigger's input, output or secret: `on.<event>.inputs.<id>.description`.
+
+    A key of that name anywhere else is data. A job whose ID is `inputs` and a
+    reusable workflow's `with: {description: …}` both still get read.
     """
     if key != "description":
         return False
-    return not path or (len(path) >= 2 and path[-2] in _DESCRIBED)
+    if not path:
+        return True
+    if len(path) == 2:
+        return path[0] in _DESCRIBED
+    return len(path) == 4 and path[0] == "on" and path[2] in _DESCRIBED
 
 
 def _value_scalars(root: yaml.Node) -> list[yaml.ScalarNode]:
@@ -131,9 +142,9 @@ def _scalar_hits(
 
     The written form keeps every offset, so a match in it lands on its own line.
     The decoded form is what GitHub receives, so an escape such as
-    `"ubuntu\\u002dlatest"` cannot hide an alias: when only that form holds one,
-    it lands on the scalar's first line. RUN is the step SCALAR is the script
-    of, if any. A bash script loses its comments first.
+    `"ubuntu\\u002dlatest"` cannot hide an alias: each alias that only that form
+    holds lands on the scalar's first line. RUN is the step SCALAR is the
+    script of, if any. A bash script loses its comments first.
     """
     start = scalar.start_mark.index
     first_line = scalar.start_mark.line + 1
@@ -151,10 +162,9 @@ def _scalar_hits(
         (text.count("\n", 0, start + m.start()) + 1, m.group())
         for m in ALIAS.finditer(written)
     ]
-    hidden = ALIAS.search(decoded)
-    if hidden and not hits:
-        hits.append((first_line, hidden.group()))
-    return hits
+    spelled = Counter(alias.lower() for _line, alias in hits)
+    hidden = Counter(m.group().lower() for m in ALIAS.finditer(decoded)) - spelled
+    return hits + [(first_line, alias) for alias in hidden.elements()]
 
 
 def violations(text: str) -> list[tuple[int, str]]:
@@ -163,12 +173,14 @@ def violations(text: str) -> list[tuple[int, str]]:
     A file PyYAML cannot parse is itself a finding: a clean result on a file
     nobody read is a false pass.
     """
-    # libyaml counts its offsets after a byte-order mark, so every slice of a
-    # text that keeps one starts a character early.
-    text = text.removeprefix("\ufeff")
     try:
         root = compose(text)
-        runs = {s.start: s for s in yaml_run_scalars(text)}
+        runs: dict[int, RunScalar] = {}
+        for run in yaml_run_scalars(text):
+            # A step that a YAML alias shares between jobs is read as bash only
+            # when every job runs it under bash.
+            if run.start not in runs or not run.is_bash:
+                runs[run.start] = run
     except yaml.YAMLError as err:
         first = str(err).partition("\n")[0]
         return [(1, f"could not parse as YAML ({first}); cannot check its runners.")]

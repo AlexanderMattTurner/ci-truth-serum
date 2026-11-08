@@ -83,13 +83,15 @@ def test_an_input_default_and_an_env_value_fire() -> None:
         "macos-latest-xlarge",
         "macos-latest-large",
         "Ubuntu-Latest",
+        "ubuntu-latest-${{ inputs.size }}",
+        "ubuntu-latest-$SIZE",
     ],
 )
 def test_every_hosted_alias_fires(label: str) -> None:
     text = _workflow(f"    runs-on: {label}\n" + _STEPS)
     [(line, message)] = mra.violations(text)
     assert line == 5
-    assert f"`{label}`" in message
+    assert f"`{label.partition('-$')[0]}`" in message
 
 
 @pytest.mark.parametrize(
@@ -186,6 +188,18 @@ def test_a_description_value_is_prose() -> None:
             "    runs-on: ${{ matrix.description }}\n",
             7,
         ),
+        # A reusable workflow's input is data, even in a job whose ID is `inputs`.
+        (
+            "on: push\njobs:\n  inputs:\n    uses: ./.github/workflows/r.yaml\n"
+            "    with:\n      description: macos-latest\n",
+            7,
+        ),
+        # A key of that name directly under a job is not an action input.
+        (
+            "on: push\njobs:\n  b:\n    description: macos-latest\n"
+            "    runs-on: ubuntu-24.04\n",
+            5,
+        ),
         # A matrix `include` entry is not an input, output or secret.
         (
             "on: push\njobs:\n  b:\n    strategy:\n      matrix:\n"
@@ -199,6 +213,17 @@ def test_a_field_named_description_that_picks_a_runner_fires(
     body: str, line: int
 ) -> None:
     assert _lines("name: w\n" + body + _STEPS) == [line]
+
+
+def test_a_trigger_secret_and_output_description_is_prose() -> None:
+    text = (
+        "name: w\non:\n  workflow_call:\n    secrets:\n      tok:\n"
+        "        description: only for ubuntu-latest jobs\n"
+        "    outputs:\n      os:\n        description: e.g. macos-latest\n"
+        "        value: windows-latest\n"
+        "jobs:\n  b:\n    runs-on: ubuntu-24.04\n" + _STEPS
+    )
+    assert _lines(text) == [10]
 
 
 def test_an_action_description_is_prose() -> None:
@@ -224,6 +249,17 @@ def test_an_alias_spelled_with_yaml_escapes_fires_on_the_scalar_line(
     [(line, message)] = mra.violations(_workflow(f"    runs-on: {value}\n" + _STEPS))
     assert line == 5
     assert f"`{alias}`" in message
+
+
+def test_an_escaped_alias_beside_an_opted_out_one_still_fires() -> None:
+    # Decoded, the script is two lines. The marker clears the second, and the
+    # escaped alias on the first is reported at the scalar's first line.
+    text = _workflow(
+        "    runs-on: ubuntu-24.04\n    steps:\n"
+        '      - run: "echo windows\\u002dlatest\\n\\\n'
+        '          echo ubuntu-latest  # allow-moving-runner-alias: probe"\n'
+    )
+    assert _lines(text) == [7]
 
 
 def test_an_escaped_alias_inside_a_bash_comment_is_skipped() -> None:
@@ -272,6 +308,21 @@ def test_a_run_in_a_shell_bash_cannot_read_reports_on_its_run_line() -> None:
     # The bash grammar cannot say where a PowerShell comment starts, so the
     # check reads the whole script, and reports where a YAML comment can sit.
     assert _lines(_PWSH) == [8]
+
+
+@pytest.mark.parametrize("other", ["bash", "sh"])
+def test_a_step_shared_with_a_non_bash_job_is_read_whole(other: str) -> None:
+    # The shared node runs under pwsh in one job, so its `#` line is not a
+    # comment the bash grammar may drop, whichever shell the other job names.
+    text = (
+        "name: w\non: push\njobs:\n"
+        "  a:\n    runs-on: windows-2025\n    defaults: {run: {shell: pwsh}}\n"
+        "    steps:\n      - &step\n        run: |\n"
+        "          # windows-latest note\n"
+        f"  b:\n    runs-on: ubuntu-24.04\n    defaults: {{run: {{shell: {other}}}}}\n"
+        "    steps:\n      - *step\n"
+    )
+    assert _lines(text) == [9]
 
 
 def test_a_marker_on_a_non_bash_run_line_exempts_the_script() -> None:
