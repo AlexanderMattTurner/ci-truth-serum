@@ -184,6 +184,16 @@
   # a clean repo costs one git call plus two small file reads — always run.
   always_run: true
 
+- id: check-moving-runner-alias
+  name: "identity: name the OS release of a GitHub-hosted runner"
+  description: "GitHub moves `ubuntu-latest` and its siblings to a new OS release with no commit in the repository, so CI changes under an unchanged diff."
+  entry: python -m ci_truth_serum.check_moving_runner_alias
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 # ───────────────────────── Tier 1 · Security (default-on) ────────────────────
 - id: check-trusted-base
   name: "security: forbid privileged checkout of an author-chosen ref (pwn-request)"
