@@ -118,6 +118,15 @@ def test_the_opt_out_needs_a_reason(marker_at: str, line: list[int]) -> None:
     assert _lines(_FIRING.replace("ubuntu-latest\n", marker_at)) == line
 
 
+def test_a_marker_on_one_matrix_entry_does_not_cover_the_next() -> None:
+    text = _workflow(
+        "    strategy:\n      matrix:\n        os:\n"
+        "          - macos-latest  # allow-moving-runner-alias: tests the alias\n"
+        "          - ubuntu-latest\n" + _STEPS
+    )
+    assert _lines(text) == [9]
+
+
 def test_a_marker_inside_a_quoted_value_does_not_exempt() -> None:
     text = _FIRING.replace(
         "    runs-on:",
