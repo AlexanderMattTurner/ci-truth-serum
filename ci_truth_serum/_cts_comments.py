@@ -41,20 +41,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # share the one traversal rather than each growing a copy of it.
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     iter_nodes,
+    opening_lines,
     parse as _parse_bash,
 )
 from _cts_js_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     is_js_source,
     parse as _parse_js,
 )
+from _cts_py_ast import opening_lines as python_opening_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_py_ast import lines as python_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CommentMap,
     comment_body,
     is_python_source,
     is_shell_source,
     is_yaml_source,
     yaml_comment_text,
     yaml_marker_comments,
+    workflow_opening_lines,
     yaml_run_scalars,
     yaml_run_script,
     yaml_scannable,
@@ -116,7 +120,7 @@ def _python_comment_items(source: str) -> tuple[tuple[int, str], ...]:
     )
 
 
-def py_comments(source: str) -> dict[int, str]:
+def py_comments(source: str) -> CommentMap:
     """``python_comments`` for Python SOURCE that may not tokenize.
 
     Lines are numbered the way the Python grammar numbers them, which is
@@ -129,12 +133,20 @@ def py_comments(source: str) -> dict[int, str]:
     """
     normalized = "\n".join(python_lines(source))
     try:
-        return python_comments(normalized)
+        found = python_comments(normalized)
     except (tokenize.TokenError, SyntaxError):
-        return text_comments(normalized)
+        return CommentMap(text_comments(normalized).items())
+    # Source can tokenize and still not parse: syntax newer than this
+    # interpreter, or a half-written edit. Its comments are still exact, and
+    # only the opener lines, which need the tree, are lost.
+    try:
+        opens = python_opening_lines(normalized)
+    except SyntaxError:
+        opens = frozenset()
+    return CommentMap(found.items(), opens)
 
 
-def shell_comments(script: str) -> dict[int, str]:
+def shell_comments(script: str) -> CommentMap:
     """1-based line -> comment text, for every bash ``comment`` node in SCRIPT.
 
     Mandatory for the reason `.claude/rules/shell-lint-parsing.md` gives: "is
@@ -148,14 +160,18 @@ def shell_comments(script: str) -> dict[int, str]:
     "no findings" on the one input an adversary controls would be exactly the
     false green this pack exists to catch.
     """
-    return _merge(
-        fragment
-        for node in iter_nodes(_parse_bash(script), "comment")
-        for fragment in _node_fragments(node)
+    root = _parse_bash(script)
+    return CommentMap(
+        _merge(
+            fragment
+            for node in iter_nodes(root, "comment")
+            for fragment in _node_fragments(node)
+        ).items(),
+        opening_lines(root),
     )
 
 
-def js_comments(source: str, path: str) -> dict[int, str]:
+def js_comments(source: str, path: str) -> CommentMap:
     """1-based line -> comment text, for every JS/TS ``comment`` node in SOURCE.
 
     Both comment shapes come from the grammar, so a `//` inside a string or a
@@ -165,14 +181,18 @@ def js_comments(source: str, path: str) -> dict[int, str]:
     as ERROR nodes under the JavaScript grammar and would drop the comments
     after them.
     """
-    return _merge(
-        fragment
-        for node in iter_nodes(_parse_js(source, path), "comment")
-        for fragment in _node_fragments(node)
+    root = _parse_js(source, path)
+    return CommentMap(
+        _merge(
+            fragment
+            for node in iter_nodes(root, "comment")
+            for fragment in _node_fragments(node)
+        ).items(),
+        opening_lines(root),
     )
 
 
-def yaml_comments(text: str) -> dict[int, str]:
+def yaml_comments(text: str) -> CommentMap:
     """1-based line -> comment text, for a YAML document holding shell.
 
     A YAML parser drops comments before it returns a document, so there is no
@@ -202,11 +222,12 @@ def yaml_comments(text: str) -> dict[int, str]:
     suppresses — on a file that does not parse, and only until it does.
     """
     if not yaml_scannable(text):
-        return text_comments(text)
+        return CommentMap(text_comments(text).items())
     try:
         scalars = yaml_run_scalars(text)
     except yaml.YAMLError:
-        return text_comments(text)  # scans, but will not compose: same fallback
+        # It scans, but will not compose: the same fallback.
+        return CommentMap(text_comments(text).items())
     fragments = [
         (lineno, body)
         for lineno, line in enumerate(yaml_comment_text(text).split("\n"), 1)
@@ -214,11 +235,11 @@ def yaml_comments(text: str) -> dict[int, str]:
     ]
     for scalar in scalars:
         offset = text.count("\n", 0, scalar.start)
-        fragments += [
-            (offset + lineno, comment)
-            for lineno, comment in shell_comments(yaml_run_script(text, scalar)).items()
-        ]
-    return _merge(sorted(fragments))
+        script = shell_comments(yaml_run_script(text, scalar))
+        fragments += [(offset + lineno, comment) for lineno, comment in script.items()]
+    return CommentMap(
+        _merge(sorted(fragments)).items(), workflow_opening_lines(text, scalars)
+    )
 
 
 def text_comments(text: str) -> dict[int, str]:
@@ -241,7 +262,7 @@ def text_comments(text: str) -> dict[int, str]:
     }
 
 
-def marker_comments(text: str, path: str, *, prose: bool = False) -> dict[int, str]:
+def marker_comments(text: str, path: str, *, prose: bool = False) -> CommentMap:
     """1-based line -> where an opt-out marker may sit on that line of PATH.
 
     PROBLEM CLASS — which text may carry an opt-out. The answer differs from
@@ -258,13 +279,13 @@ def marker_comments(text: str, path: str, *, prose: bool = False) -> dict[int, s
     Every other language takes ``comment_lines``.
     """
     if prose:
-        return dict(enumerate(text.split("\n"), 1))
+        return CommentMap(enumerate(text.split("\n"), 1))
     if is_yaml_source(path):
         return yaml_marker_comments(text)
     return comment_lines(text, path)
 
 
-def comment_lines(text: str, path: str) -> dict[int, str]:
+def comment_lines(text: str, path: str) -> CommentMap:
     """1-based line -> the comment text on that line, using the grammar PATH's
     language provides and falling back to ``text_comments`` when it has none.
 
@@ -281,4 +302,4 @@ def comment_lines(text: str, path: str) -> dict[int, str]:
         return js_comments(text, path)
     if is_yaml_source(path):
         return yaml_comments(text)
-    return text_comments(text)
+    return CommentMap(text_comments(text).items())

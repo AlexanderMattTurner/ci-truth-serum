@@ -293,6 +293,30 @@ def test_an_annotation_line_never_flags_itself(token: str) -> None:
     assert mod.violations(src) == []
 
 
+@pytest.mark.parametrize(
+    ("first_line", "suppressed"),
+    [
+        # The class opens on the marker's line and holds the guard.
+        ("class TestSync:  # drift-guard-ok: two runtimes, no shared SSOT\n", True),
+        # `X = 1` ends on its own line, so it speaks for nothing below it.
+        (
+            "X = 1  # drift-guard-ok: two runtimes, no shared SSOT\nclass TestSync:\n",
+            False,
+        ),
+    ],
+)
+def test_a_trailing_reason_covers_a_guard_only_inside_the_construct_it_opens(
+    first_line: str, suppressed: bool
+) -> None:
+    src = (
+        first_line
+        + "    def test_shell_and_python_agree(self):\n"
+        + "        # canonical char set, mirrored from the per-layer suites\n"
+        + "        assert SHELL_CHARS == PY_CHARS\n"
+    )
+    assert (mod.violations(src) == []) is suppressed
+
+
 # ── comments come from the grammar, not from text that looks like one ──
 # (`_cts_comments` owns the extractors and their unit oracle; these pin the effect
 # on this check's verdicts.)

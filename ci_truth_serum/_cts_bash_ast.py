@@ -322,6 +322,39 @@ ARGUMENT_TYPES = frozenset(
 )
 
 
+# Leaf types that separate siblings in a list. A trailing comment after one
+# speaks for the item it ends, never for the next item.
+SEPARATORS = frozenset({";", "&", ";;", ","})
+
+
+def opening_lines(root: Node) -> frozenset[int]:
+    """The 1-based lines whose last token opens a construct that continues
+    onto the next line (see ``_cts_linecheck.CommentMap``).
+
+    The construct a token belongs to is its parent node. `if` belongs to the
+    `if` statement, `&&` to its list, and `{` to its block. Works on any
+    tree-sitter tree, so the JavaScript grammar uses it too.
+    """
+    last: dict[int, Node] = {}
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "comment":
+            continue
+        if node.child_count == 0:
+            row = node.start_point[0]
+            if row not in last or node.start_byte > last[row].start_byte:
+                last[row] = node
+        stack.extend(node.children)
+    return frozenset(
+        row + 1
+        for row, leaf in last.items()
+        if leaf.type not in SEPARATORS
+        and leaf.parent is not None
+        and leaf.parent.end_point[0] > row
+    )
+
+
 def node_text(node: Node) -> str:
     """NODE's source text, decoded from the bytes tree-sitter indexes."""
     return node.text.decode("utf-8", "replace")
