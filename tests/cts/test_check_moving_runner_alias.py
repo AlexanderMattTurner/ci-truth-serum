@@ -166,6 +166,71 @@ def test_a_description_value_is_prose() -> None:
     assert _lines(text) == [8]
 
 
+@pytest.mark.parametrize(
+    ("body", "line"),
+    [
+        # An input whose NAME is `description` holds a mapping, not prose.
+        (
+            "on:\n  workflow_dispatch:\n    inputs:\n      description:\n"
+            "        description: the runner\n        default: ubuntu-latest\n"
+            "jobs:\n  b:\n    runs-on: ${{ inputs.description }}\n",
+            7,
+        ),
+        # A matrix axis named `description` holds a list.
+        (
+            "on: push\njobs:\n  b:\n    strategy:\n      matrix:\n"
+            "        description: [macos-latest]\n"
+            "    runs-on: ${{ matrix.description }}\n",
+            7,
+        ),
+        # A matrix `include` entry is not an input, output or secret.
+        (
+            "on: push\njobs:\n  b:\n    strategy:\n      matrix:\n"
+            "        include:\n          - description: windows-latest\n"
+            "    runs-on: ${{ matrix.description }}\n",
+            8,
+        ),
+    ],
+)
+def test_a_field_named_description_that_picks_a_runner_fires(
+    body: str, line: int
+) -> None:
+    assert _lines("name: w\n" + body + _STEPS) == [line]
+
+
+def test_an_action_description_is_prose() -> None:
+    text = (
+        "name: a\ndescription: Sets up ubuntu-latest tools\n"
+        "outputs:\n  os:\n    description: e.g. macos-latest\n"
+        "    value: windows-latest\n"
+        "runs:\n  using: composite\n  steps:\n    - run: make\n      shell: bash\n"
+    )
+    assert _lines(text) == [6]
+
+
+@pytest.mark.parametrize(
+    ("value", "alias"),
+    [
+        ('"ubuntu\\u002dlatest"', "ubuntu-latest"),
+        ('"macos-\\\n      latest"', "macos-latest"),
+    ],
+)
+def test_an_alias_spelled_with_yaml_escapes_fires_on_the_scalar_line(
+    value: str, alias: str
+) -> None:
+    [(line, message)] = mra.violations(_workflow(f"    runs-on: {value}\n" + _STEPS))
+    assert (line, f"`{alias}`" in message) == (5, True)
+
+
+def test_an_escaped_alias_inside_a_bash_comment_is_skipped() -> None:
+    text = _workflow(
+        "    runs-on: ubuntu-24.04\n    steps:\n"
+        '      - run: "make  # ubuntu\\u002dlatest"\n'
+        '      - run: "make os=windows\\u002dlatest"\n'
+    )
+    assert _lines(text) == [8]
+
+
 def test_a_mapping_key_is_not_a_value() -> None:
     text = _workflow(
         "    env:\n      ubuntu-latest: x\n    runs-on: windows-latest\n" + _STEPS

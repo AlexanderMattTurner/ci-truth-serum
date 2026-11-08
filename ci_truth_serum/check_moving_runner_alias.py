@@ -18,7 +18,8 @@ scalar VALUE that names an alias, so it finds every place that picks a runner:
 The check skips three kinds of text, because none of them picks a runner:
 
   * a YAML comment, which is not a scalar;
-  * the value of a `description:` key, which GitHub shows and never runs;
+  * the `description:` text of the action, or of an input, output or secret,
+    which GitHub shows and never runs;
   * a shell comment inside a `run:` value that GitHub hands to bash. The bash
     grammar decides where that comment starts, so `echo "a # b"` stays code.
 
@@ -43,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import strip_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import compose  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    RunScalar,
     annotated_near,
     source_lines,
     workflow_files as _workflow_files,
@@ -65,8 +67,9 @@ ALIAS = re.compile(
     re.IGNORECASE,
 )
 
-# A key whose value GitHub shows as text and never runs.
-_PROSE_KEYS = frozenset({"description"})
+# The maps whose entries each carry a `description:` that GitHub shows as text:
+# an input, output or secret of a workflow_call, workflow_dispatch or action.
+_DESCRIBED = frozenset({"inputs", "outputs", "secrets"})
 
 
 def _message(alias: str) -> str:
@@ -78,41 +81,66 @@ def _message(alias: str) -> str:
     )
 
 
-def _value_scalars(root: yaml.Node) -> list[yaml.ScalarNode]:
-    """Every scalar in ROOT that is a VALUE, once each.
+def _is_prose(path: tuple[str, ...], key: str) -> bool:
+    """True when KEY holds a `description:` text that GitHub shows and never runs.
 
-    A mapping key names a field and never a runner, and a `description:` value
-    is prose. A node that a YAML alias reaches twice is the same source text,
-    so the walk visits it once.
+    PATH holds the keys from the root down to the mapping that holds KEY. Only
+    the action's own description and the description of an input, output or
+    secret qualify. An input or a matrix axis whose NAME is `description` sits
+    at another depth, so it is still read.
+    """
+    if key != "description":
+        return False
+    return not path or (len(path) >= 2 and path[-2] in _DESCRIBED)
+
+
+def _value_scalars(root: yaml.Node) -> list[yaml.ScalarNode]:
+    """Every scalar in ROOT that is a VALUE and not prose, once each.
+
+    A mapping key names a field and never a runner. A node that a YAML alias
+    reaches twice is the same source text, so the walk visits it once.
     """
     found: list[yaml.ScalarNode] = []
-    stack: list[yaml.Node] = [root]
+    stack: list[tuple[yaml.Node, tuple[str, ...]]] = [(root, ())]
     seen: set[int] = set()
     while stack:
-        node = stack.pop()
+        node, path = stack.pop()
         if id(node) in seen:
             continue
         seen.add(id(node))
         if isinstance(node, yaml.ScalarNode):
             found.append(node)
         elif isinstance(node, yaml.SequenceNode):
-            stack.extend(node.value)
+            stack.extend((item, path) for item in node.value)
         elif isinstance(node, yaml.MappingNode):
-            stack.extend(
-                value
-                for key, value in node.value
-                if not (isinstance(key, yaml.ScalarNode) and key.value in _PROSE_KEYS)
-            )
+            for key_node, value in node.value:
+                key = key_node.value if isinstance(key_node, yaml.ScalarNode) else ""
+                if not _is_prose(path, key):
+                    stack.append((value, (*path, key)))
     return found
+
+
+def _texts(
+    text: str, scalar: yaml.ScalarNode, run: RunScalar | None
+) -> tuple[str, str]:
+    """SCALAR as written in TEXT, and as YAML decodes it, without bash comments.
+
+    The written form keeps every offset, so a match in it gives a line. The
+    decoded form is what GitHub receives, so an escape such as
+    `"ubuntu\\u002dlatest"` cannot hide an alias from the check.
+    """
+    if run is None:
+        return text[scalar.start_mark.index : scalar.end_mark.index], scalar.value
+    return strip_comments(yaml_run_script(text, run)), strip_comments(run.value)
 
 
 def violations(text: str) -> list[tuple[int, str]]:
     """(1-based line, message) for each moving alias in a workflow or action TEXT.
 
-    The check matches the SOURCE text of each scalar, not its decoded value, so
-    a finding inside a multi-line value lands on its own line. A file PyYAML
-    cannot parse is itself a finding: a clean result on a file nobody read
-    would be a false pass.
+    A match in the written text reports its own line, so a finding inside a
+    multi-line value lands where it is. An alias that only the decoded value
+    holds reports the line where the scalar starts. A file PyYAML cannot parse
+    is itself a finding: a clean result on a file nobody read is a false pass.
     """
     try:
         root = compose(text)
@@ -124,20 +152,22 @@ def violations(text: str) -> list[tuple[int, str]]:
         return []
     lines = source_lines(text)
     comments = yaml_marker_comments(text)
-    found: dict[int, str] = {}
+    hits: list[tuple[int, str]] = []
     for scalar in _value_scalars(root):
         start = scalar.start_mark.index
-        run = bash_runs.get(start)
-        source = (
-            strip_comments(yaml_run_script(text, run))
-            if run is not None
-            else text[start : scalar.end_mark.index]
-        )
-        for match in ALIAS.finditer(source):
-            line = text.count("\n", 0, start + match.start()) + 1
-            if line in found or annotated_near(lines, line, ALLOW, comments=comments):
-                continue
-            found[line] = _message(match.group())
+        written, decoded = _texts(text, scalar, bash_runs.get(start))
+        hits += [
+            (text.count("\n", 0, start + m.start()) + 1, m.group())
+            for m in ALIAS.finditer(written)
+        ]
+        hidden = ALIAS.search(decoded)
+        if hidden and not ALIAS.search(written):
+            hits.append((scalar.start_mark.line + 1, hidden.group()))
+    found: dict[int, str] = {}
+    for line, alias in hits:
+        if line in found or annotated_near(lines, line, ALLOW, comments=comments):
+            continue
+        found[line] = _message(alias)
     return sorted(found.items())
 
 
