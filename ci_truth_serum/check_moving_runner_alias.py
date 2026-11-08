@@ -146,6 +146,11 @@ def _scalar_hits(
     written form keeps every offset, so each alias it also spells lands on its
     own line. The rest land on the scalar's first line. RUN is the step SCALAR
     is the script of, if any. A bash script loses its comments first.
+
+    Every alias lands on the first line when the written form cannot say where
+    an alias is: a non-bash script, or a double-quoted scalar with an escape.
+    An escape can stop a written alias from decoding, so that alias could take
+    the line of a real one, and an opt-out on the wrong line would clear it.
     """
     start = scalar.start_mark.index
     first_line = scalar.start_mark.line + 1
@@ -154,11 +159,12 @@ def _scalar_hits(
     # A shortlist only: for a script, the grammar below decides what is code.
     if not (ALIAS.search(written) or ALIAS.search(decoded)):
         return []
-    if run is not None and not run.is_bash:
-        return [(first_line, m.group()) for m in ALIAS.finditer(decoded)]
-    if run is not None:
+    escaped = scalar.style == '"' and "\\" in written
+    if run is not None and run.is_bash:
         written = strip_comments(yaml_run_script(text, run))
         decoded = strip_comments(decoded)
+    if escaped or (run is not None and not run.is_bash):
+        return [(first_line, m.group()) for m in ALIAS.finditer(decoded)]
     unplaced = Counter(m.group().lower() for m in ALIAS.finditer(decoded))
     hits: list[tuple[int, str]] = []
     for m in ALIAS.finditer(written):

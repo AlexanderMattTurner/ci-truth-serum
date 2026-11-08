@@ -251,9 +251,9 @@ def test_an_alias_spelled_with_yaml_escapes_fires_on_the_scalar_line(
     assert f"`{alias}`" in message
 
 
-def test_an_escaped_alias_beside_an_opted_out_one_still_fires() -> None:
-    # Decoded, the script is two lines. The marker clears the second, and the
-    # escaped alias on the first is reported at the scalar's first line.
+def test_an_opt_out_inside_an_escaped_scalar_cannot_clear_its_first_line() -> None:
+    # The value holds an escape, so both aliases land on its first line, and
+    # the marker on the second line cannot clear them.
     text = _workflow(
         "    runs-on: ubuntu-24.04\n    steps:\n"
         '      - run: "echo windows\\u002dlatest\\n\\\n'
@@ -274,6 +274,19 @@ def test_an_escaped_alias_beside_an_opted_out_one_still_fires() -> None:
 def test_an_alias_the_decoded_script_does_not_hold_passes(run: str) -> None:
     text = _workflow(f"    runs-on: ubuntu-24.04\n    steps:\n      - run: {run}\n")
     assert _lines(text) == []
+
+
+def test_a_marker_cannot_clear_an_escaped_alias_through_a_false_one() -> None:
+    # The real alias is escaped on line 7. The escaped line break joins line 8
+    # onto `foo`, so the `ubuntu-latest` written there never reaches GitHub.
+    # Placed by the written text, the finding moved to line 8 and the marker
+    # there cleared it.
+    text = _workflow(
+        "    runs-on: ubuntu-24.04\n    env:\n"
+        '      X: "ubuntu\\u002dlatest foo\\\n        ubuntu-latest"'
+        "  # allow-moving-runner-alias: line 8 only\n" + _STEPS
+    )
+    assert _lines(text) == [7]
 
 
 def test_an_escaped_alias_inside_a_bash_comment_is_skipped() -> None:
