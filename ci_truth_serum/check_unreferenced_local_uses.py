@@ -270,8 +270,9 @@ def definition(
 def marker_window(lines: list[str], anchors: list[int]) -> list[int]:
     """The 1-based lines a definition's opt-out may sit on.
 
-    `annotation_window` owns the placement rule — the key's own line, the line
-    above it, and the unbroken comment block above that. Both anchors of a
+    `annotation_window` owns the placement rule: the key's own line and the
+    unbroken comment block above it. A code line above a key is another key
+    here, so its comment speaks for that key alone. Both anchors of a
     workflow are asked, so a reason written above `on:` reads the same as one
     written above `workflow_call:`.
 
