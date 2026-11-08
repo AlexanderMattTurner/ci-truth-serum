@@ -201,3 +201,35 @@ def test_yaml_comments_falls_back_on_a_workflow_that_scans_but_will_not_compose(
         1: "# hi",
         2: "# y",
     }
+
+
+# ── OPENS: which code lines open a construct that continues below ──────────
+@pytest.mark.parametrize(
+    ("path", "text", "opens"),
+    [
+        ("s.sh", "if  # m\n  curl -o x url\nthen :; fi\n", {1}),
+        ("s.sh", "a &&  # m\n  b\n", {1}),
+        ("s.sh", "echo a  # m\necho b\n", set()),
+        ("s.sh", "echo a;  # m\necho b\n", set()),
+        ("m.py", "x = foo(  # m\n    1)\ny = 2  # m\nz = 3\n", {1}),
+        ("m.py", "if x:  # m\n    y()\n", {1}),
+        ("m.py", "def f():\n    y = 2  # m\n    z = 3\n", {1}),
+        ("m.py", "t = (a,  # m\n     b)\n", set()),
+        ("m.py", "s = 'caf\u00e9' + f(  # m\n    1)\n", {1}),
+        ("m.js", "const a = [x,  // m\n  y];\n", set()),
+        ("m.js", "if (z) {  // m\n  w();\n}\n", {1}),
+        ("w.yaml", "os:\n  - a  # m\n  - b\n", {1}),
+        ("w.yaml", "k:  # m\n  - b\n", {1}),
+        ("w.yaml", "k: >-  # m\n  a\n  b\n", {1}),
+        ("w.yaml", "e: {A: 1,  # m\n  B: 2}\n", set()),
+        ("notes.md", "a\nb\n", set()),
+    ],
+)
+def test_opens_holds_each_line_whose_last_token_opens_a_construct(
+    path: str, text: str, opens: set[int]
+) -> None:
+    assert comments.comment_lines(text, path).opens == opens
+
+
+def test_python_that_does_not_parse_opens_nothing() -> None:
+    assert comments.py_comments("x = foo(  # m\n").opens == frozenset()
