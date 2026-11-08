@@ -222,6 +222,8 @@ def test_yaml_comments_falls_back_on_a_workflow_that_scans_but_will_not_compose(
         ("w.yaml", "k:  # m\n  - b\n", {1}),
         ("w.yaml", "k: >-  # m\n  a\n  b\n", {1}),
         ("w.yaml", "e: {A: 1,  # m\n  B: 2}\n", set()),
+        ("w.yaml", "a: &x foo\nb: *x  # m\nc: 1\n", set()),
+        ("w.yaml", "s:\n  - &x a\n  - *x  # m\n  - b\n", {1}),
         ("notes.md", "a\nb\n", set()),
     ],
 )

@@ -58,7 +58,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     is_yaml_source,
     yaml_comment_text,
     yaml_marker_comments,
-    yaml_opening_lines,
+    workflow_opening_lines,
     yaml_run_scalars,
     yaml_run_script,
     yaml_scannable,
@@ -227,13 +227,13 @@ def yaml_comments(text: str) -> CommentMap:
         for lineno, line in enumerate(yaml_comment_text(text).split("\n"), 1)
         if (body := comment_body(line)) is not None
     ]
-    opens = set(yaml_opening_lines(text))
     for scalar in scalars:
         offset = text.count("\n", 0, scalar.start)
         script = shell_comments(yaml_run_script(text, scalar))
         fragments += [(offset + lineno, comment) for lineno, comment in script.items()]
-        opens |= {offset + lineno for lineno in script.opens}
-    return CommentMap(_merge(sorted(fragments)).items(), opens)
+    return CommentMap(
+        _merge(sorted(fragments)).items(), workflow_opening_lines(text, scalars)
+    )
 
 
 def text_comments(text: str) -> dict[int, str]:

@@ -2947,6 +2947,28 @@ def yaml_marker_comments(
     its opt-out. OPENS comes from ``yaml_opening_lines``, plus each bash
     script's own ``opening_lines`` at its offset in TEXT.
     """
+    if scripts is None:
+        try:
+            scripts = bash_run_scripts(text)
+        except yaml.YAMLError:
+            scripts = []
+    return CommentMap(
+        (
+            (n, line)
+            for n, line in enumerate(_yaml_script_text(text, scripts).split("\n"), 1)
+            if line.strip()
+        ),
+        workflow_opening_lines(text, scripts),
+    )
+
+
+def workflow_opening_lines(text: str, scripts: "list[RunScalar]") -> frozenset[int]:
+    """``yaml_opening_lines`` of TEXT, plus the bash ``opening_lines`` of each
+    script in SCRIPTS at its own line offset in TEXT.
+
+    A workflow holds two languages, and a line of a `run:` value opens a
+    construct only as the bash grammar reads it.
+    """
     # Imported here for the reason `unparseable_shell_reason` gives: most
     # checks that load this module never read a workflow script.
     from _cts_bash_ast import (  # pylint: disable=import-outside-toplevel
@@ -2954,25 +2976,13 @@ def yaml_marker_comments(
         parse,
     )
 
-    if scripts is None:
-        try:
-            scripts = bash_run_scripts(text)
-        except yaml.YAMLError:
-            scripts = []
     opens = set(yaml_opening_lines(text))
     for scalar in scripts:
         offset = text.count("\n", 0, scalar.start)
         opens |= {
             offset + n for n in opening_lines(parse(yaml_run_script(text, scalar)))
         }
-    return CommentMap(
-        (
-            (n, line)
-            for n, line in enumerate(_yaml_script_text(text, scripts).split("\n"), 1)
-            if line.strip()
-        ),
-        opens,
-    )
+    return frozenset(opens)
 
 
 # The YAML tokens that hold no source text: the scanner emits them at the
@@ -3006,7 +3016,8 @@ def yaml_opening_lines(text: str) -> frozenset[int]:
     The construct a token belongs to is the smallest node, or key-value pair,
     whose span holds it. `key:` ends in the pair's `:`, whose value may start
     below. `- macos-latest` ends in a scalar that ends on its own line. A `,`
-    in a flow collection separates siblings. A text PyYAML cannot read opens
+    in a flow collection separates siblings. An alias (`*x`) ends where it is
+    written: its node's marks point at the anchor, so no span here holds it. A text PyYAML cannot read opens
     nothing, so the window stays narrow.
     """
     try:
@@ -3039,7 +3050,7 @@ def yaml_opening_lines(text: str) -> frozenset[int]:
         last[token.start_mark.line + 1] = token
     opens: set[int] = set()
     for line, token in last.items():
-        if isinstance(token, yaml.FlowEntryToken):
+        if isinstance(token, (yaml.FlowEntryToken, yaml.AliasToken)):
             continue
         at = token.start_mark.index
         holding = [(b - a, b) for a, b in spans if a <= at < b]
