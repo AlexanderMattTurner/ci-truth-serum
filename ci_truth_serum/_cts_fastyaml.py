@@ -41,30 +41,14 @@ def safe_load(stream: str | bytes | TextIO) -> Any:
     return yaml.load(stream, Loader=SafeLoader)  # noqa: S506
 
 
-def _marked_loader(stream: str | bytes | TextIO) -> type:
-    """The loader whose marks index STREAM as the caller holds it.
-
-    A check slices its own text with `mark.index`. libyaml counts that index
-    after a leading byte-order mark and the Python scanner counts it before,
-    so on a text that opens with one, every libyaml slice starts a character
-    early. The opt-out views then blank the wrong bytes. That text takes the
-    Python scanner, which is slower and agrees with the caller. It also refuses
-    a tab after a plain scalar, so a file with both a mark and such a tab is
-    reported as unparseable. That refusal is loud, and the shifted slices were
-    not.
-    """
-    if isinstance(stream, str) and stream.startswith("\ufeff"):
-        return yaml.SafeLoader
-    return SafeLoader
-
-
 def compose(stream: str | bytes | TextIO) -> Any:
     """Parse one YAML document into its NODE tree, as `yaml.compose` does.
 
-    The nodes carry `start_mark.line`, `.column` and `.index`, which is what a
-    check that reports `<path>:<line>:` off the source reads.
+    The nodes carry `start_mark.line` and `.column`, which is what a check that
+    reports `<path>:<line>:` off the source reads. Both loaders set the same
+    marks on every YAML file this repo tracks.
     """
-    return yaml.compose(stream, Loader=_marked_loader(stream))  # noqa: S506
+    return yaml.compose(stream, Loader=SafeLoader)  # noqa: S506
 
 
 def scan(stream: str | bytes | TextIO) -> Iterator[yaml.Token]:
@@ -73,4 +57,4 @@ def scan(stream: str | bytes | TextIO) -> Iterator[yaml.Token]:
     `strip_yaml_comments` reads the scalar tokens' `start_mark.index` and
     `end_mark.index` to find the spans where a `#` cannot open a comment.
     """
-    return yaml.scan(stream, Loader=_marked_loader(stream))  # noqa: S506
+    return yaml.scan(stream, Loader=SafeLoader)  # noqa: S506

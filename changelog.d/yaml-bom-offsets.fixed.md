@@ -1,1 +1,0 @@
-- A workflow or action file that starts with a UTF-8 byte-order mark now keeps its opt-out markers. libyaml counted its offsets after the mark, so every check that reads a marker blanked the wrong bytes and could miss a reasoned opt-out. Such a file now goes through the Python scanner, which counts from the first character.

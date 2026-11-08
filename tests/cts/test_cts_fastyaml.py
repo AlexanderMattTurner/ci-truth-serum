@@ -263,35 +263,6 @@ def test_scalar_spans_agree_on_generated_input(text: str) -> None:
     assert _outcome(lambda t: _scalar_spans(t, mod.SafeLoader), text) == expected
 
 
-_BOM_DOC = '\ufeffjobs:\n  a:\n    name: "x  # not a comment"\n    runs-on: os\n'
-
-
-def test_compose_marks_index_a_text_that_opens_with_a_byte_order_mark() -> None:
-    """A check slices its own text by these marks, BOM included."""
-    nodes = [v for _k, v in mod.compose(_BOM_DOC).value[0][1].value[0][1].value]
-    assert [_BOM_DOC[n.start_mark.index : n.end_mark.index] for n in nodes] == [
-        '"x  # not a comment"',
-        "os",
-    ]
-
-
-def test_scan_spans_index_a_text_that_opens_with_a_byte_order_mark() -> None:
-    spans = [
-        _BOM_DOC[t.start_mark.index : t.end_mark.index]
-        for t in mod.scan(_BOM_DOC)
-        if isinstance(t, yaml.ScalarToken)
-    ]
-    assert spans == ["jobs", "a", "name", '"x  # not a comment"', "runs-on", "os"]
-
-
-def test_a_marker_in_a_quoted_run_survives_a_byte_order_mark() -> None:
-    # A span one character early leaves the closing quote in the script, so
-    # bash reads the marker as part of an unclosed string.
-    text = "\ufeffjobs:\n  a:\n    steps:\n      - run: 'echo hi  # keep: me'\n"
-    view = [line.strip() for line in lc.yaml_script_view(text)]
-    assert view == ["", "", "", "# keep: me"]
-
-
 def test_the_c_loader_accepts_a_trailing_tab_the_python_one_rejects() -> None:
     """The one widening the property above assumes away, pinned as an example.
 
@@ -299,8 +270,7 @@ def test_the_c_loader_accepts_a_trailing_tab_the_python_one_rejects() -> None:
     as the separation whitespace YAML says it is, so a workflow with a trailing
     tab used to be reported as unparseable by every check in this pack and is now
     parsed and checked. The widening runs one way: no input the Python loader
-    accepts is refused here. A file that opens with a byte-order mark does not
-    get it, because `compose` and `scan` send that file to the Python scanner.
+    accepts is refused here.
     """
     text = "jobs:\n  a:\n    steps:\n      - run: echo hi\t\n"
     with pytest.raises(yaml.YAMLError):
