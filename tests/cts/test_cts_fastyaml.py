@@ -299,10 +299,14 @@ def test_the_c_loader_accepts_a_trailing_tab_the_python_one_rejects() -> None:
     as the separation whitespace YAML says it is, so a workflow with a trailing
     tab used to be reported as unparseable by every check in this pack and is now
     parsed and checked. The widening runs one way: no input the Python loader
-    accepts is refused here. A file that opens with a byte-order mark does not
-    get it, because `compose` and `scan` send that file to the Python scanner.
+    accepts is refused here. `compose` and `scan` drop the widening for a file
+    that opens with a byte-order mark, because they send it to the Python
+    scanner. `safe_load` keeps it.
     """
     text = "jobs:\n  a:\n    steps:\n      - run: echo hi\t\n"
     with pytest.raises(yaml.YAMLError):
         yaml.safe_load(text)
     assert mod.safe_load(text) == {"jobs": {"a": {"steps": [{"run": "echo hi"}]}}}
+    assert mod.safe_load("\ufeff" + text) == mod.safe_load(text)
+    with pytest.raises(yaml.YAMLError):
+        mod.compose("\ufeff" + text)
