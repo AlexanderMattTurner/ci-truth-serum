@@ -140,11 +140,12 @@ def _scalar_hits(
 ) -> list[tuple[int, str]]:
     """(1-based line, alias) for each alias that SCALAR hands to GitHub.
 
-    The written form keeps every offset, so a match in it lands on its own line.
-    The decoded form is what GitHub receives, so an escape such as
-    `"ubuntu\\u002dlatest"` cannot hide an alias: each alias that only that form
-    holds lands on the scalar's first line. RUN is the step SCALAR is the
-    script of, if any. A bash script loses its comments first.
+    The decoded form is what GitHub receives, so it decides which aliases
+    exist: an escape such as `"ubuntu\\u002dlatest"` cannot hide one, and a
+    written `x\\n# ubuntu-latest` that decodes to a comment adds none. The
+    written form keeps every offset, so each alias it also spells lands on its
+    own line. The rest land on the scalar's first line. RUN is the step SCALAR
+    is the script of, if any. A bash script loses its comments first.
     """
     start = scalar.start_mark.index
     first_line = scalar.start_mark.line + 1
@@ -158,13 +159,13 @@ def _scalar_hits(
     if run is not None:
         written = strip_comments(yaml_run_script(text, run))
         decoded = strip_comments(decoded)
-    hits = [
-        (text.count("\n", 0, start + m.start()) + 1, m.group())
-        for m in ALIAS.finditer(written)
-    ]
-    spelled = Counter(alias.lower() for _line, alias in hits)
-    hidden = Counter(m.group().lower() for m in ALIAS.finditer(decoded)) - spelled
-    return hits + [(first_line, alias) for alias in hidden.elements()]
+    unplaced = Counter(m.group().lower() for m in ALIAS.finditer(decoded))
+    hits: list[tuple[int, str]] = []
+    for m in ALIAS.finditer(written):
+        if unplaced[m.group().lower()] > 0:
+            unplaced[m.group().lower()] -= 1
+            hits.append((text.count("\n", 0, start + m.start()) + 1, m.group()))
+    return hits + [(first_line, alias) for alias in unplaced.elements()]
 
 
 def violations(text: str) -> list[tuple[int, str]]:

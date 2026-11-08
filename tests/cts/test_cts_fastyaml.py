@@ -284,9 +284,12 @@ def test_scan_spans_index_a_text_that_opens_with_a_byte_order_mark() -> None:
     assert spans == ["jobs", "a", "name", '"x  # not a comment"', "runs-on", "os"]
 
 
-def test_the_comment_view_of_a_text_with_a_byte_order_mark_keeps_its_comments() -> None:
-    view = lc.yaml_comment_view(_BOM_DOC + "    # keep: me\n")
-    assert [line.strip() for line in view] == ["", "", "", "", "# keep: me"]
+def test_a_marker_in_a_quoted_run_survives_a_byte_order_mark() -> None:
+    # A span one character early leaves the closing quote in the script, so
+    # bash reads the marker as part of an unclosed string.
+    text = "\ufeffjobs:\n  a:\n    steps:\n      - run: 'echo hi  # keep: me'\n"
+    view = [line.strip() for line in lc.yaml_script_view(text)]
+    assert view == ["", "", "", "# keep: me"]
 
 
 def test_the_c_loader_accepts_a_trailing_tab_the_python_one_rejects() -> None:
@@ -296,7 +299,8 @@ def test_the_c_loader_accepts_a_trailing_tab_the_python_one_rejects() -> None:
     as the separation whitespace YAML says it is, so a workflow with a trailing
     tab used to be reported as unparseable by every check in this pack and is now
     parsed and checked. The widening runs one way: no input the Python loader
-    accepts is refused here.
+    accepts is refused here. A file that opens with a byte-order mark does not
+    get it, because `compose` and `scan` send that file to the Python scanner.
     """
     text = "jobs:\n  a:\n    steps:\n      - run: echo hi\t\n"
     with pytest.raises(yaml.YAMLError):

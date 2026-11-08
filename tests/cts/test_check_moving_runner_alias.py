@@ -262,6 +262,20 @@ def test_an_escaped_alias_beside_an_opted_out_one_still_fires() -> None:
     assert _lines(text) == [7]
 
 
+@pytest.mark.parametrize(
+    "run",
+    [
+        # Decoded, the second line is a bash comment.
+        '"echo x\\n# ubuntu-latest"',
+        # Decoded, the alias is part of a file name.
+        '"cat ubuntu-latest\\x2etxt"',
+    ],
+)
+def test_an_alias_the_decoded_script_does_not_hold_passes(run: str) -> None:
+    text = _workflow(f"    runs-on: ubuntu-24.04\n    steps:\n      - run: {run}\n")
+    assert _lines(text) == []
+
+
 def test_an_escaped_alias_inside_a_bash_comment_is_skipped() -> None:
     text = _workflow(
         "    runs-on: ubuntu-24.04\n    steps:\n"
