@@ -32,8 +32,9 @@ with their alias, so the check flags them too. A third-party label that holds
 an alias inside a longer name (`acme-ubuntu-latest`) belongs to its vendor, and
 the check leaves it alone.
 
-Opt out with `# allow-moving-runner-alias: <reason>` on the finding's line or
-in the comment block directly above it. The reason is required.
+Opt out with `# allow-moving-runner-alias: <reason>`. The reason is required.
+The pack's shared window decides where the marker may sit: the finding's line,
+the line directly above it, or the comment block above that.
 
 Globs every workflow and composite action; the passed file list is ignored.
 """
