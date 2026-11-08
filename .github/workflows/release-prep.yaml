@@ -24,7 +24,7 @@ jobs:
   bump:
     name: Conservative version bump on the PR branch
     if: github.event.label.name == 'release'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Checkout PR branch
