@@ -3048,13 +3048,24 @@ def yaml_opening_lines(text: str) -> frozenset[int]:
     last: dict[int, yaml.Token] = {}
     for token in tokens:
         last[token.start_mark.line + 1] = token
+    # One sweep in source order. ACTIVE holds the spans that start at or
+    # before the token; a span that ended before it drops out. The spans nest,
+    # so ACTIVE is as deep as the tree, never as long as the file.
+    spans.sort()
+    active: list[tuple[int, int]] = []
+    following = iter(spans)
+    upcoming = next(following, None)
     opens: set[int] = set()
-    for line, token in last.items():
-        if isinstance(token, (yaml.FlowEntryToken, yaml.AliasToken)):
-            continue
+    for line, token in sorted(last.items(), key=lambda item: item[1].start_mark.index):
         at = token.start_mark.index
-        holding = [(b - a, b) for a, b in spans if a <= at < b]
-        if holding and _last_content_line(text, min(holding)[1]) > line:
+        while upcoming is not None and upcoming[0] <= at:
+            active.append(upcoming)
+            upcoming = next(following, None)
+        active = [span for span in active if span[1] > at]
+        if isinstance(token, (yaml.FlowEntryToken, yaml.AliasToken)) or not active:
+            continue
+        smallest = min(active, key=lambda span: span[1] - span[0])
+        if _last_content_line(text, smallest[1]) > line:
             opens.add(line)
     return frozenset(opens)
 

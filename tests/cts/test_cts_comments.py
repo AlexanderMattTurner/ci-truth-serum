@@ -235,3 +235,10 @@ def test_opens_holds_each_line_whose_last_token_opens_a_construct(
 
 def test_python_that_does_not_parse_opens_nothing() -> None:
     assert comments.py_comments("x = foo(  # m\n").opens == frozenset()
+
+
+def test_python_that_tokenizes_but_does_not_parse_keeps_its_exact_comments() -> None:
+    # A `#` inside a string is not a comment. The delimiter fallback, which
+    # is only for source that will not tokenize, would read it as one.
+    found = comments.py_comments("x = = 1  # m\nt = 'a # formerly z'\n")
+    assert (dict(found), found.opens) == ({1: "# m"}, frozenset())
