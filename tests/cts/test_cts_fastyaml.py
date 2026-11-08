@@ -263,6 +263,32 @@ def test_scalar_spans_agree_on_generated_input(text: str) -> None:
     assert _outcome(lambda t: _scalar_spans(t, mod.SafeLoader), text) == expected
 
 
+_BOM_DOC = '\ufeffjobs:\n  a:\n    name: "x  # not a comment"\n    runs-on: os\n'
+
+
+def test_compose_marks_index_a_text_that_opens_with_a_byte_order_mark() -> None:
+    """A check slices its own text by these marks, BOM included."""
+    nodes = [v for _k, v in mod.compose(_BOM_DOC).value[0][1].value[0][1].value]
+    assert [_BOM_DOC[n.start_mark.index : n.end_mark.index] for n in nodes] == [
+        '"x  # not a comment"',
+        "os",
+    ]
+
+
+def test_scan_spans_index_a_text_that_opens_with_a_byte_order_mark() -> None:
+    spans = [
+        _BOM_DOC[t.start_mark.index : t.end_mark.index]
+        for t in mod.scan(_BOM_DOC)
+        if isinstance(t, yaml.ScalarToken)
+    ]
+    assert spans == ["jobs", "a", "name", '"x  # not a comment"', "runs-on", "os"]
+
+
+def test_the_comment_view_of_a_text_with_a_byte_order_mark_keeps_its_comments() -> None:
+    view = lc.yaml_comment_view(_BOM_DOC + "    # keep: me\n")
+    assert [line.strip() for line in view] == ["", "", "", "", "# keep: me"]
+
+
 def test_the_c_loader_accepts_a_trailing_tab_the_python_one_rejects() -> None:
     """The one widening the property above assumes away, pinned as an example.
 
