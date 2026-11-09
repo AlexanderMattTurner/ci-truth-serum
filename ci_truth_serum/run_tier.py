@@ -59,7 +59,7 @@ from identify import identify
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import is_workflow_path  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_config import CONFIG_FILE, ConfigFileError, check_args  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_config import ConfigFileError, check_args  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     CHECKS,
     COMMENTED_CODE,
@@ -416,27 +416,16 @@ def run_per_file(
     return rc
 
 
-def configured_flags(
-    extra: dict[str, list[str]], skips: frozenset[str] = frozenset()
-) -> dict[str, list[str]]:
+def configured_flags(extra: dict[str, list[str]]) -> dict[str, list[str]]:
     """Each module's flags: those `.ci-truth-serum.toml` gives it, then EXTRA's.
 
-    Exits 2 on a config file `_cts_config` refuses, and on a configured check that
-    SKIPS removes: its flags would configure nothing, and the run would look
-    configured."""
+    Exits 2 on a config file `_cts_config` refuses. A table for a check this hook
+    skips is not an error: the file is shared, and another hook may run that check."""
     try:
         configured = check_args(check.module for check in CHECKS)
     except ConfigFileError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
-    removed = skips & set(configured)
-    if removed:
-        print(
-            f"error: {CONFIG_FILE} configures a check that --skip removes: "
-            f"{', '.join(sorted(removed))}",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
     return {
         module: [*configured.get(module, []), *extra.get(module, [])]
         for module in {*configured, *extra}
@@ -626,7 +615,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(2)
 
     members = [(m, k) for m, k in TIERS[tier] if m not in skips]
-    flags = configured_flags(extra, frozenset(skips))
+    flags = configured_flags(extra)
     rc, unscanned, seconds = run_members(members, files, flags)
     report_seconds(seconds, f"tier {tier} member")
     report_unscanned(

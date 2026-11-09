@@ -18,11 +18,11 @@ of these hold:
     an ``if`` / ``elif`` / ``else`` branch that only probes lead to. A probe is a
     ``[[ … ]]``, ``[ … ]`` or ``test …`` that asks a unary question (``-f x``,
     ``-n "$v"``, ``! -L x``), alone, negated, or joined to other probes, and holds
-    no ``$( … )``. A probe prints nothing and looks at the world now. A comparison
+    no ``$( … )`` or ``<( … )``. A probe prints nothing and looks at the world now. A comparison
     such as ``[[ $failed -eq 0 ]]`` is not a probe: it reads a verdict the script
     reached earlier, and the code that reached it usually printed the cause;
   * every statement before the exit in its branch is an assignment or a
-    declaration with no ``$( … )``. Any other command may print the reason, so the
+    declaration with no ``$( … )`` or ``<( … )``. Any other command may print the reason, so the
     lint trusts it.
 
 A `return N` is not flagged: a caller receives the status and can print the cause.
@@ -102,8 +102,10 @@ def _is_probe_expression(node) -> bool:
 
 
 def _runs_a_command(node) -> bool:
-    """Whether NODE holds a `$( … )`, whose command may print the cause."""
-    return any(True for _ in iter_nodes(node, "command_substitution"))
+    """Whether NODE holds a `$( … )` or `<( … )`, whose command may print the cause."""
+    return any(
+        True for _ in iter_nodes(node, "command_substitution", "process_substitution")
+    )
 
 
 def _is_test(node) -> bool:
@@ -130,8 +132,9 @@ def _is_test(node) -> bool:
 
 
 def _exits_the_script(exit_command) -> bool:
-    """Whether EXIT_COMMAND ends the script itself. An exit inside `( … )`, `$( … )` or
-    `<( … )` ends only that subshell, and the status reaches a caller who can print it."""
+    """Whether EXIT_COMMAND ends the script itself. An exit inside `( … )`, `$( … )`,
+    `<( … )`, a pipeline or a `cmd &` list ends only a subshell, and its status reaches
+    a caller who can print the cause."""
     node = exit_command.parent
     while node is not None and node.type not in {"function_definition", "program"}:
         if node.type in _SUBSHELLS:

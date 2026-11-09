@@ -948,14 +948,14 @@ def test_a_host_that_cannot_start_a_pool_runs_the_pass_serially(
     assert capsys.readouterr() == expected
 
 
-def test_a_config_file_for_a_skipped_check_exits_nonzero(tmp_path, monkeypatch, capsys):
+def test_a_config_file_table_for_a_skipped_check_is_not_an_error(tmp_path, monkeypatch):
+    """The file is shared: a consumer that skips a check here can re-add it as its own
+    `check-select` hook, which reads the same table."""
     (tmp_path / ".ci-truth-serum.toml").write_text(
         '[checks.check-retry-loop]\nargs = ["--wrapper=x"]\n', encoding="utf-8"
     )
     monkeypatch.chdir(tmp_path)
-    _record_argv(monkeypatch)
+    seen = _record_argv(monkeypatch)
 
-    assert _run(["2", "--skip", "check_retry_loop"]) == 2
-    assert "configures a check that --skip removes: check_retry_loop" in (
-        capsys.readouterr().err
-    )
+    assert _run(["2", "--skip", "check_retry_loop"]) == 0
+    assert "check_retry_loop" not in seen
