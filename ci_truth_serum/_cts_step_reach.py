@@ -21,6 +21,7 @@ depth is bounded and each file is read once per namespace, so a cycle ends.
 """
 
 import functools
+import itertools
 import os
 import posixpath
 import re
@@ -32,7 +33,7 @@ from typing import NamedTuple
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
     _inside_definition,
     _literal,
@@ -45,21 +46,21 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     program_name,
     unquote,
 )
-from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_linecheck import MESSAGE_PREFIX  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_imports import _PY_INTERPRETER, interpreter_scripts  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from check_embedded_program_length import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import shell_comments  # pylint: disable=wrong-import-position
+from _cts_linecheck import MESSAGE_PREFIX  # pylint: disable=wrong-import-position
+from _cts_py_imports import _PY_INTERPRETER, interpreter_scripts  # pylint: disable=wrong-import-position
+from check_embedded_program_length import (  # pylint: disable=wrong-import-position
     _ENV_BINDING,
     TRANSPARENT_PREFIXES,
     WRAPPER_VALUE_OPTIONS,
 )
-from check_shell_source_declarations import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from check_shell_source_declarations import (  # pylint: disable=wrong-import-position
     _DIRECTIVE,
     _comment_block_above,
     _directive_line,
     resolve_target,
 )
-from check_soft_timeout import _TIMEOUT_NAMES, _read_bound  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from check_soft_timeout import _TIMEOUT_NAMES, _read_bound  # pylint: disable=wrong-import-position
 
 # The wrapper options that move the program to another directory before it
 # starts (`env -C sub`, `sudo -D sub`, and `sudo -i`, whose login shell starts
@@ -208,14 +209,25 @@ class Namespace:
     """One shell process: the units it reads, and every command it runs."""
 
     def __init__(
-        self, repo_root: Path, entry: Unit, action_dir: str | None, cwd: Path | None
+        self,
+        repo_root: Path,
+        entry: Unit,
+        action_dir: str | None,
+        cwd: Path | None,
+        environment: frozenset[str] = frozenset(),
     ):
         self.repo_root = repo_root
         self.action_dir = action_dir
         self.cwd = cwd
+        # The names the step's `env:` sets. The process starts with them, so
+        # `${X:-default}` reads the step's value, not the default.
+        self.environment = environment
         self.units: list[Unit] = []
         self.functions: dict[str, list[tuple[Node, Unit]]] = {}
         self.assignments: dict[str, list[tuple[Node, Unit]]] = {}
+        # The `for NAME in …` loops, and the `read -a NAME` commands, by NAME.
+        self.loops: dict[str, list[tuple[Node, Unit]]] = {}
+        self.arrays: dict[str, list[tuple[Node, Unit]]] = {}
         self.executed: list[tuple[Node, Unit]] = []
         self._resolving: set[str] = set()
         self._variables: dict[str, str | None] = {}
@@ -249,6 +261,11 @@ class Namespace:
             self.functions.setdefault(name, []).append((body, unit))
         for name, assignment in assignments:
             self.assignments.setdefault(name, []).append((assignment, unit))
+        loops, arrays, _ = _bindings(unit.root)
+        for name, loop in loops:
+            self.loops.setdefault(name, []).append((loop, unit))
+        for name, command in arrays:
+            self.arrays.setdefault(name, []).append((command, unit))
 
     def _walk(self) -> None:
         """Walk to a fixed point. A function a later-sourced file defines may be
@@ -352,7 +369,7 @@ class Namespace:
         `$(cd X && pwd)`, `$(git rev-parse --show-toplevel)`,
         `$GITHUB_WORKSPACE`, `$GITHUB_ACTION_PATH`, a variable with one
         assignment of those forms, and the default of `${X:-default}` when no
-        file assigns X."""
+        file assigns X and the step environment does not set it."""
         key = (unit.path, node.id)
         if key not in self._values:
             self._values[key] = self._value(node, unit)
@@ -424,7 +441,7 @@ class Namespace:
         if operator == "%" and len(rest) == 2 and node_text(rest[1]) == "/*":
             base = self.variable(head_name, unit)
             return posixpath.dirname(base) if base and "/" in base else None
-        if operator in (":-", "-") and head_name not in self.assignments:
+        if operator in (":-", "-") and not self.sets(head_name):
             return self._joined(rest[1:], unit) if len(rest) > 1 else ""
         return None
 
@@ -452,6 +469,68 @@ class Namespace:
             target = self.value(words[1], unit)
             return posixpath.dirname(target) if target and "/" in target else None
         return None
+
+    def sets(self, name: str) -> bool:
+        """True when a file assigns NAME or the step environment sets it, so
+        the default of `${NAME:-default}` may not be its value."""
+        return name in self.assignments or name in self.environment
+
+    @functools.cached_property
+    def defaulted(self) -> frozenset[str]:
+        """The names the units read with a default (`${NAME:-default}`)."""
+        return frozenset().union(*(_bindings(unit.root)[2] for unit in self.units))
+
+    def assignments_at(self, name: str, node: Node) -> list[tuple[Node, Unit]]:
+        """The assignments of NAME that NODE can see. A function that declares
+        NAME `local` hides every assignment outside its own body."""
+        scope = _ancestor_of(node, "function_definition")
+        found = self.assignments.get(name, [])
+        if scope is None or not _declares_local(scope, name):
+            return found
+        return [(a, unit) for a, unit in found if _ancestor_of(a, scope) is not None]
+
+    def array_items(self, name: str) -> list[str] | None:
+        """The words the array NAME holds, when the text binds NAME once and
+        fixes each word: `NAME=(a b)`, or `read -a NAME <<<WORD`, which
+        splits WORD at blanks."""
+        bindings = self.assignments.get(name, []) + self.arrays.get(name, [])
+        if len(bindings) != 1:
+            return None
+        node, unit = bindings[0]
+        if node.type == "variable_assignment":
+            value = node.child_by_field_name("value")
+            if value is None or value.type != "array":
+                return None
+            words = [self.value(child, unit) for child in value.named_children]
+            return None if None in words else words  # type: ignore[return-value]
+        source = next(
+            (c for c in node.children if c.type == "herestring_redirect"), None
+        )
+        text = self.value(source.named_children[-1], unit) if source else None
+        return text.split() if text is not None else None
+
+    def loop_items(self, name: str) -> list[str] | None:
+        """The words `for NAME in WORDS` gives NAME, when one loop binds NAME,
+        nothing else sets it, and the text fixes each word. `"${ARRAY[@]}"`
+        reads as the words of ARRAY."""
+        loops = self.loops.get(name, [])
+        if len(loops) != 1 or self.sets(name):
+            return None
+        loop, unit = loops[0]
+        items: list[str] = []
+        for index, child in enumerate(loop.children):
+            if loop.field_name_for_child(index) != "value":
+                continue
+            array = _whole_array(child)
+            if array:
+                found = self.array_items(array)
+            else:  # an unquoted expansion splits in a way only the run knows
+                value = self.value(child, unit) if child.type in _ONE_WORD else None
+                found = None if value is None else [value]
+            if found is None:
+                return None
+            items += found
+        return items or None
 
     def words(self, command: Node, unit: Unit) -> list[str | None]:
         """COMMAND's name and argument values; None where only the run knows."""
@@ -832,21 +911,104 @@ def _shell_target(words: list[str | None]) -> str | None:
     return None
 
 
+def _ancestor_of(node: Node, match: "str | Node") -> Node | None:
+    """The nearest ancestor of NODE that is MATCH, or whose type MATCH names."""
+    node = node.parent
+    while node is not None and node != match and node.type != match:
+        node = node.parent
+    return node
+
+
+def _declares_local(function: Node, name: str) -> bool:
+    """True when FUNCTION's body runs `local NAME` (or `declare`, `typeset`)."""
+    for declaration in iter_nodes(function, "declaration_command"):
+        if node_text(declaration.children[0]) not in ("local", "declare", "typeset"):
+            continue
+        for child in declaration.named_children:
+            named = (
+                child.child_by_field_name("name")
+                if child.type == "variable_assignment"
+                else child
+            )
+            if named is not None and node_text(named) == name:
+                return True
+    return False
+
+
+# The loop words the shell keeps whole: a literal word, and a quoted string.
+_ONE_WORD = frozenset({"word", "string", "raw_string"})
+
+
+@functools.lru_cache(maxsize=1024)
+def _bindings(
+    root: Node,
+) -> tuple[list[tuple[str, Node]], list[tuple[str, Node]], frozenset[str]]:
+    """(name, loop) for each `for NAME in …` under ROOT, (name, command) for
+    each `read -a NAME`, and each name read with a default (`${NAME:-d}`).
+    A shared file is read into many namespaces, so one walk serves them all."""
+    loops, arrays, defaulted = [], [], set()
+    for node in iter_nodes(root, "for_statement", "command", "expansion"):
+        inner = node.children[1:-1]
+        if node.type == "for_statement":
+            variable = node.child_by_field_name("variable")
+            if variable is not None:
+                loops.append((node_text(variable), node))
+        elif node.type == "command":
+            if (name := _read_array(node)) is not None:
+                arrays.append((name, node))
+        elif (
+            len(inner) > 1
+            and inner[0].type == "variable_name"
+            and node_text(inner[1]) in (":-", "-")
+        ):
+            defaulted.add(node_text(inner[0]))
+    return loops, arrays, frozenset(defaulted)
+
+
+def _read_array(command: Node) -> str | None:
+    """The array a `read -a NAME` COMMAND fills, or None for any other command.
+    The name follows the option word that ends in `a` (`-a`, `-ra`)."""
+    words = tokens(command)
+    if not words or words[0] != "read":
+        return None
+    for option, name in itertools.pairwise(words[1:]):
+        if option.startswith("-") and option.endswith("a"):
+            return name
+    return None
+
+
+def _whole_array(node: Node) -> str | None:
+    """The array NODE expands whole, `"${NAME[@]}"`, or None."""
+    if node.type == "string" and len(node.named_children) == 1:
+        node = node.named_children[0]
+    inner = node.children[1:-1] if node.type == "expansion" else []
+    if len(inner) != 1 or inner[0].type != "subscript":
+        return None
+    name, index = (inner[0].child_by_field_name(f) for f in ("name", "index"))
+    if name is None or index is None or node_text(index) != "@":
+        return None
+    return node_text(name)
+
+
 @functools.lru_cache(maxsize=1024)
 def _file_namespace(
-    path: Path, repo_root: Path, action_dir: str | None, cwd: Path | None
+    path: Path,
+    repo_root: Path,
+    action_dir: str | None,
+    cwd: Path | None,
+    environment: frozenset[str],
 ) -> Namespace:
     """The namespace a followed script starts, built once per run of the lint:
     a shared script is reached from many jobs."""
-    return Namespace(repo_root, _unit(path, path), action_dir, cwd)
+    return Namespace(repo_root, _unit(path, path), action_dir, cwd, environment)
 
 
-@functools.lru_cache(maxsize=256)
 def reach(
     script: str,
     repo_root: Path,
     action_dir: str | None,
     working_directory: str | None = "",
+    environment: frozenset[str] = frozenset(),
 ) -> Reach:
     """Every namespace and Python file the `run:` body SCRIPT reaches.
 
@@ -854,7 +1016,27 @@ def reach(
     `$GITHUB_ACTION_PATH` and `${{ github.action_path }}` resolve.
     WORKING_DIRECTORY is the step's `working-directory`, relative to the repo
     root; None means the text does not fix it, so a relative path resolves to
-    nothing."""
+    nothing. ENVIRONMENT holds the names the step's `env:` sets, which every
+    process the step starts inherits. Only a name the walk reads with a
+    default (`${NAME:-default}`) changes a value, so the steps whose
+    environment sets none of those share one walk."""
+    shared = _reach(script, repo_root, action_dir, working_directory, frozenset())
+    relevant = environment & frozenset().union(
+        *(namespace.defaulted for namespace in shared.namespaces)
+    )
+    if not relevant:
+        return shared
+    return _reach(script, repo_root, action_dir, working_directory, relevant)
+
+
+@functools.lru_cache(maxsize=256)
+def _reach(
+    script: str,
+    repo_root: Path,
+    action_dir: str | None,
+    working_directory: str | None,
+    environment: frozenset[str],
+) -> Reach:
     if action_dir:
         script = _ACTION_PATH_EXPR.sub(lambda _: str(repo_root / action_dir), script)
     script = _WORKSPACE_EXPR.sub(lambda _: str(repo_root), script)
@@ -867,9 +1049,9 @@ def reach(
     while queue:
         unit, hops, here = queue.popleft()
         namespace = (
-            Namespace(repo_root, unit, action_dir, here)
+            Namespace(repo_root, unit, action_dir, here, environment)
             if unit.path is None
-            else _file_namespace(unit.path, repo_root, action_dir, here)
+            else _file_namespace(unit.path, repo_root, action_dir, here, environment)
         )
         namespaces.append(namespace)
         if hops >= MAX_HOPS:

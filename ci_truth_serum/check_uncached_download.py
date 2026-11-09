@@ -46,11 +46,17 @@ no finding, because a guessed path judges a file the step never runs. Measured
 on agent-glovebox: both osv-scanner jobs download a pinned binary on every run
 through a two-file chain, and only a walk that follows scripts sees it.
 
-A cache in the job covers a download only when the cache can hold it:
+A cache covers a download only when its step runs before the step that
+downloads, because a restore after the download cannot skip it. It must also
+be able to hold the download:
 
-  * its `key:` names the pin. That is the version, the digest, the version
-    variable as `env.NAME`, or a `hashFiles()` of a file that holds the fetch,
-    assigns its pin, or is read to compute its pin (`$(jq -r .v pins.json)`);
+  * its `key:` names the pin, and its `path:` can hold the file the download
+    writes. The pin is the version, the digest, the version variable as
+    `env.NAME`, or a `hashFiles()` of a file that holds the fetch, assigns its
+    pin, or is read to compute its pin (`$(jq -r .v pins.json)`). A computed
+    part of a path can take any value, so only the leading parts the text
+    fixes compare. An installer fetch, a fetch with no output the text can
+    read, and a cache with no path the text fixes compare as able to hold it;
   * its `path:` holds the file the download writes, a path a later `cp`,
     `install` or `mv` copies it to, or an absolute path the step hands a
     downloader function;
@@ -110,7 +116,7 @@ import yaml
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     _inside_definition,
     command_arguments,
@@ -122,7 +128,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     redirect_parts,
     unquote,
 )
-from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # pylint: disable=wrong-import-position
     annotated,
     LineLoader,
     MESSAGE_PREFIX,
@@ -130,15 +136,15 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _job_blocks,
     yaml_script_view,
 )
-from _cts_py_ast import name_of  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_imports import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import name_of  # pylint: disable=wrong-import-position
+from _cts_py_imports import (  # pylint: disable=wrong-import-position
     _fold_path,
     _is_sys_path_call,
     local_files,
     path_bindings,
     sys_path_roots,
 )
-from _cts_cache_scope import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_cache_scope import (  # pylint: disable=wrong-import-position
     ANY_INSTALLER,
     CacheScope,
     Context,
@@ -148,7 +154,7 @@ from _cts_cache_scope import (  # noqa: E402,I001  # pylint: disable=wrong-impor
     home,
     rendered,
 )
-from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_step_reach import (  # pylint: disable=wrong-import-position
     Namespace,
     Unit,
     _SHELL_INTERPRETER,
@@ -160,8 +166,8 @@ from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import
     reach,
     tokens,
 )
-from check_path_gate_deps import glob_to_regex  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from check_versionless_install import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from check_path_gate_deps import glob_to_regex  # pylint: disable=wrong-import-position
+from check_versionless_install import (  # pylint: disable=wrong-import-position
     NODE,
     _PIP_ALIAS,
     _find_install,
@@ -183,7 +189,10 @@ MESSAGE = (
     f"'# {OPT_OUT}: <reason>'."
 )
 NO_CACHE = "no cache step anywhere in the job"
-NO_COVER = "no cache in the job keyed on its pin or holding its output path"
+NO_COVER = (
+    "no cache restored before it that can hold it: a cache must hold its "
+    "output path, or be keyed on its pin with a path that can hold its output"
+)
 
 # The install flags that keep an installer from writing its store.
 _NO_STORE_FLAGS = frozenset({"--no-cache-dir", "--no-cache"})
@@ -889,7 +898,8 @@ def _spelled(
 ) -> str:
     """NODE's value when the text fixes it. Otherwise its text after quote
     removal. A variable with one assignment spells that assignment, so
-    `D="$HOME/bin"` makes `$D/tool` read `$HOME/bin/tool`. Any other expansion
+    `D="$HOME/bin"` makes `$D/tool` read `$HOME/bin/tool`. A loop variable
+    whose every item is a URL spells its first item. Any other expansion
     is spelled `$NAME`, so one variable reads the same in an output flag and
     in a here-string, or UNKNOWN when it is set. FOLLOWING holds the names
     being spelled, to stop a cycle."""
@@ -901,9 +911,9 @@ def _spelled(
         if name_node is None:
             return node_text(node) if unknown is None else unknown
         name = node_text(name_node)
-        assignments = namespace.assignments.get(name, [])
+        assignments = namespace.assignments_at(name, node)
         default = _unset_default(node)
-        if default is not None and not assignments:
+        if default is not None and not namespace.sets(name):
             return "".join(
                 _spelled(part, namespace, unit, following, unknown) for part in default
             )
@@ -913,6 +923,9 @@ def _spelled(
             assigned = assignment.child_by_field_name("value")
             if assigned is not None:
                 return _spelled(assigned, namespace, owner, following | {name}, unknown)
+        items = namespace.loop_items(name) if plain and not assignments else None
+        if items and all(_URL.match(item) for item in items):
+            return items[0]  # a loop over hosts: one stands for every pass
         return f"${name}" if unknown is None else unknown
     if unknown is not None and node.type in _COMPUTED_WORDS:
         return unknown
@@ -934,7 +947,8 @@ def _spelled(
 
 def _unset_default(expansion: Node) -> list[Node] | None:
     """The parts of the default in `${X:-default}` or `${X-default}`, or None
-    for any other expansion. The shell uses the default when no file assigns X."""
+    for any other expansion. The shell uses the default when no file assigns X
+    and the step environment does not set it."""
     inner = expansion.children[1:-1]
     if (
         len(inner) < 2
@@ -1176,8 +1190,13 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
         directory,
     )
     for node, token, value in zip(args, words, values):
+        # A version the text fixes, read through variables: the URL as the
+        # shell spells it, with each value only the run knows as `*`.
+        spelling = _spelled(node, namespace, unit, unknown="*")
         if _PINNED_URL.match(token) or (value and _PINNED_URL.match(value)):
             label, extra = token, set()
+        elif _PINNED_URL.match(spelling):
+            label, extra = spelling, set()
         elif _digest_pinned(value or token, outputs | output_names, shell):
             label, extra = f"{token} (digest-checked)", set(shell.digest_pins)
         else:
@@ -1496,9 +1515,12 @@ def _bindings(scope: ast.AST) -> dict[str, list[ast.expr]]:
     """Each value SCOPE assigns to each plain name, in source order."""
     found: dict[str, list[ast.expr]] = {}
     for node in ast.walk(scope):
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            if isinstance(target := node.targets[0], ast.Name):
-                found.setdefault(target.id, []).append(node.value)
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(target := node.targets[0], ast.Name)
+        ):
+            found.setdefault(target.id, []).append(node.value)
     return found
 
 
@@ -1884,10 +1906,14 @@ def _literal_tail(node: ast.expr) -> tuple[ast.expr, tuple[str, ...]]:
     literal parts after that base."""
     if isinstance(node, ast.Call) and name_of(node.func) == "str" and node.args:
         return _literal_tail(node.args[0])
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        if isinstance(node.right, ast.Constant) and isinstance(node.right.value, str):
-            base, parts = _literal_tail(node.left)
-            return base, (*parts, node.right.value)
+    if (
+        isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Div)
+        and isinstance(node.right, ast.Constant)
+        and isinstance(node.right.value, str)
+    ):
+        base, parts = _literal_tail(node.left)
+        return base, (*parts, node.right.value)
     return node, ()
 
 
@@ -2073,11 +2099,12 @@ def _script_fetches(
     holder: str | None,
     action_dir: str | None,
     working_directory: str | None,
+    environment: frozenset[str] = frozenset(),
 ) -> list[Fetch]:
     """Every pinned download the `run:` body SCRIPT causes, through every repo
     file it reaches. HOLDER is the repo-relative workflow or action file that
-    SCRIPT is written in."""
-    reached = reach(script, REPO_ROOT, action_dir, working_directory)
+    SCRIPT is written in. ENVIRONMENT holds the names the step's `env:` sets."""
+    reached = reach(script, REPO_ROOT, action_dir, working_directory, environment)
     fetches: list[Fetch] = []
     for namespace in reached.namespaces:
         fetches += _namespace_fetches(namespace)
@@ -2140,13 +2167,21 @@ def _hashed_assignments(root: Path, pattern: str) -> frozenset[str]:
 
 
 def _covers(scope: CacheScope, fetch: Fetch) -> bool:
-    """True when SCOPE's key names FETCH's pin or a file that sets it, its
-    path holds FETCH's output, or it is the store of FETCH's installer."""
+    """True when SCOPE's path holds FETCH's output, it is the store of FETCH's
+    installer, or its key names FETCH's pin or a file that sets it and its
+    path can hold FETCH's output."""
     if scope.key is None:
         return True
     if fetch.installer and scope.installers & {fetch.installer, ANY_INSTALLER}:
         return True
-    if any(_pin_in_key(pin).search(scope.key) for pin in fetch.pins):
+    return _holds(scope, fetch) or (
+        _key_names(scope, fetch) and _may_hold(scope, fetch)
+    )
+
+
+def _key_names(scope: CacheScope, fetch: Fetch) -> bool:
+    """True when SCOPE's key names FETCH's pin or hashes a file that sets it."""
+    if any(_pin_in_key(pin).search(scope.key or "") for pin in fetch.pins):
         return True
     for pattern in scope.hashed:
         pattern = pattern.removeprefix("./")
@@ -2157,6 +2192,49 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
             return True
         if fetch.pins & _hashed_assignments(REPO_ROOT, pattern):
             return True
+    return False
+
+
+# A path part the text does not fix: a variable, or a glob a cache path holds.
+_UNFIXED_PART = re.compile(r"[$*?\[{]")
+
+
+def _fixed_head(path: str) -> tuple[list[str], bool]:
+    """The leading parts of PATH that the text fixes, with `~` for each of
+    _HOMES, and True when the text fixes the whole path."""
+    for spelling in _HOMES[1:]:
+        if path == spelling or path.startswith(spelling + "/"):
+            path = "~" + path[len(spelling) :]
+    head: list[str] = []
+    for part in path.split("/"):
+        if _UNFIXED_PART.search(part):
+            return head, False
+        head.append(part)
+    return head, True
+
+
+def _may_hold(scope: CacheScope, fetch: Fetch) -> bool:
+    """True when a path of SCOPE can hold an output of FETCH. A computed part
+    can take any value, so only the leading parts the text fixes compare. An
+    installer writes where its own settings say, which the text does not show.
+    So an installer fetch, a fetch with no output the text can read, and a
+    cache with no path the text fixes compare as able to hold it."""
+    if fetch.installer or fetch.output_names or not fetch.outputs or not scope.paths:
+        return True
+    for out in fetch.outputs:
+        out_head, out_fixed = _fixed_head(out)
+        for path in scope.paths:
+            path_head, _ = _fixed_head(path)
+            if out_fixed and len(path_head) > len(out_head):
+                continue  # the cache holds a directory below the output
+            common = min(len(out_head), len(path_head))
+            if out_head[:common] == path_head[:common]:
+                return True
+    return False
+
+
+def _holds(scope: CacheScope, fetch: Fetch) -> bool:
+    """True when a path of SCOPE holds an output of FETCH."""
     for out in fetch.outputs:
         for path in scope.paths:
             if glob_to_regex(path).match(out) or glob_to_regex(
@@ -2286,9 +2364,11 @@ def check_file(path: Path) -> list[tuple[int, str]]:
         return [
             (
                 1,
-                f"could not parse this workflow or an action it uses as YAML "
-                f"({first_line}); cannot check its jobs for uncached downloads — "
-                "fix the syntax (or run actionlint) and re-check.",
+                (
+                    f"could not parse this workflow or an action it uses as YAML "
+                    f"({first_line}); cannot check its jobs for uncached downloads — "
+                    "fix the syntax (or run actionlint) and re-check."
+                ),
             )
         ]
 
@@ -2333,11 +2413,15 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         # whose text this job's BLOCK does not hold.
         if any(annotated(line, OPT_OUT) for line in yaml_script_view(block)):
             continue
+        # Each cache with the index of its step: a cache restored after a
+        # download cannot skip it.
         scopes = [
-            scope for f in flat if (scope := cache_scope(f.step, f.context)) is not None
+            (index, scope)
+            for index, f in enumerate(flat)
+            if (scope := cache_scope(f.step, f.context)) is not None
         ]
         default_directory = _default_directory(doc, job)
-        for step, line, origin, _ in flat:
+        for index, (step, line, origin, step_context) in enumerate(flat):
             script = step.get("run")
             if not isinstance(script, str):
                 continue
@@ -2349,10 +2433,14 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
                 step.get("working-directory", "" if origin else default_directory)
             )
             holder = _relative(_action_path(origin) if origin else REPO_ROOT / path)
+            environment = frozenset({**step_context.env, **env_of(step)})
+            earlier = [scope for at, scope in scopes if at < index]
             uncovered = [
                 fetch
-                for fetch in _script_fetches(script, holder, action_dir, directory)
-                if not any(_covers(scope, fetch) for scope in scopes)
+                for fetch in _script_fetches(
+                    script, holder, action_dir, directory, environment
+                )
+                if not any(_covers(scope, fetch) for scope in earlier)
             ]
             if not uncovered:
                 continue
