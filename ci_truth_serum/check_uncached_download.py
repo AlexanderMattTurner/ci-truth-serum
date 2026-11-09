@@ -2172,6 +2172,52 @@ def _hashed_assignments(root: Path, pattern: str) -> frozenset[str]:
     return frozenset(names)
 
 
+@functools.lru_cache(maxsize=4)
+def _assigned_literals(root: Path) -> dict[str, frozenset[str]]:
+    """Each variable's literal values across ROOT's shell files: the assigned text,
+    where it holds no expansion. A generated file such as `tool-versions.sh`
+    carries the value its source file holds, which is how a key that hashes the
+    source (`config/tool-pins/k3s.json`) names the pin."""
+    values: dict[str, set[str]] = {}
+    for rel in _shell_files(root):
+        try:
+            tree = load_shell(root / rel)[1]
+        except UnicodeDecodeError:
+            continue  # bytes no shell step reads as a script set no pin
+        for name, node in definitions(tree)[1]:
+            value = node.child_by_field_name("value")
+            text = unquote(node_text(value)) if value is not None else ""
+            if text and not any(char in text for char in "$`"):
+                values.setdefault(name, set()).add(text)
+    return {name: frozenset(found) for name, found in values.items()}
+
+
+@functools.lru_cache(maxsize=1024)
+def _hashed_text(root: Path, pattern: str) -> str:
+    """The text of every file under ROOT that a `hashFiles()` PATTERN matches."""
+    if not pattern or pattern.startswith(("/", "!")):
+        return ""
+    matcher = glob_to_regex(pattern)
+    texts = []
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if ".git" in path.relative_to(root).parts or not matcher.match(rel):
+            continue
+        if path.is_file():
+            texts.append(path.read_text(encoding="utf-8", errors="replace"))
+    return "\n".join(texts)
+
+
+def _pin_values(fetch: Fetch) -> set[str]:
+    """FETCH's pins as literal values: each version or digest it names, and each
+    literal a pin variable is assigned. A value under 4 characters is left out,
+    because a hashed file holds it by chance."""
+    assigned = _assigned_literals(REPO_ROOT)
+    values = {pin for pin in fetch.pins if not _IDENTIFIER.fullmatch(pin)}
+    values |= {value for pin in fetch.pins for value in assigned.get(pin, ())}
+    return {value for value in values if len(value) >= 4}
+
+
 def _covers(scope: CacheScope, fetch: Fetch) -> bool:
     """True when SCOPE's path holds FETCH's output, it is the store of FETCH's
     installer, or its key names FETCH's pin or a file that sets it and its
@@ -2186,7 +2232,8 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
 
 
 def _key_names(scope: CacheScope, fetch: Fetch) -> bool:
-    """True when SCOPE's key names FETCH's pin or hashes a file that sets it."""
+    """True when SCOPE's key names FETCH's pin, or hashes a file that sets it or
+    holds its value."""
     if any(_pin_in_key(pin).search(scope.key or "") for pin in fetch.pins):
         return True
     for pattern in scope.hashed:
@@ -2197,6 +2244,9 @@ def _key_names(scope: CacheScope, fetch: Fetch) -> bool:
         ):
             return True
         if fetch.pins & _hashed_assignments(REPO_ROOT, pattern):
+            return True
+        text = _hashed_text(REPO_ROOT, pattern)
+        if text and any(value in text for value in _pin_values(fetch)):
             return True
     return False
 

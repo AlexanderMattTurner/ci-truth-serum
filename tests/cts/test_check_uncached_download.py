@@ -677,6 +677,36 @@ def test_a_key_that_names_the_pin_covers_only_a_path_that_can_hold_it(
 
 
 @pytest.mark.parametrize(
+    ("hashed", "fires"),
+    [("pins/tool.json", False), ("pins/other.json", True)],
+    ids=["holds-the-value", "holds-another-value"],
+)
+def test_a_key_that_hashes_the_source_of_a_generated_pin_names_it(
+    rooted, hashed, fires
+):
+    """`s/versions.sh` is generated from `pins/tool.json`, so both hold `v2.7.0`. A
+    key that hashes the JSON changes whenever the pin does, so it names the pin.
+    A JSON file that holds another value does not."""
+    _tree(
+        rooted,
+        {
+            **VERSIONS,
+            "pins/tool.json": '{"version": "v2.7.0"}\n',
+            "pins/other.json": '{"version": "v9.9.9"}\n',
+        },
+    )
+    script = (
+        "source s/versions.sh\n"
+        'curl -fsSLo "$HOME/.cache/tool/$ARCH/tool" '
+        '"https://github.com/o/tool/releases/download/${TOOL_VERSION}/tool"'
+    )
+    key = f"t-${{{{ hashFiles('{hashed}') }}}}"
+    cache = _cache(key, "~/.cache/tool/linux")
+    messages = _messages(_write(rooted, _job(cache + _run(script))))
+    assert len(messages) == fires, messages
+
+
+@pytest.mark.parametrize(
     ("script", "fires"),
     [
         ("uv tool install pre-commit==4.6.1", False),
