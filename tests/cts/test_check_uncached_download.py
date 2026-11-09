@@ -87,7 +87,7 @@ API = "https://api.github.com/repos/$repo/releases"
         (f"{API}/tags/$tag", False),
         (f"{API}/tags/v1.2.3", False),
         (f"{API}/assets/$asset_id", False),
-        (f"{API}/assets/${{TOOL_VERSION}}", False),
+        (f"{API}/assets/${{TOOL_RELEASE_ID}}", True),
         ("https://github.com/$repo/releases/download/${VERSION}/t.tgz", True),
         ("https://github.com/o/r/releases/download/v1.2.3/t.tgz", True),
         ("https://api.github.com/repos/o/r/tarball/${VERSION}", True),
@@ -103,8 +103,9 @@ API = "https://api.github.com/repos/$repo/releases"
     ],
 )
 def test_a_release_metadata_read_is_not_a_pinned_download(tmp_path, url, fires):
-    """The API's tag and asset reads return no cacheable bytes; a real release
-    download, or another API path that holds a version, is still judged."""
+    """`releases/tags/<tag>` returns JSON, so it is not a download. `releases/assets/
+    <id>` streams the asset itself under `Accept: application/octet-stream`, so a
+    versioned asset URL is judged like any other download."""
     messages = _messages(_write(tmp_path, _job(_run(f'curl -fsSL -o t "{url}"'))))
     assert len(messages) == int(fires), messages
 

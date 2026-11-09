@@ -234,13 +234,12 @@ _COPIERS = frozenset({"cp", "install", "mv"})
 # built from one changes per run, so a cache keyed on it could never restore, and
 # flagging it would contradict the "not a version" exclusion above.
 #
-# The GitHub API's release-METADATA reads are excluded (`$repo` may hold
-# `owner/name`). `releases/tags/<tag>` returns a JSON description, and `releases/assets/<id>` names an opaque asset id
-# that carries no version. Both are the authenticated fallback that runs only
-# after the anonymous `releases/download/<tag>/…` fetch failed, so the bytes they
-# return never reach a cache. The download URL itself stays judged.
+# The GitHub API's release-METADATA read is excluded (`$repo` may hold
+# `owner/name`): `releases/tags/<tag>` returns a JSON description of the release,
+# not an artifact, so no cache holds its bytes. `releases/assets/<id>` stays
+# judged, because with `Accept: application/octet-stream` it streams the asset.
 _PINNED_URL = re.compile(
-    r"^(?!https?://api\.github\.com/repos/[^/]+(?:/[^/]+)?/releases/(?:tags|assets)/)"
+    r"^(?!https?://api\.github\.com/repos/[^/]+(?:/[^/]+)?/releases/tags/)"
     r"https?://.*(?:/v?\d+\.\d+[\w.+-]*/"
     r"|\$\{?(?!(?:GITHUB|RUNNER)_)\w*(?:VERSION|RELEASE|TAG|REF|SHA)\w*)",
     re.IGNORECASE,
