@@ -116,3 +116,10 @@ def test_survivors_markdown_lists_each_survivor_under_its_module() -> None:
 
 def test_survivors_markdown_is_empty_when_every_mutant_died() -> None:
     assert agg.survivors_markdown(_reports(_SHARD_IDS)) == ""
+
+
+def test_a_daily_aggregate_owes_no_report_for_a_weekly_module() -> None:
+    daily = [s["id"] for s in ms.expand_shards(REPO_ROOT, ms.DAILY)]
+    assert len(daily) < len(_SHARD_IDS)
+    lines = agg.aggregate(REPO_ROOT, _reports(daily), ms.DAILY)
+    assert lines[0] == f"Aggregated {len(daily)} shard report(s) (one per shard):"
