@@ -78,6 +78,37 @@ def test_a_pinned_download_in_an_uncached_job_is_flagged(tmp_path, script, named
     assert "build" in messages[0]
 
 
+API = "https://api.github.com/repos/$repo/releases"
+
+
+@pytest.mark.parametrize(
+    ("url", "fires"),
+    [
+        (f"{API}/tags/$tag", False),
+        (f"{API}/tags/v1.2.3", False),
+        (f"{API}/assets/$asset_id", False),
+        (f"{API}/assets/${{TOOL_VERSION}}", False),
+        ("https://github.com/$repo/releases/download/${VERSION}/t.tgz", True),
+        ("https://github.com/o/r/releases/download/v1.2.3/t.tgz", True),
+        ("https://api.github.com/repos/o/r/tarball/${VERSION}", True),
+    ],
+    ids=[
+        "tags-var",
+        "tags-literal",
+        "assets-id",
+        "assets-var",
+        "download-var",
+        "download-literal",
+        "tarball",
+    ],
+)
+def test_a_release_metadata_read_is_not_a_pinned_download(tmp_path, url, fires):
+    """The API's tag and asset reads return no cacheable bytes; a real release
+    download, or another API path that holds a version, is still judged."""
+    messages = _messages(_write(tmp_path, _job(_run(f'curl -fsSL -o t "{url}"'))))
+    assert len(messages) == int(fires), messages
+
+
 def test_the_finding_points_at_the_step_line(tmp_path):
     path = _write(tmp_path, _job(_run("pip install ruff==0.14.0")))
     line, _ = uc.check_file(path)[0]

@@ -1,0 +1,1 @@
+`check-uncached-download` no longer treats a GitHub API read of `releases/tags/<tag>` or `releases/assets/<id>` as a pinned download. These reads return metadata or an opaque asset, so no cache can hold them. A `releases/download/<tag>/…` fetch is still flagged.
