@@ -105,6 +105,7 @@ is real but never fails loudly.
 
 import ast
 import functools
+import gc
 import os
 import posixpath
 import re
@@ -2690,6 +2691,25 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
 
 
 def main() -> int:
+    """Check every workflow, with the cyclic garbage collector off.
+
+    The run keeps every parse tree and namespace it builds until it ends, and
+    none of them is garbage, so each pass of the collector only re-walks them:
+    about a quarter of the run on a large tree. Reference counting still frees
+    everything else. The collector comes back on for a caller that runs `main`
+    in its own process."""
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        return _report()
+    finally:
+        if enabled:
+            gc.enable()
+
+
+def _report() -> int:
+    """Print every finding in the repo's workflows. Return 1 when there is
+    one, else 0."""
     total = 0
     # Only workflows are entry points: a composite action has no cache scope of its
     # own, so it is judged inside each job that uses it, where `flatten` reaches it.
@@ -2717,4 +2737,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    status = main()
+    # Every tree and namespace the run built is still reachable here. A normal
+    # exit frees them one object at a time, which costs seconds on a large
+    # tree, and the OS frees the whole heap anyway. `_exit` skips that, so the
+    # output is flushed first.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(status)
