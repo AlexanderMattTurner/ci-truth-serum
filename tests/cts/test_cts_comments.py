@@ -242,3 +242,29 @@ def test_python_that_tokenizes_but_does_not_parse_keeps_its_exact_comments() -> 
     # is only for source that will not tokenize, would read it as one.
     found = comments.py_comments("x = = 1  # m\nt = 'a # formerly z'\n")
     assert (dict(found), found.opens) == ({1: "# m"}, frozenset())
+
+
+def test_python_opener_lines_are_computed_once_and_only_when_read(monkeypatch):
+    """Most files have no finding, so no opt-out lookup reads `opens`. Computing it
+    is a second tokenize, parse and tree walk, which tripled the comment readers'
+    cost over a large tree, so a reader defers it to the first read."""
+    calls = []
+
+    def _counted(source):
+        calls.append(source)
+        return frozenset({1})
+
+    monkeypatch.setattr(comments, "python_opening_lines", _counted)
+    found = comments.py_comments("if x:  # a note\n    y = 1\n")
+
+    assert found == {1: "# a note"}
+    assert calls == []
+    assert found.opens == frozenset({1})
+    assert found.opens == frozenset({1})
+    assert len(calls) == 1
+
+
+def test_python_that_tokenizes_but_does_not_parse_has_no_opener_lines():
+    found = comments.py_comments("x = = 1  # a note\n")
+    assert found == {1: "# a note"}
+    assert found.opens == frozenset()

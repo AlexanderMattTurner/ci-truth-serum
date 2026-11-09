@@ -136,14 +136,19 @@ def py_comments(source: str) -> CommentMap:
         found = python_comments(normalized)
     except (tokenize.TokenError, SyntaxError):
         return CommentMap(text_comments(normalized).items())
-    # Source can tokenize and still not parse: syntax newer than this
-    # interpreter, or a half-written edit. Its comments are still exact, and
-    # only the opener lines, which need the tree, are lost.
+    return CommentMap(found.items(), lambda: _python_opens(normalized))
+
+
+def _python_opens(normalized: str) -> frozenset[int]:
+    """The opener lines of NORMALIZED Python, or none when it does not parse.
+
+    Source can tokenize and still not parse: syntax newer than this interpreter,
+    or a half-written edit. Its comments are still exact, and only the opener
+    lines, which need the tree, are lost."""
     try:
-        opens = python_opening_lines(normalized)
+        return python_opening_lines(normalized)
     except SyntaxError:
-        opens = frozenset()
-    return CommentMap(found.items(), opens)
+        return frozenset()
 
 
 def shell_comments(script: str) -> CommentMap:

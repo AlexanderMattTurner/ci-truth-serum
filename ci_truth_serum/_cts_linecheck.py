@@ -242,13 +242,28 @@ class CommentMap(dict[int, str]):
     Only a language's own parser can say this, so each comment reader that has
     one fills OPENS. A plain dict carries none, and ``annotation_window`` then
     reads no code line above a finding: an opt-out can be lost, never invented.
+
+    OPENS may be a function that computes the lines. It then runs once, on the
+    first read. Most files have no finding and so no opt-out lookup, and for
+    Python the computation is a second tokenize, parse and tree walk of the file.
     """
 
     def __init__(
-        self, items: Iterable[tuple[int, str]] = (), opens: Iterable[int] = ()
+        self,
+        items: Iterable[tuple[int, str]] = (),
+        opens: "Iterable[int] | Callable[[], Iterable[int]]" = (),
     ) -> None:
         super().__init__(items)
-        self.opens = frozenset(opens)
+        self._opens = opens
+
+    @property
+    def opens(self) -> frozenset[int]:
+        """The opener lines, computed on the first read when OPENS was a function."""
+        if callable(self._opens):
+            self._opens = self._opens()
+        if not isinstance(self._opens, frozenset):
+            self._opens = frozenset(self._opens)
+        return self._opens
 
 
 def annotation_window(
