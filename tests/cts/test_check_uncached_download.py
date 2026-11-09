@@ -1711,6 +1711,137 @@ def test_what_the_python_walk_leaves_alone(rooted, install, check):
     assert uc.check_file(path) == []
 
 
+# A Python module that downloads through a `bash -c` script, the way
+# agent-glovebox's pkg_fetch.py calls fetch.bash. Its directory reaches
+# `sys.path` only through another module, from a base the fold cannot read.
+SUBPROCESS_FETCHER = """\
+import subprocess
+from pathlib import Path
+
+_LIB = Path(__file__).resolve().parent / "fetch.bash"
+
+
+def get(url, sha256, dest):
+    owner = ["download_pinned", url, sha256, dest] if sha256 else ["true"]
+    subprocess.run(["bash", "-c", 'source "$1"; shift; "$@"', "_", str(_LIB), *owner])
+
+
+def wrap():
+    get(URL, SHA, "f")
+
+
+def other():
+    return 1
+"""
+PATHS_PY = (
+    "import sys\nfrom pathlib import Path\n"
+    "sys.path.insert(0, str(find_root(Path(__file__)) / 'lib'))\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("main", "fires"),
+    [
+        ("import paths\nimport fetcher\nfetcher.get(URL, SHA, 'f')\n", 1),
+        ("import paths\nfrom fetcher import get\nget(URL, SHA, 'f')\n", 1),
+        ("import paths\nimport fetcher\nfetcher.wrap()\n", 1),
+        ("import paths\nfrom fetcher import *\nget(URL, SHA, 'f')\n", 1),
+        ("import paths\nimport fetchpkg\nfetchpkg.get(URL, SHA, 'f')\n", 1),
+        ("import paths\nimport fetcher\nfetcher.other()\n", 0),
+        ("import fetcher\nfetcher.get(URL, SHA, 'f')\n", 0),
+    ],
+    ids=[
+        "calls-the-fetch",
+        "imports-the-fetch",
+        "calls-a-caller-of-the-fetch",
+        "star-import",
+        "package-re-export",
+        "calls-another-function",
+        "no-path-insert",
+    ],
+)
+def test_a_python_fetch_through_a_shell_subprocess_fires(rooted, main, fires):
+    _tree(
+        rooted,
+        {
+            "lib/fetch.bash": CHECKED_LIB,
+            "lib/fetcher.py": SUBPROCESS_FETCHER,
+            "lib/fetchpkg/__init__.py": "from .fetcher import get\n",
+            "lib/fetchpkg/fetch.bash": CHECKED_LIB,
+            "lib/fetchpkg/fetcher.py": SUBPROCESS_FETCHER,
+            "scripts/paths.py": PATHS_PY,
+            "scripts/main.py": main,
+        },
+    )
+    messages = _messages(_write(rooted, _job(_run("python3 scripts/main.py"))))
+    assert ["fetcher.py:get)" in m for m in messages] == [True] * fires
+
+
+CURL_PY = (
+    "import subprocess\nVERSION = '2.7.0'\nsubprocess.check_call(\n"
+    "    ['curl', '-fsSLo', '/tmp/tool-cache/tool',\n"
+    "     f'https://example.com/releases/download/v{VERSION}/tool'])\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("cache", "fires"),
+    [
+        ("", 1),
+        (_cache("tool-${{ hashFiles('fetch.py') }}", "/tmp/tool-cache"), 0),
+        (_cache("deps-1", "~/.cache/some-other-tool"), 1),
+    ],
+    ids=["no-cache", "cached", "cache-holds-something-else"],
+)
+def test_a_python_curl_subprocess_is_a_fetch(rooted, cache, fires):
+    _tree(rooted, {"fetch.py": CURL_PY})
+    path = _write(rooted, _job(cache + _run("python3 fetch.py")))
+    assert len(_messages(path)) == fires
+
+
+IMPORT_TIME_FETCHER = """\
+import urllib.request
+
+
+def download():
+    urllib.request.urlretrieve("https://example.com/v2.7.0/tool", "tool")
+
+
+download()
+"""
+
+
+@pytest.mark.parametrize(
+    ("call", "fires"),
+    [("download()\n", 1), ('if __name__ == "__main__":\n    download()\n', 0)],
+    ids=["at-import", "under-the-main-guard"],
+)
+def test_a_download_an_imported_module_runs_at_import_fires(rooted, call, fires):
+    """The module calls its downloader at module level, so importing it is
+    enough: the importer names nothing from it. A main guard runs nothing on
+    import."""
+    fetcher = IMPORT_TIME_FETCHER.replace("download()\n", call)
+    _tree(rooted, {"main.py": "import fetcher\n", "fetcher.py": fetcher})
+    assert len(_messages(_write(rooted, _job(_run("python3 main.py"))))) == fires
+
+
+@pytest.mark.parametrize(
+    ("local", "fires"),
+    [
+        ("    URL = 'https://example.com/latest/tool'\n", 0),
+        ("", 1),
+    ],
+    ids=["local-floating-url-shadows-the-pin", "module-pin"],
+)
+def test_a_local_binding_shadows_a_module_constant_in_argv(rooted, local, fires):
+    fetch = (
+        "import subprocess\nURL = 'https://example.com/v2.7.0/tool'\n\n\n"
+        f"def get():\n{local}    subprocess.run(['curl', '-o', '/tmp/t', URL])\n\n\nget()\n"
+    )
+    _tree(rooted, {"fetch.py": fetch})
+    assert len(_messages(_write(rooted, _job(_run("python3 fetch.py"))))) == fires
+
+
 def test_a_hash_compare_in_another_function_does_not_pin_a_method_fetch(rooted):
     """The fetch sits in a class method, and the only compare sits in a
     different function, so nothing checks the bytes this fetch reads."""
