@@ -8,10 +8,11 @@ Nothing removes it, so these annotations accumulate. This check finds them, as
 ruff's RUF100 finds an unused `noqa`. Fix a finding by deleting the annotation.
 
 For each file that holds an annotation, this check runs the check that owns the
-token again, inside ``_cts_linecheck.audit_opt_outs``. There every opt-out is
-ignored, so the check reports each finding an opt-out would clear. The shared
-helper ``annotated_near`` also records the window lines that held the opt-out.
-An annotation is stale when no window reached it.
+token again, inside ``_cts_linecheck.audit_opt_outs``. There the shared helper
+``annotated_near`` records each window line that held the opt-out, and returns
+its real answer. The check therefore takes the path of a normal run, and a
+lookup that only runs after another opt-out cleared a finding is still made. An
+annotation that no lookup found changes no lookup's answer, so it is stale.
 
 The annotation is read through ``_cts_comments.marker_comments``: the grammar of
 the file's language says where the comments are. A token inside a string, a
@@ -77,7 +78,7 @@ _NOT_AUDITED = frozenset(
 
 # The names a check gives the token of its opt-out: OPT_OUT, EMPTY_OPT_OUT,
 # _ALLOW, _ALLOW_TOKEN. A covered check that reads a token under another name
-# makes the audit fail (``_assert_readable``), so this list cannot fall behind.
+# makes the audit fail (``_credited``), so this list cannot fall behind.
 _TOKEN_NAME = re.compile(r"^_?(?:[A-Z]+_)*(?:OPT_OUT|ALLOW)(?:_TOKEN)?$")
 
 
@@ -127,18 +128,34 @@ def owners() -> list[Owner]:
     return [Owner(c, m, d, d - shared) for c, m, d in loaded]
 
 
-def _annotations(said: dict[int, str], tokens: set[str]) -> set[tuple[int, str]]:
+def _is_annotation(comment: str, token: str, prose: bool) -> bool:
+    """True when COMMENT holds TOKEN as an opt-out.
+
+    A bare token that ends the comment (`# curl-retry-ok`) counts too, because
+    some checks accept it. A token that running text names (`rather than
+    pin-exempt.`) does not, and neither does a `:` with a placeholder reason,
+    which is how a comment explains the syntax. Prose takes no bare form.
+    """
+    if annotation_re(token).first(comment):
+        return True
+    bare = annotation_re(token, require_reason=False).first(comment)
+    return not prose and bare is not None and not comment[bare.end() :].strip()
+
+
+def _annotations(
+    said: dict[int, str], tokens: set[str], prose: bool
+) -> set[tuple[int, str]]:
     return {
         (line, token)
         for line, comment in said.items()
         for token in tokens
-        if annotation_re(token).first(comment)
+        if _is_annotation(comment, token, prose)
     }
 
 
 def _audit(owner: Owner, path: str, flags: list[str]) -> tuple[OptOutAudit, list[str]]:
-    """Run OWNER over PATH with every opt-out ignored; return the record and the
-    refusals it printed.
+    """Run OWNER over PATH under the audit; return the record and the refusals
+    it printed.
 
     A finding prints as `<path>:<line>: …` and a refusal as `<path>: …`, which is
     the report format of every check in this pack (``run_message_checks``).
@@ -160,24 +177,29 @@ def _audit(owner: Owner, path: str, flags: list[str]) -> tuple[OptOutAudit, list
     return record, refusals
 
 
-def _assert_readable(owner: Owner, path: str, record: OptOutAudit, said: dict) -> None:
-    """Fail when OWNER read an opt-out this audit cannot map back to the file.
+def _credited(
+    owner: Owner, record: OptOutAudit, raw: list[str], found: set[tuple[int, str]]
+) -> set[tuple[int, str]]:
+    """The annotations in FOUND that OWNER's lookups found, as RECORD holds them.
 
-    Each such read would make an annotation look unused, which is a false
-    finding. A token under an unknown name, or a line number that counts from
-    some other text, is a defect in this audit, so it stops the run.
+    A read whose comment text is on line N of the file names line N. Otherwise
+    the line counts from some other text, such as a script inside a heredoc.
+    That read credits each annotation of its token on a line that holds the
+    same text, and no other. An annotation it might name is then never called
+    stale, and a comment that only that other text holds is not judged here.
     """
-    for line, token in record.lines:
+    credited = set(record.scripts)
+    for line, token, text in record.reads:
         if token not in owner.declared:
             raise RuntimeError(
                 f"{owner.check.module} read the opt-out `{token}`, which it does "
                 f"not declare under a name `_TOKEN_NAME` accepts."
             )
-        if not annotation_re(token, require_reason=False).first(said.get(line, "")):
-            raise RuntimeError(
-                f"{owner.check.module} read `{token}` at {path}:{line}, where no "
-                f"comment holds it. Its line numbers do not count from the file."
-            )
+        if 1 <= line <= len(raw) and text in raw[line - 1]:
+            credited.add((line, token))
+            continue
+        credited |= {(n, t) for n, t in found if t == token and text in raw[n - 1]}
+    return credited
 
 
 def judge(path: str, members: list[Owner], extra: dict[str, list[str]]) -> int:
@@ -197,8 +219,10 @@ def judge(path: str, members: list[Owner], extra: dict[str, list[str]]) -> int:
     if reason is not None:
         print(f"{path}: {reason} (opt-outs not judged)", file=sys.stderr)
         return 1
-    said = marker_comments(text, path, prose=is_prose_path(path))
-    found = _annotations(said, {t for o in mine for t in o.judged})
+    prose = is_prose_path(path)
+    said = marker_comments(text, path, prose=prose)
+    found = _annotations(said, {t for o in mine for t in o.judged}, prose)
+    raw = text.split("\n")
     tokens = {token for _, token in found}
     live: set[tuple[int, str]] = set()
     unjudged: set[str] = set()
@@ -214,8 +238,7 @@ def judge(path: str, members: list[Owner], extra: dict[str, list[str]]) -> int:
         if refusals:
             unjudged |= owner.declared
             continue
-        _assert_readable(owner, path, record, said)
-        live |= record.lines | record.scripts
+        live |= _credited(owner, record, raw, found)
         unjudged |= record.whole_file
     for line, token in sorted(found):
         if token in unjudged or (line, token) in live:
@@ -223,9 +246,8 @@ def judge(path: str, members: list[Owner], extra: dict[str, list[str]]) -> int:
         names = [o.check.hook_id for o in mine if token in o.judged]
         verb = "reports" if len(names) == 1 else "report"
         print(
-            f"{path}:{line}: the opt-out `{token}` suppresses nothing. With every "
-            f"opt-out ignored, {' and '.join(names)} {verb} no finding that this "
-            "line covers. "
+            f"{path}:{line}: the opt-out `{token}` suppresses nothing: "
+            f"{' and '.join(names)} {verb} no finding that this line covers. "
             "Delete the annotation, or reword the comment so it does not read "
             "as one.",
             file=sys.stderr,

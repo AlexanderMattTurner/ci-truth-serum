@@ -291,20 +291,30 @@ def annotation_window(
     return sorted(n for n in candidates if 1 <= n <= len(lines))
 
 
+class OptOutRead(NamedTuple):
+    """One opt-out that an ``annotated_near`` window found."""
+
+    line: int
+    token: str
+    text: str
+
+
 class OptOutAudit:
     """What the checks run under ``audit_opt_outs`` read while judging one file.
 
-    LINES holds each (1-based line, token) pair where an ``annotated_near``
-    window found the opt-out at a construct the check judged. SCRIPTS holds the
-    same pair for every line of a `run:` value that held one, because there the
-    window counts lines from the value (``per_run_script``). WHOLE_FILE holds
-    each token that a read without a line asked about, so every annotation of
-    that token in the file counts as read. A reader of this record may call an
-    annotation unused only when it is in none of the three.
+    READS holds each (1-based line, token, comment text) where an
+    ``annotated_near`` window found the opt-out. The line counts from the text
+    the check passed in, which is not always the file (a script the check
+    found inside a heredoc), so the reader of this record matches the comment
+    text too. SCRIPTS holds (line, token) for every line of a `run:` value that
+    held one, because there the window counts lines from the decoded value
+    (``per_run_script``). WHOLE_FILE holds each token that a read without a
+    line asked about, so every annotation of that token in the file counts as
+    read.
     """
 
     def __init__(self) -> None:
-        self.lines: set[tuple[int, str]] = set()
+        self.reads: set[OptOutRead] = set()
         self.scripts: set[tuple[int, str]] = set()
         self.whole_file: set[str] = set()
 
@@ -318,12 +328,12 @@ _SCRIPT_LINES: "ContextVar[range | None]" = ContextVar("script_lines", default=N
 
 @contextmanager
 def audit_opt_outs() -> Iterator[OptOutAudit]:
-    """Ignore every opt-out, and record which annotations the checks read.
+    """Record which opt-out annotations the checks find while they run.
 
-    Inside this block ``annotated_near`` returns False, so a check reports each
-    finding an opt-out would have cleared. It also records the window lines that
-    held the opt-out. ``check_stale_opt_out`` reads that record: an annotation
-    that no finding reached suppresses nothing.
+    Every lookup still returns its real answer, so a check takes the same path
+    as in a normal run. An opt-out that gates a second lookup therefore still
+    reaches it. ``check_stale_opt_out`` reads the record: an annotation that no
+    lookup found can change no lookup's answer, so deleting it changes nothing.
     """
     token = _AUDIT.set(OptOutAudit())
     try:
@@ -359,7 +369,7 @@ def annotated_near(
     ``yaml_marker_comments`` for a workflow. A line it leaves out says nothing.
     A ``CommentMap`` also says which code lines open a construct (OPENS).
 
-    Under ``audit_opt_outs`` this returns False and records the opt-out it found.
+    Under ``audit_opt_outs`` this also records each window line that held it.
     """
     opens = comments.opens if isinstance(comments, CommentMap) else frozenset()
     window = annotation_window(lines, lineno, span_end, opens)
@@ -370,10 +380,10 @@ def annotated_near(
     held = [n for n in window if matcher.first(comments.get(n, ""))]
     script = _SCRIPT_LINES.get()
     if held and script is None:
-        audit.lines.update((n, token) for n in held)
+        audit.reads.update(OptOutRead(n, token, comments[n].strip()) for n in held)
     elif held:
         audit.scripts.update((n, token) for n in script)
-    return False
+    return bool(held)
 
 
 # A line that ends in a backslash, a pipe, or a boolean operator is continued on

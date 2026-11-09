@@ -1039,7 +1039,7 @@
 
 - id: check-stale-opt-out
   name: "extra: report an opt-out annotation that suppresses nothing"
-  description: An opt-out stays after its check stops firing, so the file keeps an exemption that nothing needs. This check runs each covered check again with every opt-out ignored. It reports each annotation that no finding reaches. Delete the annotation to fix the finding.
+  description: An opt-out stays after its check stops firing, so the file keeps an exemption that nothing needs. This check runs each covered check again. It reports each annotation that no opt-out lookup finds. Delete the annotation to fix the finding.
   entry: python -m ci_truth_serum.check_stale_opt_out
   language: python
   types: [text]
