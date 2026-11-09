@@ -1,0 +1,1 @@
+`check-uncached-download` no longer treats a GitHub API read of `releases/tags/<tag>` as a pinned download. That read returns a JSON description of the release, not an artifact. A `releases/download/<tag>/…` fetch and a `releases/assets/<id>` fetch are still judged, because the second one streams the asset.

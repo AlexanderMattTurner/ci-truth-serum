@@ -78,6 +78,38 @@ def test_a_pinned_download_in_an_uncached_job_is_flagged(tmp_path, script, named
     assert "build" in messages[0]
 
 
+API = "https://api.github.com/repos/$repo/releases"
+
+
+@pytest.mark.parametrize(
+    ("url", "fires"),
+    [
+        (f"{API}/tags/$tag", False),
+        (f"{API}/tags/v1.2.3", False),
+        (f"{API}/assets/$asset_id", False),
+        (f"{API}/assets/${{TOOL_RELEASE_ID}}", True),
+        ("https://github.com/$repo/releases/download/${VERSION}/t.tgz", True),
+        ("https://github.com/o/r/releases/download/v1.2.3/t.tgz", True),
+        ("https://api.github.com/repos/o/r/tarball/${VERSION}", True),
+    ],
+    ids=[
+        "tags-var",
+        "tags-literal",
+        "assets-id",
+        "assets-var",
+        "download-var",
+        "download-literal",
+        "tarball",
+    ],
+)
+def test_a_release_metadata_read_is_not_a_pinned_download(tmp_path, url, fires):
+    """`releases/tags/<tag>` returns JSON, so it is not a download. `releases/assets/
+    <id>` streams the asset itself under `Accept: application/octet-stream`, so a
+    versioned asset URL is judged like any other download."""
+    messages = _messages(_write(tmp_path, _job(_run(f'curl -fsSL -o t "{url}"'))))
+    assert len(messages) == int(fires), messages
+
+
 def test_the_finding_points_at_the_step_line(tmp_path):
     path = _write(tmp_path, _job(_run("pip install ruff==0.14.0")))
     line, _ = uc.check_file(path)[0]
