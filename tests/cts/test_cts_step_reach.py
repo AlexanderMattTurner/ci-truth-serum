@@ -103,6 +103,121 @@ def test_a_value_only_the_run_knows_is_none(tmp_path, script):
     assert echo_value(tmp_path, script) is None
 
 
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [(frozenset({"CACHE_DIR"}), None), (frozenset({"OTHER"}), "/home/c/x")],
+    ids=["set-by-the-step", "unset"],
+)
+def test_a_default_reads_only_when_the_step_environment_leaves_it_unset(
+    tmp_path, environment, expected
+):
+    """The step's `env:` starts the process with CACHE_DIR set, so the default
+    is not its value. A child script inherits the same environment."""
+    write(tmp_path, "child.sh", 'echo "${CACHE_DIR:-/home/c}/x"\n')
+    reached = sr.reach("bash child.sh", tmp_path, None, "", environment)
+    namespace = reached.namespaces[1]
+    echo, unit = namespace.executed[0]
+    assert namespace.value(sr.command_arguments(echo)[1], unit) == expected
+
+
+def namespace_of(root: Path, script: str):
+    path = write(root, "scripts/run.sh", script + "\n")
+    return sr.Namespace(root, sr._unit(path, path), None, root)
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        (
+            (
+                'read -r -a hosts <<<"${HOSTS:-https://a/x https://b/y}"\n'
+                'for h in "${hosts[@]}"; do :; done'
+            ),
+            ["https://a/x", "https://b/y"],
+        ),
+        (
+            'hosts=(https://a/x "https://b/y")\nfor h in "${hosts[@]}" c; do :; done',
+            ["https://a/x", "https://b/y", "c"],
+        ),
+        ("for h in a 'b c'; do :; done", ["a", "b c"]),
+        ('read -r -a hosts\nfor h in "${hosts[@]}"; do :; done', None),
+        ('hosts=(a)\nhosts+=(b)\nfor h in "${hosts[@]}"; do :; done', None),
+        ('for h in "$(cat f)"; do :; done', None),
+        ("for h in a; do :; done\nfor h in b; do :; done", None),
+        ("h=z\nfor h in a; do :; done", None),
+        ("for h; do :; done", None),
+    ],
+    ids=[
+        "read-a-from-a-here-string",
+        "array-assignment-then-a-word",
+        "literal-words",
+        "read-a-from-stdin",
+        "array-appended",
+        "computed-word",
+        "two-loops",
+        "also-assigned",
+        "positional-parameters",
+    ],
+)
+def test_a_loop_variable_reads_the_words_the_text_fixes(tmp_path, script, expected):
+    """`for h in WORDS` gives `h` each word in turn. The words are known only
+    when one loop binds `h`, nothing assigns it, and the text fixes each word."""
+    namespace = namespace_of(tmp_path, script)
+    assert namespace.loop_items("h", namespace.units[0].root) == expected
+
+
+@pytest.mark.parametrize(
+    ("declare", "use", "expected"),
+    [
+        ("local url", 'echo "$url"', None),
+        ("", 'echo "$url"', ["https://e/1.2.3/t"]),
+        ("local url", "helper", ["https://e/1.2.3/t"]),
+    ],
+    ids=["local-loop-outside", "global-loop-outside", "local-loop-inside"],
+)
+def test_a_loop_in_a_function_binds_a_local_name_only_inside_it(
+    tmp_path, declare, use, expected
+):
+    """A loop over a `local url` binds nothing outside its function. Without
+    `local`, the loop sets the global `url`."""
+    namespace = namespace_of(
+        tmp_path,
+        f'helper() {{ {declare}\nfor url in https://e/1.2.3/t; do echo "$url"; done; }}\n'
+        f"read -r url <f\n{use}",
+    )
+    inside = use == "helper"
+    echo = next(
+        c
+        for c, _ in namespace.executed
+        if sr.tokens(c)[0] == "echo"
+        and (sr._ancestor_of(c, "function_definition") is not None) == inside
+    )
+    assert namespace.loop_items("url", echo) == expected
+
+
+@pytest.mark.parametrize(
+    ("declare", "expected"),
+    [
+        ("local url", ['url="https://a/1"']),
+        ("", ['url="https://a/1"', 'url="$1"']),
+    ],
+    ids=["local", "global"],
+)
+def test_a_local_declaration_hides_the_assignments_outside_its_function(
+    tmp_path, declare, expected
+):
+    """A function that runs `local url` reads only its own `url`. Without the
+    declaration, an assignment in any function can be the value it reads."""
+    namespace = namespace_of(
+        tmp_path,
+        f'get() {{ {declare}\nurl="https://a/1"\necho "$url"; }}\n'
+        'put() { url="$1"; }\nget\nput x',
+    )
+    echo = next(c for c, _ in namespace.executed if sr.tokens(c)[0] == "echo")
+    seen = namespace.assignments_at("url", echo)
+    assert [sr.node_text(node) for node, _ in seen] == expected
+
+
 def test_a_run_body_has_no_bash_source(tmp_path):
     reached = sr.reach('echo "${BASH_SOURCE[0]}" "$0"', tmp_path, None)
     namespace = reached.namespaces[0]
