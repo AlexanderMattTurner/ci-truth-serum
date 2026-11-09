@@ -162,7 +162,37 @@ def namespace_of(root: Path, script: str):
 def test_a_loop_variable_reads_the_words_the_text_fixes(tmp_path, script, expected):
     """`for h in WORDS` gives `h` each word in turn. The words are known only
     when one loop binds `h`, nothing assigns it, and the text fixes each word."""
-    assert namespace_of(tmp_path, script).loop_items("h") == expected
+    namespace = namespace_of(tmp_path, script)
+    assert namespace.loop_items("h", namespace.units[0].root) == expected
+
+
+@pytest.mark.parametrize(
+    ("declare", "use", "expected"),
+    [
+        ("local url", 'echo "$url"', None),
+        ("", 'echo "$url"', ["https://e/1.2.3/t"]),
+        ("local url", "helper", ["https://e/1.2.3/t"]),
+    ],
+    ids=["local-loop-outside", "global-loop-outside", "local-loop-inside"],
+)
+def test_a_loop_in_a_function_binds_a_local_name_only_inside_it(
+    tmp_path, declare, use, expected
+):
+    """A loop over a `local url` binds nothing outside its function. Without
+    `local`, the loop sets the global `url`."""
+    namespace = namespace_of(
+        tmp_path,
+        f'helper() {{ {declare}\nfor url in https://e/1.2.3/t; do echo "$url"; done; }}\n'
+        f"read -r url <f\n{use}",
+    )
+    inside = use == "helper"
+    echo = next(
+        c
+        for c, _ in namespace.executed
+        if sr.tokens(c)[0] == "echo"
+        and (sr._ancestor_of(c, "function_definition") is not None) == inside
+    )
+    assert namespace.loop_items("url", echo) == expected
 
 
 @pytest.mark.parametrize(

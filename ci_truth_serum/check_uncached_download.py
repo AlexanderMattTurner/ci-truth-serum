@@ -929,7 +929,7 @@ def _spelled(
             assigned = assignment.child_by_field_name("value")
             if assigned is not None:
                 return _spelled(assigned, namespace, owner, following | {name}, unknown)
-        items = namespace.loop_items(name) if plain and not assignments else None
+        items = namespace.loop_items(name, node) if plain and not assignments else None
         if items and all(_URL.match(item) for item in items):
             return items[0]  # a loop over hosts: one stands for every pass
         return f"${name}" if unknown is None else unknown
@@ -1202,7 +1202,7 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
         if _PINNED_URL.match(token) or (value and _PINNED_URL.match(value)):
             label, extra = token, set()
         elif _PINNED_URL.match(spelling):
-            label, extra = spelling, set()
+            label, extra = spelling, _literals(spelling)
         elif _digest_pinned(value or token, outputs | output_names, shell):
             label, extra = f"{token} (digest-checked)", set(shell.digest_pins)
         else:
@@ -2243,6 +2243,8 @@ def _holds(scope: CacheScope, fetch: Fetch) -> bool:
     """True when a path of SCOPE holds an output of FETCH."""
     for out in fetch.outputs:
         for path in scope.paths:
+            if path == "." and not out.startswith(("/", "~")):
+                return True  # the workspace holds every relative output
             if glob_to_regex(path).match(out) or glob_to_regex(
                 path.rstrip("/") + "/**"
             ).match(out):
@@ -2439,7 +2441,12 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
                 step.get("working-directory", "" if origin else default_directory)
             )
             holder = _relative(_action_path(origin) if origin else REPO_ROOT / path)
-            environment = frozenset({**step_context.env, **env_of(step)})
+            # A name set to the empty string reads as unset to `${X:-default}`.
+            environment = frozenset(
+                name
+                for name, value in {**step_context.env, **env_of(step)}.items()
+                if value not in ("", None)
+            )
             earlier = [scope for at, scope in scopes if at < index]
             uncovered = [
                 fetch

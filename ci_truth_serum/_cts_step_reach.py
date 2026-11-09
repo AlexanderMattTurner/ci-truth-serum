@@ -481,13 +481,8 @@ class Namespace:
         return frozenset().union(*(_bindings(u.root).defaulted for u in self.units))
 
     def assignments_at(self, name: str, node: Node) -> list[tuple[Node, Unit]]:
-        """The assignments of NAME that NODE can see. A function that declares
-        NAME `local` hides every assignment outside its own body."""
-        scope = _ancestor_of(node, "function_definition")
-        found = self.assignments.get(name, [])
-        if scope is None or not _declares_local(scope, name):
-            return found
-        return [(a, unit) for a, unit in found if _ancestor_of(a, scope) is not None]
+        """The assignments of NAME that NODE can see."""
+        return _visible(self.assignments.get(name, []), name, node)
 
     def array_items(self, name: str) -> list[str] | None:
         """The words the array NAME holds, when the text binds NAME once and
@@ -509,11 +504,19 @@ class Namespace:
         text = self.value(source.named_children[-1], unit) if source else None
         return text.split() if text is not None else None
 
-    def loop_items(self, name: str) -> list[str] | None:
-        """The words `for NAME in WORDS` gives NAME, when one loop binds NAME,
-        nothing else sets it, and the text fixes each word. `"${ARRAY[@]}"`
-        reads as the words of ARRAY."""
-        loops = self.loops.get(name, [])
+    def loop_items(self, name: str, node: Node) -> list[str] | None:
+        """The words `for NAME in WORDS` gives NAME at NODE, when NODE can see
+        one loop that binds NAME, nothing else sets it, and the text fixes each
+        word. `"${ARRAY[@]}"` reads as the words of ARRAY."""
+        # A loop in a function that declares NAME `local` binds nothing
+        # outside that function's calls, and this walk does not follow calls.
+        loops = [
+            (loop, unit)
+            for loop, unit in _visible(self.loops.get(name, []), name, node)
+            if (owner := _ancestor_of(loop, "function_definition")) is None
+            or not _declares_local(owner, name)
+            or _ancestor_of(node, owner) is not None
+        ]
         if len(loops) != 1 or self.sets(name):
             return None
         loop, unit = loops[0]
@@ -917,6 +920,17 @@ def _ancestor_of(node: Node, match: "str | Node") -> Node | None:
     while node is not None and node != match and node.type != match:
         node = node.parent
     return node
+
+
+def _visible(
+    bindings: list[tuple[Node, Unit]], name: str, node: Node
+) -> list[tuple[Node, Unit]]:
+    """The BINDINGS of NAME that NODE can see. A function that declares NAME
+    `local` hides every binding outside its body from a node inside it."""
+    scope = _ancestor_of(node, "function_definition")
+    if scope is None or not _declares_local(scope, name):
+        return bindings
+    return [(b, u) for b, u in bindings if _ancestor_of(b, scope) is not None]
 
 
 def _declares_local(function: Node, name: str) -> bool:

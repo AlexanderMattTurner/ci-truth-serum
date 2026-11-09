@@ -702,13 +702,47 @@ NIX_FETCH = (
 
 
 @pytest.mark.parametrize(
+    ("key", "fires"),
+    [("tool-1.2.3", False), ("tool-9.9.9", True)],
+    ids=["names-the-version", "another-version"],
+)
+def test_a_version_read_through_a_variable_is_a_pin_a_key_can_name(
+    tmp_path, key, fires
+):
+    """The URL in `$url` fixes the version 1.2.3, though `$ARCH` is unknown.
+    The download writes where `$DEST` says, so a key that names 1.2.3 covers
+    it by the key alone."""
+    script = 'url="https://example.com/1.2.3/tool-$ARCH"\ncurl -fsSLo "$DEST" "$url"'
+    messages = _messages(_write(tmp_path, _job(_cache(key) + _run(script))))
+    assert len(messages) == fires
+
+
+@pytest.mark.parametrize(
+    ("path", "fires"),
+    [(".", False), ("./", False), ("other/", True)],
+    ids=["workspace", "workspace-slash", "another-directory"],
+)
+def test_a_workspace_cache_holds_every_relative_output(tmp_path, path, fires):
+    """A cache of `.` saves the whole workspace, so it holds `bin/tool`. A
+    cache of `other/` does not, though its key names the version."""
+    script = "curl -fsSLo bin/tool https://example.com/v1.2.3/tool"
+    workflow = _job(_cache("tool-1.2.3", path) + _run(script))
+    assert len(_messages(_write(tmp_path, workflow))) == fires
+
+
+@pytest.mark.parametrize(
     ("job_env", "step_env", "fires"),
     [
         ("", "NIX_INSTALLER_CACHE_DIR: /tmp/nix-cache", False),
         ("NIX_INSTALLER_CACHE_DIR: /tmp/nix-cache", "", False),
         ("", "OTHER: x", True),
+        (
+            "NIX_INSTALLER_CACHE_DIR: /tmp/nix-cache",
+            "NIX_INSTALLER_CACHE_DIR: ''",
+            True,
+        ),
     ],
-    ids=["step-env", "job-env", "unset"],
+    ids=["step-env", "job-env", "unset", "set-empty"],
 )
 def test_a_default_the_step_environment_overrides_is_not_the_output(
     rooted, job_env, step_env, fires
