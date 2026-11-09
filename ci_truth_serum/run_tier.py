@@ -23,7 +23,7 @@ parameterised check stays inside its tier instead of being skipped and re-listed
 as its own hook. Repeat the flag to pass several; ``--wrapper=retry_cmd`` is one
 token, so a flag and its value need one ``--check-arg``.
 
-Four hooks are not aggregated. A consumer enables each one on its own:
+Five hooks are not aggregated. A consumer enables each one on its own:
 
   * ``check-absolute-symlinks`` is a ``language: script`` shell hook, not a
     Python module, so it cannot run inside this Python aggregate.
@@ -31,7 +31,10 @@ Four hooks are not aggregated. A consumer enables each one on its own:
     take no file list. Every value they compare is per-repo, so a tier that
     carried them would carry one repo's configuration for every consumer.
   * ``check-bash32-portability`` judges every file it gets, so it needs the
-    consumer's own ``files:`` naming the scripts that run on macOS. The contract test in
+    consumer's own ``files:`` naming the scripts that run on macOS.
+  * ``check-mute-guard`` takes ``--only`` globs that name the workflows one repo
+    requires the guard in. An aggregate that ran it with none would flag every
+    job of every consumer on the bump that added it. The contract test in
 ``tests/cts/test_run_tier.py`` asserts the registry stays in sync with
 ``.pre-commit-hooks.yaml`` so a newly added hook can't silently escape its tier.
 

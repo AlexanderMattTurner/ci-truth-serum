@@ -56,6 +56,7 @@ reusable_permissions = load_hook(
     "check_reusable_permissions.py", "fuzz_reusable_permissions"
 )
 job_timeout = load_hook("check_job_timeout.py", "fuzz_job_timeout")
+mute_guard = load_hook("check_mute_guard.py", "fuzz_mute_guard")
 uncached_download = load_hook("check_uncached_download.py", "fuzz_uncached_download")
 failure_only_diagnostics = load_hook(
     "check_failure_only_diagnostics.py", "fuzz_failure_only_diagnostics"
@@ -93,6 +94,7 @@ WORKFLOW_CHECKS = [
     ("check_path_gate_deps", path_gate_deps.check_file, True),
     ("check_reusable_permissions", reusable_permissions.check_file, True),
     ("check_job_timeout", job_timeout.check_file, True),
+    ("check_mute_guard", mute_guard.check_file, True),
     ("check_uncached_download", uncached_download.check_file, True),
     ("check_failure_only_diagnostics", failure_only_diagnostics.check_file, True),
     ("check_trusted_base", trusted_base.check_file, True),

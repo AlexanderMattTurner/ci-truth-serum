@@ -52,8 +52,10 @@ PREFIX_TIER = {
 # `check-lockstep-pins` (config-driven; hard-errors without per-repo `--pair`
 # args), `check-env-symmetry` (a whole-tree scan needing a per-project
 # `--prefix` arg no aggregate can supply), and `check-bash32-portability`
-# (judges every file it gets, so it needs the consumer's own `files:`).
+# (judges every file it gets, so it needs the consumer's own `files:`), and
+# `check-mute-guard` (its `--only` names the workflows one repo requires).
 UNAGGREGATED = {
+    "check-mute-guard",
     "check-absolute-symlinks",
     "check-lockstep-pins",
     "check-env-symmetry",

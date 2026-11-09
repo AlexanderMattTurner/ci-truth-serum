@@ -112,6 +112,7 @@ FUZZ_REQUIRED = {
     "check_conclusion_coverage": "violations",
     "release_canary": "changelog_top_version",
     "check_job_timeout": "check_file",
+    "check_mute_guard": "check_file",
     "check_uncached_download": "check_file",
     "check_failure_only_diagnostics": "check_file",
     "check_trusted_base": "check_file",

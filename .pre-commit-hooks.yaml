@@ -293,6 +293,16 @@
   files: ^\.github/workflows/
   types: [yaml]
 
+- id: check-mute-guard
+  name: "opinionated: require the mute-failure guard before a job's first bash step"
+  description: A bash step can fail and print no reason. Without the guard action at the start of the job, no ledger names the command that failed.
+  entry: python -m ci_truth_serum.check_mute_guard
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
+  types: [yaml]
+
 - id: check-uncached-download
   name: "opinionated: require a cache in any job that downloads a pinned tool"
   description: A job that downloads a pinned tool with no cache that holds it gets the same bytes on every run. A slow registry turns that cost into a job timeout, and GitHub reports it as "cancelled". The check follows the repo scripts that a step runs.
