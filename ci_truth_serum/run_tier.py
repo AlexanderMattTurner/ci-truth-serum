@@ -59,7 +59,7 @@ from identify import identify
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import is_workflow_path  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_config import ConfigError, check_args  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_config import ConfigFileError, check_args  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     CHECKS,
     COMMENTED_CODE,
@@ -439,7 +439,7 @@ def run_members(
     """
     try:
         configured = check_args(check.module for check in CHECKS)
-    except ConfigError as exc:
+    except ConfigFileError as exc:
         print(f"error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
     extra = {

@@ -55,6 +55,6 @@ def test_a_table_names_its_check_by_hook_id_or_module(tmp_path) -> None:
     ],
 )
 def test_a_file_that_would_configure_nothing_is_refused(tmp_path, text, said) -> None:
-    with pytest.raises(mod.ConfigError) as refused:
+    with pytest.raises(mod.ConfigFileError) as refused:
         _config(tmp_path, text)
     assert said in str(refused.value)

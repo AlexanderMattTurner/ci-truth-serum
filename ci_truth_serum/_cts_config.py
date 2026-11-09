@@ -30,7 +30,7 @@ else:
 CONFIG_FILE = ".ci-truth-serum.toml"
 
 
-class ConfigError(ValueError):
+class ConfigFileError(ValueError):
     """`.ci-truth-serum.toml` does not have the shape this module reads."""
 
 
@@ -39,7 +39,7 @@ def check_args(
 ) -> dict[str, list[str]]:
     """The flags `.ci-truth-serum.toml` under ROOT gives each check, keyed by module.
 
-    MODULES is every check the file may name. Raises ConfigError for a file that does
+    MODULES is every check the file may name. Raises ConfigFileError for a file that does
     not parse, a key this module does not read, or a check outside MODULES.
     """
     path = (Path.cwd() if root is None else root) / CONFIG_FILE
@@ -48,33 +48,33 @@ def check_args(
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"{path}: {exc}") from None
+        raise ConfigFileError(f"{path}: {exc}") from None
     extra_keys = set(data) - {"checks"}
     if extra_keys:
-        raise ConfigError(
+        raise ConfigFileError(
             f"{path}: unknown top-level key(s): {', '.join(sorted(extra_keys))}"
         )
     tables = data.get("checks", {})
     if not isinstance(tables, dict):
-        raise ConfigError(f"{path}: `checks` must be a table of check tables")
+        raise ConfigFileError(f"{path}: `checks` must be a table of check tables")
     known = set(modules)
     flags: dict[str, list[str]] = {}
     for name, table in tables.items():
         module = name.replace("-", "_")
         if module not in known:
-            raise ConfigError(
+            raise ConfigFileError(
                 f"{path}: [checks.{name}] names no check a tier aggregate runs; "
                 "a standalone hook takes its flags in its own `args:`"
             )
         if module in flags:
-            raise ConfigError(
+            raise ConfigFileError(
                 f"{path}: [checks.{name}] configures {module} a second time"
             )
         if not isinstance(table, dict) or set(table) - {"args"}:
-            raise ConfigError(f"{path}: [checks.{name}] takes one key, `args`")
+            raise ConfigFileError(f"{path}: [checks.{name}] takes one key, `args`")
         args = table.get("args", [])
         if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-            raise ConfigError(
+            raise ConfigFileError(
                 f"{path}: [checks.{name}] `args` must be a list of strings"
             )
         flags[module] = args
