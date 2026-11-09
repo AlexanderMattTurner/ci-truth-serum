@@ -1,4 +1,8 @@
 name: Mutation testing
+# The scope is in the run name, so the gate can ask whether a passing run
+# already covered this head at this scope.
+run-name: >-
+  Mutation testing (${{ (github.event.schedule == '17 6 * * 0' || inputs.scope == 'full') && 'full' || 'daily' }})
 
 # Mutation testing over the lint parsers (cosmic-ray, Python) and the changelog
 # assembler (Stryker, JS). cosmic-ray reruns the offline suite once per mutant,
@@ -7,7 +11,10 @@ name: Mutation testing
 # .github/scripts/mutation_shards.py). Slices run in parallel so wall-clock is
 # the slowest single module, not the serial sum, and an aggregate step demands
 # one report per shard so a vanished slice can't score a subset as the whole.
-# This runs on a DAILY schedule and on demand, never on a pull request. One
+# This runs on a DAILY schedule and on demand, never on a pull request. The
+# daily run skips the modules cosmic-ray.toml's `[mutation] weekly-modules`
+# lists, whose oracle is too slow for a daily shard; the Sunday run is the full
+# one and mutates them too, with a longer shard timeout. One
 # cosmic-ray pass reruns the offline suite once per mutant, so the cost is paid
 # once a day against main rather than on every push to every branch. The gate job
 # skips a scheduled run when main has not moved since the last passing run. A
@@ -29,9 +36,15 @@ name: Mutation testing
 on:
   schedule:
     # cron-alert: false  # alerted repo-wide by build-publish-notify.yaml's workflow_run notifier, which check-failure-notifier-coverage holds exhaustive over every push/schedule workflow — this workflow has no in-workflow sink for this lint to credit
-    - cron: "0 6 * * *" # daily 06:00 UTC
+    - cron: "0 6 * * 1-6" # daily 06:00 UTC, Monday to Saturday: the daily scope
+    - cron: "17 6 * * 0" # Sunday 06:17 UTC: the full scope, weekly modules included
   workflow_dispatch:
     inputs:
+      scope:
+        description: daily skips the weekly modules; full mutates every module.
+        type: choice
+        options: [daily, full]
+        default: daily
       hypothesis_profile:
         description: Hypothesis profile for the property suites (dev = fast).
         type: string
@@ -60,6 +73,7 @@ jobs:
       actions: read
     outputs:
       run: ${{ steps.gate.outputs.run }}
+      scope: ${{ steps.gate.outputs.scope }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,6 +83,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           HEAD_SHA: ${{ github.sha }}
+          SCOPE: ${{ (github.event.schedule == '17 6 * * 0' || inputs.scope == 'full') && 'full' || 'daily' }}
         run: bash .github/scripts/mutation-gate.sh
 
   # Expand the shard matrix from the committed tree (one shard per mutated hook
@@ -81,13 +96,18 @@ jobs:
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.shards.outputs.shards }}
+      scope: ${{ steps.shards.outputs.scope }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Compute shard matrix
         id: shards
-        run: echo "shards=$(python3 .github/scripts/mutation_shards.py)" >> "$GITHUB_OUTPUT"
+        env:
+          SCOPE: ${{ needs.gate.outputs.scope }}
+        run: |
+          echo "scope=${SCOPE}" >>"$GITHUB_OUTPUT"
+          echo "shards=$(python3 .github/scripts/mutation_shards.py --scope "${SCOPE}")" >>"$GITHUB_OUTPUT"
 
   # One shard per mutated module, in parallel. Each runs cosmic-ray over its one
   # module with the per-mutant oracle scoped to that module's example suite, and
@@ -97,7 +117,7 @@ jobs:
     needs: plan
     if: needs.plan.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: ${{ matrix.shard.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -187,7 +207,9 @@ jobs:
       # Python 3.12, so no toolchain setup is needed to enforce the coverage gate.
       - name: Aggregate and enforce one report per shard
         if: steps.owed.outputs.ran == 'true'
-        run: python3 .github/scripts/aggregate-mutation.py shard-reports survivors.md
+        env:
+          SCOPE: ${{ needs.plan.outputs.scope }}
+        run: python3 .github/scripts/aggregate-mutation.py --scope "${SCOPE}" shard-reports survivors.md
 
       - name: Upload the survivors list for the ledger
         if: steps.owed.outputs.ran == 'true'

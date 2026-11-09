@@ -67,6 +67,17 @@ TEST_DIR = "tests/cts"
 # over that limit, which produces no shard jobs at all; at 240 it is 245.
 SPLIT_EVERY_LINES = 240
 
+# The two run scopes. The daily run skips the modules that cosmic-ray.toml's
+# `[mutation] weekly-modules` lists; the weekly full run mutates every module.
+DAILY = "daily"
+FULL = "full"
+SCOPES = (DAILY, FULL)
+
+# Each shard's job timeout, in minutes. A weekly module's oracle is slow, so its
+# shard gets the longer one; the daily timeout fits the ~5 min a typical shard takes.
+SHARD_TIMEOUT_MINUTES = 15
+WEEKLY_SHARD_TIMEOUT_MINUTES = 120
+
 # GitHub runs at most 256 jobs from one matrix. Over that it starts NONE of them,
 # and the shard job is skipped rather than failed, so the aggregate step then
 # demands reports for a matrix that never ran and dies on a missing directory —
@@ -202,8 +213,29 @@ def shard_hash(
     return digest.hexdigest()[:16]
 
 
-def expand_shards(repo_root: Path) -> list[dict]:
-    """The mutation shard matrix, id-sorted.
+def weekly_modules(repo_root: Path) -> set[str]:
+    """The modules only the weekly full run mutates (``[mutation] weekly-modules``).
+
+    Raises when one names no module of the mutated package: a misspelled entry
+    would otherwise move nothing to the weekly run, and the daily run would keep
+    timing out on the module it meant to move."""
+    config = tomllib.loads((repo_root / CONFIG).read_text(encoding="utf-8"))
+    listed = set(config.get("mutation", {}).get("weekly-modules", []))
+    package = config["cosmic-ray"]["module-path"]
+    unknown = sorted(
+        m
+        for m in listed
+        if not (repo_root / m).is_file() or Path(m).parent != Path(package)
+    )
+    if unknown:
+        raise ValueError(
+            f"{CONFIG} [mutation] weekly-modules names no module of {package}/: {unknown}"
+        )
+    return listed
+
+
+def expand_shards(repo_root: Path, scope: str = FULL) -> list[dict]:
+    """The mutation shard matrix for SCOPE, id-sorted.
 
     Reads ``cosmic-ray.toml`` for the mutated package (``module-path``) and the
     modules it excludes, then emits shards for every remaining ``ci_truth_serum/*.py``.
@@ -217,7 +249,13 @@ def expand_shards(repo_root: Path) -> list[dict]:
     shard will run, or expansion fails loud rather than gate on an empty slice.
     Raises too when the set outgrows ``MATRIX_JOB_LIMIT``, because a matrix over
     that size starts no jobs at all.
+
+    SCOPE ``daily`` leaves out the weekly modules. Each shard carries the
+    ``timeout`` in minutes that its job runs under.
     """
+    if scope not in SCOPES:
+        raise ValueError(f"unknown scope {scope!r}; expected one of {SCOPES}")
+    weekly = weekly_modules(repo_root)
     cfg = _base_config(repo_root)["cosmic-ray"]
     package = cfg["module-path"]
     excluded = set(cfg.get("excluded-modules", []))
@@ -225,7 +263,7 @@ def expand_shards(repo_root: Path) -> list[dict]:
     shards = []
     for path in sorted((repo_root / package).glob("*.py")):
         module = f"{package}/{path.name}"
-        if module in excluded:
+        if module in excluded or (scope == DAILY and module in weekly):
             continue
         tests = _test_file(path.stem)
         if not (repo_root / tests).is_file():
@@ -244,6 +282,9 @@ def expand_shards(repo_root: Path) -> list[dict]:
                     "tests": tests,
                     "index": index,
                     "total": total,
+                    "timeout": WEEKLY_SHARD_TIMEOUT_MINUTES
+                    if module in weekly
+                    else SHARD_TIMEOUT_MINUTES,
                 }
             )
     if not shards:
@@ -324,8 +365,13 @@ def main(argv: list[str]) -> None:
             raise SystemExit("usage: mutation_shards.py --write-config <id>")
         print(_write_config(repo_root, argv[1]))
         return
+    if argv[:1] == ["--scope"] and len(argv) == 2 and argv[1] in SCOPES:
+        print(json.dumps(expand_shards(repo_root, argv[1])))
+        return
     if argv:
-        raise SystemExit("usage: mutation_shards.py [--write-config <id>]")
+        raise SystemExit(
+            "usage: mutation_shards.py [--scope daily|full] | [--write-config <id>]"
+        )
     print(json.dumps(expand_shards(repo_root)))
 
 
