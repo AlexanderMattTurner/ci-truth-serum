@@ -11,25 +11,27 @@ of these hold:
 
   * it is a ``command`` named ``exit`` whose argument is a literal non-zero number.
     A bare ``exit`` or ``exit "$rc"`` passes on a status that came from elsewhere;
-  * it ends the script. An exit inside ``( … )``, ``$( … )`` or ``<( … )`` ends only
-    a subshell, and its status reaches a caller who can print the cause;
+  * it ends the script. An exit inside ``( … )``, ``$( … )``, ``<( … )`` or a
+    pipeline ends only a subshell, and its status reaches a caller who can print
+    the cause;
   * a probe guards it: it is the right operand of ``||`` after a probe, or it sits in
     an ``if`` / ``elif`` / ``else`` branch that only probes lead to. A probe is a
     ``[[ … ]]``, ``[ … ]`` or ``test …`` that asks a unary question (``-f x``,
-    ``-n "$v"``, ``! -L x``), alone, negated, or joined to other probes. A probe
-    prints nothing and looks at the world now. A comparison such as
-    ``[[ $failed -eq 0 ]]`` is not a probe: it reads a verdict the script reached
-    earlier, and the code that reached it usually printed the cause;
+    ``-n "$v"``, ``! -L x``), alone, negated, or joined to other probes, and holds
+    no ``$( … )``. A probe prints nothing and looks at the world now. A comparison
+    such as ``[[ $failed -eq 0 ]]`` is not a probe: it reads a verdict the script
+    reached earlier, and the code that reached it usually printed the cause;
   * every statement before the exit in its branch is an assignment or a
-    declaration. Any other command may print the reason, so the lint trusts it.
+    declaration with no ``$( … )``. Any other command may print the reason, so the
+    lint trusts it.
 
 A `return N` is not flagged: a caller receives the status and can print the cause.
 An exit inside a message string or a heredoc body is text, and the grammar never
 reads it as a command.
 
-Opt out with ``# allow-silent-exit: <reason>`` on the exit's line, on any line of
-its statement, or on the line above. The usual reason is a predicate script whose
-exit status is its whole answer.
+Opt out with ``# allow-silent-exit: <reason>`` on any line from the start of the
+guarding statement to the exit's line, or on the line above that statement. The
+usual reason is a predicate script whose exit status is its whole answer.
 """
 
 import sys
@@ -39,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     code_children,
     command_name,
+    condition_parts,
     iter_nodes,
     node_text,
     parse,
@@ -62,12 +65,13 @@ MESSAGE = (
 # Statements that set a variable and print nothing, so they keep a branch silent.
 _SILENT_STATEMENTS = frozenset({"variable_assignment", "declaration_command"})
 
-# The words that open and close a condition inside an `if` or `elif`.
-_CONDITION_OPENERS = frozenset({"if", "elif"})
 _BRANCH_ENDS = frozenset({"elif_clause", "else_clause", "fi"})
 
-# The nodes whose `exit` ends only a subshell.
-_SUBSHELLS = frozenset({"subshell", "command_substitution", "process_substitution"})
+# The nodes whose `exit` ends only a subshell: bash also runs each element of a
+# pipeline in one.
+_SUBSHELLS = frozenset(
+    {"subshell", "command_substitution", "process_substitution", "pipeline"}
+)
 
 
 def _literal_failure_status(exit_command) -> bool:
@@ -76,7 +80,8 @@ def _literal_failure_status(exit_command) -> bool:
     if len(arguments) != 1 or arguments[0].type != "number":
         return False
     text = node_text(arguments[0])
-    return text.isdigit() and int(text) != 0
+    # bash keeps the low 8 bits, so `exit 256` ends the script with status 0.
+    return text.isdigit() and int(text) % 256 != 0
 
 
 def _is_probe_expression(node) -> bool:
@@ -84,7 +89,8 @@ def _is_probe_expression(node) -> bool:
     question: `-f x`, `! -L x`, or such questions joined with `&&` / `||`."""
     children = code_children(node)
     if node.type == "unary_expression":
-        inner = [c for c in children if c.type == "unary_expression"]
+        # `-f x` holds an operator and a word; `! EXPR` holds the expression it negates.
+        inner = [c for c in children if c.type.endswith("expression")]
         return not inner or all(_is_probe_expression(c) for c in inner)
     if node.type == "binary_expression":
         operator = [c for c in children if c.type in {"&&", "||"}]
@@ -95,17 +101,23 @@ def _is_probe_expression(node) -> bool:
     return False
 
 
+def _runs_a_command(node) -> bool:
+    """Whether NODE holds a `$( … )`, whose command may print the cause."""
+    return any(True for _ in iter_nodes(node, "command_substitution"))
+
+
 def _is_test(node) -> bool:
     """Whether NODE is a probe: a test that asks a unary question about a file or a
     string, so it prints nothing and nothing before it has decided the outcome."""
+    if _runs_a_command(node):
+        return False
     if node.type == "test_command":
         expressions = [c for c in code_children(node) if c.is_named]
         return len(expressions) == 1 and _is_probe_expression(expressions[0])
     if node.type == "command":
-        if command_name(node) not in {"test", "["}:
+        if command_name(node) != "test":
             return False
         words = [node_text(c) for c in code_children(node)[1:]]
-        words = [w for w in words if w != "]"]
         if words and words[0] == "!":
             words = words[1:]
         return len(words) == 2 and words[0].startswith("-")
@@ -126,21 +138,6 @@ def _exits_the_script(exit_command) -> bool:
             return False
         node = node.parent
     return True
-
-
-def _conditions(clause) -> list:
-    """The condition nodes of an `if_statement` or `elif_clause`: what sits between
-    its opening word and `then`, without the `;` separators."""
-    parts = []
-    inside = False
-    for child in code_children(clause):
-        if child.type in _CONDITION_OPENERS:
-            inside = True
-        elif child.type == "then":
-            break
-        elif inside and child.type != ";":
-            parts.append(child)
-    return parts
 
 
 def _body(clause) -> list:
@@ -164,7 +161,7 @@ def _silent_before(statements, exit_command) -> bool:
     for statement in (s for s in statements if s.is_named):
         if statement.start_byte >= exit_command.start_byte:
             return True
-        if statement.type not in _SILENT_STATEMENTS:
+        if statement.type not in _SILENT_STATEMENTS or _runs_a_command(statement):
             return False
     return False
 
@@ -176,7 +173,7 @@ def _guarded_by_or(exit_command):
     operand = exit_command
     parent = exit_command.parent
     if parent is not None and parent.type == "compound_statement":
-        if not _silent_before(code_children(parent)[1:], exit_command):
+        if not _silent_before(code_children(parent), exit_command):
             return None
         operand = parent
         parent = parent.parent
@@ -200,18 +197,15 @@ def _guarded_by_if(exit_command):
     }:
         return None
     statement = clause if clause.type == "if_statement" else clause.parent
-    if statement is None or statement.type != "if_statement":
-        return None
-    if exit_command not in _body(clause) or not _silent_before(
-        _body(clause), exit_command
-    ):
+    body = _body(clause)
+    if exit_command not in body or not _silent_before(body, exit_command):
         return None
     # Every condition bash evaluates before it enters this branch must be a test.
-    evaluated = list(_conditions(statement))
+    evaluated = list(condition_parts(statement))
     for other in code_children(statement):
         if other.type != "elif_clause" or other.start_byte > clause.start_byte:
             continue
-        evaluated += _conditions(other)
+        evaluated += condition_parts(other)
     if evaluated and all(_is_test(condition) for condition in evaluated):
         return statement
     return None

@@ -40,18 +40,20 @@ def test_a_table_names_its_check_by_hook_id_or_module(tmp_path) -> None:
     [
         ('[checks.check-retry-lop]\nargs = ["--x"]\n', "names no check"),
         ('[checks.check-retry-loop]\nflags = ["--x"]\n', "takes one key, `args`"),
-        ('[checks.check-retry-loop]\nargs = "--x"\n', "must be a list of strings"),
-        ("[checks.check-retry-loop]\nargs = [1]\n", "must be a list of strings"),
+        ('[checks.check-retry-loop]\nargs = "--x"\n', "must be a non-empty list"),
+        ("[checks.check-retry-loop]\nargs = [1]\n", "must be a non-empty list"),
+        ("[checks.check-retry-loop]\nargs = []\n", "must be a non-empty list"),
+        ("[checks.check-retry-loop]\n", "takes one key, `args`"),
         (
             '[check.check-retry-loop]\nargs = ["--x"]\n',
             "unknown top-level key(s): check",
         ),
         ('checks = ["check-retry-loop"]\n', "must be a table of check tables"),
         (
-            '[checks.check-retry-loop]\nargs = ["--x"]\n[checks.check_retry_loop]\nargs = []\n',
+            '[checks.check-retry-loop]\nargs = ["--x"]\n[checks.check_retry_loop]\nargs = ["--y"]\n',
             "a second time",
         ),
-        ("[checks\n", "line 1"),
+        ("[checks\n", "Expected ']' at the end of a table declaration"),
     ],
 )
 def test_a_file_that_would_configure_nothing_is_refused(tmp_path, text, said) -> None:

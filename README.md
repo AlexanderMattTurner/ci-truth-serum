@@ -368,7 +368,7 @@ A tier hook runs many checks, so its `args:` cannot say which flag belongs to wh
 args = ["--wrapper=retry_cmd", "--retry-helper=bin/lib/retry.bash"]
 ```
 
-Each table names one aggregated check, by its hook id or its module name. Its `args` reach the check before its file arguments, one token per item. Every tier hook and `check-select` read the file. A `--check-arg <check>=<flag>` in a hook's `args:` adds flags after the configured ones. **A table that names no aggregated check, or a key other than `args`, is a hard error**, because it would otherwise configure nothing while the run looks configured. A standalone hook keeps its flags in its own `args:`.
+Each table names one aggregated check, by its hook id or its module name. Its `args` reach the check before its file arguments, one token per item. Every tier hook and `check-select` read the file. A `--check-arg <check>=<flag>` in a hook's `args:` adds flags after the configured ones. **A table that names no aggregated check, a key other than `args`, an empty `args` list, or a check that `--skip` removes is a hard error**, because it would otherwise configure nothing while the run looks configured. A standalone hook keeps its flags in its own `args:`.
 
 ### Autofix (opt-in): digest-pin base images
 

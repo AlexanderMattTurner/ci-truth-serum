@@ -59,7 +59,7 @@ from identify import identify
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import is_workflow_path  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_config import ConfigFileError, check_args  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_config import CONFIG_FILE, ConfigFileError, check_args  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     CHECKS,
     COMMENTED_CODE,
@@ -416,6 +416,33 @@ def run_per_file(
     return rc
 
 
+def configured_flags(
+    extra: dict[str, list[str]], skips: frozenset[str] = frozenset()
+) -> dict[str, list[str]]:
+    """Each module's flags: those `.ci-truth-serum.toml` gives it, then EXTRA's.
+
+    Exits 2 on a config file `_cts_config` refuses, and on a configured check that
+    SKIPS removes: its flags would configure nothing, and the run would look
+    configured."""
+    try:
+        configured = check_args(check.module for check in CHECKS)
+    except ConfigFileError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    removed = skips & set(configured)
+    if removed:
+        print(
+            f"error: {CONFIG_FILE} configures a check that --skip removes: "
+            f"{', '.join(sorted(removed))}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return {
+        module: [*configured.get(module, []), *extra.get(module, [])]
+        for module in {*configured, *extra}
+    }
+
+
 def run_members(
     members: list[tuple[str, str]],
     files: list[str],
@@ -424,9 +451,8 @@ def run_members(
     """Run each (module, kind) member over FILES; return the exit code, the
     members that had no file of their kind to scan, and each member's seconds.
 
-    EXTRA maps a module to the flags `--check-arg` gave it. They follow the flags
-    `.ci-truth-serum.toml` gives the module, and both precede the file arguments,
-    which is where argparse wants them.
+    EXTRA maps a module to its flags (see `configured_flags`). They precede the
+    file arguments, which is where argparse wants them.
 
     The second value is what separates a member that passed from one that never
     ran: both leave exit code 0, and a caller that reports one as the other is
@@ -437,15 +463,7 @@ def run_members(
     attribute the seconds re-measures them by hand against a consumer tree.
     `report_seconds` prints them.
     """
-    try:
-        configured = check_args(check.module for check in CHECKS)
-    except ConfigFileError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        raise SystemExit(2) from None
-    extra = {
-        module: [*configured.get(module, []), *(extra or {}).get(module, [])]
-        for module in {*configured, *(extra or {})}
-    }
+    extra = extra or {}
     rc = 0
     unscanned: list[str] = []
     seconds: dict[str, float] = {}
@@ -608,7 +626,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(2)
 
     members = [(m, k) for m, k in TIERS[tier] if m not in skips]
-    rc, unscanned, seconds = run_members(members, files, extra)
+    flags = configured_flags(extra, frozenset(skips))
+    rc, unscanned, seconds = run_members(members, files, flags)
     report_seconds(seconds, f"tier {tier} member")
     report_unscanned(
         unscanned,

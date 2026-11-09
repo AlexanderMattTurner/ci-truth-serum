@@ -215,3 +215,21 @@ def test_the_note_names_the_members_no_file_reached(tmp_path, monkeypatch, capsy
     assert "check_folded_scalar_comment" not in note
     # The remedy repeats the caller's own selection, so it is copy-pasteable.
     assert "--select tag:honesty --ignore check:check-pr-paths" in err
+
+
+def test_a_selection_gives_each_member_its_configured_flags(tmp_path, monkeypatch):
+    """`check-select` takes no `--check-arg`, so `.ci-truth-serum.toml` is the only way
+    to hand a selected check its flags."""
+    (tmp_path / ".ci-truth-serum.toml").write_text(
+        '[checks.check-retry-loop]\nargs = ["--wrapper=retry_cmd"]\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    seen = {}
+
+    def _record(members, files, extra):
+        seen.update(extra)
+        return 0, [], {}
+
+    monkeypatch.setattr(rs, "run_members", _record)
+    assert rs.main(["--select", "check:check-retry-loop"]) == 0
+    assert seen == {"check_retry_loop": ["--wrapper=retry_cmd"]}

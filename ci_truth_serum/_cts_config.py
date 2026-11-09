@@ -70,12 +70,16 @@ def check_args(
             raise ConfigFileError(
                 f"{path}: [checks.{name}] configures {module} a second time"
             )
-        if not isinstance(table, dict) or set(table) - {"args"}:
+        if not isinstance(table, dict) or set(table) != {"args"}:
             raise ConfigFileError(f"{path}: [checks.{name}] takes one key, `args`")
-        args = table.get("args", [])
-        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+        args = table["args"]
+        if (
+            not isinstance(args, list)
+            or not args
+            or not all(isinstance(arg, str) for arg in args)
+        ):
             raise ConfigFileError(
-                f"{path}: [checks.{name}] `args` must be a list of strings"
+                f"{path}: [checks.{name}] `args` must be a non-empty list of strings"
             )
         flags[module] = args
     return flags
