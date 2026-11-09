@@ -32,6 +32,10 @@ test("a step that fails through a dropped substitution and prints nothing is rep
 
   const lines = report(dir);
   assert.ok(lines.includes("Step glyph exited 1."), lines.join("\n"));
-  assert.ok(lines.some((l) => /^glyph\t\d+\t.*glyph\.sh:1\t1\t\d+\tfalse$/.test(l)), lines.join("\n"));
+  assert.ok(lines.some((l) => /^glyph\t\d+\t.*glyph\.sh:1\t1\t\d+\tfalse\t\(1x\)$/.test(l)), lines.join("\n"));
+  assert.ok(
+    lines.some((l) => /^glyph\t\d+\t.*glyph\.sh:3\t1\t\d+\tsubshell exit, first command: scrub\t\(1x\)$/.test(l)),
+    lines.join("\n"),
+  );
   assert.ok(lines.some((l) => l.startsWith("::error title=mute failure::mute failure: step glyph exited 1")));
 });

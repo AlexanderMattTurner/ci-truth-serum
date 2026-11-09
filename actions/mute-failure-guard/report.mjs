@@ -9,6 +9,24 @@ export const ERROR_WORDS = [
   "no such", "traceback", "exception", "panic", "abort", "killed", "timed out",
 ];
 const LEDGER_ROWS = 50;
+const LEDGER_HEADER = "step\tpid\tfile:line\tstatus\topen fds\tcommand\t(times seen)";
+
+/**
+ * ROWS with repeats collapsed. Rows that differ only in pid count as one: the same failed
+ * command at the same line, in the same step and with the same status. Each row keeps the place
+ * of its LAST occurrence, so the newest failures stay at the end, and gains its count.
+ */
+export function distinct(rows) {
+  const seen = new Map();
+  for (const row of rows) {
+    const [step, , where, status, , command] = row.split("\t");
+    const key = [step, where, status, command].join("\t");
+    const count = (seen.get(key)?.count ?? 0) + 1;
+    seen.delete(key);
+    seen.set(key, { row, count });
+  }
+  return [...seen.values()].map(({ row, count }) => `${row}\t(${count}x)`);
+}
 
 /** True when TEXT holds a line with one of WORDS, ignoring case. */
 export function hasErrorText(text, words) {
@@ -71,12 +89,19 @@ export function report(dir, words = ERROR_WORDS) {
   out.push(`open files on the host: ${openFiles()}`);
   out.push(`processes on the host: ${hostFact("ps", ["-A", "-o", "pid="]).split("\n").length}`);
   const rows = read("ledger").split("\n").filter(Boolean);
-  out.push(`Ledger: the last ${Math.min(rows.length, LEDGER_ROWS)} of ${rows.length} failed commands`);
-  out.push("step\tpid\tfile:line\tstatus\topen fds\tcommand");
-  out.push(...rows.slice(-LEDGER_ROWS));
+  for (const [step] of failed) {
+    const own = distinct(rows.filter((row) => row.split("\t")[0] === step));
+    out.push(`Ledger rows from step ${step}, newest last: ${own.length} distinct`);
+    out.push(...own.slice(-LEDGER_ROWS));
+  }
+  const all = distinct(rows);
+  out.push(`Ledger: the last ${Math.min(all.length, LEDGER_ROWS)} of ${all.length} distinct rows (${rows.length} in all)`);
+  out.push(LEDGER_HEADER);
+  out.push(...all.slice(-LEDGER_ROWS));
   out.push(
-    "A command that failed inside an `if`, `while` or `!` condition, or in a non-final part of a " +
-      "`&&` or `||` list, is not in the ledger: bash runs no ERR trap there.",
+    "A row marked `subshell exit` is a $(…), <(…) or ( … ) that exited non-zero; one marked " +
+      "`suppressed` is a failure that `|| true` or `|| :` discarded. A shell that sets its own ERR, " +
+      "DEBUG or EXIT trap replaces the guard's, and a step that is not bash has no rows.",
   );
   out.push("::endgroup::");
   for (const [step, status] of failed) {
