@@ -1726,6 +1726,10 @@ def get(url, sha256, dest):
     subprocess.run(["bash", "-c", 'source "$1"; shift; "$@"', "_", str(_LIB), *owner])
 
 
+def wrap():
+    get(URL, SHA, "f")
+
+
 def other():
     return 1
 """
@@ -1740,12 +1744,18 @@ PATHS_PY = (
     [
         ("import paths\nimport fetcher\nfetcher.get(URL, SHA, 'f')\n", 1),
         ("import paths\nfrom fetcher import get\nget(URL, SHA, 'f')\n", 1),
+        ("import paths\nimport fetcher\nfetcher.wrap()\n", 1),
+        ("import paths\nfrom fetcher import *\nget(URL, SHA, 'f')\n", 1),
+        ("import paths\nimport fetchpkg\nfetchpkg.get(URL, SHA, 'f')\n", 1),
         ("import paths\nimport fetcher\nfetcher.other()\n", 0),
         ("import fetcher\nfetcher.get(URL, SHA, 'f')\n", 0),
     ],
     ids=[
         "calls-the-fetch",
         "imports-the-fetch",
+        "calls-a-caller-of-the-fetch",
+        "star-import",
+        "package-re-export",
         "calls-another-function",
         "no-path-insert",
     ],
@@ -1756,12 +1766,15 @@ def test_a_python_fetch_through_a_shell_subprocess_fires(rooted, main, fires):
         {
             "lib/fetch.bash": CHECKED_LIB,
             "lib/fetcher.py": SUBPROCESS_FETCHER,
+            "lib/fetchpkg/__init__.py": "from .fetcher import get\n",
+            "lib/fetchpkg/fetch.bash": CHECKED_LIB,
+            "lib/fetchpkg/fetcher.py": SUBPROCESS_FETCHER,
             "scripts/paths.py": PATHS_PY,
             "scripts/main.py": main,
         },
     )
     messages = _messages(_write(rooted, _job(_run("python3 scripts/main.py"))))
-    assert ["run by lib/fetcher.py:get" in m for m in messages] == [True] * fires
+    assert ["fetcher.py:get)" in m for m in messages] == [True] * fires
 
 
 CURL_PY = (
