@@ -104,6 +104,52 @@ def test_a_failure_that_or_true_discards_is_recorded(tmp_path):
     assert _sites(rows) == [("step.sh", 2, 4, "suppressed by || true: return")]
 
 
+def test_a_failure_whose_status_a_caller_saves_is_recorded_where_it_failed(tmp_path):
+    # agent-glovebox's step server runs each step as `"$@" || _gbc_rc=$?`. Bash runs no ERR
+    # trap on the left of `||`, nor in any function called from there.
+    script = (
+        "inner() { git -C /nonexistent rev-parse HEAD 2>/dev/null; }\n"
+        'serve() { local rc=0; "$@" || rc=$?; echo "serve got $rc"; }\n'
+        "serve inner\n"
+    )
+    proc, rows, _ = _run(tmp_path, script)
+    assert (proc.returncode, proc.stdout) == (0, "serve got 128\n")
+    assert _sites(rows) == [("step.sh", 1, 128, "status saved by rc=$?: git")]
+
+
+@pytest.mark.parametrize(
+    "save",
+    [
+        pytest.param("false || rc=$?", id="plain"),
+        pytest.param('false || rc="$?"', id="quoted"),
+        pytest.param("false || rc=${?}", id="braced"),
+        pytest.param('false || rc="${?}"', id="quoted-braced"),
+        pytest.param("f() { false || local rc=$?; }\nf", id="local"),
+        pytest.param("false || declare -i rc=$?", id="declare-with-a-flag"),
+        pytest.param("false || export rc=$?", id="export"),
+        pytest.param("if false; then :; else rc=$?; fi", id="if-else"),
+    ],
+)
+def test_each_spelling_of_a_saved_status_is_recorded(tmp_path, save):
+    proc, rows, _ = _run(tmp_path, f"{save}\necho done\n")
+    assert (proc.returncode, proc.stdout) == (0, "done\n")
+    assert _sites(rows) == [("step.sh", 1, 1, "status saved by rc=$?: false")]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        pytest.param("true\nrc=$?\n", id="after-a-success"),
+        pytest.param("if true; then rc=0; else rc=$?; fi\n", id="if-that-succeeds"),
+        pytest.param("false || rc=1\n", id="a-value-that-is-not-the-status"),
+        pytest.param("false || rc=$?x\n", id="the-status-inside-a-longer-value"),
+    ],
+)
+def test_an_assignment_that_saves_no_failed_status_leaves_no_row(tmp_path, script):
+    proc, rows, _ = _run(tmp_path, script)
+    assert (proc.returncode, rows) == (0, [])
+
+
 def test_a_substitution_that_succeeds_leaves_no_row(tmp_path):
     proc, rows, _ = _run(
         tmp_path,
@@ -261,7 +307,7 @@ def test_a_shell_that_unsets_the_guards_variables_keeps_running(tmp_path):
     # trap that then reads one would end the user's script.
     script = (
         "set -u\n"
-        "unset _cts_sub_level _cts_prev _cts_mute_dir _cts_us\n"
+        "unset _cts_sub_level _cts_prev _cts_mute_dir _cts_us _cts_var _cts_psrc _cts_pline\n"
         "echo ok\n"
         "x=$(echo sub)\n"
         "false || :\n"

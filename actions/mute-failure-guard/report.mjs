@@ -116,7 +116,8 @@ export function report(dir, words = ERROR_WORDS) {
   out.push(...others.slice(-LEDGER_ROWS));
   out.push(
     "A row marked `subshell exit` is a $(…), <(…) or ( … ) that exited non-zero; one marked " +
-      "`suppressed` is a failure that `|| true` or `|| :` discarded. A shell that sets its own ERR, " +
+      "`suppressed` is a failure that `|| true` or `|| :` discarded; one marked `status saved` is a " +
+      "failure whose status a caller kept with `|| rc=$?`. A shell that sets its own ERR, " +
       "DEBUG or EXIT trap replaces the guard's, and a step that is not bash has no rows.",
   );
   out.push("::endgroup::");
