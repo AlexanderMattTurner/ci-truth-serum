@@ -159,6 +159,7 @@ from _cts_step_reach import (  # pylint: disable=wrong-import-position
     Namespace,
     Unit,
     _SHELL_INTERPRETER,
+    _executed,
     _launched,
     body_start,
     callable_words,
@@ -358,14 +359,18 @@ def _callees(namespace: Namespace) -> dict[str, frozenset[str]]:
     may call."""
     defined = namespace.functions.keys()
     return {
-        name: frozenset(
-            word
-            for command, _ in namespace.function_commands(name)
-            for word in callable_words(command)
-            if word in defined
-        )
-        for name in namespace.functions
+        name: frozenset().union(*(_body_words(body) & defined for body, _ in bodies))
+        for name, bodies in namespace.functions.items()
     }
+
+
+@functools.cache
+def _body_words(body: Node) -> frozenset[str]:
+    """The words the commands a function BODY runs may call a function by,
+    read once per body: a shared file's functions sit in many namespaces."""
+    return frozenset(
+        word for command in _executed(body) for word in callable_words(command)
+    )
 
 
 def _callers_of(
@@ -387,18 +392,45 @@ class _NodeTest(Protocol):
     def __call__(self, node: Node, /) -> bool: ...
 
 
+class _BodyTest(Protocol):
+    """A question about one function body."""
+
+    def __call__(self, body: Node, /) -> bool: ...
+
+
 def _functions_running(
-    namespace: Namespace, callees: dict[str, frozenset[str]], runs: _NodeTest
+    namespace: Namespace, callees: dict[str, frozenset[str]], runs: _BodyTest
 ) -> frozenset[str]:
-    """The functions whose bodies run a command that RUNS accepts, directly or
-    through another such function. With `_runs_downloader`,
+    """The functions with a body that RUNS accepts, directly or through
+    another such function. With `_body_downloads`,
     `pinned_curl() { curl … "$url"; }` is one."""
     seeds = {
         name
-        for name in namespace.functions
-        if any(runs(command) for command, _ in namespace.function_commands(name))
+        for name, bodies in namespace.functions.items()
+        if any(runs(body) for body, _ in bodies)
     }
     return _callers_of(seeds, callees)
+
+
+@functools.cache
+def _body_downloads(body: Node) -> bool:
+    """True when a command the function BODY runs runs curl or wget."""
+    return any(_runs_downloader(command) for command in _executed(body))
+
+
+@functools.cache
+def _body_hashing(body: Node) -> tuple[bool, tuple[Node, ...]]:
+    """Whether a command the function BODY runs names a checksum tool, and
+    the commands whose program is an expansion, which only a namespace can
+    read. Read once per body."""
+    named, expanded = False, []
+    for command in _executed(body):
+        args = command_arguments(command)
+        if _names_digest_tool(command):
+            named = True
+        elif args and _expansion_word(args[0]) is not None:
+            expanded.append(command)
+    return named, tuple(expanded)
 
 
 def _ancestor(node: Node, kind: str) -> Node | None:
@@ -419,7 +451,9 @@ def _enclosing_function(node: Node) -> str | None:
 def _downloads(command: Node, downloaders: frozenset[str]) -> bool:
     """True when COMMAND runs curl or wget, or calls a function DOWNLOADERS
     names."""
-    return _runs_downloader(command) or bool(set(callable_words(command)) & downloaders)
+    return _runs_downloader(command) or not downloaders.isdisjoint(
+        callable_words(command)
+    )
 
 
 @functools.lru_cache(maxsize=65536)
@@ -562,14 +596,20 @@ def _read_glob(spelled: str, directory: Path | None) -> str | None:
     return _relative(Path(posixpath.normpath(posixpath.join(str(directory), spelled))))
 
 
+def _expansion_word(word: Node) -> Node | None:
+    """The expansion WORD is, alone or as the one part of a string."""
+    if word.type == "string" and len(word.named_children) == 1:
+        word = word.named_children[0]
+    return word if word.type in ("simple_expansion", "expansion") else None
+
+
 def _array_programs(word: Node, namespace: Namespace) -> set[str] | None:
     """The programs a command word that expands one array may name:
     `"${SHA_ARGV[@]}"` names `sha256sum` when each assignment of `SHA_ARGV` is
     an array that starts with it. A `+=` only appends options, so it names no
     program. None when the word is anything else."""
-    if word.type == "string" and len(word.named_children) == 1:
-        word = word.named_children[0]
-    if word.type not in ("simple_expansion", "expansion"):
+    word = _expansion_word(word)
+    if word is None:
         return None
     names = list(iter_nodes(word, "variable_name"))
     assignments = namespace.assignments.get(node_text(names[0]), []) if names else []
@@ -584,14 +624,32 @@ def _array_programs(word: Node, namespace: Namespace) -> set[str] | None:
     return programs or None
 
 
+def _hashes_in(namespace: Namespace) -> _BodyTest:
+    """A `_BodyTest`: True when the function body runs a checksum tool, read
+    as `_runs_digest_tool` reads a command in NAMESPACE."""
+
+    def test(body: Node) -> bool:
+        named, expanded = _body_hashing(body)
+        return named or any(_runs_digest_tool(c, namespace) for c in expanded)
+
+    return test
+
+
+@functools.cache
+def _names_digest_tool(command: Node) -> bool:
+    """True when COMMAND's own program word is a checksum tool."""
+    words = tokens(command)
+    return bool(words) and bool(_DIGEST_TOOLS.fullmatch(program_name(words[0])))
+
+
 def _runs_digest_tool(command: Node, namespace: Namespace) -> bool:
     """True when COMMAND runs a checksum tool: by name, or through an array
     that holds the tool and its options."""
+    if _names_digest_tool(command):
+        return True
     args = command_arguments(command)
     if not args:
         return False
-    if _DIGEST_TOOLS.fullmatch(program_name(tokens(command)[0])):
-        return True
     programs = _array_programs(args[0], namespace)
     return bool(programs) and all(_DIGEST_TOOLS.fullmatch(p) for p in programs)
 
@@ -1102,10 +1160,8 @@ def _written_names(
 
 def _shell_context(namespace: Namespace) -> _Shell:
     callees = _callees(namespace)
-    downloaders = _functions_running(namespace, callees, _runs_downloader)
-    hashers = _functions_running(
-        namespace, callees, lambda command: _runs_digest_tool(command, namespace)
-    )
+    downloaders = _functions_running(namespace, callees, _body_downloads)
+    hashers = _functions_running(namespace, callees, _hashes_in(namespace))
     checks = _digest_checks(namespace, hashers, _Floats(namespace, downloaders))
     pins: set[str] = set()
     by_function: dict[str, frozenset[str]] = {}
@@ -1161,12 +1217,16 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
     words = tokens(command)
     if not words or MESSAGE_PREFIX.match(words[0]):
         return []
-    where = f" in {rel}" if (rel := _relative(unit.path)) else ""
     fetches = []
-    install_args, sometimes = _with_array_elements(args, namespace)
-    install_words = [unquote(node_text(node)) for node in install_args]
-    installer, specs = _pinned_install(install_words, install_args)
-    if _NO_STORE_FLAGS & set(install_words):
+    if _expands_an_array(command):
+        install_args, sometimes = _with_array_elements(args, namespace)
+        install_words = [unquote(node_text(node)) for node in install_args]
+        installer, specs = _pinned_install(install_words, install_args)
+    else:
+        install_args, sometimes, install_words = args, set(), words
+        installer, specs = _command_install(command)
+    where = f" in {rel}" if specs and (rel := _relative(unit.path)) else ""
+    if not _NO_STORE_FLAGS.isdisjoint(install_words):
         installer = ""  # the bytes reach no store, so no store cache holds them
     store = _INSTALLER_STORES.get(installer, "")
     for spec in specs:
@@ -1184,8 +1244,9 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
                 installer,
             )
         )
-    if not _runs_downloader(command) and not shell.downloaders & set(words):
+    if not _runs_downloader(command) and shell.downloaders.isdisjoint(words):
         return fetches
+    where = f" in {rel}" if (rel := _relative(unit.path)) else ""
     values = [namespace.value(node, unit) for node in args]
     spelled = [_spelled(node, namespace, unit) for node in args]
     written = _outputs(command, words, spelled)
@@ -1243,6 +1304,23 @@ def _copies(paths: set[str], namespace: Namespace) -> set[str]:
     of them to, followed to a fixed point. `curl -o "$work/t" …` and then
     `install "$work/t" "$cache/t"` leave the bytes where a cache of `$cache`
     holds them."""
+    copies = _copy_commands(namespace)
+    found, pending = set(paths), True
+    while pending:
+        pending = False
+        for sources, target in copies:
+            copied = sources & found
+            if copied and target not in found:
+                found.add(target)
+                found |= {posixpath.join(target, posixpath.basename(s)) for s in copied}
+                pending = True
+    return found
+
+
+@functools.cache
+def _copy_commands(namespace: Namespace) -> list[tuple[frozenset[str], str]]:
+    """(sources, target) of each copy NAMESPACE runs, read once per namespace:
+    every download in it asks."""
     copies = []
     for command, unit in namespace.executed:
         words = tokens(command)
@@ -1254,16 +1332,14 @@ def _copies(paths: set[str], namespace: Namespace) -> set[str]:
         named = [word for word in named if not word.startswith("-")]
         if len(named) >= 2:
             copies.append((frozenset(named[:-1]), named[-1]))
-    found, pending = set(paths), True
-    while pending:
-        pending = False
-        for sources, target in copies:
-            copied = sources & found
-            if copied and target not in found:
-                found.add(target)
-                found |= {posixpath.join(target, posixpath.basename(s)) for s in copied}
-                pending = True
-    return found
+    return copies
+
+
+@functools.cache
+def _command_install(command: Node) -> tuple[str, list[str]]:
+    """`_pinned_install` of COMMAND's own words, read once per command: a
+    shared file's commands run in many namespaces."""
+    return _pinned_install(tokens(command), command_arguments(command))
 
 
 def _pinned_install(words: list[str], args: list) -> tuple[str, list[str]]:
@@ -1316,15 +1392,30 @@ def _with_array_elements(
     return expanded, sometimes
 
 
-def _array_elements(word: Node, namespace: Namespace) -> list[tuple[Node, bool]] | None:
-    """The elements of the array WORD expands whole, across every assignment
-    of it, each with whether its assignment is conditional. None when WORD is
-    not such an expansion."""
+def _whole_array(word: Node) -> str | None:
+    """The array WORD expands whole (`"${NAME[@]}"`, `${NAME[*]}`), or None."""
     if word.type == "string" and len(word.named_children) == 1:
         word = word.named_children[0]
     names = list(iter_nodes(word, "variable_name")) if word.type == "expansion" else []
     name = node_text(names[0]) if names else ""
     if not name or node_text(word) not in (f"${{{name}[@]}}", f"${{{name}[*]}}"):
+        return None
+    return name
+
+
+@functools.cache
+def _expands_an_array(command: Node) -> bool:
+    """True when an argument of COMMAND expands a whole array, so only the
+    namespace knows its words."""
+    return any(_whole_array(word) is not None for word in command_arguments(command))
+
+
+def _array_elements(word: Node, namespace: Namespace) -> list[tuple[Node, bool]] | None:
+    """The elements of the array WORD expands whole, across every assignment
+    of it, each with whether its assignment is conditional. None when WORD is
+    not such an expansion."""
+    name = _whole_array(word)
+    if name is None:
         return None
     elements = []
     for assignment, _ in namespace.assignments.get(name, []):
@@ -1674,14 +1765,14 @@ _PY_FETCHER_SPELLING = re.compile(
 )
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.cache
 def _source(path: Path) -> str:
     """PATH's text. A followed file that is not UTF-8 raises, as a followed
     shell file does: the lint cannot judge bytes it cannot read."""
     return path.read_text(encoding="utf-8")
 
 
-@functools.lru_cache(maxsize=512)
+@functools.cache
 def _parsed(path: Path) -> ast.Module | None:
     """PATH's tree, or None when it does not read as Python."""
     try:
@@ -1690,7 +1781,79 @@ def _parsed(path: Path) -> ast.Module | None:
         return None
 
 
-@functools.lru_cache(maxsize=512)
+@functools.cache
+def _py_nodes(path: Path) -> tuple[ast.AST, ...]:
+    """Every node of PATH's tree in `ast.walk` order, walked once per file."""
+    tree = _parsed(path)
+    return tuple(ast.walk(tree)) if tree is not None else ()
+
+
+class _PyNames(NamedTuple):
+    """What one Python file takes from other modules. IMPORTS holds its
+    import statements. ATTRIBUTES maps each dotted name to the attributes read
+    from it (`m.x` gives `m` -> `x`)."""
+
+    imports: tuple[ast.Import | ast.ImportFrom, ...]
+    attributes: dict[str | None, frozenset[str]]
+
+
+@functools.cache
+def _py_names(path: Path) -> _PyNames:
+    """PATH's `_PyNames`, read once per file."""
+    nodes = _py_nodes(path)
+    attributes: dict[str | None, set[str]] = {}
+    for node in nodes:
+        if isinstance(node, ast.Attribute):
+            attributes.setdefault(name_of(node.value), set()).add(node.attr)
+    return _PyNames(
+        tuple(n for n in nodes if isinstance(n, (ast.Import, ast.ImportFrom))),
+        {name: frozenset(attrs) for name, attrs in attributes.items()},
+    )
+
+
+class _PyCalls(NamedTuple):
+    """The call graph of one Python file. FUNCTIONS names its module-level
+    functions, CALLS the module-level functions each one calls, and
+    TOP_CALLS those that its import-time code calls. NESTED names every
+    other function it defines."""
+
+    functions: frozenset[str]
+    calls: dict[str, frozenset[str]]
+    top_calls: frozenset[str]
+    nested: frozenset[str]
+
+
+@functools.cache
+def _py_calls(path: Path) -> _PyCalls:
+    """PATH's `_PyCalls`, read once per file. A file that does not read as
+    Python calls nothing."""
+    tree = _parsed(path) or ast.Module(body=[], type_ignores=[])
+    functions: dict[str, ast.AST] = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    # A definition runs no body on import, and neither does the main guard.
+    top = [
+        n
+        for n in tree.body
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and not (isinstance(n, ast.If) and "__main__" in ast.unparse(n.test))
+    ]
+    return _PyCalls(
+        frozenset(functions),
+        {name: frozenset(_called(node, functions)) for name, node in functions.items()},
+        frozenset(_called(ast.Module(body=top, type_ignores=[]), functions)),
+        frozenset(
+            node.name
+            for node in _py_nodes(path)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name not in functions
+        ),
+    )
+
+
+@functools.cache
 def _python_fetches(path: Path) -> list[Fetch]:
     """The pinned downloads the Python file PATH makes, and those of each
     repo-local module it imports, one level down. A download inside a
@@ -1700,24 +1863,24 @@ def _python_fetches(path: Path) -> list[Fetch]:
     if tree is None:
         return []
     fetches = [fetch for _, fetch in _module_fetches(path, None)]
-    for module in _local_imports(tree, path):
+    for module in _local_imports(path):
         stems = {module.stem}
         if (module.parent / "__init__.py").is_file():
             stems.add(module.parent.name)  # a package re-exports its modules
-        reached = _reached(module, _names_used(tree, stems))
+        reached = _reached(module, _names_used(path, stems))
         fetches += [
             f for holder, f in _module_fetches(module, path) if holder in reached
         ]
     return fetches
 
 
-def _names_used(tree: ast.Module, stems: set[str]) -> set[str]:
-    """The names TREE takes from a module named in STEMS: `from STEM import x`,
-    and `m.x` for each name `m` that an import binds to a STEM."""
+def _names_used(path: Path, stems: set[str]) -> set[str]:
+    """The names the file PATH takes from a module named in STEMS:
+    `from STEM import x`, and `m.x` for each name `m` that an import binds to
+    a STEM."""
+    index = _py_names(path)
     names, bound = set(), set()
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Import, ast.ImportFrom)):
-            continue
+    for node in index.imports:
         module = node.module if isinstance(node, ast.ImportFrom) else None
         if (module or "").rsplit(".", 1)[-1] in stems:
             names |= {alias.name for alias in node.names}
@@ -1726,11 +1889,7 @@ def _names_used(tree: ast.Module, stems: set[str]) -> set[str]:
             for alias in node.names
             if alias.name.rsplit(".", 1)[-1] in stems
         }
-    return names | {
-        node.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Attribute) and name_of(node.value) in bound
-    }
+    return names.union(*(index.attributes.get(name, ()) for name in bound))
 
 
 def _reached(module: Path, named: set[str]) -> set[str]:
@@ -1739,53 +1898,40 @@ def _reached(module: Path, named: set[str]) -> set[str]:
     function it calls count. A method or a nested function is reached by calls
     this graph cannot follow, so it counts too. A `*` import names every
     function."""
-    tree = _parsed(module) or ast.Module(body=[], type_ignores=[])
-    functions: dict[str, ast.AST] = {
-        node.name: node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    named = named | (functions.keys() if "*" in named else set())
-    reached = (
-        named
-        | {"<module>"}
-        | {
-            node.name
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name not in functions
-        }
-    )
-    # A definition runs no body on import, and neither does the main guard.
-    top = [
-        n
-        for n in tree.body
-        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        and not (isinstance(n, ast.If) and "__main__" in ast.unparse(n.test))
-    ]
-    pending = list(
-        (named | _called(ast.Module(body=top, type_ignores=[]), functions))
-        & functions.keys()
-    )
+    index = _py_calls(module)
+    functions = index.functions
+    named = named | (functions if "*" in named else set())
+    reached = named | {"<module>"} | index.nested
+    pending = list((named | index.top_calls) & functions)
     reached |= set(pending)
     while pending:
-        new = _called(functions[pending.pop()], functions) - reached
+        new = index.calls[pending.pop()] - reached
         reached |= new
         pending += new
     return reached
 
 
-@functools.lru_cache(maxsize=1024)
 def _module_fetches(path: Path, importer: Path | None) -> list[tuple[str, Fetch]]:
     """The pinned downloads written in the Python file PATH itself, each with
     the function that holds it. IMPORTER is the file that imports it, whose
     hash a cache key may also name."""
+    held = _relative(importer)
+    return [
+        (holder, fetch._replace(sources=fetch.sources | {held}) if held else fetch)
+        for holder, fetch in _own_module_fetches(path)
+    ]
+
+
+@functools.cache
+def _own_module_fetches(path: Path) -> list[tuple[str, Fetch]]:
+    """`_module_fetches` of PATH with no importer, read once per file: many
+    files import one module."""
     if not _PY_FETCHER_SPELLING.search(_source(path)):
         return []
     tree = _parsed(path)
     if tree is None:
         return []
-    nodes = list(ast.walk(tree))
+    nodes = _py_nodes(path)
     aliases = _aliases(nodes)
     calls = [
         node
@@ -1818,8 +1964,8 @@ def _module_fetches(path: Path, importer: Path | None) -> list[tuple[str, Fetch]
         and isinstance(node.value, str)
         and _DIGEST_LITERAL.fullmatch(node.value)
     }
-    sources = {rel for p in (path, importer) if (rel := _relative(p))}
-    rel = _relative(path) or path.name
+    sources = {rel} if (rel := _relative(path)) else set()
+    rel = rel or path.name
     # A fetch's scope is its innermost enclosing function. ast.walk is
     # breadth-first, so an inner function overwrites its outer one here. The
     # module scope holds only top-level statements, so a compare inside some
@@ -1883,10 +2029,10 @@ def _module_fetches(path: Path, importer: Path | None) -> list[tuple[str, Fetch]
     return fetches
 
 
-def _local_imports(tree: ast.Module, path: Path) -> list[Path]:
+def _local_imports(path: Path) -> list[Path]:
     """The repo files PATH imports, found the way `python3 PATH` finds them."""
     names = set()
-    for node in ast.walk(tree):
+    for node in _py_names(path).imports:
         if isinstance(node, ast.Import):
             names |= {alias.name.split(".")[0] for alias in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
@@ -1924,19 +2070,23 @@ def _literal_tail(node: ast.expr) -> tuple[ast.expr, tuple[str, ...]]:
     return node, ()
 
 
-@functools.lru_cache(maxsize=512)
+@functools.cache
 def _inserted_roots(module: Path) -> tuple[Path, ...]:
     """The directories MODULE puts on `sys.path`. An insert whose base the fold
     cannot read (`repo_root(_HERE) / "bin" / "lib"`) names its literal tail
     under each ancestor of MODULE in the repo that holds that tail. That is a
     guess about the base, so it serves only to find a module by name."""
     tree = _parsed(module)
-    if tree is None:
+    inserts = [
+        node
+        for node in _py_nodes(module)
+        if isinstance(node, ast.Call) and _is_sys_path_call(node) and node.args
+    ]
+    # `sys_path_roots` reads only these calls, and parses the file again.
+    if tree is None or not inserts:
         return ()
     roots, bindings = list(sys_path_roots(module)), path_bindings(tree, module)
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and _is_sys_path_call(node) and node.args):
-            continue
+    for node in inserts:
         base, tail = _literal_tail(node.args[-1])
         if not tail or _fold_path(base, bindings, module):
             continue
@@ -2203,9 +2353,9 @@ def _repo_files(root: Path) -> tuple[tuple[str, Path], ...]:
     found = []
     for directory, subdirectories, names in os.walk(root):
         subdirectories[:] = sorted(d for d in subdirectories if d != ".git")
-        for name in sorted(names):
-            path = Path(directory) / name
-            found.append((path.relative_to(root).as_posix(), path))
+        base = Path(directory)
+        prefix = base.relative_to(root).as_posix() + "/" if base != root else ""
+        found += [(prefix + name, base / name) for name in sorted(names)]
     return tuple(found)
 
 
@@ -2265,8 +2415,11 @@ def _key_names(scope: CacheScope, fetch: Fetch) -> bool:
         if fetch.pins & _hashed_assignments(REPO_ROOT, pattern):
             return True
         text = _hashed_text(REPO_ROOT, pattern)
+        # `value in text` is a cheap shortlist: the token pattern matches only
+        # where VALUE itself is written, and the hashed text can be large.
         if text and any(
-            _pin_in_key(value).search(text) for value in _pin_values(fetch)
+            value in text and _pin_in_key(value).search(text)
+            for value in _pin_values(fetch)
         ):
             return True
     return False
