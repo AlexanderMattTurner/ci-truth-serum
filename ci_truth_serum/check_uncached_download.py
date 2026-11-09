@@ -242,8 +242,14 @@ _COPIERS = frozenset({"cp", "install", "mv"})
 # every run — $GITHUB_SHA is this commit, $GITHUB_REF_NAME is this branch. A URL
 # built from one changes per run, so a cache keyed on it could never restore, and
 # flagging it would contradict the "not a version" exclusion above.
+#
+# The GitHub API's release-METADATA read is excluded (`$repo` may hold
+# `owner/name`): `releases/tags/<tag>` returns a JSON description of the release,
+# not an artifact, so no cache holds its bytes. `releases/assets/<id>` stays
+# judged, because with `Accept: application/octet-stream` it streams the asset.
 _PINNED_URL = re.compile(
-    r"^https?://.*(?:/v?\d+\.\d+[\w.+-]*/"
+    r"^(?!https?://api\.github\.com/repos/[^/]+(?:/[^/]+)?/releases/tags/)"
+    r"https?://.*(?:/v?\d+\.\d+[\w.+-]*/"
     r"|\$\{?(?!(?:GITHUB|RUNNER)_)\w*(?:VERSION|RELEASE|TAG|REF|SHA)\w*)",
     re.IGNORECASE,
 )
