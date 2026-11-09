@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { ERROR_WORDS, distinct, hasErrorText, report, signalName } from "./report.mjs";
+import { ERROR_WORDS, distinct, hasErrorText, headAndTail, report, signalName } from "./report.mjs";
 
 function ledgerDir(files) {
   const dir = mkdtempSync(join(tmpdir(), "mute-report-"));
@@ -54,13 +54,26 @@ test("a job with no recorded failed step says so instead of reporting nothing", 
   assert.deepEqual(lines.filter((line) => line.startsWith("::error")), []);
 });
 
-test("only the last 50 distinct ledger rows are printed", () => {
+test("a failed step's first failure is printed when the step has more than 50 rows", () => {
+  // A live check that fails first in a long pytest step leaves the oldest row of the step.
   const rows = Array.from({ length: 60 }, (_, i) => `build\t1\tx.sh:${i + 1}\t1\t5\tfalse`);
   const lines = report(ledgerDir({ steps: "build\t1\n", "step-build.out": "fail\n", ledger: rows.join("\n") }));
-  assert.ok(lines.includes("Ledger: the last 50 of 60 distinct rows (60 in all)"));
   const shown = (row) => lines.filter((line) => line === `${row}\t(1x)`).length;
-  // Each recent row appears twice: once in the failed step's section, once in the whole ledger.
-  assert.deepEqual([shown(rows[59]), shown(rows[10]), shown(rows[9])], [2, 2, 0]);
+  assert.deepEqual([shown(rows[0]), shown(rows[30]), shown(rows[59])], [1, 1, 1]);
+});
+
+test("a failed step past its row limit keeps its first and last rows and counts the rest", () => {
+  const rows = ["a", "b", "c", "d", "e", "f", "g"];
+  assert.deepEqual(headAndTail(rows, 4), ["a", "b", "... 3 rows not shown ...", "f", "g"]);
+  assert.deepEqual(headAndTail(rows, 7), rows);
+});
+
+test("rows from the steps that passed are cut to the last 50", () => {
+  const rows = Array.from({ length: 60 }, (_, i) => `setup\t1\tx.sh:${i + 1}\t1\t5\tfalse`);
+  const lines = report(ledgerDir({ steps: "setup\t0\nbuild\t1\n", "step-build.out": "fail\n", ledger: rows.join("\n") }));
+  assert.ok(lines.includes("Ledger rows from the other steps: the last 50 of 60 distinct rows (60 rows in the whole ledger)"));
+  const shown = (row) => lines.filter((line) => line === `${row}\t(1x)`).length;
+  assert.deepEqual([shown(rows[59]), shown(rows[10]), shown(rows[9])], [1, 1, 0]);
 });
 
 test("a probe that fails on every call is one row with its count, kept where it last failed", () => {
@@ -70,11 +83,11 @@ test("a probe that fails on every call is one row with its count, kept where it 
   assert.deepEqual(distinct(rows), [`${cause}\t(1x)`, `${probe(3)}\t(3x)`]);
 });
 
-test("the failed step's own rows come before the whole ledger", () => {
+test("the failed step's own rows come before the other steps' rows", () => {
   const other = "lint\t5\ta.sh:1\t1\t4\tfalse";
   const mine = "build\t6\tb.sh:2\t2\t4\tgrep x";
   const lines = report(ledgerDir({ steps: "build\t2\n", "step-build.out": "error\n", ledger: `${mine}\n${other}\n` }));
-  const head = lines.indexOf("Ledger rows from step build, newest last: 1 distinct");
+  const head = lines.indexOf("Ledger rows from step build, in the order each row last failed: 1 distinct");
   assert.equal(lines[head + 1], `${mine}\t(1x)`);
   assert.ok(lines.indexOf(`${other}\t(1x)`) > head + 1);
 });
