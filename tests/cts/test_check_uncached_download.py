@@ -678,21 +678,25 @@ def test_a_key_that_names_the_pin_covers_only_a_path_that_can_hold_it(
 
 @pytest.mark.parametrize(
     ("hashed", "fires"),
-    [("pins/tool.json", False), ("pins/other.json", True)],
-    ids=["holds-the-value", "holds-another-value"],
+    [("pins/tool.json", False), ("pins/other.json", True), ("pins/near.json", True)],
+    ids=["holds-the-value", "holds-another-value", "holds-a-longer-version"],
 )
 def test_a_key_that_hashes_the_source_of_a_generated_pin_names_it(
     rooted, hashed, fires
 ):
     """`s/versions.sh` is generated from `pins/tool.json`, so both hold `v2.7.0`. A
     key that hashes the JSON changes whenever the pin does, so it names the pin.
-    A JSON file that holds another value does not."""
+    A JSON file that holds another value, or a longer version that contains it
+    (`12.7.0`), does not. An unrelated script the parser refuses (`s/huge.sh`)
+    does not stop the check."""
     _tree(
         rooted,
         {
             **VERSIONS,
             "pins/tool.json": '{"version": "v2.7.0"}\n',
             "pins/other.json": '{"version": "v9.9.9"}\n',
+            "pins/near.json": '{"version": "12.7.0"}\n',
+            "s/huge.sh": "true" + " | true" * 2100 + "\n",
         },
     )
     script = (
