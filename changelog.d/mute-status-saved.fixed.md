@@ -1,0 +1,1 @@
+- `mute-failure-guard` records a failure whose exit status a caller saves, as `"$@" || rc=$?` does. Bash runs no ERR trap on the left of `||`, so the ledger had no row for such a failure. The new row reads `status saved by rc=$?: <command>` and names the file and line of the command that failed.
