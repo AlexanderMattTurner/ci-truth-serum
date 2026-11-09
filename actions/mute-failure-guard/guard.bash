@@ -24,7 +24,7 @@ _cts_mute_dir=${BASH_SOURCE[0]%/*}
 # -T passes the DEBUG trap into functions and subshells, which the subshell rows need.
 set -E -T
 # The traps below assign these; set here so `set -u` never meets them unset.
-_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd= _cts_us=
+_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd='' _cts_us=''
 
 # _cts_mute_row STATUS FILE LINE COMMAND — append one tab-separated ledger row: step id, pid,
 # file:line, status, open descriptors, command text. The handler must never fail: under errexit
@@ -85,8 +85,8 @@ _cts_prev=
 _cts_sets_return_trap() {
   case "$1 " in
   trap[[:space:]]*[[:space:]]RETURN[[:space:]]* | trap[[:space:]]*[[:space:]]\'RETURN\'[[:space:]]* | trap[[:space:]]*[[:space:]]\"RETURN\"[[:space:]]*) return 0 ;;
+  *) return 1 ;;
   esac
-  return 1
 }
 # $LINENO is read on the trap's first line: each later line of this body adds one to it.
 trap '_cts_drc=$? _cts_dline=$LINENO _cts_us=$_

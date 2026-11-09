@@ -232,7 +232,7 @@ def test_an_evaluated_command_records_only_its_name(tmp_path):
     script = 'secret=dynamic-secret-value\neval "false $secret" || :\neval "tok=$secret; false" || :\n'
     proc, rows, mute = _run(tmp_path, script)
     assert proc.returncode == 0
-    assert "dynamic-secret-value" not in (mute / "ledger").read_text()
+    assert "dynamic-secret-value" not in (mute / "ledger").read_text(encoding="utf-8")
     assert [r[5] for r in rows] == [
         "suppressed by || true: false",
         "suppressed by || true: false",
