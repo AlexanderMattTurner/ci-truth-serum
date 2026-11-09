@@ -11,8 +11,12 @@
 #     calls, so this row is what records `[[ -n "$(f)" ]] || …` and `x="$(f)" || return 1`.
 #   * suppressed — a failure that `|| true` or `|| :` discarded.
 #
-# It never uses `set -x`: that prints expanded values, and CI logs are public. Bash 3.2 safe:
-# macOS runners run /bin/bash 3.2.
+# It never uses `set -x`: that prints expanded values, and CI logs are public. /bin/bash 3.2 on
+# macOS runs it with less recorded: it names no command in an ERR row, and it records no exit
+# of a `<(…)`.
+#
+# A launcher that snapshots and replays shell variables can unset the guard's own, so every
+# trap reads them with a default and keeps running under `set -u`.
 #
 # The action copies this file into the job's ledger directory and writes an `active` marker
 # beside it, so the file finds its ledger from its own path. That needs no second variable,
@@ -24,17 +28,18 @@ _cts_mute_dir=${BASH_SOURCE[0]%/*}
 # -T passes the DEBUG trap into functions and subshells, which the subshell rows need.
 set -E -T
 # The traps below assign these; set here so `set -u` never meets them unset.
-_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd='' _cts_us=''
+_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd='' _cts_us='' _cts_bc=''
 
 # _cts_mute_row STATUS FILE LINE COMMAND — append one tab-separated ledger row: step id, pid,
 # file:line, status, open descriptors, command text. The handler must never fail: under errexit
 # a failed write here would end the user's script, so an `if` holds the write.
 _cts_mute_row() {
-  local cmd=$4 fds=0 _
+  local cmd=$4 fds=0 dir=${_cts_mute_dir:-} _
+  [[ -n "$dir" ]] || return 0
   cmd=${cmd//$'\n'/ }
   cmd=${cmd//$'\t'/ }
   for _ in /dev/fd/*; do fds=$((fds + 1)); done
-  if ! printf '%s\t%s\t%s:%s\t%s\t%s\t%s\n' "${GITHUB_ACTION:-}" "${BASHPID:-$$}" "$2" "$3" "$1" "$fds" "${cmd:0:300}" >>"$_cts_mute_dir/ledger" 2>/dev/null; then
+  if ! printf '%s\t%s\t%s:%s\t%s\t%s\t%s\n' "${GITHUB_ACTION:-}" "${BASHPID:-$$}" "$2" "$3" "$1" "$fds" "${cmd:0:300}" >>"$dir/ledger" 2>/dev/null; then
     return 0
   fi
 }
@@ -49,13 +54,18 @@ _cts_mute_cmd() {
     _cts_cmd='<bash -c>'
     return 0
   fi
+  # Bash 3.2 sets BASH_COMMAND to the ERR trap's own command, which holds no user command name.
+  if [[ $1 == _cts_* ]]; then
+    _cts_cmd='?'
+    return 0
+  fi
   word=${1%%[[:space:]]*}
   if [[ $word == *=* && ${word%%=*} != *[!A-Za-z0-9_]* ]]; then word="${word%%=*}="; fi
   _cts_cmd=${word:0:64}
 }
 
 # Each trap ends with `: "$_cts_us"`, which gives `$_` back the caller's last argument.
-trap '_cts_rc=$? _cts_us=$_; _cts_mute_cmd "$BASH_COMMAND"; _cts_mute_row "$_cts_rc" "${BASH_SOURCE[0]:-?}" "$LINENO" "$_cts_cmd"; : "$_cts_us"' ERR
+trap '_cts_rc=$? _cts_us=$_ _cts_bc=$BASH_COMMAND; _cts_mute_cmd "$_cts_bc"; _cts_mute_row "$_cts_rc" "${BASH_SOURCE[0]:-?}" "$LINENO" "$_cts_cmd"; : "$_cts_us"' ERR
 
 # _cts_mute_enter FILE LINE COMMAND — arm an EXIT trap in a subshell that has just started, so
 # its non-zero exit is recorded at the place its first command came from.
@@ -90,8 +100,8 @@ _cts_sets_return_trap() {
 }
 # $LINENO is read on the trap's first line: each later line of this body adds one to it.
 trap '_cts_drc=$? _cts_dline=$LINENO _cts_us=$_
-((BASH_SUBSHELL > _cts_sub_level)) && _cts_mute_enter "${BASH_SOURCE[0]:-?}" "$_cts_dline" "$BASH_COMMAND"
-((_cts_drc != 0)) && [[ $BASH_COMMAND == true || $BASH_COMMAND == : ]] && _cts_mute_cmd "$_cts_prev" && _cts_mute_row "$_cts_drc" "${BASH_SOURCE[0]:-?}" "$_cts_dline" "suppressed by || true: $_cts_cmd"
+((BASH_SUBSHELL > ${_cts_sub_level:-0})) && _cts_mute_enter "${BASH_SOURCE[0]:-?}" "$_cts_dline" "$BASH_COMMAND"
+((_cts_drc != 0)) && [[ $BASH_COMMAND == true || $BASH_COMMAND == : ]] && _cts_mute_cmd "${_cts_prev:-}" && _cts_mute_row "$_cts_drc" "${BASH_SOURCE[0]:-?}" "$_cts_dline" "suppressed by || true: $_cts_cmd"
 [[ $BASH_COMMAND == trap[[:space:]]* ]] && _cts_sets_return_trap "$BASH_COMMAND" && set +T
 _cts_prev=$BASH_COMMAND
 : "$_cts_us"' DEBUG
@@ -111,5 +121,8 @@ if [[ -n "${GITHUB_ACTION:-}" ]] && mkdir "$_cts_mute_dir/step-$GITHUB_ACTION.cl
   disown
   exec >"$_cts_mute_dir/$$.o" 2>"$_cts_mute_dir/$$.e"
   rm -f "$_cts_mute_dir/$$.o" "$_cts_mute_dir/$$.e"
-  trap 'printf "%s\t%s\n" "$GITHUB_ACTION" "$?" >>"$_cts_mute_dir/steps"' EXIT
+  # The path is fixed now, so a later `unset` of the guard's variables cannot move the record.
+  printf -v _cts_steps '%q' "$_cts_mute_dir/steps"
+  # shellcheck disable=SC2064 # the path is fixed now, at the step shell's start
+  trap "printf '%s\\t%s\\n' \"\$GITHUB_ACTION\" \"\$?\" >>$_cts_steps" EXIT
 fi
