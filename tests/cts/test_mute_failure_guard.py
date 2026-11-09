@@ -101,7 +101,7 @@ def test_a_failure_that_or_true_discards_is_recorded(tmp_path):
         tmp_path, "f() { return 4; }\nf || :\ng() { return 0; }\ng || true\n"
     )
     assert proc.returncode == 0
-    assert _sites(rows) == [("step.sh", 2, 4, "suppressed by || true: return 4")]
+    assert _sites(rows) == [("step.sh", 2, 4, "suppressed by || true: return")]
 
 
 def test_a_substitution_that_succeeds_leaves_no_row(tmp_path):
@@ -119,6 +119,8 @@ def test_a_substitution_that_succeeds_leaves_no_row(tmp_path):
         pytest.param("RETURN EXIT", id="return-then-exit"),
         pytest.param("RETURN ERR", id="return-then-err"),
         pytest.param("EXIT RETURN", id="exit-then-return"),
+        pytest.param("'RETURN'", id="single-quoted"),
+        pytest.param('"RETURN" EXIT', id="double-quoted-then-exit"),
     ],
 )
 def test_a_return_trap_cleanup_waits_for_its_own_function(tmp_path, signals):
@@ -146,7 +148,7 @@ def test_the_guard_changes_no_output_and_no_status(tmp_path):
     assert [s[3] for s in _sites(rows)] == [
         "false",
         "subshell exit, first command: false",
-        'x="$(false)"',
+        "x=",
     ]
 
 
@@ -223,3 +225,32 @@ def test_a_bare_wait_in_the_step_returns(tmp_path):
     proc, _, mute = _run(tmp_path, "sleep 0.1 &\nwait\necho waited\n")
     assert (proc.returncode, proc.stdout) == (0, "waited\n")
     assert (mute / "steps").read_text(encoding="utf-8") == "build\t0\n"
+
+
+def test_an_evaluated_command_records_only_its_name(tmp_path):
+    # Inside eval, BASH_COMMAND is already expanded, so its text can hold a secret.
+    script = 'secret=dynamic-secret-value\neval "false $secret" || :\neval "tok=$secret; false" || :\n'
+    proc, rows, mute = _run(tmp_path, script)
+    assert proc.returncode == 0
+    assert "dynamic-secret-value" not in (mute / "ledger").read_text()
+    assert [r[5] for r in rows] == [
+        "suppressed by || true: false",
+        "suppressed by || true: false",
+    ]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        pytest.param('mkdir -p "$HOME/made"; cd "$_"; pwd\n', id="last-argument"),
+        pytest.param(
+            '[[ release-123 =~ ^release-([0-9]+)$ ]]; printf "%s\\n" "${BASH_REMATCH[1]}"\n',
+            id="regex-captures",
+        ),
+    ],
+)
+def test_the_guard_leaves_the_callers_shell_state_alone(tmp_path, script):
+    plain, _, _ = _run(tmp_path, script, guarded=False)
+    guarded, _, _ = _run(tmp_path, script)
+    assert (guarded.returncode, guarded.stdout) == (plain.returncode, plain.stdout)
+    assert plain.stdout.strip() not in ("", str(tmp_path))

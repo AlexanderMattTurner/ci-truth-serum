@@ -87,7 +87,8 @@ export function report(dir, words = ERROR_WORDS) {
   }
   out.push(`ulimit -n: ${hostFact("sh", ["-c", "ulimit -n"])}`);
   out.push(`open files on the host: ${openFiles()}`);
-  out.push(`processes on the host: ${hostFact("ps", ["-A", "-o", "pid="]).split("\n").length}`);
+  const ps = hostFact("ps", ["-A", "-o", "pid="]);
+  out.push(`processes on the host: ${ps.startsWith("unreadable") ? ps : ps.split("\n").length}`);
   const rows = read("ledger").split("\n").filter(Boolean);
   for (const [step] of failed) {
     const own = distinct(rows.filter((row) => row.split("\t")[0] === step));

@@ -89,3 +89,15 @@ test("error text is matched per line and ignores case", () => {
   assert.equal(hasErrorText("ok\nFATAL: no disk\n", ERROR_WORDS), true);
   assert.equal(hasErrorText("✗ \n\n", ERROR_WORDS), false);
 });
+
+test("a process count that ps could not read says so instead of claiming one process", () => {
+  const path = process.env.PATH;
+  process.env.PATH = "/nonexistent";
+  try {
+    const lines = report(ledgerDir({ steps: "build\t1\n", "step-build.out": "error\n" }));
+    const count = lines.find((line) => line.startsWith("processes on the host: "));
+    assert.match(count, /^processes on the host: unreadable \(/);
+  } finally {
+    process.env.PATH = path;
+  }
+});

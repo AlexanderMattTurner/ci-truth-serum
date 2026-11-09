@@ -24,7 +24,7 @@ _cts_mute_dir=${BASH_SOURCE[0]%/*}
 # -T passes the DEBUG trap into functions and subshells, which the subshell rows need.
 set -E -T
 # The traps below assign these; set here so `set -u` never meets them unset.
-_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd=
+_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd= _cts_us=
 
 # _cts_mute_row STATUS FILE LINE COMMAND — append one tab-separated ledger row: step id, pid,
 # file:line, status, open descriptors, command text. The handler must never fail: under errexit
@@ -39,13 +39,23 @@ _cts_mute_row() {
   fi
 }
 
-# _cts_mute_cmd TEXT — set _cts_cmd to TEXT, or to a placeholder in a `bash -c "$x"` child,
-# whose command text was expanded by its parent and can carry a secret.
+# _cts_mute_cmd TEXT — set _cts_cmd to the command name in TEXT, the first word, with an
+# assignment cut to `NAME=`. Only the name is kept: inside `eval`, and in a `bash -c "$x"`
+# child, TEXT is already expanded and can carry a secret, and bash marks neither case.
+# The row's file:line names the full command in its source.
 _cts_mute_cmd() {
-  if [[ -n "${BASH_EXECUTION_STRING:-}" ]]; then _cts_cmd='<bash -c>'; else _cts_cmd=$1; fi
+  local word
+  if [[ -n "${BASH_EXECUTION_STRING:-}" ]]; then
+    _cts_cmd='<bash -c>'
+    return 0
+  fi
+  word=${1%%[[:space:]]*}
+  if [[ $word == *=* && ${word%%=*} != *[!A-Za-z0-9_]* ]]; then word="${word%%=*}="; fi
+  _cts_cmd=${word:0:64}
 }
 
-trap '_cts_rc=$?; _cts_mute_cmd "$BASH_COMMAND"; _cts_mute_row "$_cts_rc" "${BASH_SOURCE[0]:-?}" "$LINENO" "$_cts_cmd"' ERR
+# Each trap ends with `: "$_cts_us"`, which gives `$_` back the caller's last argument.
+trap '_cts_rc=$? _cts_us=$_; _cts_mute_cmd "$BASH_COMMAND"; _cts_mute_row "$_cts_rc" "${BASH_SOURCE[0]:-?}" "$LINENO" "$_cts_cmd"; : "$_cts_us"' ERR
 
 # _cts_mute_enter FILE LINE COMMAND — arm an EXIT trap in a subshell that has just started, so
 # its non-zero exit is recorded at the place its first command came from.
@@ -66,18 +76,25 @@ _cts_mute_enter() {
 #   3. turns -T off in a shell about to set a RETURN trap, in any position of its signal list.
 #      Under -T a RETURN trap also runs when every function it calls returns, so a cleanup there
 #      would run too early. That shell keeps its ERR and suppressed rows and loses only the
-#      subshell rows. The pattern may match a command that is not a trap; that costs the shell
-#      its subshell rows and nothing else. Known limit: a trap set through a wrapper function
-#      (for example `add_trap cleanup RETURN`) is not seen, so -T stays on for it.
-# The pattern sits in a variable because bash 3.2 and 5 read a quoted =~ operand differently.
-_cts_return_re='^trap[[:space:]].*[[:space:]]RETURN([[:space:]]|$)'
+#      subshell rows. A false match costs the shell its subshell rows and nothing else. Known
+#      limit: a trap set through a wrapper function (`add_trap cleanup RETURN`) is not seen.
+#   4. gives `$_` back the caller's last argument.
 _cts_prev=
+# _cts_sets_return_trap TEXT — whether the command TEXT sets a RETURN trap. It matches with
+# `case`, because `=~` would overwrite the caller's BASH_REMATCH.
+_cts_sets_return_trap() {
+  case "$1 " in
+  trap[[:space:]]*[[:space:]]RETURN[[:space:]]* | trap[[:space:]]*[[:space:]]\'RETURN\'[[:space:]]* | trap[[:space:]]*[[:space:]]\"RETURN\"[[:space:]]*) return 0 ;;
+  esac
+  return 1
+}
 # $LINENO is read on the trap's first line: each later line of this body adds one to it.
-trap '_cts_drc=$? _cts_dline=$LINENO
+trap '_cts_drc=$? _cts_dline=$LINENO _cts_us=$_
 ((BASH_SUBSHELL > _cts_sub_level)) && _cts_mute_enter "${BASH_SOURCE[0]:-?}" "$_cts_dline" "$BASH_COMMAND"
 ((_cts_drc != 0)) && [[ $BASH_COMMAND == true || $BASH_COMMAND == : ]] && _cts_mute_cmd "$_cts_prev" && _cts_mute_row "$_cts_drc" "${BASH_SOURCE[0]:-?}" "$_cts_dline" "suppressed by || true: $_cts_cmd"
-[[ $BASH_COMMAND =~ $_cts_return_re ]] && set +T
-_cts_prev=$BASH_COMMAND' DEBUG
+[[ $BASH_COMMAND == trap[[:space:]]* ]] && _cts_sets_return_trap "$BASH_COMMAND" && set +T
+_cts_prev=$BASH_COMMAND
+: "$_cts_us"' DEBUG
 
 # The first guarded bash in a step is the step's own shell. It records the step's exit status and
 # keeps a copy of both output streams, which the post hook reads to judge a mute failure. An
