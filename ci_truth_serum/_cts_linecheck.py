@@ -29,7 +29,9 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
@@ -136,9 +138,22 @@ class AnnotationMatcher(NamedTuple):
 
     pattern: "re.Pattern[str]"
     require_reason: bool
+    token: str = ""
 
     def search(self, text: str) -> "re.Match[str] | None":
-        """The first annotation in TEXT that satisfies this token's contract."""
+        """The first annotation in TEXT that satisfies this token's contract.
+
+        Under ``audit_opt_outs`` this records the token as read for the whole
+        file: this call is not told a line, so it cannot say which one it read.
+        """
+        audit = _AUDIT.get()
+        if audit is not None:
+            audit.whole_file.add(self.token)
+        return self.first(text)
+
+    def first(self, text: str) -> "re.Match[str] | None":
+        """``search`` without the audit record. Only the pack's own helpers
+        that record a more exact answer call this."""
         for match in self.pattern.finditer(text):
             if not self.require_reason or not is_placeholder_reason(
                 match.group("reason")
@@ -180,6 +195,7 @@ def annotation_re(token: str, require_reason: bool = True) -> AnnotationMatcher:
     return AnnotationMatcher(
         re.compile(rf"{_COMMENT_INTRO}{lead}{re.escape(token)}{tail}"),
         require_reason,
+        token,
     )
 
 
@@ -275,6 +291,47 @@ def annotation_window(
     return sorted(n for n in candidates if 1 <= n <= len(lines))
 
 
+class OptOutAudit:
+    """What the checks run under ``audit_opt_outs`` read while judging one file.
+
+    LINES holds each (1-based line, token) pair where an ``annotated_near``
+    window found the opt-out at a construct the check judged. SCRIPTS holds the
+    same pair for every line of a `run:` value that held one, because there the
+    window counts lines from the value (``per_run_script``). WHOLE_FILE holds
+    each token that a read without a line asked about, so every annotation of
+    that token in the file counts as read. A reader of this record may call an
+    annotation unused only when it is in none of the three.
+    """
+
+    def __init__(self) -> None:
+        self.lines: set[tuple[int, str]] = set()
+        self.scripts: set[tuple[int, str]] = set()
+        self.whole_file: set[str] = set()
+
+
+_AUDIT: "ContextVar[OptOutAudit | None]" = ContextVar("opt_out_audit", default=None)
+# The 1-based lines of the `run:` value that ``per_run_script`` is judging. The
+# check reads that value as decoded text, so its line numbers count from the
+# value and not from the file. The record then credits the whole value.
+_SCRIPT_LINES: "ContextVar[range | None]" = ContextVar("script_lines", default=None)
+
+
+@contextmanager
+def audit_opt_outs() -> Iterator[OptOutAudit]:
+    """Ignore every opt-out, and record which annotations the checks read.
+
+    Inside this block ``annotated_near`` returns False, so a check reports each
+    finding an opt-out would have cleared. It also records the window lines that
+    held the opt-out. ``check_stale_opt_out`` reads that record: an annotation
+    that no finding reached suppresses nothing.
+    """
+    token = _AUDIT.set(OptOutAudit())
+    try:
+        yield _AUDIT.get()
+    finally:
+        _AUDIT.reset(token)
+
+
 def annotated_near(
     lines: list[str],
     lineno: int,
@@ -301,12 +358,22 @@ def annotated_near(
     ``shell_comments`` / ``py_comments`` for a text with no path), and
     ``yaml_marker_comments`` for a workflow. A line it leaves out says nothing.
     A ``CommentMap`` also says which code lines open a construct (OPENS).
+
+    Under ``audit_opt_outs`` this returns False and records the opt-out it found.
     """
     opens = comments.opens if isinstance(comments, CommentMap) else frozenset()
-    return any(
-        annotated(comments.get(n, ""), token, require_reason)
-        for n in annotation_window(lines, lineno, span_end, opens)
-    )
+    window = annotation_window(lines, lineno, span_end, opens)
+    matcher = annotation_re(token, require_reason)
+    audit = _AUDIT.get()
+    if audit is None:
+        return any(matcher.first(comments.get(n, "")) for n in window)
+    held = [n for n in window if matcher.first(comments.get(n, ""))]
+    script = _SCRIPT_LINES.get()
+    if held and script is None:
+        audit.lines.update((n, token) for n in held)
+    elif held:
+        audit.scripts.update((n, token) for n in script)
+    return False
 
 
 # A line that ends in a backslash, a pipe, or a boolean operator is continued on
@@ -548,7 +615,7 @@ def _refusal_message(err: BaseException) -> str:
     return str(err)
 
 
-def _unreadable_reason(path: str, text: str) -> str | None:
+def unreadable_reason(path: str, text: str) -> str | None:
     """The refusal message when PATH's TEXT cannot be parsed, else None.
 
     Every kind a refusal takes, in one place: shell the bash grammar cannot
@@ -601,7 +668,7 @@ def run_message_checks(
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
             continue
-        reason = _unreadable_reason(path, text)
+        reason = unreadable_reason(path, text)
         if reason is None:
             try:
                 found = find_violations(text, path)
@@ -633,7 +700,7 @@ def refuse_unparseable(paths: Iterable[str]) -> set[str]:
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
             continue
-        reason = _unreadable_reason(path, text)
+        reason = unreadable_reason(path, text)
         if reason is not None:
             print(f"{path}: {reason}", file=sys.stderr)
             refused.add(path)
@@ -667,13 +734,17 @@ def per_run_script(
 
     def detect(text: str, path: str) -> list[tuple[int, str]]:
         if is_workflow_path(path):
-            return sorted(
-                {
-                    (scalar.line, message)
-                    for scalar in bash_run_scripts(text)
-                    for _line, message in find_violations(scalar.value, path)
-                }
-            )
+            found = set()
+            for scalar in bash_run_scripts(text):
+                first = text.count("\n", 0, scalar.start) + 1
+                last = _last_content_line(text, scalar.end)
+                judging = _SCRIPT_LINES.set(range(first, last + 1))
+                try:
+                    hits = find_violations(scalar.value, path)
+                finally:
+                    _SCRIPT_LINES.reset(judging)
+                found.update((scalar.line, message) for _line, message in hits)
+            return sorted(found)
         if is_yaml_source(path):
             return []
         return find_violations(text, path)

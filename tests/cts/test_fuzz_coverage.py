@@ -174,6 +174,7 @@ FUZZ_REQUIRED = {
 _NON_PARSER_HOOKS = {
     "run_tier",
     "run_selection",
+    "check_stale_opt_out",
     "_cts_registry",
     "sync_required_checks",
     "sync_merge_queue",

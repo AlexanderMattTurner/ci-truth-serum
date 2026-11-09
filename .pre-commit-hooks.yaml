@@ -1037,10 +1037,19 @@
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
 
+- id: check-stale-opt-out
+  name: "extra: report an opt-out annotation that suppresses nothing"
+  description: An opt-out stays after its check stops firing, so the file keeps an exemption that nothing needs. This check runs each covered check again with every opt-out ignored. It reports each annotation that no finding reaches. Delete the annotation to fix the finding.
+  entry: python -m ci_truth_serum.check_stale_opt_out
+  language: python
+  types: [text]
+
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
-# picked up with no consumer change. Four checks are not aggregated — enable
-# each on its own: `check-absolute-symlinks` (a language:script shell hook),
+# picked up with no consumer change. Five checks are not aggregated — enable
+# each on its own: `check-stale-opt-out` (it runs the covered checks again, so
+# in an aggregate it would double their time), `check-absolute-symlinks` (a
+# language:script shell hook),
 # `check-lockstep-pins` (config-driven; it hard-errors without the per-repo
 # --pair args an aggregate cannot supply), `check-env-symmetry` (needs a
 # per-project --prefix arg an aggregate can't supply), and
