@@ -276,9 +276,15 @@ def test_a_shell_that_unsets_the_guards_variables_keeps_running(tmp_path):
 
 @pytest.mark.parametrize(
     ("text", "name"),
-    [("git fetch origin", "git"), ("tok=s3cr3t", "tok="), ("_cts_rc=$? _cts_us=$_", "?")],
+    [
+        ("git fetch origin", "git"),
+        ("tok=s3cr3t", "tok="),
+        ("_cts_rc=$? _cts_us=$_", "?"),
+    ],
 )
 def test_a_row_names_the_command_and_never_the_guards_own(tmp_path, text, name):
     # Bash 3.2 hands the ERR trap its own command text, which names no user command.
-    proc, _, _ = _run(tmp_path, f"_cts_mute_cmd '{text}'\nprintf '%s\\n' \"$_cts_cmd\"\n")
+    proc, _, _ = _run(
+        tmp_path, f"_cts_mute_cmd '{text}'\nprintf '%s\\n' \"$_cts_cmd\"\n"
+    )
     assert (proc.returncode, proc.stdout) == (0, f"{name}\n")
