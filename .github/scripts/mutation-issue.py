@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep ONE issue in step with the daily mutation run.
+"""Keep ONE issue in step with the latest mutation run.
 
 A red job or a surviving mutant rewrites the issue's body to this run's
 findings, and reopens the issue when a past run closed it. A run with neither
@@ -129,7 +129,7 @@ def render_clean_body(run_url: str, sha: str, run_number: int) -> str:
     """The body a clean run leaves on the issue it closes."""
     return (
         f"{MARKER}\n{STAMP.format(run_number)}\n\n"
-        f"The daily mutation run at `{sha}` found no survivors and no failed job: {run_url}\n"
+        f"The mutation run at `{sha}` found no survivors and no failed job: {run_url}\n"
     )
 
 
@@ -139,7 +139,7 @@ def render_body(
     """The issue body for a run with RED jobs or SURVIVORS."""
     parts = [
         f"{MARKER}\n{STAMP.format(run_number)}",
-        f"The daily mutation run at `{sha}` found work: {run_url}",
+        f"The mutation run at `{sha}` found work: {run_url}",
         "Each survivor is a mutant that the module's own tests did not catch. Kill it with a test, or mark an equivalent mutant with a reason: `# pragma: no mutate` in Python, `// Stryker disable` in JS. This issue closes itself when a run finds no survivors and no failed job.",
     ]
     if red:
@@ -231,7 +231,7 @@ def main() -> None:
                 "close",
                 number,
                 "--comment",
-                f"The daily mutation run found no survivors and no failed job: {run_url}",
+                f"The mutation run found no survivors and no failed job: {run_url}",
             )
         return
     body = render_body(red, survivors, run_url, sha, run_number)

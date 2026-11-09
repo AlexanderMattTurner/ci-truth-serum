@@ -1,10 +1,5 @@
 name: Mutation testing
-# The scope is in the run name, so the gate can ask whether a passing run
-# already covered this head at this scope. A run is full when its cron fires
-# on Sunday (day-of-week 0); tests/test_mutation_gate.py holds the schedule
-# to exactly one such cron.
-run-name: >-
-  Mutation testing (${{ (endsWith(github.event.schedule, ' 0') || inputs.scope == 'full') && 'full' || 'daily' }})
+run-name: Mutation testing (${{ inputs.scope }})
 
 # Mutation testing over the lint parsers (cosmic-ray, Python) and the changelog
 # assembler (Stryker, JS). cosmic-ray reruns the offline suite once per mutant,
@@ -13,33 +8,26 @@ run-name: >-
 # .github/scripts/mutation_shards.py). Slices run in parallel so wall-clock is
 # the slowest single module, not the serial sum, and an aggregate step demands
 # one report per shard so a vanished slice can't score a subset as the whole.
-# This runs on a DAILY schedule and on demand, never on a pull request. The
-# daily run skips the modules cosmic-ray.toml's `[mutation] weekly-modules`
-# lists, whose oracle is too slow for a daily shard; the Sunday run is the full
-# one and mutates them too, with a longer shard timeout. One
-# cosmic-ray pass reruns the offline suite once per mutant, so the cost is paid
-# once a day against main rather than on every push to every branch. The gate job
-# skips a scheduled run when main has not moved since the last passing run. A
-# mutant that survives is a prompt to add a test, and the ledger job keeps one
-# issue listing every survivor, closed again once a run finds none.
+# It runs only on demand: a full pass costs hundreds of runner-minutes, so it
+# has no schedule and no pull_request trigger. The `daily` scope skips the
+# modules cosmic-ray.toml's `[mutation] weekly-modules` lists, whose oracle is
+# too slow for a short shard; `full` mutates them too, with a longer shard
+# timeout. A mutant that survives is a prompt to add a test, and the ledger job
+# keeps one issue listing every survivor, closed again once a run finds none.
 #
 # The Python side is INCREMENTAL. Each shard caches its cosmic-ray session under
 # a key that is a content hash of the shard's own inputs, so a run recomputes a
 # mutant only when something it depends on changed and restores the rest. Each
-# daily run therefore pays for the modules the day's merges touched.
+# run therefore pays for the modules that changed since the last one.
 #
 # Gate semantics: a shard fails only when its unmutated baseline is red or
 # cosmic-ray errors — a surviving mutant is diagnostic, not a build break. The
 # mutation-passed reporter is an `if: always()` summary so a run always reaches a
 # conclusion. It is NOT a required check: this workflow has no pull_request
-# trigger, so it posts no status on a pull request. A red daily run reaches a
-# person through build-publish-notify.yaml's workflow_run notifier and the ledger.
+# trigger, so it posts no status on a pull request. A red run reaches a person
+# through build-publish-notify.yaml's workflow_run notifier and the ledger.
 
 on:
-  schedule:
-    # cron-alert: false  # alerted repo-wide by build-publish-notify.yaml's workflow_run notifier, which check-failure-notifier-coverage holds exhaustive over every push/schedule workflow — this workflow has no in-workflow sink for this lint to credit
-    - cron: "0 6 * * 1-6" # daily 06:00 UTC, Monday to Saturday: the daily scope
-    - cron: "17 6 * * 0" # Sunday 06:17 UTC: the full scope, weekly modules included
   workflow_dispatch:
     inputs:
       scope:
@@ -65,9 +53,9 @@ permissions:
   contents: read
 
 jobs:
-  # Skip a scheduled run when main has not moved since the last passing run. Its
-  # verdicts would repeat that run's, and so would the issue it writes.
-  gate: # multi-cron-ok: both crons run this gate; SCOPE carries which schedule fired
+  # Check the scope and hand it on. A scheduled run would skip a head that a passing
+  # run already judged at the same scope or wider; with no schedule, every dispatch runs.
+  gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -85,7 +73,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           HEAD_SHA: ${{ github.sha }}
-          SCOPE: ${{ (endsWith(github.event.schedule, ' 0') || inputs.scope == 'full') && 'full' || 'daily' }}
+          SCOPE: ${{ inputs.scope }}
         run: bash .github/scripts/mutation-gate.sh
 
   # Expand the shard matrix from the committed tree (one shard per mutated hook
@@ -167,7 +155,6 @@ jobs:
   # and print the per-shard survival rates. This is the coverage gate; the shards
   # themselves never fail on survivors.
   aggregate: # required-check: false  # rolled up by mutation-passed (which needs: aggregate)
-    # multi-cron-ok: both crons aggregate their own scope's shard set
     needs: [gate, plan, mutation]
     if: always()
     runs-on: ubuntu-24.04
@@ -255,7 +242,6 @@ jobs:
   # Runs even when the gates close or a job is cancelled or skipped, so every
   # run reaches one conclusion a person can read.
   mutation-passed: # required-check: false  # the workflow has no pull_request trigger, so no pull request can wait on it
-    # multi-cron-ok: both crons need the run's verdict
     if: always()
     needs: [gate, plan, mutation, aggregate, mutation-js]
     runs-on: ubuntu-24.04
