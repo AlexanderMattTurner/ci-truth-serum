@@ -491,6 +491,13 @@
   language: python
   types: [shell]
 
+- id: check-silent-exit
+  name: "opinionated: require a message before an `exit N` that a failed probe reaches"
+  description: '`[[ -f "$cfg" ]] || exit 2` stops the script and prints nothing, so the log names no cause.'
+  entry: python -m ci_truth_serum.check_silent_exit
+  language: python
+  types: [shell]
+
 - id: check-lockstep-pins
   name: "opinionated: verify configured twin pins agree (the enforced 'keep in lockstep' comment)"
   description: Each --pair extracts one value from each of two files and fails unless they are equal; zero or multiple matches is a hard error. Config-driven, so it is NOT in the check-tier2 aggregate — enable it standalone with args.

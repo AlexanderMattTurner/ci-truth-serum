@@ -18,10 +18,11 @@ reports on a commit that touches only one language. It also catches the hand
 run: ``run_tier 1`` with no arguments still runs every workflow lint and exits
 0, which without the note reads as a clean tier rather than a partial one.
 
-A member that takes flags gets them from ``--check-arg <check>=<flag>``, so a
-parameterised check stays inside its tier instead of being skipped and re-listed
-as its own hook. Repeat the flag to pass several; ``--wrapper=retry_cmd`` is one
-token, so a flag and its value need one ``--check-arg``.
+A member that takes flags gets them from ``.ci-truth-serum.toml`` (see
+``_cts_config``) and from ``--check-arg <check>=<flag>``, so a parameterised check
+stays inside its tier instead of being skipped and re-listed as its own hook.
+Repeat the flag to pass several; ``--wrapper=retry_cmd`` is one token, so a flag
+and its value need one ``--check-arg``.
 
 Five hooks are not aggregated. A consumer enables each one on its own:
   * ``check-stale-opt-out`` runs the covered checks again, once for each file
@@ -58,7 +59,9 @@ from identify import identify
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import is_workflow_path  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_config import ConfigFileError, check_args  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CHECKS,
     COMMENTED_CODE,
     DOCKERFILE,
     DRIFT,
@@ -413,6 +416,22 @@ def run_per_file(
     return rc
 
 
+def configured_flags(extra: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Each module's flags: those `.ci-truth-serum.toml` gives it, then EXTRA's.
+
+    Exits 2 on a config file `_cts_config` refuses. A table for a check this hook
+    skips is not an error: the file is shared, and another hook may run that check."""
+    try:
+        configured = check_args(check.module for check in CHECKS)
+    except ConfigFileError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    return {
+        module: [*configured.get(module, []), *extra.get(module, [])]
+        for module in {*configured, *extra}
+    }
+
+
 def run_members(
     members: list[tuple[str, str]],
     files: list[str],
@@ -421,7 +440,7 @@ def run_members(
     """Run each (module, kind) member over FILES; return the exit code, the
     members that had no file of their kind to scan, and each member's seconds.
 
-    EXTRA maps a module to the flags `--check-arg` gave it. They precede the
+    EXTRA maps a module to its flags (see `configured_flags`). They precede the
     file arguments, which is where argparse wants them.
 
     The second value is what separates a member that passed from one that never
@@ -596,7 +615,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(2)
 
     members = [(m, k) for m, k in TIERS[tier] if m not in skips]
-    rc, unscanned, seconds = run_members(members, files, extra)
+    flags = configured_flags(extra)
+    rc, unscanned, seconds = run_members(members, files, flags)
     report_seconds(seconds, f"tier {tier} member")
     report_unscanned(
         unscanned,

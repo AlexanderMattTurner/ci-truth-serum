@@ -8,10 +8,14 @@ Covered here: check_token_fallback, check_workflow_secret_names,
 check_provenance_repo_url (URL normalization), check_pin_comment_truth,
 check_divergent_action_pins, check_stderr_merge_parse, check_echo_fallback,
 check_case_default, check_soft_timeout, check_flock_fixed_fd,
-check_bare_return_status,
+check_bare_return_status, check_silent_exit,
 check_lockstep_pins, check_cron_comment, check_toolchain_skips,
-check_conclusion_coverage, and release_canary's changelog/semver parsing.
+check_conclusion_coverage, _cts_config (the `.ci-truth-serum.toml` reader), and
+release_canary's changelog/semver parsing.
 """
+
+import tempfile
+from pathlib import Path
 
 from hypothesis import given
 from hypothesis import strategies as st
@@ -33,6 +37,8 @@ case_default = load_hook("check_case_default.py", "fuzz_check_case_default")
 soft_timeout = load_hook("check_soft_timeout.py", "fuzz_check_soft_timeout")
 flock_fd = load_hook("check_flock_fixed_fd.py", "fuzz_check_flock_fixed_fd")
 bare_return = load_hook("check_bare_return_status.py", "fuzz_check_bare_return_status")
+silent_exit = load_hook("check_silent_exit.py", "fuzz_check_silent_exit")
+cts_config = load_hook("_cts_config.py", "fuzz_cts_config")
 lockstep = load_hook("check_lockstep_pins.py", "fuzz_check_lockstep_pins")
 cron_comment = load_hook("check_cron_comment.py", "fuzz_check_cron_comment")
 toolchain = load_hook("check_toolchain_skips.py", "fuzz_check_toolchain_skips")
@@ -58,6 +64,12 @@ _TOKENS = [
     "- uses: actions/checkout@v6",
     "# pin-comment-ok",
     "v=$(cmd 2>&1 | tail -1)",
+    '[[ -f "$cfg" ]] || exit 2',
+    'if ! [ -n "$a" ]; then',
+    "else",
+    "  exit 3",
+    "fi",
+    "# allow-silent-exit: the status is the answer",
     "out=$(cmd 2>&1)",
     'echo "$out" | grep x',
     "[[ $out == 1.2.3 ]]",
@@ -138,6 +150,7 @@ _LINE_DETECTORS = [
     ("check_soft_timeout", soft_timeout.violations),
     ("check_flock_fixed_fd", flock_fd.violations),
     ("check_bare_return_status", bare_return.violations),
+    ("check_silent_exit", silent_exit.violations),
     ("check_cron_comment", cron_comment.violations),
     ("check_toolchain_skips", toolchain.violations),
 ]
@@ -276,3 +289,38 @@ def test_conclusion_coverage_violations_is_total(text: str, path: str) -> None:
     for lineno, detail in result:
         assert 1 <= lineno <= max(n_lines, 1)
         assert isinstance(detail, str) and detail
+
+
+_TOML_TOKENS = [
+    "[checks.check-retry-loop]",
+    "[checks.check_curl_retry]",
+    "[checks.check-no-such]",
+    'args = ["--x"]',
+    "args = []",
+    "args = [1]",
+    'flags = ["--x"]',
+    "[check]",
+    "checks = 1",
+]
+
+
+@given(
+    st.lists(
+        st.one_of(st.sampled_from(_TOML_TOKENS), st.text(max_size=12)), max_size=12
+    ).map("\n".join)
+)
+def test_config_reader_returns_flags_or_refuses(text: str) -> None:
+    """Any file either yields a module -> non-empty list of strings map, or raises
+    ConfigFileError: no other exception, and no table that configures nothing."""
+    with tempfile.TemporaryDirectory() as root:
+        (Path(root) / cts_config.CONFIG_FILE).write_text(text, encoding="utf-8")
+        try:
+            flags = cts_config.check_args(
+                {"check_retry_loop", "check_curl_retry"}, Path(root)
+            )
+        except cts_config.ConfigFileError:
+            return
+    assert set(flags) <= {"check_retry_loop", "check_curl_retry"}
+    assert all(
+        args and all(isinstance(a, str) for a in args) for args in flags.values()
+    )

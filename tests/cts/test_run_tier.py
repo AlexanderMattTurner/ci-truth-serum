@@ -391,6 +391,48 @@ def test_check_arg_reaches_a_workflow_member_that_takes_no_files(monkeypatch):
     assert seen["check_failure_notifier_coverage"] == ["--require-notifier"]
 
 
+def test_a_config_file_gives_its_member_flags_ahead_of_check_arg(tmp_path, monkeypatch):
+    """`.ci-truth-serum.toml` in the hook's directory configures a member by hook id,
+    and a `--check-arg` for the same member follows the configured flags."""
+    (tmp_path / ".ci-truth-serum.toml").write_text(
+        '[checks.check-retry-loop]\nargs = ["--wrapper=retry_cmd"]\n', encoding="utf-8"
+    )
+    shell_file = tmp_path / "s.sh"
+    shell_file.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    seen = _record_argv(monkeypatch)
+
+    rc = _run(
+        [
+            "2",
+            "--check-arg",
+            "check_retry_loop=--retry-helper=lib.bash",
+            str(shell_file),
+        ]
+    )
+
+    assert rc == 0
+    assert seen["check_retry_loop"] == [
+        "--wrapper=retry_cmd",
+        "--retry-helper=lib.bash",
+        str(shell_file),
+    ]
+    assert seen["check_curl_retry"] == [str(shell_file)]
+
+
+def test_a_config_file_that_names_no_aggregated_check_exits_nonzero(
+    tmp_path, monkeypatch, capsys
+):
+    (tmp_path / ".ci-truth-serum.toml").write_text(
+        '[checks.check-retry-lop]\nargs = ["--wrapper=x"]\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    _record_argv(monkeypatch)
+
+    assert _run(["2"]) == 2
+    assert "[checks.check-retry-lop] names no check" in capsys.readouterr().err
+
+
 def test_check_arg_for_a_check_outside_the_tier_exits_nonzero(capsys):
     rc = _run(["1", "--check-arg", "check_does_not_exist=--flag"])
     assert rc == 2
@@ -904,3 +946,16 @@ def test_a_host_that_cannot_start_a_pool_runs_the_pass_serially(
     monkeypatch.setattr(package_rt, "workers", lambda: 2)
     assert package_rt.run_per_file(members, files, {}, {}) == serial_rc == 1
     assert capsys.readouterr() == expected
+
+
+def test_a_config_file_table_for_a_skipped_check_is_not_an_error(tmp_path, monkeypatch):
+    """The file is shared: a consumer that skips a check here can re-add it as its own
+    `check-select` hook, which reads the same table."""
+    (tmp_path / ".ci-truth-serum.toml").write_text(
+        '[checks.check-retry-loop]\nargs = ["--wrapper=x"]\n', encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+    seen = _record_argv(monkeypatch)
+
+    assert _run(["2", "--skip", "check_retry_loop"]) == 0
+    assert "check_retry_loop" not in seen
