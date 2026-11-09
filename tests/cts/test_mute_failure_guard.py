@@ -261,15 +261,17 @@ def test_a_shell_that_unsets_the_guards_variables_keeps_running(tmp_path):
     # trap that then reads one would end the user's script.
     script = (
         "set -u\n"
-        "unset _cts_sub_level _cts_prev _cts_mute_dir _cts_us _cts_bc\n"
+        "unset _cts_sub_level _cts_prev _cts_mute_dir _cts_us\n"
         "echo ok\n"
         "x=$(echo sub)\n"
         "false || :\n"
         "echo done\n"
     )
-    proc, _, mute = _run(tmp_path, script)
+    proc, rows, mute = _run(tmp_path, script)
     assert (proc.returncode, proc.stdout, proc.stderr) == (0, "ok\ndone\n", "")
     assert (mute / "steps").read_text(encoding="utf-8") == "build\t0\n"
+    # The rows still reach the ledger with its path variable gone.
+    assert _sites(rows) == [("step.sh", 5, 1, "suppressed by || true: false")]
 
 
 @pytest.mark.parametrize(

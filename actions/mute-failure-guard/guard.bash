@@ -28,14 +28,15 @@ _cts_mute_dir=${BASH_SOURCE[0]%/*}
 # -T passes the DEBUG trap into functions and subshells, which the subshell rows need.
 set -E -T
 # The traps below assign these; set here so `set -u` never meets them unset.
-_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd='' _cts_us='' _cts_bc=''
+_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd='' _cts_us=''
 
 # _cts_mute_row STATUS FILE LINE COMMAND — append one tab-separated ledger row: step id, pid,
 # file:line, status, open descriptors, command text. The handler must never fail: under errexit
 # a failed write here would end the user's script, so an `if` holds the write.
 _cts_mute_row() {
-  local cmd=$4 fds=0 dir=${_cts_mute_dir:-} _
-  [[ -n "$dir" ]] || return 0
+  # A function's BASH_SOURCE is the file that defined it, so this finds the ledger beside the
+  # guard even after a launcher unsets the guard's variables.
+  local cmd=$4 fds=0 dir=${BASH_SOURCE[0]%/*} _
   cmd=${cmd//$'\n'/ }
   cmd=${cmd//$'\t'/ }
   for _ in /dev/fd/*; do fds=$((fds + 1)); done
@@ -65,7 +66,7 @@ _cts_mute_cmd() {
 }
 
 # Each trap ends with `: "$_cts_us"`, which gives `$_` back the caller's last argument.
-trap '_cts_rc=$? _cts_us=$_ _cts_bc=$BASH_COMMAND; _cts_mute_cmd "$_cts_bc"; _cts_mute_row "$_cts_rc" "${BASH_SOURCE[0]:-?}" "$LINENO" "$_cts_cmd"; : "$_cts_us"' ERR
+trap '_cts_rc=$? _cts_us=$_; _cts_mute_cmd "$BASH_COMMAND"; _cts_mute_row "$_cts_rc" "${BASH_SOURCE[0]:-?}" "$LINENO" "$_cts_cmd"; : "$_cts_us"' ERR
 
 # _cts_mute_enter FILE LINE COMMAND — arm an EXIT trap in a subshell that has just started, so
 # its non-zero exit is recorded at the place its first command came from.
