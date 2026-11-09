@@ -147,6 +147,7 @@ from _cts_py_imports import (  # pylint: disable=wrong-import-position
 )
 from _cts_cache_scope import (  # pylint: disable=wrong-import-position
     ANY_INSTALLER,
+    PIN_NAME as _PIN_NAME,
     CacheScope,
     Context,
     Text,
@@ -258,9 +259,6 @@ _URL = re.compile(r"^https?://")
 _VERSION_LITERAL = re.compile(r"(?<![\w.])v?(?P<version>\d+\.\d+(?:\.\d+)*)(?![\w])")
 _DIGEST_LITERAL = re.compile(r"\b[0-9a-f]{64}(?:[0-9a-f]{64})?\b")
 _RUNNER_VARIABLE = re.compile(r"^(?:GITHUB|RUNNER)_")
-# A variable whose name says it holds a pin. REF is left out: it is a substring
-# of PREFIX, a word that names a directory far more often than a release.
-_PIN_NAME = re.compile(r"VERSION|RELEASE|TAG|SHA|DIGEST|CHECKSUM|HASH", re.IGNORECASE)
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 # The suffix a checksum file adds to the name of the file it vouches for.
 _CHECKSUM_SUFFIX = re.compile(r"\.(?:sha(?:1|224|256|384|512)(?:sums?)?|b2|asc)$")
