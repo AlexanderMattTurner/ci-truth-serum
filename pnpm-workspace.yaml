@@ -1,0 +1,11 @@
+overrides:
+  # GHSA-r7fv-28h4-cvq7, GHSA-gfr2-rv44-r23c: markdown-it quadratic-time ReDoS (markdownlint-cli2 dep)
+  markdown-it: ">=15.0.3"
+  # GHSA-r4xh-jqrq-34v2: smol-toml quadratic-time parse (markdownlint-cli2 dep)
+  smol-toml: ">=1.8.1"
+  # GHSA-ph9p-34f9-6g65: tmp path traversal (@stryker-mutator dep)
+  tmp: ">=0.2.6"
+  # GHSA-2g4f-4pwh-qvx6: ajv ReDoS with $data option (@stryker-mutator dep)
+  ajv: ">=8.18.0"
+  # GHSA-g3hv-75wg-m249: minimatch DoS via globparts amplification (@stryker-mutator dep)
+  minimatch: ">=11.0.1"
