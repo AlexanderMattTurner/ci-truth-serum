@@ -80,13 +80,13 @@ ANY_INSTALLER = "*"
 
 # One `${{ }}` in workflow text, with its body.
 _EXPRESSION = re.compile(r"\$\{\{(?P<body>.*?)\}\}", re.DOTALL)
+# A variable whose name says it holds a pin. REF is left out: it is a substring
+# of PREFIX, a word that names a directory far more often than a release.
+PIN_NAME = re.compile(r"VERSION|RELEASE|TAG|SHA|DIGEST|CHECKSUM|HASH", re.IGNORECASE)
 # The contexts a cache key keeps as written when the text does not fix their
 # value. `env`, `vars`, `matrix` and a workflow's own `inputs` can hold a pin,
 # and a caller finds that pin by the variable it reads. The runner, the
 # event, the strategy and the job hold none.
-# A variable whose name says it holds a pin. REF is left out: it is a substring
-# of PREFIX, a word that names a directory far more often than a release.
-PIN_NAME = re.compile(r"VERSION|RELEASE|TAG|SHA|DIGEST|CHECKSUM|HASH", re.IGNORECASE)
 _KEPT_CONTEXTS = frozenset(
     {"env", "vars", "matrix", "inputs", "runner", "github", "strategy", "job"}
 )
