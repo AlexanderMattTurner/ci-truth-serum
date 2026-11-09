@@ -1,8 +1,10 @@
 name: Mutation testing
 # The scope is in the run name, so the gate can ask whether a passing run
-# already covered this head at this scope.
+# already covered this head at this scope. A run is full when its cron fires
+# on Sunday (day-of-week 0); tests/test_mutation_gate.py holds the schedule
+# to exactly one such cron.
 run-name: >-
-  Mutation testing (${{ (github.event.schedule == '17 6 * * 0' || inputs.scope == 'full') && 'full' || 'daily' }})
+  Mutation testing (${{ (endsWith(github.event.schedule, ' 0') || inputs.scope == 'full') && 'full' || 'daily' }})
 
 # Mutation testing over the lint parsers (cosmic-ray, Python) and the changelog
 # assembler (Stryker, JS). cosmic-ray reruns the offline suite once per mutant,
@@ -83,7 +85,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           HEAD_SHA: ${{ github.sha }}
-          SCOPE: ${{ (github.event.schedule == '17 6 * * 0' || inputs.scope == 'full') && 'full' || 'daily' }}
+          SCOPE: ${{ (endsWith(github.event.schedule, ' 0') || inputs.scope == 'full') && 'full' || 'daily' }}
         run: bash .github/scripts/mutation-gate.sh
 
   # Expand the shard matrix from the committed tree (one shard per mutated hook
@@ -96,7 +98,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.shards.outputs.shards }}
-      scope: ${{ steps.shards.outputs.scope }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,7 +107,6 @@ jobs:
         env:
           SCOPE: ${{ needs.gate.outputs.scope }}
         run: |
-          echo "scope=${SCOPE}" >>"$GITHUB_OUTPUT"
           echo "shards=$(python3 .github/scripts/mutation_shards.py --scope "${SCOPE}")" >>"$GITHUB_OUTPUT"
 
   # One shard per mutated module, in parallel. Each runs cosmic-ray over its one
@@ -209,7 +209,7 @@ jobs:
       - name: Aggregate and enforce one report per shard
         if: steps.owed.outputs.ran == 'true'
         env:
-          SCOPE: ${{ needs.plan.outputs.scope }}
+          SCOPE: ${{ needs.gate.outputs.scope }}
         run: python3 .github/scripts/aggregate-mutation.py --scope "${SCOPE}" shard-reports survivors.md
 
       - name: Upload the survivors list for the ledger
@@ -308,6 +308,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SURVIVORS_FILE: survivors.md
           STRYKER_REPORT: mutation.json
+          MUTATION_SCOPE: ${{ needs.gate.outputs.scope }}
           RESULTS: |
             gate=${{ needs.gate.result }}
             plan=${{ needs.plan.result }}

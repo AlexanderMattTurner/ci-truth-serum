@@ -16,17 +16,28 @@ that finds a newer stamp on the issue leaves the issue as it is, and stale
 findings never replace newer ones. When no issue exists yet, a clean run
 creates the issue closed, only to hold its stamp.
 
+A daily run does not mutate the weekly modules (cosmic-ray.toml's
+`[mutation] weekly-modules`), so it cannot prove them clean. It carries their
+survivor sections forward from the issue, and the issue closes only when a run
+also finds none of those.
+
 Env: RESULTS (one `job=result` line per job), SURVIVORS_FILE (the Markdown
 aggregate-mutation.py wrote; absent when no aggregate ran), STRYKER_REPORT
 (Stryker's JSON report; absent when Stryker did not pass), RUN_URL, GITHUB_SHA,
-GITHUB_RUN_NUMBER, GH_TOKEN. Needs `gh` with issues:write.
+GITHUB_RUN_NUMBER, MUTATION_SCOPE (daily or full; full when unset), GH_TOKEN.
+Needs `gh` with issues:write.
 """
 
 import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _repo_root import find_repo_root  # noqa: E402
+from mutation_shards import DAILY, weekly_modules  # noqa: E402
 
 MARKER = "<!-- mutation-testing-ledger -->"
 TITLE = "Mutation testing: surviving mutants or failed jobs"
@@ -35,6 +46,10 @@ RED_RESULTS = frozenset({"failure", "cancelled"})
 BODY_LIMIT = 65_536
 STAMP = "<!-- mutation-run: {} -->"
 STAMP_RE = re.compile(r"<!-- mutation-run: (?P<run>\d+) -->")
+# The heading of one shard's survivor section (aggregate-mutation.py's
+# survivors_markdown), and the suffix a sub-shard adds to its module's stem.
+SECTION_RE = re.compile(r"### `(?P<id>[^`]+)`")
+SUB_SHARD_RE = re.compile(r"-\d+$")
 # The Stryker statuses of a mutant that no test detected.
 UNDETECTED = {"Survived": "", "NoCoverage": " (no test covers it)"}
 
@@ -96,6 +111,18 @@ def stamp_of(body: str) -> int:
     """The run number stamped in BODY, or 0 for a body that a run never stamped."""
     found = STAMP_RE.search(body)
     return int(found["run"]) if found else 0
+
+
+def carried_sections(body: str, stems: set[str]) -> str:
+    """The survivor sections of BODY whose shard mutates a module in STEMS.
+
+    A section runs from its `### ` heading to the next heading of any level."""
+    kept = []
+    for section in re.split(r"\n(?=##)", body):
+        found = SECTION_RE.match(section)
+        if found and SUB_SHARD_RE.sub("", found["id"]) in stems:
+            kept.append(section.strip())
+    return "\n\n".join(kept)
 
 
 def render_clean_body(run_url: str, sha: str, run_number: int) -> str:
@@ -183,6 +210,11 @@ def main() -> None:
             " This run leaves the issue as it is."
         )
         return
+    if os.environ.get("MUTATION_SCOPE") == DAILY and issue is not None:
+        root = find_repo_root(Path(__file__).resolve().parent)
+        stems = {Path(module).stem for module in weekly_modules(root)}
+        carried = carried_sections(issue["body"], stems)
+        survivors = "\n\n".join(part for part in (survivors, carried) if part)
     if not red and not survivors:
         # A clean run stamps the issue too, whatever its state, or an older red
         # run that finishes later sees no newer stamp and reopens the issue.
