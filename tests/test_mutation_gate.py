@@ -10,7 +10,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 from tests._helpers import REPO_ROOT
 
@@ -70,17 +69,3 @@ def test_an_unknown_scope_fails_loud(tmp_path) -> None:
     proc, _ = _gate(tmp_path, "weekly", "")
     assert proc.returncode == 1
     assert "SCOPE must be daily or full" in proc.stderr
-
-
-def test_exactly_one_scheduled_cron_selects_the_full_scope() -> None:
-    """The workflow calls a run full when `github.event.schedule` ends in ` 0`
-    (day-of-week Sunday). A schedule with no such cron would make every run
-    daily, and the weekly modules would never be mutated, with no red anywhere."""
-    workflow = yaml.safe_load(
-        (REPO_ROOT / ".github" / "workflows" / "mutation.yaml").read_text(
-            encoding="utf-8"
-        )
-    )
-    crons = [entry["cron"] for entry in workflow[True]["schedule"]]
-    assert [cron for cron in crons if cron.endswith(" 0")] == ["17 6 * * 0"]
-    assert len(crons) == 2

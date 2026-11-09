@@ -21,7 +21,7 @@ name: Startup failure scan
 
 on:
   schedule:
-    - cron: "0 7 * * 1" # Mondays 07:00 UTC, one hour after the mutation run
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC
   workflow_dispatch:
 
 concurrency:
