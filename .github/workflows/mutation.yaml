@@ -65,7 +65,7 @@ permissions:
 jobs:
   # Skip a scheduled run when main has not moved since the last passing run. Its
   # verdicts would repeat that run's, and so would the issue it writes.
-  gate:
+  gate: # multi-cron-ok: both crons run this gate; SCOPE carries which schedule fired
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -167,6 +167,7 @@ jobs:
   # and print the per-shard survival rates. This is the coverage gate; the shards
   # themselves never fail on survivors.
   aggregate: # required-check: false  # rolled up by mutation-passed (which needs: aggregate)
+    # multi-cron-ok: both crons aggregate their own scope's shard set
     needs: [gate, plan, mutation]
     if: always()
     runs-on: ubuntu-24.04
@@ -254,6 +255,7 @@ jobs:
   # Runs even when the gates close or a job is cancelled or skipped, so every
   # run reaches one conclusion a person can read.
   mutation-passed: # required-check: false  # the workflow has no pull_request trigger, so no pull request can wait on it
+    # multi-cron-ok: both crons need the run's verdict
     if: always()
     needs: [gate, plan, mutation, aggregate, mutation-js]
     runs-on: ubuntu-24.04
