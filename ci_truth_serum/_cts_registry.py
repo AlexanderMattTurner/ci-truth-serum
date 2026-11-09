@@ -222,6 +222,7 @@ CHECKS: tuple[Check, ...] = (
     ),
     _check("check_echo_fallback", "2", SHELL, HONESTY, per_file=True),
     _check("check_bare_return_status", "2", SHELL, HONESTY, CORRECTNESS, per_file=True),
+    _check("check_silent_exit", "2", SHELL, HONESTY, per_file=True),
     _check("check_bare_mkdir", "2", SHELL, HONESTY, CORRECTNESS, per_file=True),
     _check("check_env_arith", "2", SHELL, CORRECTNESS, per_file=True),
     _check("check_curl_retry", "2", SHELL, CORRECTNESS, COST, per_file=True),
