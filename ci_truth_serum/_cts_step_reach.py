@@ -261,10 +261,10 @@ class Namespace:
             self.functions.setdefault(name, []).append((body, unit))
         for name, assignment in assignments:
             self.assignments.setdefault(name, []).append((assignment, unit))
-        loops, arrays, _ = _bindings(unit.root)
-        for name, loop in loops:
+        bindings = _bindings(unit.root)
+        for name, loop in bindings.loops:
             self.loops.setdefault(name, []).append((loop, unit))
-        for name, command in arrays:
+        for name, command in bindings.arrays:
             self.arrays.setdefault(name, []).append((command, unit))
 
     def _walk(self) -> None:
@@ -478,7 +478,7 @@ class Namespace:
     @functools.cached_property
     def defaulted(self) -> frozenset[str]:
         """The names the units read with a default (`${NAME:-default}`)."""
-        return frozenset().union(*(_bindings(unit.root)[2] for unit in self.units))
+        return frozenset().union(*(_bindings(u.root).defaulted for u in self.units))
 
     def assignments_at(self, name: str, node: Node) -> list[tuple[Node, Unit]]:
         """The assignments of NAME that NODE can see. A function that declares
@@ -939,13 +939,20 @@ def _declares_local(function: Node, name: str) -> bool:
 _ONE_WORD = frozenset({"word", "string", "raw_string"})
 
 
+class _Bindings(NamedTuple):
+    """What one parse tree binds. LOOPS holds (name, loop) for each
+    `for NAME in …`, ARRAYS holds (name, command) for each `read -a NAME`, and
+    DEFAULTED holds each name read with a default (`${NAME:-d}`)."""
+
+    loops: list[tuple[str, Node]]
+    arrays: list[tuple[str, Node]]
+    defaulted: frozenset[str]
+
+
 @functools.lru_cache(maxsize=1024)
-def _bindings(
-    root: Node,
-) -> tuple[list[tuple[str, Node]], list[tuple[str, Node]], frozenset[str]]:
-    """(name, loop) for each `for NAME in …` under ROOT, (name, command) for
-    each `read -a NAME`, and each name read with a default (`${NAME:-d}`).
-    A shared file is read into many namespaces, so one walk serves them all."""
+def _bindings(root: Node) -> _Bindings:
+    """What ROOT binds. A shared file is read into many namespaces, so one
+    walk serves them all."""
     loops, arrays, defaulted = [], [], set()
     for node in iter_nodes(root, "for_statement", "command", "expansion"):
         inner = node.children[1:-1]
@@ -962,7 +969,7 @@ def _bindings(
             and node_text(inner[1]) in (":-", "-")
         ):
             defaulted.add(node_text(inner[0]))
-    return loops, arrays, frozenset(defaulted)
+    return _Bindings(loops, arrays, frozenset(defaulted))
 
 
 def _read_array(command: Node) -> str | None:
