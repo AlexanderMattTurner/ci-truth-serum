@@ -1535,14 +1535,18 @@ def _argv_variants(
 
 def _shell_text(node: ast.expr | None, scope: _PyScope, depth: int = 0) -> str | None:
     """NODE as bash reads it between double quotes, or None when the text does
-    not fix it. A name the module does not bind is `${name}`, so a pin name
-    in a URL stays a pin name."""
+    not fix it. A name reads the function's own assignment before the
+    module's. A name neither binds is `${name}`, so a pin name in a URL stays
+    a pin name."""
     if node is None or depth > 3:
         return None
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return re.sub(r'["\\`]', lambda m: "\\" + m[0], node.value)
     if isinstance(node, ast.Name):
-        bound = scope.constants.get(node.id)
+        local = scope.local.get(node.id, [])
+        if len(local) > 1:
+            return None  # two assignments: the text does not fix which one runs
+        bound = local[0] if local else scope.constants.get(node.id)
         return _shell_text(bound, scope, depth + 1) if bound else f"${{{node.id}}}"
     if not isinstance(node, ast.JoinedStr):
         return None
@@ -1702,9 +1706,10 @@ def _names_used(tree: ast.Module, stems: set[str]) -> set[str]:
 
 def _reached(module: Path, named: set[str]) -> set[str]:
     """NAMED, with every module-level function of MODULE that a NAMED function
-    calls at any depth. Code at module level runs on import, and a method or a
-    nested function is reached by calls this graph cannot follow, so both
-    count. A `*` import names every function."""
+    calls at any depth. Code at module level runs on import, so it and each
+    function it calls count. A method or a nested function is reached by calls
+    this graph cannot follow, so it counts too. A `*` import names every
+    function."""
     tree = _parsed(module) or ast.Module(body=[], type_ignores=[])
     functions: dict[str, ast.AST] = {
         node.name: node
@@ -1722,7 +1727,18 @@ def _reached(module: Path, named: set[str]) -> set[str]:
             and node.name not in functions
         }
     )
-    pending = list(named & functions.keys())
+    # A definition runs no body on import, and neither does the main guard.
+    top = [
+        n
+        for n in tree.body
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and not (isinstance(n, ast.If) and "__main__" in ast.unparse(n.test))
+    ]
+    pending = list(
+        (named | _called(ast.Module(body=top, type_ignores=[]), functions))
+        & functions.keys()
+    )
+    reached |= set(pending)
     while pending:
         new = _called(functions[pending.pop()], functions) - reached
         reached |= new
