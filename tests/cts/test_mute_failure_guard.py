@@ -112,11 +112,20 @@ def test_a_substitution_that_succeeds_leaves_no_row(tmp_path):
     assert (proc.returncode, rows) == (0, [])
 
 
-def test_a_return_trap_cleanup_waits_for_its_own_function(tmp_path):
+@pytest.mark.parametrize(
+    "signals",
+    [
+        pytest.param("RETURN", id="return-only"),
+        pytest.param("RETURN EXIT", id="return-then-exit"),
+        pytest.param("RETURN ERR", id="return-then-err"),
+        pytest.param("EXIT RETURN", id="exit-then-return"),
+    ],
+)
+def test_a_return_trap_cleanup_waits_for_its_own_function(tmp_path, signals):
     # -T would also run f's RETURN trap when g returns; the guard turns -T off before such a trap.
     script = (
         "g() { :; }\n"
-        'f() { local t="$PWD/kept"; : >"$t"; trap "rm -f -- $t" RETURN; g; [[ -e $t ]] && echo kept-after-g; }\n'
+        f'f() {{ local t="$PWD/kept"; : >"$t"; trap "rm -f -- $t" {signals}; g; [[ -e $t ]] && echo kept-after-g; }}\n'
         "f\n"
         '[[ -e "$PWD/kept" ]] || echo removed-after-f\n'
     )

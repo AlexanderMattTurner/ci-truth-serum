@@ -63,15 +63,20 @@ _cts_mute_enter() {
 # The DEBUG trap runs before every command. In order, it:
 #   1. arms the subshell EXIT trap on the first command of a new subshell;
 #   2. records a failure that the `true` or `:` about to run will discard — $? still holds it;
-#   3. turns -T off in a shell about to set a RETURN trap. Under -T a RETURN trap also runs when
-#      every function it calls returns, so a cleanup there would run too early. That shell keeps
-#      its ERR and suppressed rows and loses only the subshell rows.
+#   3. turns -T off in a shell about to set a RETURN trap, in any position of its signal list.
+#      Under -T a RETURN trap also runs when every function it calls returns, so a cleanup there
+#      would run too early. That shell keeps its ERR and suppressed rows and loses only the
+#      subshell rows. The pattern may match a command that is not a trap; that costs the shell
+#      its subshell rows and nothing else. Known limit: a trap set through a wrapper function
+#      (for example `add_trap cleanup RETURN`) is not seen, so -T stays on for it.
+# The pattern sits in a variable because bash 3.2 and 5 read a quoted =~ operand differently.
+_cts_return_re='^trap[[:space:]].*[[:space:]]RETURN([[:space:]]|$)'
 _cts_prev=
 # $LINENO is read on the trap's first line: each later line of this body adds one to it.
 trap '_cts_drc=$? _cts_dline=$LINENO
 ((BASH_SUBSHELL > _cts_sub_level)) && _cts_mute_enter "${BASH_SOURCE[0]:-?}" "$_cts_dline" "$BASH_COMMAND"
 ((_cts_drc != 0)) && [[ $BASH_COMMAND == true || $BASH_COMMAND == : ]] && _cts_mute_cmd "$_cts_prev" && _cts_mute_row "$_cts_drc" "${BASH_SOURCE[0]:-?}" "$_cts_dline" "suppressed by || true: $_cts_cmd"
-[[ $BASH_COMMAND == trap*RETURN ]] && set +T
+[[ $BASH_COMMAND =~ $_cts_return_re ]] && set +T
 _cts_prev=$BASH_COMMAND' DEBUG
 
 # The first guarded bash in a step is the step's own shell. It records the step's exit status and
