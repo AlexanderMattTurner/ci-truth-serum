@@ -60,13 +60,19 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
           restore-keys: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-node${{ steps.node.outputs.node-version }}-
+      # Every environment is built here, before any hook runs, so the save below can tell a
+      # complete store from one a failed download or a cancel left half built.
+      - name: Install the hook environments
+        id: install-hooks
+        if: hashFiles('.pre-commit-config.yaml') != ''
+        run: uvx pre-commit==4.6.0 install-hooks
       - name: Run pre-commit
         if: hashFiles('.pre-commit-config.yaml') != ''
         run: uvx pre-commit==4.6.0 run --all-files --show-diff-on-failure
-      # Saved even when a hook fails: the environments it built are valid either way, and a
-      # failing run is the one most likely to run again.
+      # Saved when a hook fails too, since the environments are complete either way. Only a
+      # store whose install succeeded is saved: a key that hits is never saved again.
       - name: Save pre-commit cache
-        if: always() && hashFiles('.pre-commit-config.yaml') != '' && steps.pre-commit-cache.outputs.cache-hit != 'true'
+        if: ${{ !cancelled() && steps.install-hooks.outcome == 'success' && steps.pre-commit-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
