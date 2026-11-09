@@ -16,6 +16,7 @@ set -euo pipefail
 
 # No package.json at all: nothing is configured — a legitimate skip, not an
 # unreadable one.
+# allow-silent-exit: exit 1 is this predicate's documented "not configured" answer
 [[ -f package.json ]] || exit 1
 
 # Use jq so the script name is never interpolated into an expression string.
