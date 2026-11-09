@@ -105,6 +105,7 @@ is real but never fails loudly.
 
 import ast
 import functools
+import os
 import posixpath
 import re
 import shlex
@@ -2173,21 +2174,20 @@ def _hashed_assignments(root: Path, pattern: str) -> frozenset[str]:
 
 
 @functools.lru_cache(maxsize=1024)
-def _assigned_literals(root: Path, name: str) -> frozenset[str]:
-    """The literal values ROOT's shell files assign NAME: the assigned text, where it
-    holds no expansion. A generated file such as `tool-versions.sh` carries the
-    value its source file holds, which is how a key that hashes the source
-    (`config/tool-pins/k3s.json`) names the pin.
+def _assigned_literals(root: Path, name: str, files: frozenset[str]) -> frozenset[str]:
+    """The literal values that FILES, repo-relative shell files, assign NAME: the
+    assigned text, where it holds no expansion. FILES are the ones the fetch reads,
+    so only the value the download uses counts. A generated file such as
+    `tool-versions.sh` carries the value its source file holds, which is how a key
+    that hashes the source (`config/tool-pins/k3s.json`) names the pin.
 
-    Only a file whose text mentions NAME is parsed. A file the parser refuses
-    gives no value, which can only leave a fetch uncovered: the safe direction."""
+    A file the parser refuses gives no value, which leaves the fetch uncovered:
+    the safe direction."""
     values: set[str] = set()
-    for rel in _shell_files(root):
+    for rel in sorted(files):
         try:
-            if name not in (root / rel).read_text(encoding="utf-8"):
-                continue
             tree = load_shell(root / rel)[1]
-        except (UnicodeDecodeError, PathologicalInputError):
+        except (OSError, UnicodeDecodeError, PathologicalInputError):
             continue
         for assigned, node in definitions(tree)[1]:
             value = node.child_by_field_name("value")
@@ -2197,29 +2197,43 @@ def _assigned_literals(root: Path, name: str) -> frozenset[str]:
     return frozenset(values)
 
 
+@functools.lru_cache(maxsize=4)
+def _repo_files(root: Path) -> tuple[tuple[str, Path], ...]:
+    """(repo-relative path, path) of every file under ROOT, `.git` left out."""
+    found = []
+    for directory, subdirectories, names in os.walk(root):
+        subdirectories[:] = sorted(d for d in subdirectories if d != ".git")
+        for name in sorted(names):
+            path = Path(directory) / name
+            found.append((path.relative_to(root).as_posix(), path))
+    return tuple(found)
+
+
 @functools.lru_cache(maxsize=1024)
 def _hashed_text(root: Path, pattern: str) -> str:
     """The text of every file under ROOT that a `hashFiles()` PATTERN matches."""
     if not pattern or pattern.startswith(("/", "!")):
         return ""
     matcher = glob_to_regex(pattern)
-    texts = []
-    for path in sorted(root.rglob("*")):
-        rel = path.relative_to(root).as_posix()
-        if ".git" in path.relative_to(root).parts or not matcher.match(rel):
-            continue
-        if path.is_file():
-            texts.append(path.read_text(encoding="utf-8", errors="replace"))
-    return "\n".join(texts)
+    return "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for rel, path in _repo_files(root)
+        if matcher.match(rel)
+    )
 
 
 def _pin_values(fetch: Fetch) -> set[str]:
     """FETCH's pins as literal values: each version or digest it names, and each
     literal a pin variable is assigned. A value under 4 characters is left out,
     because a hashed file holds it by chance."""
-    values = {pin for pin in fetch.pins if not _IDENTIFIER.fullmatch(pin)}
+    values = {
+        pin
+        for pin in fetch.pins
+        if not _IDENTIFIER.fullmatch(pin) or _DIGEST_LITERAL.fullmatch(pin)
+    }
+    shell = frozenset(rel for rel in fetch.sources if rel.endswith((".sh", ".bash")))
     for pin in fetch.pins - values:
-        values |= _assigned_literals(REPO_ROOT, pin)
+        values |= _assigned_literals(REPO_ROOT, pin, shell)
     return {value for value in values if len(value) >= 4}
 
 

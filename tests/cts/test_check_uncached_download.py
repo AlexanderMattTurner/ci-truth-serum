@@ -710,6 +710,57 @@ def test_a_key_that_hashes_the_source_of_a_generated_pin_names_it(
     assert len(messages) == fires, messages
 
 
+def test_a_value_an_unrelated_script_assigns_names_no_pin(rooted):
+    """Only the files the fetch reads give a pin variable its value. Another
+    script that assigns the same name `v9.9.9` does not let a key hashing a file
+    that holds `v9.9.9` cover a download of `v2.7.0`."""
+    _tree(
+        rooted,
+        {
+            **VERSIONS,
+            "other/versions.sh": "TOOL_VERSION=v9.9.9\n",
+            "pins/other.json": '{"version": "v9.9.9"}\n',
+        },
+    )
+    script = (
+        "source s/versions.sh\n"
+        'curl -fsSLo "$HOME/.cache/tool/$ARCH/tool" '
+        '"https://github.com/o/tool/releases/download/${TOOL_VERSION}/tool"'
+    )
+    key = "t-${{ hashFiles('pins/other.json') }}"
+    cache = _cache(key, "~/.cache/tool/linux")
+    assert len(_messages(_write(rooted, _job(cache + _run(script))))) == 1
+
+
+@pytest.mark.parametrize(
+    ("digest", "hashed", "fires"),
+    [
+        ("a" * 64, "pins/tool.json", False),
+        ("0" * 64, "pins/tool.json", False),
+        ("a" * 64, "pins/none.json", True),
+    ],
+    ids=["letter-led", "digit-led", "unrelated-key"],
+)
+def test_a_key_that_hashes_a_file_holding_the_digest_names_the_pin(
+    rooted, digest, hashed, fires
+):
+    """A 64-hex digest is a value even when it starts with a letter and so also
+    reads as a variable name."""
+    _tree(
+        rooted,
+        {
+            "pins/tool.json": f'{{"sha256": "{digest}"}}\n',
+            "pins/none.json": "{}\n",
+        },
+    )
+    out = "$HOME/.cache/tool/$ARCH/tool"
+    script = f'curl -fsSLo "{out}" "https://example.com/v1.2.3/{digest}/tool"'
+    key = f"t-${{{{ hashFiles('{hashed}') }}}}"
+    cache = _cache(key, "~/.cache/tool/linux")
+    messages = _messages(_write(rooted, _job(cache + _run(script))))
+    assert len(messages) == fires, messages
+
+
 @pytest.mark.parametrize(
     ("script", "fires"),
     [
