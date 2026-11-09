@@ -461,6 +461,17 @@ The cost is one request for each 100 completed runs, plus one for each failing r
 
 **The obvious version of this scan reports every repo healthy.** A run that failed to load concludes `startup_failure`, and not `failure`. The `status=` filter on the runs listing matches the conclusion, so `status=failure` never returns one. This tool asks for `status=completed` and classifies each conclusion itself. It leaves out `cancelled` and `skipped`, because a run cancelled in the queue also holds zero jobs and is not a broken file.
 
+## Actions
+
+### Mute-failure guard
+
+The `mute-failure-guard` action records every bash command that fails in a CI job. When the job fails, the action prints the failed step's records, so a failure that no step printed still has a cause. It also reports the open-file and process counts. Add it as the first step of a job, before the first bash step. It refuses a job that already sets `BASH_ENV`.
+
+```yaml
+steps:
+  - uses: AlexanderMattTurner/ci-truth-serum/actions/mute-failure-guard@<commit SHA>
+```
+
 ## Contributing
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) states the rule for what belongs here. It gives three tests a proposed check must pass, says which tier and tag a new check takes, and lists the files one check has to ship. Read it before you open a pull request that adds a check.
