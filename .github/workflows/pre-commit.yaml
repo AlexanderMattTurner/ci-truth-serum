@@ -31,6 +31,7 @@ jobs:
       # pre-commit itself; the two versions are kept in sync by
       # tests/test_version_sync.py.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: python
         with:
           python-version: "3.11"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -39,6 +40,7 @@ jobs:
       # from the repo's node_modules (ESM ignores NODE_PATH), so the module is
       # absent until `pnpm install` runs.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        id: node
         with:
           node-version-file: ".nvmrc"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -46,16 +48,35 @@ jobs:
         # No --frozen-lockfile: the repo gitignores pnpm-lock.yaml, so CI resolves
         # from package.json against the registry.
         run: pnpm install --no-frozen-lockfile
+      # A hook environment is a venv or node env bound to the exact interpreter that built it.
+      # When setup-python or setup-node moves to a new patch release, pre-commit finds every
+      # cached environment broken and rebuilds it, and a key that still hits is never saved
+      # again. So the key carries both versions, and a toolchain bump starts a fresh cache.
       - name: Restore pre-commit cache
+        id: pre-commit-cache
         if: hashFiles('.pre-commit-config.yaml') != ''
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
-          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-          restore-keys: pre-commit-${{ runner.os }}-
+          key: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
+          restore-keys: pre-commit-${{ runner.os }}-py${{ steps.python.outputs.python-version }}-node${{ steps.node.outputs.node-version }}-
+      # Every environment is built here, before any hook runs, so the save below can tell a
+      # complete store from one a failed download or a cancel left half built.
+      - name: Install the hook environments
+        id: install-hooks
+        if: hashFiles('.pre-commit-config.yaml') != ''
+        run: uvx pre-commit==4.6.0 install-hooks
       - name: Run pre-commit
         if: hashFiles('.pre-commit-config.yaml') != ''
         run: uvx pre-commit==4.6.0 run --all-files --show-diff-on-failure
+      # Saved when a hook fails too, since the environments are complete either way. Only a
+      # store whose install succeeded is saved: a key that hits is never saved again.
+      - name: Save pre-commit cache
+        if: ${{ !cancelled() && steps.install-hooks.outcome == 'success' && steps.pre-commit-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: ${{ steps.pre-commit-cache.outputs.cache-primary-key }}
 
   # Stable Required check: runs even when `pre-commit` is cancelled/skipped, so
   # a protected branch never gets stuck on a check that never reports.
