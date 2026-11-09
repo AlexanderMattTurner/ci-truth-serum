@@ -287,6 +287,17 @@ def _walk_missing(node: Node):
         stack.extend(current.children)
 
 
+def code_children(node: Node) -> list[Node]:
+    """NODE's children without its comment nodes.
+
+    A comment on its own line inside a `||` chain is a child of the `list` node,
+    between the operator and the operand it introduces. A check that pairs an
+    operator with the next sibling then reads the comment as the operand, and
+    the finding behind the comment disappears.
+    """
+    return [child for child in node.children if child.type != "comment"]
+
+
 def iter_nodes(node: Node, *types: str):
     """Every descendant of NODE (inclusive) whose ``type`` is in TYPES, yielded in
     document (pre-order) order."""

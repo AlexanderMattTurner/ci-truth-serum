@@ -87,6 +87,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
+    code_children,
     command_name,
     command_words,
     iter_nodes,
@@ -340,7 +341,7 @@ def _is_captured_producer(node) -> bool:
 
 def _operands(node) -> list:
     """NODE's branches, with the operator tokens between them dropped."""
-    return [child for child in node.children if child.type not in _OPERATORS]
+    return [child for child in code_children(node) if child.type not in _OPERATORS]
 
 
 def _is_noop(node) -> bool:

@@ -84,6 +84,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
+    code_children,
     command_words,
     in_condition,
     iter_nodes,
@@ -306,7 +307,7 @@ def _status_discarded(node) -> bool:
     parent = node.parent
     if parent is None or parent.type != "list":
         return False
-    children = parent.children
+    children = code_children(parent)
     index = next(i for i, child in enumerate(children) if child.id == node.id)
     if index + 2 >= len(children) or children[index + 1].type != "||":
         return False

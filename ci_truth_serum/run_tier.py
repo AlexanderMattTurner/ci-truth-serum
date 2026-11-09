@@ -23,8 +23,9 @@ parameterised check stays inside its tier instead of being skipped and re-listed
 as its own hook. Repeat the flag to pass several; ``--wrapper=retry_cmd`` is one
 token, so a flag and its value need one ``--check-arg``.
 
-Four hooks are not aggregated. A consumer enables each one on its own:
-
+Five hooks are not aggregated. A consumer enables each one on its own:
+  * ``check-stale-opt-out`` runs the covered checks again, once for each file
+    that holds an opt-out, so an aggregate that held it would run them twice.
   * ``check-absolute-symlinks`` is a ``language: script`` shell hook, not a
     Python module, so it cannot run inside this Python aggregate.
   * ``check-lockstep-pins`` and ``check-env-symmetry`` scan the whole tree and

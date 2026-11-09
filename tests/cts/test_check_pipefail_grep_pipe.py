@@ -680,3 +680,9 @@ def test_own_shell_surface_is_clean() -> None:
         hits = mod.violations(path.read_text(encoding="utf-8", errors="replace"))
         offenders += [f"{path.relative_to(REPO_ROOT)}:{n}" for n in hits]
     assert offenders == [], f"early-reader pipelines in own shell surface: {offenders}"
+
+
+def test_a_comment_before_the_discard_word_still_discards() -> None:
+    """A comment line between `||` and `true` is a child of the `list` node, so
+    read as the right operand it hid the discard and the pipe was flagged."""
+    assert _flag("producer | grep -q pat ||\n  # why\n  true\n") == []
