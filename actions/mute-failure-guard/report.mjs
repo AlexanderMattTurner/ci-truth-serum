@@ -8,6 +8,9 @@ export const ERROR_WORDS = [
   "error", "fail", "fatal", "refus", "denied", "cannot", "could not", "not found",
   "no such", "traceback", "exception", "panic", "abort", "killed", "timed out",
 ];
+// A failed step's own rows are printed in full up to STEP_ROWS: its first failure is often the
+// cause, so a newest-only cut would hide it. Rows from steps that passed are context, newest last.
+const STEP_ROWS = 500;
 const LEDGER_ROWS = 50;
 const LEDGER_HEADER = "step\tpid\tfile:line\tstatus\topen fds\tcommand\t(times seen)";
 
@@ -66,6 +69,13 @@ function openFiles() {
   }
 }
 
+/** ROWS, or its first and last halves of LIMIT with a line that counts the rows left out. */
+export function headAndTail(rows, limit) {
+  if (rows.length <= limit) return rows;
+  const half = Math.floor(limit / 2);
+  return [...rows.slice(0, half), `... ${rows.length - 2 * half} rows not shown ...`, ...rows.slice(-half)];
+}
+
 /** The report lines for the ledger directory DIR. */
 export function report(dir, words = ERROR_WORDS) {
   const read = (name) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), "utf8") : "");
@@ -90,15 +100,20 @@ export function report(dir, words = ERROR_WORDS) {
   const ps = hostFact("ps", ["-A", "-o", "pid="]);
   out.push(`processes on the host: ${ps.startsWith("unreadable") ? ps : ps.split("\n").length}`);
   const rows = read("ledger").split("\n").filter(Boolean);
-  for (const [step] of failed) {
-    const own = distinct(rows.filter((row) => row.split("\t")[0] === step));
-    out.push(`Ledger rows from step ${step}, newest last: ${own.length} distinct`);
-    out.push(...own.slice(-LEDGER_ROWS));
+  const failedSteps = new Set(failed.map(([step]) => step));
+  const stepOf = (row) => row.split("\t")[0];
+  out.push(`Ledger columns: ${LEDGER_HEADER}`);
+  for (const step of failedSteps) {
+    const own = distinct(rows.filter((row) => stepOf(row) === step));
+    out.push(`Ledger rows from step ${step}, in the order each row last failed: ${own.length} distinct`);
+    out.push(...headAndTail(own, STEP_ROWS));
   }
-  const all = distinct(rows);
-  out.push(`Ledger: the last ${Math.min(all.length, LEDGER_ROWS)} of ${all.length} distinct rows (${rows.length} in all)`);
-  out.push(LEDGER_HEADER);
-  out.push(...all.slice(-LEDGER_ROWS));
+  const others = distinct(rows.filter((row) => !failedSteps.has(stepOf(row))));
+  out.push(
+    `Ledger rows from the other steps: the last ${Math.min(others.length, LEDGER_ROWS)} of ` +
+      `${others.length} distinct rows (${rows.length} rows in the whole ledger)`,
+  );
+  out.push(...others.slice(-LEDGER_ROWS));
   out.push(
     "A row marked `subshell exit` is a $(…), <(…) or ( … ) that exited non-zero; one marked " +
       "`suppressed` is a failure that `|| true` or `|| :` discarded. A shell that sets its own ERR, " +
