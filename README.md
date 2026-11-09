@@ -359,6 +359,17 @@ This keeps the property that matters. A new check added to the tier upstream sti
 
 `check-exit-suppression` also takes `--producer-only`, which restricts it to the captured-producer rule (a suppressed `$(gh api …)`/`$(jq …)` capture) and skips the uncaptured rule (a bare `cmd || true` with output kept). A consumer that wants the producer rule over a wider tree than it has ever enforced the uncaptured rule on adds a second `check-exit-suppression` entry with that flag and a broader `files:`, instead of widening the first entry's scope and inheriting uncaptured findings it never opted into.
 
+### Configure a check in a tier
+
+A tier hook runs many checks, so its `args:` cannot say which flag belongs to which check. Write those flags once, in `.ci-truth-serum.toml` at the repository root:
+
+```toml
+[checks.check-retry-loop]
+args = ["--wrapper=retry_cmd", "--retry-helper=bin/lib/retry.bash"]
+```
+
+Each table names one aggregated check, by its hook id or its module name. Its `args` reach the check before its file arguments, one token per item. Every tier hook and `check-select` read the file. A `--check-arg <check>=<flag>` in a hook's `args:` adds flags after the configured ones. **A table that names no aggregated check, or a key other than `args`, is a hard error**, because it would otherwise configure nothing while the run looks configured. A standalone hook keeps its flags in its own `args:`.
+
 ### Autofix (opt-in): digest-pin base images
 
 `check-pinned-base-images` can rewrite what it finds. Pass `--fix`, and it resolves the current registry digest of each unpinned `FROM` and appends it, so `FROM node:22` becomes `FROM node:22@sha256:…`. It preserves a `--platform` flag and an `AS <stage>` suffix. The flag is opt-in because `--fix` makes the only network call in the pack, a Docker Registry v2 manifest lookup. Detection stays offline. The check leaves an image untouched when it cannot resolve the digest, and it never guesses one.

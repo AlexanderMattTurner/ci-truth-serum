@@ -18,10 +18,11 @@ reports on a commit that touches only one language. It also catches the hand
 run: ``run_tier 1`` with no arguments still runs every workflow lint and exits
 0, which without the note reads as a clean tier rather than a partial one.
 
-A member that takes flags gets them from ``--check-arg <check>=<flag>``, so a
-parameterised check stays inside its tier instead of being skipped and re-listed
-as its own hook. Repeat the flag to pass several; ``--wrapper=retry_cmd`` is one
-token, so a flag and its value need one ``--check-arg``.
+A member that takes flags gets them from ``.ci-truth-serum.toml`` (see
+``_cts_config``) and from ``--check-arg <check>=<flag>``, so a parameterised check
+stays inside its tier instead of being skipped and re-listed as its own hook.
+Repeat the flag to pass several; ``--wrapper=retry_cmd`` is one token, so a flag
+and its value need one ``--check-arg``.
 
 Five hooks are not aggregated. A consumer enables each one on its own:
   * ``check-stale-opt-out`` runs the covered checks again, once for each file
@@ -58,7 +59,9 @@ from identify import identify
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import is_workflow_path  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_config import ConfigError, check_args  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CHECKS,
     COMMENTED_CODE,
     DOCKERFILE,
     DRIFT,
@@ -421,8 +424,9 @@ def run_members(
     """Run each (module, kind) member over FILES; return the exit code, the
     members that had no file of their kind to scan, and each member's seconds.
 
-    EXTRA maps a module to the flags `--check-arg` gave it. They precede the
-    file arguments, which is where argparse wants them.
+    EXTRA maps a module to the flags `--check-arg` gave it. They follow the flags
+    `.ci-truth-serum.toml` gives the module, and both precede the file arguments,
+    which is where argparse wants them.
 
     The second value is what separates a member that passed from one that never
     ran: both leave exit code 0, and a caller that reports one as the other is
@@ -433,7 +437,15 @@ def run_members(
     attribute the seconds re-measures them by hand against a consumer tree.
     `report_seconds` prints them.
     """
-    extra = extra or {}
+    try:
+        configured = check_args(check.module for check in CHECKS)
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    extra = {
+        module: [*configured.get(module, []), *(extra or {}).get(module, [])]
+        for module in {*configured, *(extra or {})}
+    }
     rc = 0
     unscanned: list[str] = []
     seconds: dict[str, float] = {}
