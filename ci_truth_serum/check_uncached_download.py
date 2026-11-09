@@ -37,7 +37,11 @@ The lint reads more than the `run:` text. `_cts_step_reach` follows each repo
 script the step runs or sources, and each function call into that function's
 body. A wrapper in front of a script (`timeout 900 bash setup.bash`) does not
 hide it. It also records a Python file the step hands an interpreter, which this
-module parses with `ast`. A path that the text does not fix ends the walk with
+module parses with `ast`. A `subprocess` call there whose argv starts with
+`curl` or `wget`, or runs `bash -c SCRIPT`, is read as shell. Each `$N` and
+`"$@"` in SCRIPT reads as the argv word it receives, so a `source "$1"` of a
+repo library is followed. A download in an imported module counts when the
+file calls the function that holds it. A path that the text does not fix ends the walk with
 no finding, because a guessed path judges a file the step never runs. Measured
 on agent-glovebox: both osv-scanner jobs download a pinned binary on every run
 through a two-file chain, and only a walk that follows scripts sees it.
@@ -97,6 +101,7 @@ import ast
 import functools
 import posixpath
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import NamedTuple, Protocol
@@ -112,6 +117,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     is_lookup,
     iter_nodes,
     node_text,
+    parse,
     program_name,
     redirect_parts,
     unquote,
@@ -125,7 +131,13 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     yaml_script_view,
 )
 from _cts_py_ast import name_of  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_imports import local_files, sys_path_roots  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_imports import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    _fold_path,
+    _is_sys_path_call,
+    local_files,
+    path_bindings,
+    sys_path_roots,
+)
 from _cts_cache_scope import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ANY_INSTALLER,
     CacheScope,
@@ -139,6 +151,7 @@ from _cts_cache_scope import (  # noqa: E402,I001  # pylint: disable=wrong-impor
 from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Namespace,
     Unit,
+    _SHELL_INTERPRETER,
     _launched,
     body_start,
     callable_words,
@@ -1456,9 +1469,176 @@ def _checks_digest(
     return False
 
 
+# ── Python: a download a subprocess makes ──────────────────────────────────
+
+_PY_SUBPROCESS = frozenset(
+    f"subprocess.{name}"
+    for name in ("run", "Popen", "call", "check_call", "check_output")
+)
+# A word bash reads as computed, for a Python value the text does not fix.
+_UNKNOWN_WORD = '"$(:)"'
+_SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
+_MAX_ARGV_VARIANTS = 8
+
+
+class _PyScope(NamedTuple):
+    """What an expression in one Python function can be read against: the
+    module's CONSTANTS, the names the module binds to PATHS, the LOCAL
+    assignments of the function, and FILE, the module itself."""
+
+    constants: dict[str, ast.expr]
+    paths: dict[str, Path]
+    local: dict[str, list[ast.expr]]
+    file: Path
+
+
+def _bindings(scope: ast.AST) -> dict[str, list[ast.expr]]:
+    """Each value SCOPE assigns to each plain name, in source order."""
+    found: dict[str, list[ast.expr]] = {}
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            if isinstance(target := node.targets[0], ast.Name):
+                found.setdefault(target.id, []).append(node.value)
+    return found
+
+
+def _argv_variants(
+    node: ast.expr, scope: _PyScope, depth: int = 0
+) -> list[list[ast.expr | None]]:
+    """The element lists the argv NODE can be: a list literal, a name the
+    function binds to one, or each arm of a conditional. A `*name` element
+    splices each list the name can be, and None when the text does not fix it."""
+    if depth > 3:
+        return []
+    if isinstance(node, ast.Name):
+        values = scope.local.get(node.id) or [scope.constants.get(node.id)]
+        return [
+            v
+            for value in values
+            if value
+            for v in _argv_variants(value, scope, depth + 1)
+        ]
+    if isinstance(node, ast.IfExp):
+        return _argv_variants(node.body, scope, depth + 1) + _argv_variants(
+            node.orelse, scope, depth + 1
+        )
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return []
+    variants: list[list[ast.expr | None]] = [[]]
+    for element in node.elts:
+        options: list[list[ast.expr | None]] = [[element]]
+        if isinstance(element, ast.Starred):
+            options = _argv_variants(element.value, scope, depth + 1) or [[None]]
+        variants = [v + o for v in variants for o in options][:_MAX_ARGV_VARIANTS]
+    return variants
+
+
+def _shell_text(node: ast.expr | None, scope: _PyScope, depth: int = 0) -> str | None:
+    """NODE as bash reads it between double quotes, or None when the text does
+    not fix it. A name the module does not bind is `${name}`, so a pin name
+    in a URL stays a pin name."""
+    if node is None or depth > 3:
+        return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return re.sub(r'["\\`]', lambda m: "\\" + m[0], node.value)
+    if isinstance(node, ast.Name):
+        bound = scope.constants.get(node.id)
+        return _shell_text(bound, scope, depth + 1) if bound else f"${{{node.id}}}"
+    if not isinstance(node, ast.JoinedStr):
+        return None
+    pieces = [
+        _shell_text(
+            part.value if isinstance(part, ast.FormattedValue) else part,
+            scope,
+            depth + 1,
+        )
+        for part in node.values
+    ]
+    return "".join("$(:)" if piece is None else piece for piece in pieces)
+
+
+def _shell_word(node: ast.expr | None, scope: _PyScope) -> str:
+    """NODE as one bash word: a path the fold reads, else its text quoted."""
+    folded = _fold_path(node, scope.paths, scope.file) if node else None
+    if folded is not None:
+        return shlex.quote(str(folded))
+    text = _shell_text(node, scope)
+    return _UNKNOWN_WORD if text is None else f'"{text}"'
+
+
+def _bound_script(script: str, positionals: list[str]) -> str:
+    """SCRIPT with each `$N` and `"$@"` replaced by the words `bash -c SCRIPT`
+    receives, POSITIONALS[0] being `$0`. A `shift` written before an
+    expansion drops one word from it, in source order."""
+    root = parse(script)
+    shifts = [
+        c.start_byte for c in iter_nodes(root, "command") if tokens(c) == ["shift"]
+    ]
+    edits = []
+    for node in iter_nodes(root, "simple_expansion", "expansion"):
+        name = node_text(node).strip("${}")
+        dropped = sum(start < node.start_byte for start in shifts)
+        if name == "@":
+            words = positionals[1 + dropped :]
+        elif name.isdigit():
+            index = int(name) + (dropped if name != "0" else 0)
+            words = positionals[index : index + 1] or ['""']
+        else:
+            continue
+        if edits and node.start_byte < edits[-1][1]:
+            continue  # inside an expansion this already replaces
+        parent = node.parent
+        whole = parent.type == "string" and len(parent.named_children) == 1
+        target = parent if whole else node
+        edits.append((target.start_byte, target.end_byte, " ".join(words)))
+    raw = script.encode()
+    for start, end, text in sorted(edits, reverse=True):
+        raw = raw[:start] + text.encode() + raw[end:]
+    return raw.decode()
+
+
+def _subprocess_scripts(call: ast.Call, scope: _PyScope) -> list[str]:
+    """The shell text each argv of the subprocess CALL amounts to: the command
+    line of a curl or wget, or the `-c` script a shell runs with its
+    positional parameters bound."""
+    argv = call.args[0] if call.args else None
+    argv = argv or next((k.value for k in call.keywords if k.arg == "args"), None)
+    scripts = []
+    for elements in _argv_variants(argv, scope) if argv else []:
+        texts = [_py_text(element, scope.constants) for element in elements[:3]]
+        program, flag, script = [*texts, "", "", ""][:3]
+        program = posixpath.basename(program)
+        words = [_shell_word(element, scope) for element in elements]
+        if program in _DOWNLOADERS:
+            scripts.append(" ".join(words))
+        elif _SHELL_INTERPRETER.fullmatch(program) and _SHELL_COMMAND_FLAG.match(flag):
+            scripts.append(_bound_script(script, words[3:]))
+    return scripts
+
+
+def _subprocess_fetches(
+    call: ast.Call, scope: _PyScope, sources: frozenset[str], where: str
+) -> list[Fetch]:
+    """The pinned downloads the subprocess CALL makes, judged by the shell
+    rules on the script it runs. WHERE names the calling function."""
+    fetches = []
+    for script in _subprocess_scripts(call, scope):
+        for namespace in reach(script, REPO_ROOT, None, None).namespaces:
+            fetches += [
+                fetch._replace(
+                    what=f"{fetch.what} (run by {where})",
+                    sources=fetch.sources - {_RUN_BODY} | sources,
+                )
+                for fetch in _namespace_fetches(namespace)
+            ]
+    return fetches
+
+
 # A cheap shortlist ahead of the parse: a module that spells no fetcher's name
 # holds no fetch call. The `ast` walk below is what decides.
-_PY_FETCHER_SPELLING = re.compile(r"\b(?:urlopen|urlretrieve|requests|httpx)\b")
+_PY_FETCHER_SPELLING = re.compile(
+    r"\b(?:urlopen|urlretrieve|requests|httpx|subprocess)\b"
+)
 
 
 @functools.lru_cache(maxsize=1024)
@@ -1480,20 +1660,81 @@ def _parsed(path: Path) -> ast.Module | None:
 @functools.lru_cache(maxsize=512)
 def _python_fetches(path: Path) -> list[Fetch]:
     """The pinned downloads the Python file PATH makes, and those of each
-    repo-local module it imports, one level down."""
+    repo-local module it imports, one level down. A download inside a
+    function of that module counts only when PATH names the function, or a
+    function that calls it."""
     tree = _parsed(path)
     if tree is None:
         return []
-    fetches = list(_module_fetches(path, None))
+    fetches = [fetch for _, fetch in _module_fetches(path, None)]
     for module in _local_imports(tree, path):
-        fetches += _module_fetches(module, path)
+        stems = {module.stem}
+        if (module.parent / "__init__.py").is_file():
+            stems.add(module.parent.name)  # a package re-exports its modules
+        reached = _reached(module, _names_used(tree, stems))
+        fetches += [
+            f for holder, f in _module_fetches(module, path) if holder in reached
+        ]
     return fetches
 
 
+def _names_used(tree: ast.Module, stems: set[str]) -> set[str]:
+    """The names TREE takes from a module named in STEMS: `from STEM import x`,
+    and `m.x` for each name `m` that an import binds to a STEM."""
+    names, bound = set(), set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        module = node.module if isinstance(node, ast.ImportFrom) else None
+        if (module or "").rsplit(".", 1)[-1] in stems:
+            names |= {alias.name for alias in node.names}
+        bound |= {
+            alias.asname or alias.name
+            for alias in node.names
+            if alias.name.rsplit(".", 1)[-1] in stems
+        }
+    return names | {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute) and name_of(node.value) in bound
+    }
+
+
+def _reached(module: Path, named: set[str]) -> set[str]:
+    """NAMED, with every module-level function of MODULE that a NAMED function
+    calls at any depth. Code at module level runs on import, and a method or a
+    nested function is reached by calls this graph cannot follow, so both
+    count. A `*` import names every function."""
+    tree = _parsed(module) or ast.Module(body=[], type_ignores=[])
+    functions: dict[str, ast.AST] = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    named = named | (functions.keys() if "*" in named else set())
+    reached = (
+        named
+        | {"<module>"}
+        | {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name not in functions
+        }
+    )
+    pending = list(named & functions.keys())
+    while pending:
+        new = _called(functions[pending.pop()], functions) - reached
+        reached |= new
+        pending += new
+    return reached
+
+
 @functools.lru_cache(maxsize=1024)
-def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
-    """The pinned downloads written in the Python file PATH itself. IMPORTER is
-    the file that imports it, whose hash a cache key may also name."""
+def _module_fetches(path: Path, importer: Path | None) -> list[tuple[str, Fetch]]:
+    """The pinned downloads written in the Python file PATH itself, each with
+    the function that holds it. IMPORTER is the file that imports it, whose
+    hash a cache key may also name."""
     if not _PY_FETCHER_SPELLING.search(_source(path)):
         return []
     tree = _parsed(path)
@@ -1506,7 +1747,13 @@ def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
         for node in nodes
         if isinstance(node, ast.Call) and _qualified(node.func, aliases) in _PY_FETCHERS
     ]
-    if not calls:
+    launches = [
+        node
+        for node in nodes
+        if isinstance(node, ast.Call)
+        and _qualified(node.func, aliases) in _PY_SUBPROCESS
+    ]
+    if not calls and not launches:
         return []
     constants = _constants(tree)
     functions: dict[str, ast.AST] = {
@@ -1567,10 +1814,27 @@ def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
         label = f"{url or 'a URL'} (fetched by {rel}:{scope_name}"
         label += ")" if pinned_url else ", digest-checked)"
         fetches.append(
-            Fetch(
-                label, frozenset(p for p in pins if p), frozenset(sources), frozenset()
+            (
+                scope_name,
+                Fetch(
+                    label,
+                    frozenset(p for p in pins if p),
+                    frozenset(sources),
+                    frozenset(),
+                ),
             )
         )
+    paths = path_bindings(tree, path)
+    for node in launches:
+        scope = owner.get(id(node), top)
+        scope_name = getattr(scope, "name", "<module>")
+        own = _PyScope(constants, paths, _bindings(scope), path)
+        fetches += [
+            (scope_name, fetch)
+            for fetch in _subprocess_fetches(
+                node, own, frozenset(sources), f"{rel}:{scope_name}"
+            )
+        ]
     return fetches
 
 
@@ -1582,17 +1846,58 @@ def _local_imports(tree: ast.Module, path: Path) -> list[Path]:
             names |= {alias.name.split(".")[0] for alias in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             names.add(node.module.split(".")[0])
-    search = (path.parent, *sys_path_roots(path))
-    found = []
-    for name in sorted(names):
-        for module in local_files(name, search):
-            if (
-                module.is_relative_to(REPO_ROOT)
-                and module != path
-                and module not in found
-            ):
-                found.append(module)
+    # `sys.path` is one list per process, so a directory that an imported
+    # module inserts serves the imports after it. The walk runs to a fixed
+    # point and ignores import order, which can only resolve more names.
+    search = [path.parent, *_inserted_roots(path)]
+    found: list[Path] = []
+    grew = True
+    while grew:
+        grew = False
+        for name in sorted(names):
+            for module in local_files(name, tuple(search)):
+                if module.is_relative_to(REPO_ROOT) and module not in (path, *found):
+                    found.append(module)
+                    search += [d for d in _inserted_roots(module) if d not in search]
+                    grew = True
     return found
+
+
+def _literal_tail(node: ast.expr) -> tuple[ast.expr, tuple[str, ...]]:
+    """NODE, read through `str()`, as the base of its `/` chain and the
+    literal parts after that base."""
+    if isinstance(node, ast.Call) and name_of(node.func) == "str" and node.args:
+        return _literal_tail(node.args[0])
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        if isinstance(node.right, ast.Constant) and isinstance(node.right.value, str):
+            base, parts = _literal_tail(node.left)
+            return base, (*parts, node.right.value)
+    return node, ()
+
+
+@functools.lru_cache(maxsize=512)
+def _inserted_roots(module: Path) -> tuple[Path, ...]:
+    """The directories MODULE puts on `sys.path`. An insert whose base the fold
+    cannot read (`repo_root(_HERE) / "bin" / "lib"`) names its literal tail
+    under each ancestor of MODULE in the repo that holds that tail. That is a
+    guess about the base, so it serves only to find a module by name."""
+    tree = _parsed(module)
+    if tree is None:
+        return ()
+    roots, bindings = list(sys_path_roots(module)), path_bindings(tree, module)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _is_sys_path_call(node) and node.args):
+            continue
+        base, tail = _literal_tail(node.args[-1])
+        if not tail or _fold_path(base, bindings, module):
+            continue
+        roots += [
+            directory / Path(*tail)
+            for directory in module.parents
+            if directory.is_relative_to(REPO_ROOT)
+            and (directory / Path(*tail)).is_dir()
+        ]
+    return tuple(roots)
 
 
 class _CheckedCall(NamedTuple):

@@ -1711,6 +1711,81 @@ def test_what_the_python_walk_leaves_alone(rooted, install, check):
     assert uc.check_file(path) == []
 
 
+# A Python module that downloads through a `bash -c` script, the way
+# agent-glovebox's pkg_fetch.py calls fetch.bash. Its directory reaches
+# `sys.path` only through another module, from a base the fold cannot read.
+SUBPROCESS_FETCHER = """\
+import subprocess
+from pathlib import Path
+
+_LIB = Path(__file__).resolve().parent / "fetch.bash"
+
+
+def get(url, sha256, dest):
+    owner = ["download_pinned", url, sha256, dest] if sha256 else ["true"]
+    subprocess.run(["bash", "-c", 'source "$1"; shift; "$@"', "_", str(_LIB), *owner])
+
+
+def other():
+    return 1
+"""
+PATHS_PY = (
+    "import sys\nfrom pathlib import Path\n"
+    "sys.path.insert(0, str(find_root(Path(__file__)) / 'lib'))\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("main", "fires"),
+    [
+        ("import paths\nimport fetcher\nfetcher.get(URL, SHA, 'f')\n", 1),
+        ("import paths\nfrom fetcher import get\nget(URL, SHA, 'f')\n", 1),
+        ("import paths\nimport fetcher\nfetcher.other()\n", 0),
+        ("import fetcher\nfetcher.get(URL, SHA, 'f')\n", 0),
+    ],
+    ids=[
+        "calls-the-fetch",
+        "imports-the-fetch",
+        "calls-another-function",
+        "no-path-insert",
+    ],
+)
+def test_a_python_fetch_through_a_shell_subprocess_fires(rooted, main, fires):
+    _tree(
+        rooted,
+        {
+            "lib/fetch.bash": CHECKED_LIB,
+            "lib/fetcher.py": SUBPROCESS_FETCHER,
+            "scripts/paths.py": PATHS_PY,
+            "scripts/main.py": main,
+        },
+    )
+    messages = _messages(_write(rooted, _job(_run("python3 scripts/main.py"))))
+    assert ["run by lib/fetcher.py:get" in m for m in messages] == [True] * fires
+
+
+CURL_PY = (
+    "import subprocess\nVERSION = '2.7.0'\nsubprocess.check_call(\n"
+    "    ['curl', '-fsSLo', '/tmp/tool-cache/tool',\n"
+    "     f'https://example.com/releases/download/v{VERSION}/tool'])\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("cache", "fires"),
+    [
+        ("", 1),
+        (_cache("tool-${{ hashFiles('fetch.py') }}", "/tmp/tool-cache"), 0),
+        (_cache("deps-1", "~/.cache/some-other-tool"), 1),
+    ],
+    ids=["no-cache", "cached", "cache-holds-something-else"],
+)
+def test_a_python_curl_subprocess_is_a_fetch(rooted, cache, fires):
+    _tree(rooted, {"fetch.py": CURL_PY})
+    path = _write(rooted, _job(cache + _run("python3 fetch.py")))
+    assert len(_messages(path)) == fires
+
+
 def test_a_hash_compare_in_another_function_does_not_pin_a_method_fetch(rooted):
     """The fetch sits in a class method, and the only compare sits in a
     different function, so nothing checks the bytes this fetch reads."""
