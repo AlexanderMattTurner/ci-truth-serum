@@ -98,6 +98,8 @@ FUZZ_REQUIRED = {
     "check_divergent_action_pins": "check_files",
     "check_stderr_merge_parse": "violations",
     "check_echo_fallback": "violations",
+    "check_silent_exit": "violations",
+    "_cts_config": "check_args",
     "check_case_default": "violations",
     "check_soft_timeout": "violations",
     "check_embedded_program_length": "violations",
