@@ -63,6 +63,9 @@ def test_a_probe_that_reaches_a_silent_exit_is_flagged(src: str) -> None:
         'v=$([[ -f "$x" ]] || exit 1)\n',
         'ls | while read -r l; do [[ -f "$l" ]] || exit 1; done\n',
         "{ [[ -f a ]] || exit 2; } | tee log\n",
+        '[[ -f "$cfg" ]] || exit 2 &\nwait\n',
+        '[[ ! "$failed" -eq 0 ]] || exit 1\n',
+        '[[ -f "$cfg" ]] || { reason=$(echo missing >&2); exit 2; }\n',
         'diff <([[ -f "$x" ]] || exit 1) f\n',
         # A return hands the status to a caller who can print the cause.
         'f() { [[ -n "$1" ]] || return 2; }\n',

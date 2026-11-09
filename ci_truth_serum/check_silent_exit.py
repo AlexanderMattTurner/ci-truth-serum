@@ -11,9 +11,9 @@ of these hold:
 
   * it is a ``command`` named ``exit`` whose argument is a literal non-zero number.
     A bare ``exit`` or ``exit "$rc"`` passes on a status that came from elsewhere;
-  * it ends the script. An exit inside ``( … )``, ``$( … )``, ``<( … )`` or a
-    pipeline ends only a subshell, and its status reaches a caller who can print
-    the cause;
+  * it ends the script. An exit inside ``( … )``, ``$( … )``, ``<( … )``, a
+    pipeline or a list run with ``&`` ends only a subshell, and its status reaches
+    a caller who can print the cause;
   * a probe guards it: it is the right operand of ``||`` after a probe, or it sits in
     an ``if`` / ``elif`` / ``else`` branch that only probes lead to. A probe is a
     ``[[ … ]]``, ``[ … ]`` or ``test …`` that asks a unary question (``-f x``,
@@ -135,6 +135,10 @@ def _exits_the_script(exit_command) -> bool:
     node = exit_command.parent
     while node is not None and node.type not in {"function_definition", "program"}:
         if node.type in _SUBSHELLS:
+            return False
+        # `cmd &` runs CMD in a subshell; the grammar marks it with a `&` sibling.
+        following = node.next_sibling
+        if following is not None and following.type == "&":
             return False
         node = node.parent
     return True
