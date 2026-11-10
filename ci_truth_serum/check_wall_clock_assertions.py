@@ -25,8 +25,9 @@ The Python arm also flags an ``assert`` that compares two deltas, such as
 by a different amount, so the order between them measures the runner too. A
 second delta is a non-literal, but it moves with load. The budget exemption
 above does not reach it. The arm follows deltas that ``append`` collects into
-a list, or into a list that a dict holds (``taken[which].append(...)``). It reads that list through ``min``, ``max``, ``sum``, the
-``statistics`` averages, ``sorted`` and a subscript. It also follows a name
+a list, or into a list that a dict holds (``taken[which].append(...)``).
+It reads that list through ``min``, ``max``, ``sum``, the ``statistics``
+averages, ``sorted`` and a subscript. It also follows a name
 that ``+=`` adds deltas to. A bare clock reading is a point in time, not a
 delta, so ``assert first_seen < second_seen`` stays legal: it asserts an
 order of events. An interval that is nested inside a second one is shorter
