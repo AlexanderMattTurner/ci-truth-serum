@@ -51,6 +51,7 @@ Invoked by pre-commit with the staged test files, Python or JavaScript/TypeScrip
 
 import argparse
 import ast
+import operator
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -360,8 +361,12 @@ def _is_duration(node: ast.expr, b: _ClockBindings, returns: _ReturnMap) -> bool
     callee = node.func
     if node.args and isinstance(callee, ast.Name) and callee.id in _DURATION_PRESERVING:
         return any(_is_duration(arg, b, returns) for arg in node.args)
-    if node.args and _callee_name(callee) in _REDUCTIONS:
-        if len(node.args) == 1 and _is_series(node.args[0], b, returns):
+    reduction = _callee_name(callee)
+    if node.args and reduction in _REDUCTIONS:
+        # One positional argument is an iterable; so is `sum`'s first, before
+        # its start value. `min(a, b)` with two compares the arguments.
+        iterable = len(node.args) == 1 or reduction == "sum"
+        if iterable and _is_series(node.args[0], b, returns):
             return True
         return any(_is_duration(arg, b, returns) for arg in node.args)
     return False
@@ -387,10 +392,12 @@ def _offends(
         if not isinstance(compare, ast.Compare):
             continue
         sides = [compare.left, *compare.comparators]
-        durations = sum(_is_duration(s, b, returns) for s in sides)
-        if durations >= 2:
+        is_duration = [_is_duration(s, b, returns) for s in sides]
+        # `a < budget > b` is `a < budget and budget > b`: only neighbours
+        # are compared, so only a pair of neighbours can order two durations.
+        if any(map(operator.and_, is_duration, is_duration[1:])):
             return True
-        if durations and any(_is_number(s, scalers) for s in sides):
+        if any(is_duration) and any(_is_number(s, scalers) for s in sides):
             return True
     return False
 

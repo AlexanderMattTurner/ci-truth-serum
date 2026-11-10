@@ -315,6 +315,10 @@ _TWO_HELPERS = (
             _py(*_TWO_HELPERS, "    assert max(_seconds(warm), 0.0) < _seconds(cold)"),
             id="multi-arg-reduction",
         ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert sum(fast, 0.0) < sum(slow, 0.0)"),
+            id="sum-with-a-start-value",
+        ),
     ],
 )
 def test_flags_two_durations_compared(body: str) -> None:
@@ -420,6 +424,19 @@ def test_flags_two_durations_inside_a_chained_comparison() -> None:
                 "    assert max(codes) < max(sizes)",
             ),
             id="lists-that-append-no-duration",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t(budget):",
+                "    s = time.monotonic()",
+                "    a = time.monotonic() - s",
+                "    b = time.monotonic() - s",
+                "    assert a < budget > b",
+            ),
+            id="two-durations-that-a-chain-never-compares",
         ),
     ],
 )
