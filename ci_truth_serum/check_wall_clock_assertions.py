@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Ban a test assertion that compares a wall-clock duration against a number.
+"""Ban a test assertion that compares a wall-clock duration against a number or
+against a second measured duration.
 
 A shared CI runner gives a test no promise about when it runs — a spawn, a
 page fault, or a descheduled thread routinely costs hundreds of milliseconds
@@ -18,6 +19,19 @@ inline, reached through a local bound to one earlier in the same function, or
 returned by a helper the same module defines. NOT flagged: a deadline poll
 (``while time.monotonic() < deadline``), and a comparison against a
 non-literal (the subject's own budget can't be moved by runner load).
+
+The Python arm also flags an ``assert`` that compares two deltas, such as
+``assert min(fast) < 1.6 * min(slow)``. A loaded runner stretches each delta
+by a different amount, so the order between them measures the runner too. A
+second delta is a non-literal, but it moves with load, so the budget exemption
+above does not reach it. The arm follows deltas that ``append`` collects into
+a list, and it reads that list through ``min``, ``max``, ``sum``, the
+``statistics`` averages, ``sorted`` and a subscript. It also follows a name
+that ``+=`` adds deltas to. A bare clock reading is
+a point in time, not a delta, so ``assert first_seen < second_seen`` stays
+legal: it asserts an order of events. An interval that is nested inside a
+second one is shorter by construction; opt that assert out with a reason. The
+JavaScript/TypeScript arm does not compare two deltas yet.
 
 Both halves — Python (stdlib ``ast``) and JavaScript/TypeScript (``_cts_js_ast``,
 tree-sitter) — read the real grammar, never text: a clock mention inside a
@@ -38,6 +52,7 @@ Invoked by pre-commit with the staged test files, Python or JavaScript/TypeScrip
 import argparse
 import ast
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -81,9 +96,47 @@ _CLOCKS = frozenset(
 # passed in is still a duration coming out.
 _DURATION_PRESERVING = frozenset({"abs", "float", "int", "round"})
 
+# Reductions that turn a list of durations, or several durations, into one
+# duration: `min(fast)`, `statistics.median(runs)`, `max(a, b)`.
+_REDUCTIONS = frozenset(
+    {
+        "fmean",
+        "geometric_mean",
+        "harmonic_mean",
+        "max",
+        "mean",
+        "median",
+        "median_high",
+        "median_low",
+        "min",
+        "sum",
+    }
+)
+
+# Calls that return their argument's elements in a new list: `sorted(fast)`.
+_SERIES_PRESERVING = frozenset({"list", "sorted", "tuple"})
+
 # Where a helper's return value carries a duration: `None` for a scalar
 # `return elapsed`, an int for that position of a returned tuple.
 _ReturnMap = dict[str, frozenset[int | None]]
+
+
+@dataclass
+class _ClockBindings:
+    """The clock-derived names one scope binds.
+
+    ``clocked`` holds every name whose value reads a clock, a point in time
+    included: `start` must be known before `time.monotonic() - start` reads as
+    a delta. ``durations`` holds only the names bound to a delta. ``series``
+    holds the names of lists that collect deltas, such as `fast` after
+    `fast.append(time.monotonic() - t0)`."""
+
+    clocked: set[str] = field(default_factory=set)
+    durations: set[str] = field(default_factory=set)
+    series: set[str] = field(default_factory=set)
+
+    def copy(self) -> "_ClockBindings":
+        return _ClockBindings(set(self.clocked), set(self.durations), set(self.series))
 
 
 # ── Python ───────────────────────────────────────────────────────────────
@@ -124,30 +177,74 @@ def _mentions_clock(node: ast.expr, names: set[str]) -> bool:
     return False
 
 
+def _appended_duration(
+    node: ast.AST, b: _ClockBindings, returns: _ReturnMap
+) -> str | None:
+    """The list name in `name.append(<duration>)`, or None for any other node."""
+    if not (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "append"
+        and isinstance(node.func.value, ast.Name)
+        and len(node.args) == 1
+    ):
+        return None
+    return node.func.value.id if _is_duration(node.args[0], b, returns) else None
+
+
+def _source_order(scope: ast.AST) -> list[ast.AST]:
+    """Every node under SCOPE, pre-order, so a statement nested in a loop is
+    read before the statement that follows the loop. `ast.walk` is
+    breadth-first: it reads `best = min(fast)` after a loop before the
+    `fast.append(...)` inside that loop."""
+    found: list[ast.AST] = []
+    stack = [scope]
+    while stack:
+        node = stack.pop()
+        found.append(node)
+        stack.extend(reversed(list(ast.iter_child_nodes(node))))
+    return found
+
+
 def _clock_names(
-    scope: ast.AST, inherited: frozenset[str], returns: _ReturnMap
-) -> set[str]:
-    """Names bound to a clock reading, or to a duration derived from one, in
-    SCOPE. Walked in source order and grown as it goes, so `elapsed =
-    time.monotonic() - start` is recognised once `start` is known to be a
-    reading. Resolved PER FUNCTION, seeded by the module-level bindings — a
-    one-letter name like `r` is reused by nearly every test in a module, and a
-    module-wide set would let one function's duration make every other
-    function's same-named local a duration too."""
-    names = set(inherited)
-    for node in ast.walk(scope):
+    scope: ast.AST, inherited: _ClockBindings, returns: _ReturnMap
+) -> _ClockBindings:
+    """The clock-derived names SCOPE binds. Walked in source order and grown
+    as it goes, so `elapsed = time.monotonic() - start` is recognised once
+    `start` is known to be a reading. Resolved PER FUNCTION, seeded by the
+    module-level bindings — a one-letter name like `r` is reused by nearly
+    every test in a module, and a module-wide set would let one function's
+    duration make every other function's same-named local a duration too."""
+    b = inherited.copy()
+    for node in _source_order(scope):
+        appended = _appended_duration(node, b, returns)
+        if appended is not None:
+            b.series.add(appended)
+        if (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.op, ast.Add)
+            and isinstance(node.target, ast.Name)
+            and _is_duration(node.value, b, returns)
+        ):
+            b.clocked.add(node.target.id)
+            b.durations.add(node.target.id)
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
         target, value = node.targets[0], node.value
         positions = _returned_positions(value, returns)
         if isinstance(target, ast.Name):
-            if _mentions_clock(value, names) or None in positions:
-                names.add(target.id)
+            if _mentions_clock(value, b.clocked) or None in positions:
+                b.clocked.add(target.id)
+            if _is_duration(value, b, returns):
+                b.durations.add(target.id)
+            if _is_series(value, b, returns):
+                b.series.add(target.id)
         elif isinstance(target, ast.Tuple):
             for index, element in enumerate(target.elts):
                 if isinstance(element, ast.Name) and index in positions:
-                    names.add(element.id)
-    return names
+                    b.clocked.add(element.id)
+                    b.durations.add(element.id)
+    return b
 
 
 def _own_returns(func: ast.AST) -> list[ast.Return]:
@@ -186,16 +283,16 @@ def _duration_returns(tree: ast.Module) -> _ReturnMap:
     while grew:
         grew = False
         for func, values in candidates:
-            names = _clock_names(func, inherited, returns)
+            b = _clock_names(func, inherited, returns)
             found: set[int | None] = set(returns.get(func.name, frozenset()))
             for value in values:
                 if isinstance(value, ast.Tuple):
                     found.update(
                         index
                         for index, element in enumerate(value.elts)
-                        if _is_duration(element, names, returns)
+                        if _is_duration(element, b, returns)
                     )
-                elif _is_duration(value, names, returns):
+                elif _is_duration(value, b, returns):
                     found.add(None)
             if found != set(returns.get(func.name, frozenset())):
                 returns[func.name] = frozenset(found)
@@ -203,28 +300,60 @@ def _duration_returns(tree: ast.Module) -> _ReturnMap:
     return returns
 
 
-def _is_duration(node: ast.expr, names: set[str], returns: _ReturnMap) -> bool:
+def _is_series(node: ast.expr, b: _ClockBindings, returns: _ReturnMap) -> bool:
+    """True when NODE is a collection of durations: a name that `append`
+    filled, a slice or `sorted()` of one, or a list or generator whose
+    elements are durations."""
+    if isinstance(node, ast.Name):
+        return node.id in b.series
+    if isinstance(node, ast.Subscript):
+        return isinstance(node.slice, ast.Slice) and _is_series(node.value, b, returns)
+    if isinstance(node, ast.Call):
+        return (
+            isinstance(node.func, ast.Name)
+            and node.func.id in _SERIES_PRESERVING
+            and len(node.args) == 1
+            and _is_series(node.args[0], b, returns)
+        )
+    if isinstance(node, (ast.ListComp, ast.GeneratorExp)):
+        return _is_duration(node.elt, b, returns)
+    if isinstance(node, ast.List):
+        return bool(node.elts) and all(_is_duration(e, b, returns) for e in node.elts)
+    return False
+
+
+def _is_duration(node: ast.expr, b: _ClockBindings, returns: _ReturnMap) -> bool:
     """True when NODE is a wall-clock DURATION rather than a point in time. A
     bare reading is NOT a duration: `time.monotonic() < deadline` is a poll,
-    which this check steers toward rather than away from."""
+    which this check steers toward rather than away from, and `first_seen <
+    second_seen` orders two events."""
     if isinstance(node, ast.Name):
-        return node.id in names
+        return node.id in b.durations
     if isinstance(node, ast.BinOp):
-        if isinstance(node.op, ast.Sub) and _mentions_clock(node, names):
+        if isinstance(node.op, ast.Sub) and _mentions_clock(node, b.clocked):
             return True
-        return _is_duration(node.left, names, returns) or _is_duration(
-            node.right, names, returns
+        return _is_duration(node.left, b, returns) or _is_duration(
+            node.right, b, returns
         )
-    if isinstance(node, ast.Call):
-        if None in _returned_positions(node, returns):
+    if isinstance(node, ast.Subscript):
+        return not isinstance(node.slice, ast.Slice) and _is_series(
+            node.value, b, returns
+        )
+    if isinstance(node, ast.IfExp):
+        return _is_duration(node.body, b, returns) or _is_duration(
+            node.orelse, b, returns
+        )
+    if not isinstance(node, ast.Call):
+        return False
+    if None in _returned_positions(node, returns):
+        return True
+    callee = node.func
+    if node.args and isinstance(callee, ast.Name) and callee.id in _DURATION_PRESERVING:
+        return any(_is_duration(arg, b, returns) for arg in node.args)
+    if node.args and _callee_name(callee) in _REDUCTIONS:
+        if len(node.args) == 1 and _is_series(node.args[0], b, returns):
             return True
-        callee = node.func
-        if (
-            node.args
-            and isinstance(callee, ast.Name)
-            and callee.id in _DURATION_PRESERVING
-        ):
-            return any(_is_duration(arg, names, returns) for arg in node.args)
+        return any(_is_duration(arg, b, returns) for arg in node.args)
     return False
 
 
@@ -240,31 +369,33 @@ def _is_number(node: ast.expr, scalers: frozenset[str]) -> bool:
 
 
 def _offends(
-    node: ast.Assert, names: set[str], returns: _ReturnMap, scalers: frozenset[str]
+    node: ast.Assert, b: _ClockBindings, returns: _ReturnMap, scalers: frozenset[str]
 ) -> bool:
-    """Whether this assert compares a wall-clock duration against a number."""
+    """Whether this assert compares a wall-clock duration against a number,
+    or compares two wall-clock durations with each other."""
     for compare in ast.walk(node.test):
         if not isinstance(compare, ast.Compare):
             continue
         sides = [compare.left, *compare.comparators]
-        if any(_is_duration(s, names, returns) for s in sides) and any(
-            _is_number(s, scalers) for s in sides
-        ):
+        durations = sum(_is_duration(s, b, returns) for s in sides)
+        if durations >= 2:
+            return True
+        if durations and any(_is_number(s, scalers) for s in sides):
             return True
     return False
 
 
-def _module_level_names(tree: ast.Module, returns: _ReturnMap) -> frozenset[str]:
+def _module_level_names(tree: ast.Module, returns: _ReturnMap) -> _ClockBindings:
     """Clock-derived names bound at module level, which every function inherits."""
     module_only = ast.Module(
         body=[n for n in tree.body if isinstance(n, ast.Assign)], type_ignores=[]
     )
-    return frozenset(_clock_names(module_only, frozenset(), returns))
+    return _clock_names(module_only, _ClockBindings(), returns)
 
 
 def _scopes(
     tree: ast.Module, returns: _ReturnMap
-) -> list[tuple[ast.AST, frozenset[str]]]:
+) -> list[tuple[ast.AST, _ClockBindings]]:
     """Each function body paired with the clock-derived names it inherits,
     plus the module itself for asserts written outside any function."""
     inherited = _module_level_names(tree, returns)
@@ -276,7 +407,7 @@ def _scopes(
         ],
         type_ignores=[],
     )
-    scopes: list[tuple[ast.AST, frozenset[str]]] = [(outside, inherited)]
+    scopes: list[tuple[ast.AST, _ClockBindings]] = [(outside, inherited)]
     for node in walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             scopes.append((node, inherited))
@@ -291,11 +422,11 @@ def _py_violations(source: str, scalers: frozenset[str]) -> list[int]:
     for tree in trees(source):
         returns = _duration_returns(tree)
         for scope, inherited in _scopes(tree, returns):
-            names = _clock_names(scope, inherited, returns)
+            b = _clock_names(scope, inherited, returns)
             for node in ast.walk(scope):
                 if (
                     isinstance(node, ast.Assert)
-                    and _offends(node, names, returns, scalers)
+                    and _offends(node, b, returns, scalers)
                     and not annotated_near(
                         physical,
                         node.lineno,
