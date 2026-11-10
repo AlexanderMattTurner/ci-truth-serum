@@ -25,7 +25,7 @@ The Python arm also flags an ``assert`` that compares two deltas, such as
 by a different amount, so the order between them measures the runner too. A
 second delta is a non-literal, but it moves with load. The budget exemption
 above does not reach it. The arm follows deltas that ``append`` collects into
-a list. It reads that list through ``min``, ``max``, ``sum``, the
+a list, or into a list that a dict holds (``taken[which].append(...)``). It reads that list through ``min``, ``max``, ``sum``, the
 ``statistics`` averages, ``sorted`` and a subscript. It also follows a name
 that ``+=`` adds deltas to. A bare clock reading is a point in time, not a
 delta, so ``assert first_seen < second_seen`` stays legal: it asserts an
@@ -131,14 +131,22 @@ class _ClockBindings:
     included: `start` must be known before `time.monotonic() - start` reads as
     a delta. ``durations`` holds only the names bound to a delta. ``series``
     holds the names of lists that collect deltas, such as `fast` after
-    `fast.append(time.monotonic() - t0)`."""
+    `fast.append(time.monotonic() - t0)`. ``series_maps`` holds the names of
+    containers whose items are such lists, such as `taken` after
+    `taken[which].append(time.perf_counter() - started)`."""
 
     clocked: set[str] = field(default_factory=set)
     durations: set[str] = field(default_factory=set)
     series: set[str] = field(default_factory=set)
+    series_maps: set[str] = field(default_factory=set)
 
     def copy(self) -> "_ClockBindings":
-        return _ClockBindings(set(self.clocked), set(self.durations), set(self.series))
+        return _ClockBindings(
+            set(self.clocked),
+            set(self.durations),
+            set(self.series),
+            set(self.series_maps),
+        )
 
 
 # ── Python ───────────────────────────────────────────────────────────────
@@ -179,19 +187,24 @@ def _mentions_clock(node: ast.expr, names: set[str]) -> bool:
     return False
 
 
-def _appended_duration(
+def _record_append(
     node: ast.AST, bindings: _ClockBindings, returns: _ReturnMap
-) -> str | None:
-    """The list name in `name.append(<duration>)`, or None for any other node."""
+) -> None:
+    """Record the list that `<list>.append(<duration>)` fills: `name` itself,
+    or the container `name` when the list is one of its items, `name[key]`."""
     if not (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "append"
-        and isinstance(node.func.value, ast.Name)
         and len(node.args) == 1
+        and _is_duration(node.args[0], bindings, returns)
     ):
-        return None
-    return node.func.value.id if _is_duration(node.args[0], bindings, returns) else None
+        return
+    receiver = node.func.value
+    if isinstance(receiver, ast.Name):
+        bindings.series.add(receiver.id)
+    elif isinstance(receiver, ast.Subscript) and isinstance(receiver.value, ast.Name):
+        bindings.series_maps.add(receiver.value.id)
 
 
 def _holds_duration(
@@ -229,7 +242,9 @@ def _may_hold_duration(
     value that fails this one never reaches them: a 1100-part string
     concatenation would raise RecursionError, and a 400-term subtraction
     would take seconds."""
-    known = bindings.clocked | bindings.durations | bindings.series
+    known = (
+        bindings.clocked | bindings.durations | bindings.series | bindings.series_maps
+    )
     for node in ast.walk(value):
         if _is_clock_call(node):
             return True
@@ -279,9 +294,7 @@ def _clock_bindings(
             continue
         if screened is None or not _may_hold_duration(screened, bindings, returns):
             continue
-        appended = _appended_duration(node, bindings, returns)
-        if appended is not None:
-            bindings.series.add(appended)
+        _record_append(node, bindings, returns)
         if isinstance(node, ast.AugAssign) and _aug_makes_duration(
             node, bindings, returns
         ):
@@ -361,13 +374,15 @@ def _duration_returns(tree: ast.Module) -> _ReturnMap:
 
 def _is_series(node: ast.expr, bindings: _ClockBindings, returns: _ReturnMap) -> bool:
     """True when NODE is a collection of durations: a name that `append`
-    filled, a slice or `sorted()` of one, or a list or generator whose
-    elements are durations."""
+    filled, an item of a container whose items `append` filled, a slice or
+    `sorted()` of one, or a list or generator whose elements are durations."""
     if isinstance(node, ast.Name):
         return node.id in bindings.series
     if isinstance(node, ast.Subscript):
-        return isinstance(node.slice, ast.Slice) and _is_series(
-            node.value, bindings, returns
+        if isinstance(node.slice, ast.Slice):
+            return _is_series(node.value, bindings, returns)
+        return (
+            isinstance(node.value, ast.Name) and node.value.id in bindings.series_maps
         )
     if isinstance(node, ast.Call):
         return (

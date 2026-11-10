@@ -329,6 +329,22 @@ _TWO_HELPERS = (
                 "",
                 "",
                 "def t():",
+                "    taken: dict[int, list[float]] = {0: [], 1: []}",
+                "    for _ in range(5):",
+                "        for which in (0, 1):",
+                "            started = time.perf_counter()",
+                "            run(which)",
+                "            taken[which].append(time.perf_counter() - started)",
+                "    assert min(taken[1]) < 1.6 * min(taken[0])",
+            ),
+            id="lists-held-in-a-dict",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t():",
                 "    warm = cold = 0.0",
                 "    for _ in range(3):",
                 "        t0 = time.monotonic()",
@@ -444,6 +460,16 @@ def test_a_wrapped_duration_is_still_a_duration(value: str) -> None:
         pytest.param(
             _py(*_TWO_SERIES, "    assert min(fast) < budget"),
             id="a-series-against-a-budget",
+        ),
+        pytest.param(
+            _py(
+                "def t():",
+                "    sizes: dict[int, list[int]] = {0: [], 1: []}",
+                "    sizes[0].append(len(out()))",
+                "    sizes[1].append(len(err()))",
+                "    assert min(sizes[1]) < 1.6 * min(sizes[0])",
+            ),
+            id="lists-in-a-dict-that-append-no-duration",
         ),
         pytest.param(
             _py(
