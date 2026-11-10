@@ -345,6 +345,20 @@ _TWO_HELPERS = (
                 "",
                 "",
                 "def t():",
+                '    m = {"warm": [], "cold": []}',
+                "    started = time.perf_counter()",
+                '    m["warm"].append(time.perf_counter() - started)',
+                '    m["cold"].append(time.perf_counter() - started)',
+                '    assert min(m["warm"]) < min(m["cold"])',
+            ),
+            id="lists-under-constant-keys",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t():",
                 "    warm = cold = 0.0",
                 "    for _ in range(3):",
                 "        t0 = time.monotonic()",
@@ -470,6 +484,20 @@ def test_a_wrapped_duration_is_still_a_duration(value: str) -> None:
                 "    assert min(sizes[1]) < 1.6 * min(sizes[0])",
             ),
             id="lists-in-a-dict-that-append-no-duration",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t():",
+                '    m = {"elapsed": [], "sizes": []}',
+                "    started = time.perf_counter()",
+                '    m["elapsed"].append(time.perf_counter() - started)',
+                '    m["sizes"].append(len(out()))',
+                '    assert min(m["sizes"]) == 10',
+            ),
+            id="a-sibling-key-that-holds-no-duration",
         ),
         pytest.param(
             _py(

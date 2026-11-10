@@ -132,13 +132,16 @@ class _ClockBindings:
     a delta. ``durations`` holds only the names bound to a delta. ``series``
     holds the names of lists that collect deltas, such as `fast` after
     `fast.append(time.monotonic() - t0)`. ``series_maps`` holds the names of
-    containers whose items are such lists, such as `taken` after
-    `taken[which].append(time.perf_counter() - started)`."""
+    containers whose every item may be such a list, such as `taken` after
+    `taken[which].append(time.perf_counter() - started)`: a computed key can
+    reach any item. ``series_items`` holds `(name, key)` for an item filled
+    under a constant key, so `m["elapsed"]` taints only that one item."""
 
     clocked: set[str] = field(default_factory=set)
     durations: set[str] = field(default_factory=set)
     series: set[str] = field(default_factory=set)
     series_maps: set[str] = field(default_factory=set)
+    series_items: set[tuple[str, object]] = field(default_factory=set)
 
     def copy(self) -> "_ClockBindings":
         return _ClockBindings(
@@ -146,6 +149,7 @@ class _ClockBindings:
             set(self.durations),
             set(self.series),
             set(self.series_maps),
+            set(self.series_items),
         )
 
 
@@ -191,7 +195,7 @@ def _record_append(
     node: ast.AST, bindings: _ClockBindings, returns: _ReturnMap
 ) -> None:
     """Record the list that `<list>.append(<duration>)` fills: `name` itself,
-    or the container `name` when the list is one of its items, `name[key]`."""
+    or one item of the container `name` when the list is `name[key]`."""
     if not (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
@@ -204,7 +208,10 @@ def _record_append(
     if isinstance(receiver, ast.Name):
         bindings.series.add(receiver.id)
     elif isinstance(receiver, ast.Subscript) and isinstance(receiver.value, ast.Name):
-        bindings.series_maps.add(receiver.value.id)
+        if isinstance(receiver.slice, ast.Constant):
+            bindings.series_items.add((receiver.value.id, receiver.slice.value))
+        else:
+            bindings.series_maps.add(receiver.value.id)
 
 
 def _holds_duration(
@@ -243,7 +250,11 @@ def _may_hold_duration(
     concatenation would raise RecursionError, and a 400-term subtraction
     would take seconds."""
     known = (
-        bindings.clocked | bindings.durations | bindings.series | bindings.series_maps
+        bindings.clocked
+        | bindings.durations
+        | bindings.series
+        | bindings.series_maps
+        | {name for name, _ in bindings.series_items}
     )
     for node in ast.walk(value):
         if _is_clock_call(node):
@@ -381,8 +392,14 @@ def _is_series(node: ast.expr, bindings: _ClockBindings, returns: _ReturnMap) ->
     if isinstance(node, ast.Subscript):
         if isinstance(node.slice, ast.Slice):
             return _is_series(node.value, bindings, returns)
+        if not isinstance(node.value, ast.Name):
+            return False
+        name = node.value.id
+        if name in bindings.series_maps:
+            return True
+        key = node.slice
         return (
-            isinstance(node.value, ast.Name) and node.value.id in bindings.series_maps
+            isinstance(key, ast.Constant) and (name, key.value) in bindings.series_items
         )
     if isinstance(node, ast.Call):
         return (
