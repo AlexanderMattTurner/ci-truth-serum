@@ -319,29 +319,46 @@ _TWO_HELPERS = (
             _py(*_TWO_SERIES, "    assert sum(fast, 0.0) < sum(slow, 0.0)"),
             id="sum-with-a-start-value",
         ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert max(fast) < 0.5"),
+            id="an-appended-list-against-a-literal",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t():",
+                "    warm = cold = 0.0",
+                "    for _ in range(3):",
+                "        t0 = time.monotonic()",
+                "        run(cached=True)",
+                "        warm += time.monotonic() - t0",
+                "        t0 = time.monotonic()",
+                "        run(cached=False)",
+                "        cold += time.monotonic() - t0",
+                "    assert warm < cold",
+            ),
+            id="two-totals-that-plus-equals-built",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t(floor):",
+                "    s = time.monotonic()",
+                "    a = time.monotonic() - s",
+                "    s2 = time.monotonic()",
+                "    b = time.monotonic() - s2",
+                "    assert floor < a < b",
+            ),
+            id="two-neighbours-inside-a-chain",
+        ),
     ],
 )
 def test_flags_two_durations_compared(body: str) -> None:
     assert _py_violations(body) == [len(body.splitlines())]
-
-
-def test_flags_two_totals_that_plus_equals_built() -> None:
-    body = _py(
-        "import time",
-        "",
-        "",
-        "def t():",
-        "    warm = cold = 0.0",
-        "    for _ in range(3):",
-        "        t0 = time.monotonic()",
-        "        run(cached=True)",
-        "        warm += time.monotonic() - t0",
-        "        t0 = time.monotonic()",
-        "        run(cached=False)",
-        "        cold += time.monotonic() - t0",
-        "    assert warm < cold",
-    )
-    assert _py_violations(body) == [13]
 
 
 @pytest.mark.parametrize(
@@ -350,6 +367,9 @@ def test_flags_two_totals_that_plus_equals_built() -> None:
         "time.monotonic() - s if s else 0.0",
         "math.ceil(time.monotonic() - s)",
         "to_ms(time.monotonic() - s)",
+        "(time.monotonic() - s) or 0.0",
+        "ready and time.monotonic() - s",
+        "-(s - time.monotonic())",
     ],
 )
 def test_a_wrapped_duration_is_still_a_duration(value: str) -> None:
@@ -363,25 +383,6 @@ def test_a_wrapped_duration_is_still_a_duration(value: str) -> None:
         "    assert elapsed < 2",
     )
     assert _py_violations(body) == [7]
-
-
-def test_flags_an_appended_list_against_a_literal_too() -> None:
-    body = _py(*_TWO_SERIES, "    assert max(fast) < 0.5")
-    assert _py_violations(body) == [14]
-
-
-def test_flags_two_durations_inside_a_chained_comparison() -> None:
-    body = _py(
-        "import time",
-        "",
-        "",
-        "def t(floor):",
-        "    s = time.monotonic()",
-        "    a = time.monotonic() - s",
-        "    b = time.monotonic() - s",
-        "    assert floor < a < b",
-    )
-    assert _py_violations(body) == [8]
 
 
 @pytest.mark.parametrize(
@@ -426,6 +427,10 @@ def test_flags_two_durations_inside_a_chained_comparison() -> None:
             id="lists-that-append-no-duration",
         ),
         pytest.param(
+            _py(*_TWO_SERIES, "    assert min(fast) < budget"),
+            id="a-series-against-a-budget",
+        ),
+        pytest.param(
             _py(
                 "import time",
                 "",
@@ -464,6 +469,21 @@ def test_the_annotation_exempts_two_durations() -> None:
         "    assert min(fast) < 1.6 * min(slow)",
     )
     assert _py_violations(body) == []
+
+
+def test_a_long_expression_with_no_clock_does_not_recurse() -> None:
+    # 1100 operands nest deeper than the default recursion limit of 1000.
+    concat = " + ".join(f"'l{i}'" for i in range(1100))
+    body = _py(
+        "import time",
+        "",
+        "",
+        "def t():",
+        f"    expected = {concat}",
+        "    s = time.monotonic()",
+        "    assert time.monotonic() - s < 2",
+    )
+    assert _py_violations(body) == [7]
 
 
 # ── Python: the --scaler flag (repo-specific, off by default) ──────────────
