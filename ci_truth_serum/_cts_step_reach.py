@@ -136,14 +136,17 @@ class Unit(NamedTuple):
     entry: Path | None
 
 
-@functools.lru_cache(maxsize=512)
+@functools.cache
 def load_shell(path: Path) -> tuple[str, Node]:
     """The text of the shell file PATH and its parse tree, read once."""
     text = path.read_text(encoding="utf-8")
     return text, parse(text)
 
 
-_comments = functools.lru_cache(maxsize=512)(shell_comments)
+_comments = functools.cache(shell_comments)
+# Whether a node sits in a function body: asked of every link of every
+# command, in every namespace that reads its file.
+_in_function = functools.cache(_inside_definition)
 
 
 def _unit(path: Path, entry: Path | None) -> Unit:
@@ -173,7 +176,7 @@ def _executed(node: Node) -> list[Node]:
     return [c for c in iter_nodes(node, "command") if not _inside_definition(c, node)]
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.cache
 def definitions(root: Node) -> tuple[list[tuple[str, Node]], list[tuple[str, Node]]]:
     """(name, body) of each function ROOT defines, and (name, node) of each
     variable it assigns, at any depth."""
@@ -223,6 +226,7 @@ class Namespace:
         # `${X:-default}` reads the step's value, not the default.
         self.environment = environment
         self.units: list[Unit] = []
+        self._unit_paths: set[Path | None] = set()
         self.functions: dict[str, list[tuple[Node, Unit]]] = {}
         self.assignments: dict[str, list[tuple[Node, Unit]]] = {}
         # The `for NAME in …` loops, and the `read -a NAME` commands, by NAME.
@@ -256,6 +260,7 @@ class Namespace:
         self._variables.clear()
         self._values.clear()
         self.units.append(unit)
+        self._unit_paths.add(unit.path)
         functions, assignments = definitions(unit.root)
         for name, body in functions:
             self.functions.setdefault(name, []).append((body, unit))
@@ -294,7 +299,7 @@ class Namespace:
         target = self._source_target(command, unit)
         if target is None:
             return None
-        if any(u.path == target for u in self.units):
+        if target in self._unit_paths:
             self._anchors[target] = None
             return None
         added = _unit(target, unit.entry)
@@ -476,6 +481,25 @@ class Namespace:
         return name in self.assignments or name in self.environment
 
     @functools.cached_property
+    def launches(self) -> tuple["Launch", ...]:
+        """Each executed command that hands a repo file to Python or to a
+        shell, in walk order. A shared script is reached from many steps, so
+        one read serves every walk that reaches this namespace."""
+        found = []
+        for command, owner in self.executed:
+            words = self.words(command, owner)
+            # Asked of every command, in walk order: an answer `directory_at`
+            # caches can decide a later one, so the order is part of the result.
+            here = self.directory_at(command, owner)
+            py = self.file_in(_python_target(words), here)
+            target = self.file_in(_shell_target(words), here)
+            if py is not None and py.suffix != ".py":
+                py = None
+            if py is not None or target is not None:
+                found.append(Launch(py, target, here))
+        return tuple(found)
+
+    @functools.cached_property
     def defaulted(self) -> frozenset[str]:
         """The names the units read with a default (`${NAME:-default}`)."""
         return frozenset().union(*(_bindings(u.root).defaulted for u in self.units))
@@ -568,12 +592,13 @@ class Namespace:
     def _directory_at(self, command: Node, unit: Unit) -> Path | None:
         if self._changers is None:
             self._changers = [
-                (self._links(other, owner), self._chain(other, owner))
+                (links, self._chain(links))
                 for other, owner in self.executed
                 if _changes_directory(tokens(other))
+                for links in [self._links(other, owner)]
             ]
         command_links = self._links(command, unit)
-        command_chain = self._chain(command, unit)
+        command_chain = self._chain(command_links)
         last: list[tuple[Node, Unit]] | None = None
         for links, chain in self._changers:
             if _confined(links, command_links):
@@ -603,7 +628,7 @@ class Namespace:
         if self._anchors.get(links[-1][1].path, ()) is None:
             return None
         name = next(
-            (_function_name(n) for n, u in links if _inside_definition(n, u.root)),
+            (_function_name(n) for n, u in links if _in_function(n, u.root)),
             None,
         )
         if name is None:
@@ -638,14 +663,13 @@ class Namespace:
             links.append(anchor)
         return links
 
-    def _chain(self, node: Node, unit: Unit) -> list[tuple[Node, Unit]] | None:
-        """The links of NODE when they fix the line it runs at. None when a
-        link sits in a function body, which runs where it is called, or a file
-        on the way is sourced at two lines."""
-        links = self._links(node, unit)
+    def _chain(self, links: list[tuple[Node, Unit]]) -> list[tuple[Node, Unit]] | None:
+        """LINKS, a command's `_links`, when they fix the line it runs at.
+        None when a link sits in a function body, which runs where it is
+        called, or a file on the way is sourced at two lines."""
         if self._anchors.get(links[-1][1].path, ()) is None:
             return None
-        if any(_inside_definition(n, u.root) for n, u in links):
+        if any(_in_function(n, u.root) for n, u in links):
             return None
         return links
 
@@ -669,6 +693,7 @@ class Namespace:
         return {u.path for _, u in self.assignments.get(name, []) if u.path}
 
 
+@functools.cache
 def _own_shell(node: Node) -> Node | None:
     """The nearest node at or above NODE that runs its own shell, if any. In
     a pipeline that is the member holding NODE; a node that `&` sends to the
@@ -686,6 +711,7 @@ def _own_shell(node: Node) -> Node | None:
         below = scope
 
 
+@functools.cache
 def _function_name(node: Node) -> str:
     """The name of the innermost function whose body holds NODE."""
     while node.type != "function_definition":
@@ -788,6 +814,15 @@ class _Pending(NamedTuple):
     unit: Unit
     hops: int
     cwd: Path | None
+
+
+class Launch(NamedTuple):
+    """One command that starts a repo file: the `.py` file it hands Python
+    (PY), the shell script it runs (SCRIPT), and the directory it runs in."""
+
+    py: Path | None
+    script: Path | None
+    here: Path | None
 
 
 class Reach(NamedTuple):
@@ -963,7 +998,7 @@ class _Bindings(NamedTuple):
     defaulted: frozenset[str]
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.cache
 def _bindings(root: Node) -> _Bindings:
     """What ROOT binds. A shared file is read into many namespaces, so one
     walk serves them all."""
@@ -1011,7 +1046,7 @@ def _whole_array(node: Node) -> str | None:
     return node_text(name)
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.cache
 def _file_namespace(
     path: Path,
     repo_root: Path,
@@ -1050,7 +1085,7 @@ def reach(
     return _reach(script, repo_root, action_dir, working_directory, relevant)
 
 
-@functools.lru_cache(maxsize=256)
+@functools.cache
 def _reach(
     script: str,
     repo_root: Path,
@@ -1077,14 +1112,10 @@ def _reach(
         namespaces.append(namespace)
         if hops >= MAX_HOPS:
             continue
-        for command, owner in namespace.executed:
-            words = namespace.words(command, owner)
-            here = namespace.directory_at(command, owner)
-            py = namespace.file_in(_python_target(words), here)
-            if py is not None and py.suffix == ".py" and py not in python:
+        for py, target, here in namespace.launches:
+            if py is not None and py not in python:
                 python.append(py)
                 continue
-            target = namespace.file_in(_shell_target(words), here)
             if target is not None and target not in seen:
                 seen.add(target)
                 # A child runs in the directory its parent was in.
