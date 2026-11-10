@@ -222,7 +222,7 @@ def _source_order(scope: ast.AST) -> list[ast.AST]:
 
 
 def _may_hold_duration(
-    value: ast.expr, bindings: _ClockBindings, returns: _ReturnMap
+    value: ast.AST, bindings: _ClockBindings, returns: _ReturnMap
 ) -> bool:
     """A cheap, iterative test that VALUE reads a clock, a clock-derived name,
     or a duration-returning helper. Every exact test below recurses, so a
@@ -240,6 +240,22 @@ def _may_hold_duration(
     return False
 
 
+def _aug_makes_duration(
+    node: ast.AugAssign, bindings: _ClockBindings, returns: _ReturnMap
+) -> bool:
+    """True when NODE leaves a duration in its target: `total += <duration>`,
+    or `elapsed -= start` on a name that holds a clock reading."""
+    if not isinstance(node.target, ast.Name):
+        return False
+    if isinstance(node.op, ast.Add):
+        return _holds_duration(node.value, bindings, returns)
+    return (
+        isinstance(node.op, ast.Sub)
+        and node.target.id in bindings.clocked
+        and _mentions_clock(node.value, bindings.clocked)
+    )
+
+
 def _clock_bindings(
     scope: ast.AST, inherited: _ClockBindings, returns: _ReturnMap
 ) -> _ClockBindings:
@@ -251,28 +267,29 @@ def _clock_bindings(
     duration make every other function's same-named local a duration too."""
     bindings = inherited.copy()
     for node in _source_order(scope):
+        # What the screen reads: an append's argument, an assignment's value,
+        # and all of an augmented assignment, whose target is also an operand.
         if isinstance(node, ast.Call):
-            value = node.args[0] if node.args else None
-        elif isinstance(node, (ast.Assign, ast.AugAssign)):
-            value = node.value
+            screened = node.args[0] if node.args else None
+        elif isinstance(node, ast.Assign):
+            screened = node.value
+        elif isinstance(node, ast.AugAssign):
+            screened = node
         else:
             continue
-        if value is None or not _may_hold_duration(value, bindings, returns):
+        if screened is None or not _may_hold_duration(screened, bindings, returns):
             continue
         appended = _appended_duration(node, bindings, returns)
         if appended is not None:
             bindings.series.add(appended)
-        if (
-            isinstance(node, ast.AugAssign)
-            and isinstance(node.op, ast.Add)
-            and isinstance(node.target, ast.Name)
-            and _holds_duration(node.value, bindings, returns)
+        if isinstance(node, ast.AugAssign) and _aug_makes_duration(
+            node, bindings, returns
         ):
             bindings.clocked.add(node.target.id)
             bindings.durations.add(node.target.id)
         if not isinstance(node, ast.Assign) or len(node.targets) != 1:
             continue
-        target = node.targets[0]
+        target, value = node.targets[0], node.value
         positions = _returned_positions(value, returns)
         if isinstance(target, ast.Name):
             if _mentions_clock(value, bindings.clocked) or None in positions:

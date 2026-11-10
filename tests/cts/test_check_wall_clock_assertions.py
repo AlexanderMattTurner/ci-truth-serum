@@ -361,6 +361,21 @@ def test_flags_two_durations_compared(body: str) -> None:
     assert _py_violations(body) == [len(body.splitlines())]
 
 
+def test_minus_equals_on_a_reading_makes_a_duration() -> None:
+    body = _py(
+        "import time",
+        "",
+        "",
+        "def t():",
+        "    start = time.monotonic()",
+        "    run()",
+        "    elapsed = time.monotonic()",
+        "    elapsed -= start",
+        "    assert elapsed < 5",
+    )
+    assert _py_violations(body) == [9]
+
+
 @pytest.mark.parametrize(
     "value",
     [
