@@ -1,10 +1,13 @@
 """Tests for ci_truth_serum/check_wall_clock_assertions.py — the check that bans a
-test assertion comparing a wall-clock duration against a numeric literal, in
+test assertion comparing a wall-clock duration against a numeric literal or a
+second measured duration, in
 Python (stdlib ``ast``) and JavaScript/TypeScript (``_cts_js_ast``, tree-sitter).
 """
 
 import subprocess
 import sys
+
+import pytest
 
 from tests._helpers import REPO_ROOT, load_hook
 
@@ -219,6 +222,283 @@ def test_a_nested_defs_return_does_not_escape_to_its_owner() -> None:
         "    assert n < 3",
     )
     assert _py_violations(body) == []
+
+
+# ── Python: two durations compared with each other ──────────────────────────
+_TWO_SERIES = (
+    "import statistics",
+    "import time",
+    "",
+    "",
+    "def t():",
+    "    fast, slow = [], []",
+    "    for _ in range(5):",
+    "        t0 = time.perf_counter()",
+    "        run(cached=True)",
+    "        fast.append(time.perf_counter() - t0)",
+    "        t0 = time.perf_counter()",
+    "        run(cached=False)",
+    "        slow.append(time.perf_counter() - t0)",
+)
+
+_TWO_HELPERS = (
+    "import time",
+    "",
+    "",
+    "def _seconds(job):",
+    "    started = time.monotonic()",
+    "    job()",
+    "    return time.monotonic() - started",
+    "",
+    "",
+    "def t():",
+)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert min(fast) < 1.6 * min(slow)"),
+            id="min-of-two-appended-lists",
+        ),
+        pytest.param(
+            _py(
+                *_TWO_SERIES,
+                "    assert statistics.median(fast) < statistics.median(slow)",
+            ),
+            id="statistics-median",
+        ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert sorted(fast)[0] <= sorted(slow)[0]"),
+            id="subscript-of-sorted",
+        ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert sum(fast[1:]) < sum(slow[1:])"),
+            id="sum-of-a-slice",
+        ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    best = min(fast)", "    assert best < min(slow)"),
+            id="reduction-bound-to-a-name",
+        ),
+        pytest.param(
+            _py(*_TWO_HELPERS, "    assert _seconds(warm) < _seconds(cold) / 2"),
+            id="two-helper-durations",
+        ),
+        pytest.param(
+            _py(
+                *_TWO_HELPERS,
+                "    runs = [_seconds(warm) for _ in range(3)]",
+                "    assert max(runs) < _seconds(cold)",
+            ),
+            id="list-comprehension-of-durations",
+        ),
+        pytest.param(
+            _py(
+                *_TWO_HELPERS,
+                "    assert min(_seconds(warm) for _ in range(3)) < _seconds(cold)",
+            ),
+            id="generator-of-durations",
+        ),
+        pytest.param(
+            _py(
+                *_TWO_HELPERS,
+                "    assert min([_seconds(warm), _seconds(warm)]) < _seconds(cold)",
+            ),
+            id="list-literal-of-durations",
+        ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert tuple(fast)[0] < list(slow)[0]"),
+            id="subscript-of-tuple-and-list",
+        ),
+        pytest.param(
+            _py(*_TWO_HELPERS, "    assert max(_seconds(warm), 0.0) < _seconds(cold)"),
+            id="multi-arg-reduction",
+        ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert sum(fast, 0.0) < sum(slow, 0.0)"),
+            id="sum-with-a-start-value",
+        ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert max(fast) < 0.5"),
+            id="an-appended-list-against-a-literal",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t():",
+                "    warm = cold = 0.0",
+                "    for _ in range(3):",
+                "        t0 = time.monotonic()",
+                "        run(cached=True)",
+                "        warm += time.monotonic() - t0",
+                "        t0 = time.monotonic()",
+                "        run(cached=False)",
+                "        cold += time.monotonic() - t0",
+                "    assert warm < cold",
+            ),
+            id="two-totals-that-plus-equals-built",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t(floor):",
+                "    s = time.monotonic()",
+                "    a = time.monotonic() - s",
+                "    s2 = time.monotonic()",
+                "    b = time.monotonic() - s2",
+                "    assert floor < a < b",
+            ),
+            id="two-neighbours-inside-a-chain",
+        ),
+    ],
+)
+def test_flags_two_durations_compared(body: str) -> None:
+    assert _py_violations(body) == [len(body.splitlines())]
+
+
+def test_minus_equals_on_a_reading_makes_a_duration() -> None:
+    body = _py(
+        "import time",
+        "",
+        "",
+        "def t():",
+        "    start = time.monotonic()",
+        "    run()",
+        "    elapsed = time.monotonic()",
+        "    elapsed -= start",
+        "    assert elapsed < 5",
+    )
+    assert _py_violations(body) == [9]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "time.monotonic() - s if s else 0.0",
+        "math.ceil(time.monotonic() - s)",
+        "to_ms(time.monotonic() - s)",
+        "(time.monotonic() - s) or 0.0",
+        "ready and time.monotonic() - s",
+        "-(s - time.monotonic())",
+    ],
+)
+def test_a_wrapped_duration_is_still_a_duration(value: str) -> None:
+    body = _py(
+        "import math",
+        "import time",
+        "",
+        "",
+        "def t(s):",
+        f"    elapsed = {value}",
+        "    assert elapsed < 2",
+    )
+    assert _py_violations(body) == [7]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t():",
+                "    first_seen = time.monotonic()",
+                "    fire()",
+                "    second_seen = time.monotonic()",
+                "    assert first_seen < second_seen",
+            ),
+            id="two-readings-order-two-events",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t():",
+                "    start = time.monotonic()",
+                "    assert start > 0",
+            ),
+            id="a-reading-against-a-literal",
+        ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert len(fast) == len(slow)"),
+            id="the-lengths-of-two-series",
+        ),
+        pytest.param(
+            _py(
+                "def t():",
+                "    codes, sizes = [], []",
+                "    codes.append(run().returncode)",
+                "    sizes.append(len(out()))",
+                "    assert max(codes) < max(sizes)",
+            ),
+            id="lists-that-append-no-duration",
+        ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert min(fast) < budget"),
+            id="a-series-against-a-budget",
+        ),
+        pytest.param(
+            _py(
+                "import time",
+                "",
+                "",
+                "def t(budget):",
+                "    s = time.monotonic()",
+                "    a = time.monotonic() - s",
+                "    b = time.monotonic() - s",
+                "    assert a < budget > b",
+            ),
+            id="two-durations-that-a-chain-never-compares",
+        ),
+    ],
+)
+def test_two_non_durations_are_not_flagged(body: str) -> None:
+    assert _py_violations(body) == []
+
+
+def test_a_series_name_does_not_leak_across_functions() -> None:
+    body = _py(
+        *_TWO_SERIES,
+        "    assert min(fast) < 1.6 * min(slow)",
+        "",
+        "",
+        "def t_other():",
+        "    fast, slow = [3], [4]",
+        "    assert min(fast) < min(slow)",
+    )
+    assert _py_violations(body) == [14]
+
+
+def test_the_annotation_exempts_two_durations() -> None:
+    body = _py(
+        *_TWO_SERIES,
+        "    # allow-wall-clock: the warm path skips the whole download",
+        "    assert min(fast) < 1.6 * min(slow)",
+    )
+    assert _py_violations(body) == []
+
+
+def test_a_long_expression_with_no_clock_does_not_recurse() -> None:
+    # 1100 operands nest deeper than the default recursion limit of 1000.
+    concat = " + ".join(f"'l{i}'" for i in range(1100))
+    body = _py(
+        "import time",
+        "",
+        "",
+        "def t():",
+        f"    expected = {concat}",
+        "    s = time.monotonic()",
+        "    assert time.monotonic() - s < 2",
+    )
+    assert _py_violations(body) == [7]
 
 
 # ── Python: the --scaler flag (repo-specific, off by default) ──────────────
