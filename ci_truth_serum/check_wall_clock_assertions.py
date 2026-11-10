@@ -192,6 +192,16 @@ def _appended_duration(
     return node.func.value.id if _is_duration(node.args[0], b, returns) else None
 
 
+def _holds_duration(value: ast.expr, b: _ClockBindings, returns: _ReturnMap) -> bool:
+    """True when some part of VALUE is a duration, so a name bound to VALUE is
+    one too. `math.ceil(time.monotonic() - t0)` wraps a delta in a call the
+    grammar of `_is_duration` does not know, and the result is still a
+    duration. A bare reading, or `time.monotonic() + 5`, has no such part."""
+    return any(
+        isinstance(n, ast.expr) and _is_duration(n, b, returns) for n in ast.walk(value)
+    )
+
+
 def _source_order(scope: ast.AST) -> list[ast.AST]:
     """Every node under SCOPE, pre-order, so a statement nested in a loop is
     read before the statement that follows the loop. `ast.walk` is
@@ -224,7 +234,7 @@ def _clock_names(
             isinstance(node, ast.AugAssign)
             and isinstance(node.op, ast.Add)
             and isinstance(node.target, ast.Name)
-            and _is_duration(node.value, b, returns)
+            and _holds_duration(node.value, b, returns)
         ):
             b.clocked.add(node.target.id)
             b.durations.add(node.target.id)
@@ -235,7 +245,7 @@ def _clock_names(
         if isinstance(target, ast.Name):
             if _mentions_clock(value, b.clocked) or None in positions:
                 b.clocked.add(target.id)
-            if _is_duration(value, b, returns):
+            if _holds_duration(value, b, returns):
                 b.durations.add(target.id)
             if _is_series(value, b, returns):
                 b.series.add(target.id)

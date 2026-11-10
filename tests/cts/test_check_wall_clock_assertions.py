@@ -293,6 +293,28 @@ _TWO_HELPERS = (
             ),
             id="list-comprehension-of-durations",
         ),
+        pytest.param(
+            _py(
+                *_TWO_HELPERS,
+                "    assert min(_seconds(warm) for _ in range(3)) < _seconds(cold)",
+            ),
+            id="generator-of-durations",
+        ),
+        pytest.param(
+            _py(
+                *_TWO_HELPERS,
+                "    assert min([_seconds(warm), _seconds(warm)]) < _seconds(cold)",
+            ),
+            id="list-literal-of-durations",
+        ),
+        pytest.param(
+            _py(*_TWO_SERIES, "    assert tuple(fast)[0] < list(slow)[0]"),
+            id="subscript-of-tuple-and-list",
+        ),
+        pytest.param(
+            _py(*_TWO_HELPERS, "    assert max(_seconds(warm), 0.0) < _seconds(cold)"),
+            id="multi-arg-reduction",
+        ),
     ],
 )
 def test_flags_two_durations_compared(body: str) -> None:
@@ -318,16 +340,25 @@ def test_flags_two_totals_that_plus_equals_built() -> None:
     assert _py_violations(body) == [13]
 
 
-def test_a_conditional_duration_is_still_a_duration() -> None:
+@pytest.mark.parametrize(
+    "value",
+    [
+        "time.monotonic() - s if s else 0.0",
+        "math.ceil(time.monotonic() - s)",
+        "to_ms(time.monotonic() - s)",
+    ],
+)
+def test_a_wrapped_duration_is_still_a_duration(value: str) -> None:
     body = _py(
+        "import math",
         "import time",
         "",
         "",
         "def t(s):",
-        "    elapsed = time.monotonic() - s if s else 0.0",
+        f"    elapsed = {value}",
         "    assert elapsed < 2",
     )
-    assert _py_violations(body) == [6]
+    assert _py_violations(body) == [7]
 
 
 def test_flags_an_appended_list_against_a_literal_too() -> None:
