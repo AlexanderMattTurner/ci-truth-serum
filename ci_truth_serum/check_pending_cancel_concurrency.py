@@ -67,16 +67,19 @@ current SHA → red). The safe fixes are to drop the group or key it on
 A workflow "backs a required check" by EITHER of two routes. The heuristic
 route is a decide gate plus one of the shapes that fail closed on a broken gate:
 an `always()` reporter, or a fail-closed twin (`if: always() &&
-needs.<gate>.result != 'success'`). A workflow can also declare a required check
-with nothing but a `# required-check: true` marker on one job — the mandatory
-SSOT marker check_required_reporter enforces and sync_required_checks reads —
-and that shape has no decide gate to find.
+needs.<gate>.result != 'success'`). The other route is the gating set: a job
+with a `# required-check: true` marker — the SSOT marker check_required_reporter
+enforces and sync_required_checks reads — or a job whose check a Mergify config
+names in `check-success=<name>`. That shape has no decide gate to find. Mergify
+reads the newest run of a check, so a cancelled sibling holds the pull request
+out of the queue just as it reddens a ruleset's check. `--gating-source` picks
+the places to read; see `_cts_gating`.
 
 Which jobs each route judges follows from what reads their results. An always()
 reporter is a funnel every job feeds, so that route judges every job. A twin
 reads only its gates' results, so that route judges the gates, the twins and the
 MARKED jobs; an unrelated job's cancellation reddens no check the twin posts.
-The marker route judges the workflow-level block plus the marked jobs alone.
+The gating-set route judges the workflow-level block plus the gating jobs alone.
 
 This lint is deliberately scoped to per-ref/per-PR groups (the key polarity
 check_static_concurrency calls safe). A STATIC group shares the failure mode but
@@ -91,6 +94,7 @@ is genuinely never a required check. That token is file-wide and answers shape 2
 only; shape 1 takes the per-job "# inert-group-ok: <reason>" instead.
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -102,7 +106,6 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     CALLED_EVENT,
     TWIN_SHAPE,
     _job_blocks,
-    _marked_jobs,
     annotated,
     annotated_near,
     concurrency_line,
@@ -128,6 +131,11 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     PathologicalInputError,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_gating import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    GatingSource,
+    MergifyConfigError,
+    add_source_flag,
+)
 
 OPT_OUT = "pending-cancel-ok"
 INERT_OPT_OUT = "inert-group-ok"
@@ -377,10 +385,15 @@ def _block_opted_out(comment_lines: list[str], block: tuple[int, str]) -> bool:
     return any(annotated(line, INERT_OPT_OUT) for line in window)
 
 
-def check_file(path: Path) -> list[tuple[int | None, str]]:
+def check_file(
+    path: Path, source: GatingSource | None = None
+) -> list[tuple[int | None, str]]:
     """Return (line, message) for every ref-keyed concurrency group — workflow-
     level OR job-level — on a required-check workflow whose pull_request types
     can queue multiple runs on one head SHA.
+
+    SOURCE says where the gating checks are written. None reads the
+    `# required-check: true` markers alone.
 
     A file that cannot be parsed as YAML is itself reported as a violation
     (line ``None``) rather than silently passed as clean — matching the sibling
@@ -416,12 +429,13 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
         )
 
     heuristic = required_check_shape(jobs, doc)
-    marked = _marked_jobs(blocks, jobs)
+    gates = (source or GatingSource()).jobs(path, blocks, jobs)
+    marked = sorted(gates)
     if not (heuristic or marked):
         return (
             violations  # not a required-check shape — a reddened cancel self-describes
         )
-    basis = heuristic or "the '# required-check: true' marker"
+    basis = heuristic or gates[marked[0]].describe(source.config if source else None)
 
     if _ref_keyed(group_of(doc.get("concurrency"))):
         violations.append(
@@ -451,12 +465,22 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
     return violations
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_source_flag(parser)
+    # pre-commit passes no files (`pass_filenames: false`); discovery globs the tree.
+    parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        source = GatingSource.load(REPO_ROOT, args.gating_source, WORKFLOWS_DIR)
+    except MergifyConfigError as err:
+        print(f"::error::{err}")
+        return 1
     total = 0
     for path in workflow_files(WORKFLOWS_DIR, ACTIONS_DIR):
         rel = path.relative_to(REPO_ROOT)
         try:
-            findings = check_file(path)
+            findings = check_file(path, source)
         except PathologicalInputError as err:
             print(f"::error file={rel}::{err}")
             total += 1

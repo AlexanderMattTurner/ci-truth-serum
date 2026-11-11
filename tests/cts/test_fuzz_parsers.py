@@ -47,6 +47,7 @@ secret_file_perms = load_hook("check_secret_file_perms.py", "fuzz_secret_file_pe
 workflow_pipefail = load_hook("check_workflow_pipefail.py", "fuzz_workflow_pipefail")
 inline_run_length = load_hook("check_inline_run_length.py", "fuzz_inline_run_length")
 linecheck = load_hook("_cts_linecheck.py", "fuzz_linecheck")
+gating = load_hook("_cts_gating.py", "fuzz_gating")
 env_symmetry = load_hook("check_env_symmetry.py", "fuzz_env_symmetry")
 gh_slurp_jq = load_hook("check_gh_slurp_jq.py", "fuzz_gh_slurp_jq")
 main_push = load_hook("check_main_push.py", "fuzz_main_push")
@@ -376,6 +377,66 @@ def test_required_check_contexts_never_crashes(text: str) -> None:
     out = linecheck.required_check_contexts(text)
     assert isinstance(out, list)
     assert all(isinstance(c, str) for c in out)
+
+
+# A Mergify condition: a string leaf, or an `and`/`or`/`not` node over a list.
+_MERGIFY_LEAVES = st.sampled_from(
+    [
+        "check-success=CI",
+        "check-success = lint",
+        "-check-success=CI",
+        "check-failure=CI",
+        "status-success=build",
+        "check-success~=^e2e",
+        "base=main",
+        "-base=main",
+        "label=approved",
+        "-draft",
+        "#approved-reviews-by>=1",
+    ]
+)
+_MERGIFY_CONDITIONS = st.recursive(
+    _MERGIFY_LEAVES | st.text(max_size=20),
+    lambda inner: st.dictionaries(
+        st.sampled_from(["and", "or", "not"]),
+        st.lists(inner, max_size=3) | inner,
+        min_size=1,
+        max_size=1,
+    ),
+    max_leaves=8,
+)
+
+
+@st.composite
+def mergify_text(draw: st.DrawFn) -> str:
+    """A Mergify config: queue rules over random conditions, or random text."""
+    import yaml
+
+    if draw(st.booleans()):
+        return draw(st.text(max_size=80))
+    rule = {
+        key: draw(st.lists(_MERGIFY_CONDITIONS, max_size=4))
+        for key in draw(
+            st.lists(
+                st.sampled_from(["queue_conditions", "merge_conditions"]), unique=True
+            )
+        )
+    }
+    return yaml.safe_dump({"queue_rules": [rule]})
+
+
+@given(text=mergify_text(), base=st.sampled_from([None, "main", "dev"]))
+def test_mergify_queue_checks_never_crash(text: str, base: str | None) -> None:
+    # The reader names the gating checks, or refuses the config with
+    # MergifyConfigError. Any other exception is a crash a consumer sees as a
+    # traceback instead of a finding.
+    try:
+        checks = gating.queue_checks(text, base=base)
+    except gating.MergifyConfigError:
+        return
+    assert isinstance(checks.required, frozenset)
+    assert checks.required.isdisjoint(checks.conditional)
+    assert all(isinstance(name, str) for name in checks.gating())
 
 
 @given(caller=yaml_text(), callee=yaml_text())

@@ -39,10 +39,23 @@ fires on both a pull request event and ``merge_group``. A workflow that fires on
 ``merge_group`` alone can be a leg written before the queue is turned on, so it
 proves nothing.
 
+The roots can also come from a Mergify config: a job whose check a queue rule
+names in ``check-success=<name>``. Mergify reads the newest run of a check, and
+it counts a skipped run as no success. So a skip in the closure fails one of two
+ways there. A reporter that still runs reports green with none of the work done,
+and that green replaces an earlier red. A root that skips replaces an earlier
+green, and the pull request leaves the queue. Mergify reads
+``queue_conditions`` on the pull request, on every pull request event, and
+``merge_conditions`` on its draft, which gets only ``opened`` and
+``synchronize``. Neither one runs on ``merge_group``, so the second rule does
+not apply to a Mergify root. ``--gating-source`` picks the places to read; see
+``_cts_gating``.
+
 Opt out per job with ``# event-scoped-ok: <reason>`` on or above the job when
 the skip is deliberate and the reporter below it is honest about it.
 """
 
+import argparse
 import json
 import re
 import sys
@@ -53,7 +66,6 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _job_blocks,
-    _marked_jobs,
     annotated_near,
     declared_events,
     github_string,
@@ -65,6 +77,12 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 from _cts_linecheck import WORKFLOW_GLOBS  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_linecheck import workflow_files as _workflow_files  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_gating import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    Gate,
+    GatingSource,
+    MergifyConfigError,
+    add_source_flag,
+)
 
 OPT_OUT = "event-scoped-ok"
 REPO_ROOT = Path.cwd()
@@ -111,6 +129,9 @@ _NO_PULL_REQUEST = frozenset({"merge_group"})
 
 # The activity type GitHub sends with every merge_group event.
 _MERGE_GROUP_ACTION = "checks_requested"
+
+# The activity types Mergify's draft, the queue build, gets.
+DRAFT_TYPES = frozenset({"opened", "synchronize"})
 
 # The functions truth_of reads, each over two string casts.
 _STRING_CALLS = ("contains", "startswith", "endswith")
@@ -446,19 +467,37 @@ def uses_merge_queue(paths: list[Path]) -> bool:
     return any(gates_the_queue(path) for path in paths)
 
 
+def root_pairs(
+    gate: Gate, pairs: list[tuple[str, str | None]]
+) -> list[tuple[str, str | None]]:
+    """The (event, type) pairs of PAIRS on which the check that GATE names gates.
+
+    A marker gates on every pair. A Mergify name gates on the pull request
+    events only. A name only `merge_conditions` holds gates only on the types
+    Mergify's draft gets."""
+    if gate.marker:
+        return pairs
+    return [
+        (event, action)
+        for event, action in pairs
+        if event in PR_EVENTS and (gate.pull_request or action in DRAFT_TYPES)
+    ]
+
+
 def _siblings(path: Path) -> list[Path]:
     """The workflow files in PATH's directory, PATH included."""
     return sorted(p for glob in WORKFLOW_GLOBS for p in path.parent.glob(glob))
 
 
 def check_file(
-    path: Path, merge_queue: bool | None = None
+    path: Path, merge_queue: bool | None = None, source: GatingSource | None = None
 ) -> list[tuple[int | None, str]]:
     """Return (line, message) for every closure job provably skipped on a
     gating event, and for every required job the merge queue never runs.
 
     MERGE_QUEUE says whether the repo uses a merge queue. None reads it from
-    the workflow files beside PATH.
+    the workflow files beside PATH. SOURCE says where the gating checks are
+    written. None reads the `# required-check: true` markers alone.
 
     A file that cannot be parsed as YAML is itself reported as a violation
     (line ``None``) rather than silently passed as clean — matching the sibling
@@ -491,15 +530,16 @@ def check_file(
     blocks = _job_blocks(text)
     lines = source_lines(text)
     comments = yaml_marker_comments(text)
-    required = _marked_jobs(blocks, jobs)
+    required = (source or GatingSource()).jobs(path, blocks, jobs)
+    marked = [root for root, gate in required.items() if gate.marker]
 
     violations: list[tuple[int | None, str]] = []
     events = {event for event, _ in pairs}
-    if required and events & PR_EVENTS and "merge_group" not in events:
+    if marked and events & PR_EVENTS and "merge_group" not in events:
         if merge_queue is None:
             merge_queue = uses_merge_queue(_siblings(path))
         if merge_queue:
-            for root in required:
+            for root in marked:
                 start, block = blocks.get(root, (1, ""))
                 span_end = start + len(block.splitlines()) - 1
                 if not annotated_near(
@@ -507,30 +547,45 @@ def check_file(
                 ):
                     violations.append((start, _no_queue_trigger(root)))
 
-    judged: set[str] = set()
-    for root in required:
+    # Each closure job is judged once, on every pair some root it feeds gates on.
+    # The message names the first root that reaches it.
+    job_pairs: dict[str, list[tuple[str, str | None]]] = {}
+    first_root: dict[str, str] = {}
+    for root, gate in required.items():
+        gated = root_pairs(gate, pairs)
         for name in sorted(needs_closure(jobs, root)):
-            if name in judged:
-                continue
-            judged.add(name)
-            cond = unwrap_expression(jobs[name].get("if", ""))
-            if not cond:
-                continue
-            start, block = blocks.get(name, (1, ""))
-            span_end = start + len(block.splitlines()) - 1
-            # LINES shapes the window; COMMENTS says what each line holds, so a
-            # `#` inside a quoted scalar in the job's block opts nobody out.
-            if annotated_near(
-                lines, start, OPT_OUT, span_end=span_end, comments=comments
-            ):
-                continue
-            try:
-                excluded = _excluded_on(cond, pairs)
-            except ExpressionError as err:
-                violations.append((start, _unreadable(name, cond, err)))
-                continue
-            if excluded:
-                violations.append((start, _excluded(name, root, excluded, cond)))
+            first_root.setdefault(name, root)
+            known = job_pairs.setdefault(name, [])
+            known += [pair for pair in gated if pair not in known]
+
+    config = source.config if source else None
+    for name, gated in job_pairs.items():
+        if not gated:
+            continue
+        root = first_root[name]
+        cond = unwrap_expression(jobs[name].get("if", ""))
+        if not cond:
+            continue
+        start, block = blocks.get(name, (1, ""))
+        span_end = start + len(block.splitlines()) - 1
+        # LINES shapes the window; COMMENTS says what each line holds, so a
+        # `#` inside a quoted scalar in the job's block opts nobody out.
+        if annotated_near(lines, start, OPT_OUT, span_end=span_end, comments=comments):
+            continue
+        try:
+            excluded = _excluded_on(cond, gated)
+        except ExpressionError as err:
+            violations.append((start, _unreadable(name, cond, err)))
+            continue
+        if not excluded:
+            continue
+        gate = required[root]
+        message = (
+            _excluded(name, root, excluded, cond)
+            if gate.marker
+            else _excluded_mergify(name, root, excluded, cond, gate.describe(config))
+        )
+        violations.append((start, message))
     return violations
 
 
@@ -542,6 +597,21 @@ def _excluded(name: str, root: str, excluded: list[str], cond: str) -> str:
         "with none of this job's work done. Widen the `if:` to admit the event, "
         f"or annotate the job with '# {OPT_OUT}: <reason>' if the skip is "
         "deliberate and honestly reported."
+    )
+
+
+def _excluded_mergify(
+    name: str, root: str, excluded: list[str], cond: str, basis: str
+) -> str:
+    return (
+        f"job '{name}', which gating job '{root}' depends on ({basis}), is "
+        f"skipped on {', '.join(excluded)} — its `if:` is {cond!r}. Mergify "
+        "reads the newest run of a check. If the check still runs there, it "
+        "reports green with none of this job's work done, and that green "
+        "replaces an earlier red. If the check skips, Mergify counts the skip "
+        "as no success, and the pull request leaves the queue. Widen the `if:` "
+        f"to admit the event, or annotate the job with '# {OPT_OUT}: <reason>' "
+        "if the skip is deliberate and honestly reported."
     )
 
 
@@ -571,13 +641,23 @@ def workflow_files() -> list[Path]:
     return _workflow_files(WORKFLOWS_DIR, ACTIONS_DIR)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_source_flag(parser)
+    # pre-commit passes no files (`pass_filenames: false`); discovery globs the tree.
+    parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        source = GatingSource.load(REPO_ROOT, args.gating_source, WORKFLOWS_DIR)
+    except MergifyConfigError as err:
+        print(f"::error::{err}")
+        return 1
     total = 0
     files = workflow_files()
     merge_queue = uses_merge_queue(files)
     for path in files:
         rel = path.relative_to(REPO_ROOT)
-        for line, message in check_file(path, merge_queue):
+        for line, message in check_file(path, merge_queue, source):
             loc = f"file={rel},line={line}" if line else f"file={rel}"
             print(f"::error {loc}::{message}")
             total += 1
