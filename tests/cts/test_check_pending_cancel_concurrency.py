@@ -1217,7 +1217,7 @@ def test_a_check_the_mergify_config_names_is_a_required_check(tmp_path):
     body = STORM_TRIGGER + REF_GROUP + MERGIFY_ONLY_JOBS
     path = _write(tmp_path, body)
     assert pc.check_file(path) == []  # no marker, and no source given
-    source = pc.GatingSource(pull_request=frozenset({"CI"}), config=".mergify.yml")
+    source = pc.GatingSource(names=frozenset({"CI"}), config=".mergify.yml")
     violations = pc.check_file(path, source)
     assert len(violations) == 1
     assert "(.mergify.yml gates on 'CI')" in violations[0][1]
@@ -1228,7 +1228,7 @@ def test_a_job_mergify_names_is_judged_like_a_marked_job(tmp_path):
         "    name: CI\n",
         "    name: CI\n    concurrency:\n      group: g-${{ github.head_ref }}\n",
     )
-    source = pc.GatingSource(queue_build=frozenset({"CI"}), config=".mergify.yml")
+    source = pc.GatingSource(names=frozenset({"CI"}), config=".mergify.yml")
     violations = pc.check_file(_write(tmp_path, body), source)
     assert [message.split(":")[0] for _, message in violations] == ["job 'gate'"]
 

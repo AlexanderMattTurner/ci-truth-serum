@@ -230,7 +230,7 @@ MERGIFY_RULES = (
 def test_a_check_the_mergify_config_names_is_a_required_check(tmp_path):
     path = _write(tmp_path, _wf(STATIC_CANCELLABLE, MERGIFY_JOBS))
     assert crc.check_file(path) is None  # no marker, and no source given
-    source = crc.GatingSource(pull_request=frozenset({"CI"}), config=".mergify.yml")
+    source = crc.GatingSource(names=frozenset({"CI"}), config=".mergify.yml")
     result = crc.check_file(path, source)
     assert result is not None
     assert "job 'report', by .mergify.yml gates on 'CI'" in result[1]

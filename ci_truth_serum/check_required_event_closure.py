@@ -47,7 +47,7 @@ and that green replaces an earlier red. A root that skips replaces an earlier
 green, and the pull request leaves the queue. Mergify reads
 ``queue_conditions`` on the pull request, on every pull request event. It reads
 ``merge_conditions`` on its draft, or on the pull request itself with in-place
-checks, so both judge every pull request event. Mergify sends no
+checks. So a Mergify root gates on every pull request event. Mergify sends no
 ``merge_group`` event, so the second rule does not apply to a Mergify root. ``--gating-source`` picks the places to read; see
 ``_cts_gating``.
 

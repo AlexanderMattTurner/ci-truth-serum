@@ -577,12 +577,8 @@ jobs:
 """
 
 
-def _source(pull_request=(), queue_build=()):
-    return crec.GatingSource(
-        pull_request=frozenset(pull_request),
-        queue_build=frozenset(queue_build),
-        config=".mergify.yml",
-    )
+def _source(names):
+    return crec.GatingSource(names=frozenset(names), config=".mergify.yml")
 
 
 def _check_with(tmp_path: Path, body: str, source) -> list[tuple[int | None, str]]:
@@ -591,29 +587,18 @@ def _check_with(tmp_path: Path, body: str, source) -> list[tuple[int | None, str
     return crec.check_file(path, source=source)
 
 
-def test_a_pull_request_gate_is_judged_on_every_pull_request_type(tmp_path):
-    """Mergify reads `queue_conditions` on every pull request event. The skip on
+def test_a_mergify_gate_is_judged_on_every_pull_request_type(tmp_path):
+    """Mergify reads its conditions on every pull request event. The skip on
     `labeled` posts a green CI that replaces an earlier red. The skip on
     `merge_group` is no finding, because Mergify runs no merge_group event."""
     assert _check(tmp_path, MERGIFY_DECIDE_SKIPS_LABELED) == []
-    violations = _check_with(
-        tmp_path, MERGIFY_DECIDE_SKIPS_LABELED, _source(pull_request={"CI"})
-    )
+    violations = _check_with(tmp_path, MERGIFY_DECIDE_SKIPS_LABELED, _source({"CI"}))
     assert len(violations) == 1
     line, message = violations[0]
     assert line == 7
     assert "is skipped on pull_request:labeled —" in message
     assert "(.mergify.yml gates on 'CI')" in message
     assert "merge_group" not in message.split("—")[0]
-
-
-def test_a_queue_build_gate_is_judged_on_every_pull_request_type(tmp_path):
-    """With in-place checks, Mergify reads `merge_conditions` on the pull request
-    itself, so a `labeled` skip can post the newest run there too."""
-    [(_, message)] = _check_with(
-        tmp_path, MERGIFY_DECIDE_SKIPS_LABELED, _source(queue_build={"CI"})
-    )
-    assert "is skipped on pull_request:labeled —" in message
 
 
 def test_a_marked_root_names_a_job_both_kinds_of_root_reach(tmp_path):
@@ -625,7 +610,7 @@ def test_a_marked_root_names_a_job_both_kinds_of_root_reach(tmp_path):
         "  marked: # required-check: true\n    needs: decide\n    if: always()\n"
         "    runs-on: ubuntu-latest\n",
     )
-    [(_, message)] = _check_with(tmp_path, body, _source(pull_request={"CI"}))
+    [(_, message)] = _check_with(tmp_path, body, _source({"CI"}))
     assert "required check 'marked' depends on" in message
     assert "pull_request:labeled, merge_group" in message
 
@@ -636,7 +621,7 @@ def test_a_mergify_gate_needs_no_merge_group_trigger(tmp_path):
     (tmp_path / "queue.yaml").write_text(QUEUE_WORKFLOW, encoding="utf-8")
     assert _check(tmp_path, PR_ONLY_GATE) != []
     gated = PR_ONLY_GATE.replace(" # required-check: true\n", "\n    name: CI\n")
-    assert _check_with(tmp_path, gated, _source(pull_request={"CI"})) == []
+    assert _check_with(tmp_path, gated, _source({"CI"})) == []
 
 
 def test_main_reads_the_mergify_config(tmp_path, monkeypatch, capsys):

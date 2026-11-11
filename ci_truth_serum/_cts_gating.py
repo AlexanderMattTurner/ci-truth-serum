@@ -107,7 +107,7 @@ def _split(condition: str) -> _Condition:
     # Mergify writes equality as `=`, `==` or `:`.
     operator = next((op for op in ("==", "=", ":") if rest.startswith(op)), None)
     plain = operator is not None and rest[len(operator) : len(operator) + 1] != "~"
-    value = rest[len(operator) :].strip() if plain and operator else None
+    value = rest[len(operator or "") :].strip() if plain else None
     return _Condition(text[: len(text) - len(body)], body[:end], value)
 
 
@@ -267,16 +267,13 @@ class Gate:
     """Why one job gates: its marker, and the config names that its check posts."""
 
     marker: bool = False
-    pull_request: frozenset[str] = frozenset()
-    queue_build: frozenset[str] = frozenset()
+    names: frozenset[str] = frozenset()
 
     def describe(self, config: str | None) -> str:
         """The reason this job gates, for a finding's message."""
         if self.marker:
             return "the '# required-check: true' marker"
-        names = ", ".join(
-            f"'{n}'" for n in sorted(self.pull_request | self.queue_build)
-        )
+        names = ", ".join(f"'{name}'" for name in sorted(self.names))
         return f"{config or 'the Mergify config'} gates on {names}"
 
 
@@ -284,14 +281,12 @@ class Gate:
 class GatingSource:
     """Where the gating checks of a repository are written.
 
-    MARKERS says whether a `# required-check: true` marker gates. PULL_REQUEST and
-    QUEUE_BUILD are the names the Mergify config gates on, read on the pull
-    request and on the draft. CALLED maps a workflow file to the jobs whose check
+    MARKERS says whether a `# required-check: true` marker gates. NAMES are the
+    check names the Mergify config gates on. CALLED maps a workflow file to the jobs whose check
     another workflow posts under a gating `<caller> / <callee>` name."""
 
     markers: bool = True
-    pull_request: frozenset[str] = frozenset()
-    queue_build: frozenset[str] = frozenset()
+    names: frozenset[str] = frozenset()
     config: str | None = None
     called: dict[Path, dict[str, frozenset[str]]] = field(default_factory=dict)
 
@@ -315,22 +310,21 @@ class GatingSource:
         rel = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8")
         try:
-            pull_request = (
-                queue_checks(text).gating() | queue_action_checks(text).gating()
+            names = (
+                queue_checks(text).gating()
+                | queue_action_checks(text).gating()
+                | merge_checks(text).gating()
             )
-            queue_build = merge_checks(text).gating()
         except MergifyConfigError as err:
             raise MergifyConfigError(f"{rel}: {err}") from None
-        if source == MERGIFY and not pull_request | queue_build:
+        if source == MERGIFY and not names:
             raise MergifyConfigError(f"{rel}: no queue rule gates on a check")
-        names = pull_request | queue_build
         directory = (
             root / ".github" / "workflows" if workflows_dir is None else workflows_dir
         )
         return cls(
             markers=source == BOTH,
-            pull_request=pull_request,
-            queue_build=queue_build,
+            names=names,
             config=rel,
             called=_called_gates(directory, names) if names else {},
         )
@@ -340,20 +334,17 @@ class GatingSource:
 
         BLOCKS is `_job_blocks` of the workflow text and JOBS its parsed `jobs:`."""
         marked = {str(k) for k in _marked_jobs(blocks, jobs)} if self.markers else set()
-        names = self.pull_request | self.queue_build
         called = self.called.get(path.resolve(), {})
         found: dict[str, Gate] = {}
         for key, cfg in jobs.items():
             if not isinstance(cfg, dict):
                 continue
-            posted = (set(_job_names(str(key), cfg)) & names) | called.get(
+            posted = (set(_job_names(str(key), cfg)) & self.names) | called.get(
                 str(key), set()
             )
             if str(key) in marked or posted:
                 found[str(key)] = Gate(
-                    marker=str(key) in marked,
-                    pull_request=frozenset(posted & self.pull_request),
-                    queue_build=frozenset(posted & self.queue_build),
+                    marker=str(key) in marked, names=frozenset(posted)
                 )
         return found
 
@@ -442,7 +433,7 @@ def source_from_argv(
     add_source_flag(parser)
     # pre-commit passes no files (`pass_filenames: false`); discovery globs the tree.
     parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(argv)
     try:
         return GatingSource.load(root, args.gating_source, workflows_dir)
     except MergifyConfigError as err:

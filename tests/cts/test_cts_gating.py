@@ -156,6 +156,7 @@ queue_rules:
         ),
         ("queue_rules:\n  - queue_conditions: [check-failure=CI]\n", "check-failure"),
         ("queue_rules:\n  - queue_conditions: ['check-success~=^CI']\n", "~="),
+        ("queue_rules:\n  - queue_conditions: ['check-success=~CI']\n", "=~"),
         ("queue_rules:\n  - queue_conditions: [{not: {or: [a]}}]\n", "not"),
         ("queue_rules:\n  - queue_conditions: [{or: a}]\n", "`or:` holds no list"),
         ("queue_rules:\n  - queue_conditions: check-success=CI\n", "not a list"),
@@ -192,9 +193,7 @@ def test_load_reads_the_queue_action_rules(tmp_path):
     rules = "pull_request_rules:\n  - conditions: [check-success=CI]\n    actions: {queue: {}}\n"
     wf = _repo(tmp_path, rules, ci=CI_WORKFLOW)
     source = gating.GatingSource.load(tmp_path, "mergify")
-    assert _gates(source, wf / "ci.yaml") == {
-        "report": gating.Gate(pull_request=_set("CI"))
-    }
+    assert _gates(source, wf / "ci.yaml") == {"report": gating.Gate(names=_set("CI"))}
 
 
 # ── config_path ───────────────────────────────────────────────────────────
@@ -252,9 +251,7 @@ def test_both_sources_gate_together(tmp_path):
     gates = _gates(source, wf / "ci.yaml")
     assert sorted(gates) == ["lint", "report"]
     assert gates["lint"] == gating.Gate(marker=True)
-    assert gates["report"] == gating.Gate(
-        pull_request=_set("CI"), queue_build=_set("CI")
-    )
+    assert gates["report"] == gating.Gate(names=_set("CI"))
     assert gates["report"].describe(source.config) == ".mergify.yml gates on 'CI'"
     assert (
         gates["lint"].describe(source.config) == "the '# required-check: true' marker"
@@ -329,10 +326,10 @@ def test_a_called_workflow_gates_through_its_caller_name(tmp_path):
     wf = _repo(tmp_path, rules, caller=CALLER, lint=CALLEE)
     source = gating.GatingSource.load(tmp_path, "mergify")
     assert _gates(source, wf / "caller.yaml") == {
-        "lint": gating.Gate(pull_request=_set("Lint / ruff"))
+        "lint": gating.Gate(names=_set("Lint / ruff"))
     }
     assert _gates(source, wf / "lint.yaml") == {
-        "ruff": gating.Gate(pull_request=_set("Lint / ruff"))
+        "ruff": gating.Gate(names=_set("Lint / ruff"))
     }
 
 
