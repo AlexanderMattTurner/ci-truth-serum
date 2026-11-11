@@ -3478,8 +3478,17 @@ def gating_jobs(
     blocks: dict[str, tuple[int, str]], jobs: dict, names: Iterable[str] = ()
 ) -> list[str]:
     """The keys of JOBS that carry a `# required-check: true` marker, or whose
-    check name (over its matrix) is one of NAMES, a Mergify config's gates."""
-    marked, wanted = set(_marked_jobs(blocks, jobs)), set(names)
+    check name (over its matrix) is one of NAMES, a Mergify config's gates.
+
+    Each name also matches its `<caller>` half of `<caller> / <callee>` and its
+    stem before GitHub's default ` (<matrix values>)` suffix, so a reusable
+    workflow's caller and an unnamed matrix job still count as gating."""
+    marked = set(_marked_jobs(blocks, jobs))
+    wanted = {
+        form
+        for name in names
+        for form in (name, name.split(" / ")[0], name.split(" (")[0])
+    }
     return [
         key
         for key, cfg in jobs.items()

@@ -1811,3 +1811,24 @@ def test_mergify_check_names(tmp_path: Path, config: str | None, names: set[str]
     if config is not None:
         (tmp_path / ".mergify.yml").write_text(config, encoding="utf-8")
     assert lc.mergify_check_names(tmp_path) == names
+
+
+@pytest.mark.parametrize(
+    ("jobs", "names", "gating"),
+    [
+        ({"lint": {"name": "Lint"}}, {"Lint"}, ["lint"]),
+        ({"lint": {"name": "Lint"}}, {"Other"}, []),
+        (
+            {"ci": {"name": "CI", "uses": "org/r/.github/workflows/c.yml@v1"}},
+            {"CI / test"},
+            ["ci"],
+        ),
+        (
+            {"test": {"strategy": {"matrix": {"os": ["a", "b"]}}}},
+            {"test (a)"},
+            ["test"],
+        ),
+    ],
+)
+def test_gating_jobs_mergify_names(jobs: dict, names: set[str], gating: list[str]):
+    assert lc.gating_jobs({}, jobs, names) == gating
