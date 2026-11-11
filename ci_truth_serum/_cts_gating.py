@@ -24,6 +24,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -83,16 +84,24 @@ _NOTHING = _Paths(every=frozenset(), named=frozenset())
 _EMPTY = QueueChecks(required=frozenset(), conditional=frozenset())
 
 
-def _split(condition: str) -> tuple[str, str, str | None]:
-    """CONDITION as its `-`/`#` modifiers, its attribute, and the value after a
-    plain `=` operator. The value is None for every other operator."""
+class _Condition(NamedTuple):
+    """One string condition: its `-`/`#` modifiers, its attribute, and the value
+    after a plain `=` operator (None for every other operator)."""
+
+    prefix: str
+    attribute: str
+    value: str | None
+
+
+def _split(condition: str) -> _Condition:
+    """CONDITION split at its modifiers and its operator."""
     text = condition.strip()
     body = text.lstrip("-#")
     end = next((i for i, char in enumerate(body) if char in _OPERATOR_CHARS), len(body))
     rest = body[end:].lstrip()
     plain = rest.startswith("=") and rest[1:2] not in ("=", "~")
     value = rest[1:].strip() if plain else None
-    return text[: len(text) - len(body)], body[:end], value
+    return _Condition(text[: len(text) - len(body)], body[:end], value)
 
 
 def _check_name(value: str) -> str:
