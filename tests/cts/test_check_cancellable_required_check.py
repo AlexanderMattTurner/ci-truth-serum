@@ -260,3 +260,4 @@ def test_main_refuses_a_mergify_config_it_cannot_read(tmp_path, monkeypatch, cap
     monkeypatch.setattr(crc, "WORKFLOWS_DIR", wf)
     assert crc.main([]) == 1
     assert "::error::.mergify.yml: this reader cannot read" in capsys.readouterr().out
+    assert crc.main(["--gating-source=markers"]) == 0

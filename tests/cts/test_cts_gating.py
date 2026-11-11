@@ -108,6 +108,9 @@ def test_a_negated_base_condition_excludes_its_base():
         ("status-success=CI", "CI"),
         ("check-success=@github-actions/CI", "CI"),
         ("check-success=@other-app/CI", "@other-app/CI"),
+        ("check-success==CI", "CI"),
+        ("check-success:CI", "CI"),
+        ("check-success-or-neutral=CI", "CI"),
     ],
 )
 def test_a_success_condition_names_the_check_a_job_posts(condition, name):
@@ -168,6 +171,30 @@ def test_a_config_the_reader_cannot_read_is_refused(text, fragment):
     with pytest.raises(gating.MergifyConfigError) as err:
         gating.queue_checks(text)
     assert fragment in str(err.value)
+
+
+def test_a_queue_action_rule_gates_on_its_conditions():
+    text = """\
+pull_request_rules:
+  - name: queue
+    conditions: [check-success=build, label=go]
+    actions:
+      queue: {}
+  - name: comment
+    conditions: [check-failure=lint]
+    actions:
+      comment: {message: x}
+"""
+    assert gating.queue_action_checks(text).gating() == _set("build")
+
+
+def test_load_reads_the_queue_action_rules(tmp_path):
+    rules = "pull_request_rules:\n  - conditions: [check-success=CI]\n    actions: {queue: {}}\n"
+    wf = _repo(tmp_path, rules, ci=CI_WORKFLOW)
+    source = gating.GatingSource.load(tmp_path, "mergify")
+    assert _gates(source, wf / "ci.yaml") == {
+        "report": gating.Gate(pull_request=_set("CI"))
+    }
 
 
 # ── config_path ───────────────────────────────────────────────────────────
@@ -310,6 +337,19 @@ def test_a_called_workflow_gates_through_its_caller_name(tmp_path):
 
 
 def test_a_call_cycle_ends_the_walk(tmp_path):
+    loop = (
+        "on: [pull_request, workflow_call]\njobs:\n"
+        "  again:\n    uses: ./.github/workflows/loop.yaml\n"
+        "  lint:\n    name: Lint\n    uses: ./.github/workflows/lint.yaml\n"
+    )
+    rules = "queue_rules:\n  - queue_conditions: ['check-success=Lint / ruff']\n"
+    wf = _repo(tmp_path, rules, loop=loop, lint=CALLEE)
+    source = gating.GatingSource.load(tmp_path, "mergify")
+    assert sorted(_gates(source, wf / "loop.yaml")) == ["lint"]
+    assert sorted(_gates(source, wf / "lint.yaml")) == ["ruff"]
+
+
+def test_a_lone_call_cycle_gates_nothing(tmp_path):
     loop = "on: [pull_request, workflow_call]\njobs:\n  again:\n    uses: ./.github/workflows/loop.yaml\n"
     rules = "queue_rules:\n  - queue_conditions: [check-success=again]\n    merge_conditions: []\n"
     _repo(tmp_path, rules, loop=loop)

@@ -607,13 +607,27 @@ def test_a_pull_request_gate_is_judged_on_every_pull_request_type(tmp_path):
     assert "merge_group" not in message.split("—")[0]
 
 
-def test_a_queue_build_gate_is_judged_on_the_draft_types_only(tmp_path):
-    """Mergify's draft gets `opened` and `synchronize`, never `labeled`."""
-    source = _source(queue_build={"CI"})
-    assert _check_with(tmp_path, MERGIFY_DECIDE_SKIPS_LABELED, source) == []
-    body = MERGIFY_DECIDE_SKIPS_LABELED.replace("'labeled'", "'synchronize'")
-    [(_, message)] = _check_with(tmp_path, body, source)
-    assert "is skipped on pull_request:synchronize —" in message
+def test_a_queue_build_gate_is_judged_on_every_pull_request_type(tmp_path):
+    """With in-place checks, Mergify reads `merge_conditions` on the pull request
+    itself, so a `labeled` skip can post the newest run there too."""
+    [(_, message)] = _check_with(
+        tmp_path, MERGIFY_DECIDE_SKIPS_LABELED, _source(queue_build={"CI"})
+    )
+    assert "is skipped on pull_request:labeled —" in message
+
+
+def test_a_marked_root_names_a_job_both_kinds_of_root_reach(tmp_path):
+    """The marked root gates on merge_group as well, so its message speaks for
+    the exclusion there, which no Mergify root gates on."""
+    body = MERGIFY_DECIDE_SKIPS_LABELED.replace(
+        "    if: always()\n    runs-on: ubuntu-latest\n",
+        "    if: always()\n    runs-on: ubuntu-latest\n"
+        "  marked: # required-check: true\n    needs: decide\n    if: always()\n"
+        "    runs-on: ubuntu-latest\n",
+    )
+    [(_, message)] = _check_with(tmp_path, body, _source(pull_request={"CI"}))
+    assert "required check 'marked' depends on" in message
+    assert "pull_request:labeled, merge_group" in message
 
 
 def test_a_mergify_gate_needs_no_merge_group_trigger(tmp_path):

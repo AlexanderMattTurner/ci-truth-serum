@@ -94,7 +94,6 @@ is genuinely never a required check. That token is file-wide and answers shape 2
 only; shape 1 takes the per-job "# inert-group-ok: <reason>" instead.
 """
 
-import argparse
 import sys
 from pathlib import Path
 
@@ -133,8 +132,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_gating import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     GatingSource,
-    MergifyConfigError,
-    add_source_flag,
+    source_from_argv,
 )
 
 OPT_OUT = "pending-cancel-ok"
@@ -430,12 +428,12 @@ def check_file(
 
     heuristic = required_check_shape(jobs, doc)
     gates = (source or GatingSource()).jobs(path, blocks, jobs)
-    marked = sorted(gates)
-    if not (heuristic or marked):
+    gating = sorted(gates)
+    if not (heuristic or gating):
         return (
             violations  # not a required-check shape — a reddened cancel self-describes
         )
-    basis = heuristic or gates[marked[0]].describe(source.config if source else None)
+    basis = heuristic or gates[gating[0]].describe(source.config if source else None)
 
     if _ref_keyed(group_of(doc.get("concurrency"))):
         violations.append(
@@ -450,7 +448,7 @@ def check_file(
     if heuristic == ALWAYS_REPORTER_SHAPE:
         judged = jobs
     else:
-        names = set(marked)
+        names = set(gating)
         if heuristic == TWIN_SHAPE:
             names |= decide_gate_names(jobs) | set(valid_twin_names(jobs, doc))
         judged = {name: jobs[name] for name in names if name in jobs}
@@ -466,15 +464,8 @@ def check_file(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_source_flag(parser)
-    # pre-commit passes no files (`pass_filenames: false`); discovery globs the tree.
-    parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    try:
-        source = GatingSource.load(REPO_ROOT, args.gating_source, WORKFLOWS_DIR)
-    except MergifyConfigError as err:
-        print(f"::error::{err}")
+    source = source_from_argv(argv, __doc__, REPO_ROOT, WORKFLOWS_DIR)
+    if source is None:
         return 1
     total = 0
     for path in workflow_files(WORKFLOWS_DIR, ACTIONS_DIR):

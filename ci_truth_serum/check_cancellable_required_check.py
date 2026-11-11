@@ -45,7 +45,6 @@ Opt out with "# cancellable-required-check-ok" for a workflow whose static
 cancellable group is deliberate and known-safe.
 """
 
-import argparse
 import re
 import sys
 from pathlib import Path
@@ -63,8 +62,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 )
 from _cts_gating import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     GatingSource,
-    MergifyConfigError,
-    add_source_flag,
+    source_from_argv,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -149,14 +147,14 @@ def check_file(
     )
     if not gates:
         return None
-    gate = gates[min(gates)]
+    job = min(gates)
     config = source.config if source else None
 
     line = _concurrency_line(text)
     return line, (
         f"{static_group_reason(group, events)} The group is also cancellable "
         "(cancel-in-progress truthy), and this workflow posts a gating check "
-        f"(job '{min(gates)}', by {gate.describe(config)}). A "
+        f"(job '{job}', by {gates[job].describe(config)}). A "
         "sibling ref's run shares the one static slot and cancels this run "
         "wholesale — the workflow-level cancel tears down the always() reporter "
         "too, no status posts for this ref's head, and the required check hangs "
@@ -171,15 +169,8 @@ def check_file(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_source_flag(parser)
-    # pre-commit passes no files (`pass_filenames: false`); discovery globs the tree.
-    parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    try:
-        source = GatingSource.load(REPO_ROOT, args.gating_source, WORKFLOWS_DIR)
-    except MergifyConfigError as err:
-        print(f"::error::{err}")
+    source = source_from_argv(argv, __doc__, REPO_ROOT, WORKFLOWS_DIR)
+    if source is None:
         return 1
     files = workflow_files(WORKFLOWS_DIR)
     total = 0

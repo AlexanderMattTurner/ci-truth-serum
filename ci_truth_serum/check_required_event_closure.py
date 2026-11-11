@@ -45,17 +45,16 @@ it counts a skipped run as no success. So a skip in the closure fails one of two
 ways there. A reporter that still runs reports green with none of the work done,
 and that green replaces an earlier red. A root that skips replaces an earlier
 green, and the pull request leaves the queue. Mergify reads
-``queue_conditions`` on the pull request, on every pull request event, and
-``merge_conditions`` on its draft, which gets only ``opened`` and
-``synchronize``. Neither one runs on ``merge_group``, so the second rule does
-not apply to a Mergify root. ``--gating-source`` picks the places to read; see
+``queue_conditions`` on the pull request, on every pull request event. It reads
+``merge_conditions`` on its draft, or on the pull request itself with in-place
+checks, so both judge every pull request event. Mergify sends no
+``merge_group`` event, so the second rule does not apply to a Mergify root. ``--gating-source`` picks the places to read; see
 ``_cts_gating``.
 
 Opt out per job with ``# event-scoped-ok: <reason>`` on or above the job when
 the skip is deliberate and the reporter below it is honest about it.
 """
 
-import argparse
 import json
 import re
 import sys
@@ -80,8 +79,7 @@ from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-
 from _cts_gating import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     Gate,
     GatingSource,
-    MergifyConfigError,
-    add_source_flag,
+    source_from_argv,
 )
 
 OPT_OUT = "event-scoped-ok"
@@ -129,9 +127,6 @@ _NO_PULL_REQUEST = frozenset({"merge_group"})
 
 # The activity type GitHub sends with every merge_group event.
 _MERGE_GROUP_ACTION = "checks_requested"
-
-# The activity types Mergify's draft, the queue build, gets.
-DRAFT_TYPES = frozenset({"opened", "synchronize"})
 
 # The functions truth_of reads, each over two string casts.
 _STRING_CALLS = ("contains", "startswith", "endswith")
@@ -473,15 +468,11 @@ def root_pairs(
     """The (event, type) pairs of PAIRS on which the check that GATE names gates.
 
     A marker gates on every pair. A Mergify name gates on the pull request
-    events only. A name only `merge_conditions` holds gates only on the types
-    Mergify's draft gets."""
+    events only. That holds for a `merge_conditions` name too: with in-place
+    checks, Mergify reads it on the pull request itself, not on a draft."""
     if gate.marker:
         return pairs
-    return [
-        (event, action)
-        for event, action in pairs
-        if event in PR_EVENTS and (gate.pull_request or action in DRAFT_TYPES)
-    ]
+    return [(event, action) for event, action in pairs if event in PR_EVENTS]
 
 
 def _siblings(path: Path) -> list[Path]:
@@ -548,10 +539,11 @@ def check_file(
                     violations.append((start, _no_queue_trigger(root)))
 
     # Each closure job is judged once, on every pair some root it feeds gates on.
-    # The message names the first root that reaches it.
+    # The message names the first root that reaches it, a marked root first,
+    # because a marked root gates on every pair a Mergify root does.
     job_pairs: dict[str, list[tuple[str, str | None]]] = {}
     first_root: dict[str, str] = {}
-    for root, gate in required.items():
+    for root, gate in sorted(required.items(), key=lambda item: not item[1].marker):
         gated = root_pairs(gate, pairs)
         for name in sorted(needs_closure(jobs, root)):
             first_root.setdefault(name, root)
@@ -642,15 +634,8 @@ def workflow_files() -> list[Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_source_flag(parser)
-    # pre-commit passes no files (`pass_filenames: false`); discovery globs the tree.
-    parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
-    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    try:
-        source = GatingSource.load(REPO_ROOT, args.gating_source, WORKFLOWS_DIR)
-    except MergifyConfigError as err:
-        print(f"::error::{err}")
+    source = source_from_argv(argv, __doc__, REPO_ROOT, WORKFLOWS_DIR)
+    if source is None:
         return 1
     total = 0
     files = workflow_files()

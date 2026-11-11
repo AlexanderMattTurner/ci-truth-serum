@@ -6,17 +6,19 @@ check in `check-success=<name>`. A repository that moves to Mergify deletes its
 markers. A check that reads only the markers then finds no gate, and it passes
 while it judges nothing. `GatingSource` reads both places.
 
-Mergify reads the config at the first of `CONFIG_PATHS` that exists. Its queue
-rules gate in two places:
+Mergify reads the config at the first of `CONFIG_PATHS` that exists. That
+config gates in three places:
 
 - `queue_conditions`, which Mergify reads on the pull request, on every event.
-- `merge_conditions`, which it reads on its draft, the queue build.
+- `merge_conditions`, which it reads on its draft, the queue build, or on the
+  pull request itself with in-place checks.
+- the `conditions` of a `pull_request_rules` entry with a `queue` action.
 
 A condition list is an AND, `and:`/`or:` nest, and the queue rules read as one
 `or`. A check on every path is REQUIRED, and a check on some paths is
 CONDITIONAL. Both gate. A guess can drop a gate, so the reader refuses `not:`,
-`extends`, and every check condition except a plain `check-success` or
-`status-success`.
+`extends`, and every check condition except an equality on `check-success`,
+`check-success-or-neutral` or `status-success`.
 """
 
 import argparse
@@ -48,8 +50,11 @@ MERGIFY = "mergify"
 BOTH = "both"
 SOURCES = (BOTH, MARKERS, MERGIFY)
 
-# Mergify's two spellings of "this check concluded success".
-_SUCCESS_ATTRIBUTES = frozenset({"check-success", "status-success"})
+# Mergify's spellings of "this check concluded success"; a neutral run also
+# satisfies the `-or-neutral` one.
+_SUCCESS_ATTRIBUTES = frozenset(
+    {"check-success", "check-success-or-neutral", "status-success"}
+)
 # A Mergify operator starts at the first of these characters.
 _OPERATOR_CHARS = frozenset("=~!<>:≠≥≤ ")
 # The app prefix that pins a check name to GitHub Actions: `@github-actions/CI`.
@@ -86,7 +91,7 @@ _EMPTY = QueueChecks(required=frozenset(), conditional=frozenset())
 
 class _Condition(NamedTuple):
     """One string condition: its `-`/`#` modifiers, its attribute, and the value
-    after a plain `=` operator (None for every other operator)."""
+    after an equality operator (None for every other operator)."""
 
     prefix: str
     attribute: str
@@ -99,8 +104,10 @@ def _split(condition: str) -> _Condition:
     body = text.lstrip("-#")
     end = next((i for i, char in enumerate(body) if char in _OPERATOR_CHARS), len(body))
     rest = body[end:].lstrip()
-    plain = rest.startswith("=") and rest[1:2] not in ("=", "~")
-    value = rest[1:].strip() if plain else None
+    # Mergify writes equality as `=`, `==` or `:`.
+    operator = next((op for op in ("==", "=", ":") if rest.startswith(op)), None)
+    plain = operator is not None and rest[len(operator) : len(operator) + 1] != "~"
+    value = rest[len(operator) :].strip() if plain and operator else None
     return _Condition(text[: len(text) - len(body)], body[:end], value)
 
 
@@ -169,9 +176,8 @@ def _node(condition: object, base: str | None) -> _Paths | None:
     raise MergifyConfigError(f"this reader cannot read the condition {condition!r}")
 
 
-def _rules(text: str) -> tuple[list[dict], dict]:
-    """The `queue_rules` of config TEXT, and the `defaults.queue_rule` that fills
-    a key a rule leaves out. A config with no `queue_rules` has no rule."""
+def _config(text: str) -> dict:
+    """Config TEXT as a mapping, refusing a shape this reader cannot read."""
     try:
         config = safe_load(text)
     except yaml.YAMLError as err:
@@ -180,23 +186,32 @@ def _rules(text: str) -> tuple[list[dict], dict]:
             f"the config is not valid YAML ({first_line})"
         ) from None
     if config is None:
-        return [], {}
+        return {}
     if not isinstance(config, dict):
         raise MergifyConfigError("the config is not a mapping")
     if "extends" in config:
         raise MergifyConfigError(
             "`extends` pulls rules from another repository, which this reader cannot read"
         )
-    rules = config.get("queue_rules")
+    return config
+
+
+def _rule_list(config: dict, key: str) -> list[dict]:
+    """The rules under KEY of CONFIG. An absent KEY holds no rule."""
+    rules = config.get(key)
     if rules is None:
-        rules = []
+        return []
     if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
-        raise MergifyConfigError("`queue_rules` is not a list of rules")
-    defaults = config.get("defaults") or {}
-    default_rule = defaults.get("queue_rule") if isinstance(defaults, dict) else None
-    if not isinstance(default_rule, (dict, type(None))):
-        raise MergifyConfigError("`defaults.queue_rule` is not a mapping")
-    return rules, default_rule or {}
+        raise MergifyConfigError(f"`{key}` is not a list of rules")
+    return rules
+
+
+def _either(arms: list[_Paths | None]) -> QueueChecks:
+    """ARMS read as one `or`."""
+    paths = _any(arms)
+    if paths is None:
+        return _EMPTY
+    return QueueChecks(required=paths.every, conditional=paths.named - paths.every)
 
 
 def _checks(text: str, key: str, base: str | None) -> QueueChecks:
@@ -204,15 +219,29 @@ def _checks(text: str, key: str, base: str | None) -> QueueChecks:
 
     A rule that leaves KEY out takes it from `defaults.queue_rule`, and with no
     default it has no condition. `true` is Mergify's spelling of no condition."""
-    rules, default_rule = _rules(text)
+    config = _config(text)
+    defaults = config.get("defaults") or {}
+    default_rule = defaults.get("queue_rule") if isinstance(defaults, dict) else None
+    if not isinstance(default_rule, (dict, type(None))):
+        raise MergifyConfigError("`defaults.queue_rule` is not a mapping")
+    default_rule = default_rule or {}
     arms: list[_Paths | None] = []
-    for rule in rules:
+    for rule in _rule_list(config, "queue_rules"):
         conditions = rule.get(key, default_rule.get(key, []))
         arms.append(_NOTHING if conditions is True else _all(conditions, base))
-    paths = _any(arms)
-    if paths is None:
-        return _EMPTY
-    return QueueChecks(required=paths.every, conditional=paths.named - paths.every)
+    return _either(arms)
+
+
+def queue_action_checks(text: str, *, base: str | None = None) -> QueueChecks:
+    """The checks that the `conditions` of a `queue` action in `pull_request_rules`
+    name. A pull request enters the queue only through such a rule, so those
+    checks gate the pull request like `queue_conditions` do."""
+    arms: list[_Paths | None] = []
+    for rule in _rule_list(_config(text), "pull_request_rules"):
+        actions = rule.get("actions")
+        if isinstance(actions, dict) and "queue" in actions:
+            arms.append(_all(rule.get("conditions", []), base))
+    return _either(arms)
 
 
 def queue_checks(text: str, *, base: str | None = None) -> QueueChecks:
@@ -245,11 +274,10 @@ class Gate:
         """The reason this job gates, for a finding's message."""
         if self.marker:
             return "the '# required-check: true' marker"
-        names = ", ".join(f"'{name}'" for name in sorted(self.mergify_names()))
+        names = ", ".join(
+            f"'{n}'" for n in sorted(self.pull_request | self.queue_build)
+        )
         return f"{config or 'the Mergify config'} gates on {names}"
-
-    def mergify_names(self) -> frozenset[str]:
-        return self.pull_request | self.queue_build
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -287,7 +315,9 @@ class GatingSource:
         rel = path.relative_to(root).as_posix()
         text = path.read_text(encoding="utf-8")
         try:
-            pull_request = queue_checks(text).gating()
+            pull_request = (
+                queue_checks(text).gating() | queue_action_checks(text).gating()
+            )
             queue_build = merge_checks(text).gating()
         except MergifyConfigError as err:
             raise MergifyConfigError(f"{rel}: {err}") from None
@@ -309,7 +339,7 @@ class GatingSource:
         """The jobs of the workflow at PATH that post a gating check, with why.
 
         BLOCKS is `_job_blocks` of the workflow text and JOBS its parsed `jobs:`."""
-        marked = set(_marked_jobs(blocks, jobs)) if self.markers else set()
+        marked = {str(k) for k in _marked_jobs(blocks, jobs)} if self.markers else set()
         names = self.pull_request | self.queue_build
         called = self.called.get(path.resolve(), {})
         found: dict[str, Gate] = {}
@@ -319,9 +349,9 @@ class GatingSource:
             posted = (set(_job_names(str(key), cfg)) & names) | called.get(
                 str(key), set()
             )
-            if key in marked or posted:
+            if str(key) in marked or posted:
                 found[str(key)] = Gate(
-                    marker=key in marked,
+                    marker=str(key) in marked,
                     pull_request=frozenset(posted & self.pull_request),
                     queue_build=frozenset(posted & self.queue_build),
                 )
@@ -401,3 +431,20 @@ def add_source_flag(parser: argparse.ArgumentParser) -> None:
         help="where the gating checks are written: the `# required-check: true` "
         "markers, the Mergify config, or both (default: both)",
     )
+
+
+def source_from_argv(
+    argv: list[str] | None, description: str | None, root: Path, workflows_dir: Path
+) -> GatingSource | None:
+    """The gating source that a check's command line picks. A config this reader
+    refuses prints as an `::error::` annotation, and the answer is None."""
+    parser = argparse.ArgumentParser(description=description)
+    add_source_flag(parser)
+    # pre-commit passes no files (`pass_filenames: false`); discovery globs the tree.
+    parser.add_argument("files", nargs="*", help=argparse.SUPPRESS)
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        return GatingSource.load(root, args.gating_source, workflows_dir)
+    except MergifyConfigError as err:
+        print(f"::error::{err}")
+        return None
