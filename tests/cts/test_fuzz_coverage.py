@@ -47,7 +47,6 @@ FUZZ_REQUIRED = {
     "_cts_comments": "comment_lines",
     "_cts_fastyaml": "safe_load",
     "_cts_linecheck": "required_check_contexts",
-    "_cts_gating": "queue_checks",
     "_cts_failure_routing": "routing",
     "check_exit_suppression": "violations",
     "check_stderr_suppression": "violations",

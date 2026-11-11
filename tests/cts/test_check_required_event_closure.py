@@ -526,7 +526,7 @@ def test_main_exit_codes(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(crec, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(crec, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(crec, "ACTIONS_DIR", tmp_path / ".github" / "actions")
-    assert crec.main([]) == 1
+    assert crec.main() == 1
     out = capsys.readouterr().out
     assert "::error file=.github/workflows/bad.yaml,line=6::" in out
 
@@ -537,7 +537,7 @@ def test_main_exit_codes(tmp_path, monkeypatch, capsys):
         ),
         encoding="utf-8",
     )
-    assert crec.main([]) == 0
+    assert crec.main() == 0
 
 
 def test_main_reads_the_merge_queue_from_the_whole_tree(tmp_path, monkeypatch, capsys):
@@ -547,95 +547,22 @@ def test_main_reads_the_merge_queue_from_the_whole_tree(tmp_path, monkeypatch, c
     monkeypatch.setattr(crec, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(crec, "WORKFLOWS_DIR", wf)
     monkeypatch.setattr(crec, "ACTIONS_DIR", tmp_path / ".github" / "actions")
-    assert crec.main([]) == 0
+    assert crec.main() == 0
     (wf / "other.yaml").write_text(QUEUE_WORKFLOW, encoding="utf-8")
-    assert crec.main([]) == 1
+    assert crec.main() == 1
     assert (
         "::error file=.github/workflows/gate.yaml,line=5::" in capsys.readouterr().out
     )
 
 
-# ── the Mergify gating source ─────────────────────────────────────────────
-
-# A reporter Mergify gates on by name, with no marker. Its decide job skips on
-# `labeled`, which the workflow fires on.
-MERGIFY_DECIDE_SKIPS_LABELED = """\
-name: x
-on:
-  pull_request:
-    types: [opened, synchronize, labeled]
-  merge_group:
-jobs:
-  decide:
-    if: github.event.action != 'labeled' && github.event_name != 'merge_group'
-    runs-on: ubuntu-latest
-  report:
-    name: CI
-    needs: decide
-    if: always()
-    runs-on: ubuntu-latest
-"""
-
-
-def _source(names):
-    return crec.GatingSource(names=frozenset(names), config=".mergify.yml")
-
-
-def _check_with(tmp_path: Path, body: str, source) -> list[tuple[int | None, str]]:
+def test_mergify_root_is_judged_but_needs_no_merge_group(tmp_path):
+    # A Mergify-gated job roots the closure, but Mergify sends no merge_group,
+    # so the queue-trigger rule judges marked jobs only.
     path = tmp_path / "wf.yaml"
-    path.write_text(body, encoding="utf-8")
-    return crec.check_file(path, source=source)
-
-
-def test_a_mergify_gate_is_judged_on_every_pull_request_type(tmp_path):
-    """Mergify reads its conditions on every pull request event. The skip on
-    `labeled` posts a green CI that replaces an earlier red. The skip on
-    `merge_group` is no finding, because Mergify runs no merge_group event."""
-    assert _check(tmp_path, MERGIFY_DECIDE_SKIPS_LABELED) == []
-    violations = _check_with(tmp_path, MERGIFY_DECIDE_SKIPS_LABELED, _source({"CI"}))
-    assert len(violations) == 1
-    line, message = violations[0]
-    assert line == 7
-    assert "is skipped on pull_request:labeled —" in message
-    assert "(.mergify.yml gates on 'CI')" in message
-    assert "merge_group" not in message.split("—")[0]
-
-
-def test_a_marked_root_names_a_job_both_kinds_of_root_reach(tmp_path):
-    """The marked root gates on merge_group as well, so its message speaks for
-    the exclusion there, which no Mergify root gates on."""
-    body = MERGIFY_DECIDE_SKIPS_LABELED.replace(
-        "    if: always()\n    runs-on: ubuntu-latest\n",
-        "    if: always()\n    runs-on: ubuntu-latest\n"
-        "  marked: # required-check: true\n    needs: decide\n    if: always()\n"
-        "    runs-on: ubuntu-latest\n",
-    )
-    [(_, message)] = _check_with(tmp_path, body, _source({"CI"}))
-    assert "required check 'marked' depends on" in message
-    assert "pull_request:labeled, merge_group" in message
-
-
-def test_a_mergify_gate_needs_no_merge_group_trigger(tmp_path):
-    """A pull-request-only workflow beside a queue gate is a finding for a
-    marker, and none for a Mergify name: Mergify runs no merge_group event."""
-    (tmp_path / "queue.yaml").write_text(QUEUE_WORKFLOW, encoding="utf-8")
-    assert _check(tmp_path, PR_ONLY_GATE) != []
-    gated = PR_ONLY_GATE.replace(" # required-check: true\n", "\n    name: CI\n")
-    assert _check_with(tmp_path, gated, _source({"CI"})) == []
-
-
-def test_main_reads_the_mergify_config(tmp_path, monkeypatch, capsys):
-    wf = tmp_path / ".github" / "workflows"
-    wf.mkdir(parents=True)
-    (wf / "bad.yaml").write_text(MERGIFY_DECIDE_SKIPS_LABELED, encoding="utf-8")
-    (tmp_path / ".mergify.yml").write_text(
-        "queue_rules:\n  - queue_conditions: [check-success=CI]\n"
-        "    merge_conditions: [check-success=CI]\n",
+    path.write_text(
+        REQUIRED_JOB_NARROWER_THAN_TYPES.replace(" # required-check: true", ""),
         encoding="utf-8",
     )
-    monkeypatch.setattr(crec, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(crec, "WORKFLOWS_DIR", wf)
-    monkeypatch.setattr(crec, "ACTIONS_DIR", tmp_path / ".github" / "actions")
-    assert crec.main([]) == 1
-    assert "::error file=.github/workflows/bad.yaml,line=7::" in capsys.readouterr().out
-    assert crec.main(["--gating-source=markers"]) == 0
+    assert crec.check_file(path, merge_queue=True) == []
+    [(_line, message)] = crec.check_file(path, True, frozenset({"changelog"}))
+    assert "pull_request:edited" in message

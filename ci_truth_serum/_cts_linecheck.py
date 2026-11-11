@@ -3437,6 +3437,57 @@ def _job_names(key: str, cfg: dict) -> list[str]:
     )
 
 
+# `check-success=<name>` and its `-or-neutral`, `==` and `:` spellings.
+_MERGIFY_CHECK = re.compile(
+    r"^check-success(?:-or-neutral)?\s*(?:==|=|:)\s*(?:@github-actions/)?(?P<name>\S.*?)\s*$"
+)
+
+
+def _condition_checks(node: object) -> Iterator[str]:
+    """Every check name a `check-success` leaf under NODE names, through and/or."""
+    if isinstance(node, str):
+        if found := _MERGIFY_CHECK.match(node.strip()):
+            yield found["name"]
+    elif isinstance(node, list):
+        for child in node:
+            yield from _condition_checks(child)
+    elif isinstance(node, dict):
+        for key in ("and", "or"):
+            yield from _condition_checks(node.get(key))
+
+
+def mergify_check_names(root: Path) -> frozenset[str]:
+    """Every check name a `.mergify.yml` queue rule names in its queue or merge
+    conditions. An over-approximation: any such name counts as gating, whatever
+    `or:` or `base=` surrounds it. A missing or unreadable config names none."""
+    try:
+        config = safe_load((root / ".mergify.yml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return frozenset()
+    rules = config.get("queue_rules") if isinstance(config, dict) else None
+    return frozenset(
+        name
+        for rule in (rules if isinstance(rules, list) else [])
+        if isinstance(rule, dict)
+        for key in ("queue_conditions", "merge_conditions")
+        for name in _condition_checks(rule.get(key))
+    )
+
+
+def gating_jobs(
+    blocks: dict[str, tuple[int, str]], jobs: dict, names: Iterable[str] = ()
+) -> list[str]:
+    """The keys of JOBS that carry a `# required-check: true` marker, or whose
+    check name (over its matrix) is one of NAMES, a Mergify config's gates."""
+    marked, wanted = set(_marked_jobs(blocks, jobs)), set(names)
+    return [
+        key
+        for key, cfg in jobs.items()
+        if isinstance(cfg, dict)
+        and (key in marked or wanted.intersection(_job_names(str(key), cfg)))
+    ]
+
+
 def _called_contexts(
     file: str, sources: dict[str, str], stack: tuple[str, ...]
 ) -> list[str]:

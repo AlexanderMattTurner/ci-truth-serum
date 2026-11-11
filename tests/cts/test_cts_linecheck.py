@@ -1786,3 +1786,28 @@ def test_a_bash_marker_in_a_run_covers_what_its_line_opens(
     lines = lc.source_lines(text)
     comments = lc.yaml_marker_comments(text)
     assert lc.annotated_near(lines, 7, "tok", comments=comments) is covered
+
+
+@pytest.mark.parametrize(
+    ("config", "names"),
+    [
+        ("queue_rules:\n  - queue_conditions: [check-success=ci]\n", {"ci"}),
+        (
+            "queue_rules:\n  - merge_conditions:\n"
+            "      - or: [check-success-or-neutral == a, {and: ['check-success: b']}]\n"
+            "      - check-success=@github-actions/c\n",
+            {"a", "b", "c"},
+        ),
+        (
+            "queue_rules:\n  - queue_conditions: [check-failure=x, base=main, -draft]\n",
+            set(),
+        ),
+        ("queue_rules: oops\n", set()),
+        ("[unclosed\n", set()),
+        (None, set()),
+    ],
+)
+def test_mergify_check_names(tmp_path: Path, config: str | None, names: set[str]):
+    if config is not None:
+        (tmp_path / ".mergify.yml").write_text(config, encoding="utf-8")
+    assert lc.mergify_check_names(tmp_path) == names

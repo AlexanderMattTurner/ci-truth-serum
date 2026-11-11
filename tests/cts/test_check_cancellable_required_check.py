@@ -197,7 +197,7 @@ def test_main_reports_violation_and_returns_nonzero(tmp_path, monkeypatch, capsy
     _write(tmp_path, _wf(STATIC_CANCELLABLE), name="bad.yaml")
     monkeypatch.setattr(crc, "WORKFLOWS_DIR", tmp_path)
     monkeypatch.setattr(crc, "REPO_ROOT", tmp_path)
-    rc = crc.main([])
+    rc = crc.main()
     assert rc == 1
     out = capsys.readouterr().out
     assert "static" in out
@@ -210,54 +210,10 @@ def test_all_shipped_workflows_pass(monkeypatch, capsys):
     workflows = REPO_ROOT / ".github" / "workflows"
     monkeypatch.setattr(crc, "REPO_ROOT", REPO_ROOT)
     monkeypatch.setattr(crc, "WORKFLOWS_DIR", workflows)
-    assert crc.main([]) == 0, capsys.readouterr().out
+    assert crc.main() == 0, capsys.readouterr().out
 
 
-# ── the Mergify gating source ─────────────────────────────────────────────
-
-# The marker-free shape a repository on Mergify writes: the gate is the job's
-# check name, which the queue rule names in `check-success=CI`.
-MERGIFY_JOBS = REQUIRED_CHECK_JOBS.replace(
-    "  report: # required-check: true\n", "  report:\n    name: CI\n"
-)
-MERGIFY_RULES = (
-    "queue_rules:\n"
-    "  - queue_conditions: [check-success=CI]\n"
-    "    merge_conditions: [check-success=CI]\n"
-)
-
-
-def test_a_check_the_mergify_config_names_is_a_required_check(tmp_path):
-    path = _write(tmp_path, _wf(STATIC_CANCELLABLE, MERGIFY_JOBS))
-    assert crc.check_file(path) is None  # no marker, and no source given
-    source = crc.GatingSource(names=frozenset({"CI"}), config=".mergify.yml")
-    result = crc.check_file(path, source)
-    assert result is not None
-    assert "job 'report', by .mergify.yml gates on 'CI'" in result[1]
-
-
-def test_main_reads_the_mergify_config(tmp_path, monkeypatch, capsys):
-    wf = tmp_path / ".github" / "workflows"
-    wf.mkdir(parents=True)
-    (wf / "bad.yaml").write_text(
-        _wf(STATIC_CANCELLABLE, MERGIFY_JOBS), encoding="utf-8"
-    )
-    (tmp_path / ".mergify.yml").write_text(MERGIFY_RULES, encoding="utf-8")
-    monkeypatch.setattr(crc, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(crc, "WORKFLOWS_DIR", wf)
-    assert crc.main([]) == 1
-    assert "::error file=.github/workflows/bad.yaml,line=4::" in capsys.readouterr().out
-    assert crc.main(["--gating-source=markers"]) == 0
-
-
-def test_main_refuses_a_mergify_config_it_cannot_read(tmp_path, monkeypatch, capsys):
-    wf = tmp_path / ".github" / "workflows"
-    wf.mkdir(parents=True)
-    (tmp_path / ".mergify.yml").write_text(
-        "queue_rules:\n  - queue_conditions: [check-failure=CI]\n", encoding="utf-8"
-    )
-    monkeypatch.setattr(crc, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(crc, "WORKFLOWS_DIR", wf)
-    assert crc.main([]) == 1
-    assert "::error::.mergify.yml: this reader cannot read" in capsys.readouterr().out
-    assert crc.main(["--gating-source=markers"]) == 0
+def test_mergify_gate_counts_as_a_required_check(tmp_path):
+    path = _write(tmp_path, _wf(STATIC_CANCELLABLE, ADVISORY_JOBS))
+    assert crc.check_file(path) is None
+    assert crc.check_file(path, frozenset({"report"})) is not None

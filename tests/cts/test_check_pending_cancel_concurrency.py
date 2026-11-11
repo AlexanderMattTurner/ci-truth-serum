@@ -436,7 +436,7 @@ def test_main_reports_violation_and_returns_nonzero(tmp_path, monkeypatch, capsy
     monkeypatch.setattr(pc, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(pc, "WORKFLOWS_DIR", wf_dir)
     monkeypatch.setattr(pc, "ACTIONS_DIR", tmp_path / ".github" / "actions")
-    assert pc.main([]) == 1
+    assert pc.main() == 1
     out = capsys.readouterr().out
     assert "::error file=.github/workflows/bad.yaml,line=5::" in out
     assert "violation" in out
@@ -448,7 +448,7 @@ def test_all_shipped_workflows_pass(monkeypatch, capsys):
     monkeypatch.setattr(pc, "REPO_ROOT", REPO_ROOT)
     monkeypatch.setattr(pc, "WORKFLOWS_DIR", REPO_ROOT / ".github" / "workflows")
     monkeypatch.setattr(pc, "ACTIONS_DIR", REPO_ROOT / ".github" / "actions")
-    assert pc.main([]) == 0, capsys.readouterr().out
+    assert pc.main() == 0, capsys.readouterr().out
 
 
 def test_twin_shape_is_a_required_check_route(tmp_path):
@@ -1203,50 +1203,10 @@ def test_a_called_workflow_group_with_no_caller_key_stays_an_error(tmp_path):
     assert "reads the event payload" in _only(pc.check_file(_write(tmp_path, body)))
 
 
-# ── the Mergify gating source ─────────────────────────────────────────────
-
-# MARKER_ONLY_JOBS with the marker swapped for the check name a Mergify queue
-# rule names. Mergify reads the newest run of a check, so a cancelled same-SHA
-# sibling holds the pull request out of the queue.
-MERGIFY_ONLY_JOBS = MARKER_ONLY_JOBS.replace(
-    "  gate:  # required-check: true\n", "  gate:\n    name: CI\n"
-)
-
-
-def test_a_check_the_mergify_config_names_is_a_required_check(tmp_path):
-    body = STORM_TRIGGER + REF_GROUP + MERGIFY_ONLY_JOBS
-    path = _write(tmp_path, body)
-    assert pc.check_file(path) == []  # no marker, and no source given
-    source = pc.GatingSource(names=frozenset({"CI"}), config=".mergify.yml")
-    violations = pc.check_file(path, source)
-    assert len(violations) == 1
-    assert "(.mergify.yml gates on 'CI')" in violations[0][1]
-
-
-def test_a_job_mergify_names_is_judged_like_a_marked_job(tmp_path):
-    body = STORM_TRIGGER + MERGIFY_ONLY_JOBS.replace(
-        "    name: CI\n",
-        "    name: CI\n    concurrency:\n      group: g-${{ github.head_ref }}\n",
+def test_mergify_gate_counts_as_a_required_check(tmp_path):
+    jobs = (
+        "jobs:\n  build:\n    name: Build\n    runs-on: ubuntu-latest\n    steps: []\n"
     )
-    source = pc.GatingSource(names=frozenset({"CI"}), config=".mergify.yml")
-    violations = pc.check_file(_write(tmp_path, body), source)
-    assert [message.split(":")[0] for _, message in violations] == ["job 'gate'"]
-
-
-def test_main_reads_the_mergify_config(tmp_path, monkeypatch, capsys):
-    wf_dir = tmp_path / ".github" / "workflows"
-    wf_dir.mkdir(parents=True)
-    (wf_dir / "bad.yaml").write_text(
-        STORM_TRIGGER + REF_GROUP + MERGIFY_ONLY_JOBS, encoding="utf-8"
-    )
-    (tmp_path / ".mergify.yml").write_text(
-        "queue_rules:\n  - queue_conditions: [check-success=CI]\n"
-        "    merge_conditions: []\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(pc, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(pc, "WORKFLOWS_DIR", wf_dir)
-    monkeypatch.setattr(pc, "ACTIONS_DIR", tmp_path / ".github" / "actions")
-    assert pc.main([]) == 1
-    assert "::error file=.github/workflows/bad.yaml,line=5::" in capsys.readouterr().out
-    assert pc.main(["--gating-source=markers"]) == 0
+    path = _write(tmp_path, STORM_TRIGGER + REF_GROUP + jobs)
+    assert pc.check_file(path) == []
+    assert len(pc.check_file(path, frozenset({"Build"}))) == 1

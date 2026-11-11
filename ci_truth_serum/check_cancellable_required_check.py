@@ -33,13 +33,9 @@ default branch on an event that carries no ref of its own. So
 pull-request run and one fixed string on every `schedule` run. The message names
 the event that flattens the group. See `_cts_linecheck.group_collapse_event`.
 
-Keyed off the explicit gating set, so false positives are low: this repo's
-required-check workflows all use per-ref cancellable groups — the blessed pattern
-— and none are flagged. The gating set is the jobs that carry the marker, and
-the jobs whose check a Mergify config names in `check-success=<name>`. Mergify
-counts a cancelled run as no success, so the hazard is the same there: the pull
-request waits for a check that never reports. `--gating-source` picks the
-places to read; see `_cts_gating`.
+Keyed off the explicit `# required-check: true` marker (mandatory on such
+workflows), or a check `.mergify.yml` names in `check-success=<name>`, so false positives are low: this repo's required-check workflows all
+use per-ref cancellable groups — the blessed pattern — and none are flagged.
 
 Opt out with "# cancellable-required-check-ok" for a workflow whose static
 cancellable group is deliberate and known-safe.
@@ -53,16 +49,14 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    _job_blocks,
     declared_events,
     group_is_per_ref,
+    _job_blocks,
+    gating_jobs,
+    mergify_check_names,
     opted_out,
     static_group_reason,
     workflow_files,
-)
-from _cts_gating import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
-    GatingSource,
-    source_from_argv,
 )
 from _cts_fastyaml import safe_load  # noqa: E402,I001  # pylint: disable=wrong-import-position
 
@@ -102,14 +96,11 @@ def _is_cancellable(value: object) -> bool:
 
 
 def check_file(
-    path: Path, source: GatingSource | None = None
+    path: Path, names: frozenset[str] = frozenset()
 ) -> tuple[int | None, str] | None:
-    """Return (line, message) if PATH posts a gating check and carries a
-    workflow-level concurrency group that is both static (no per-ref key) and
-    cancellable.
-
-    SOURCE says where the gating checks are written. None reads the
-    `# required-check: true` markers alone.
+    """Return (line, message) if PATH declares a required check (a
+    `# required-check: true` marker, or a Mergify check in NAMES) and carries a workflow-level concurrency
+    group that is both static (no per-ref key) and cancellable.
 
     A file that cannot be parsed as YAML is itself reported as a violation
     (line ``None``) rather than silently passed as clean — matching the sibling
@@ -140,21 +131,16 @@ def check_file(
     if not _is_cancellable(conc.get("cancel-in-progress")):
         return None  # not cancel-on-supersede — nothing tears down the reporter
 
-    # Only a workflow that actually posts a gating check can be stranded.
+    # Only a workflow that actually declares a required check can be stranded.
     jobs = doc.get("jobs")
-    gates = (source or GatingSource()).jobs(
-        path, _job_blocks(text), jobs if isinstance(jobs, dict) else {}
-    )
-    if not gates:
+    if not isinstance(jobs, dict) or not gating_jobs(_job_blocks(text), jobs, names):
         return None
-    job = min(gates)
-    config = source.config if source else None
 
     line = _concurrency_line(text)
     return line, (
         f"{static_group_reason(group, events)} The group is also cancellable "
-        "(cancel-in-progress truthy), and this workflow posts a gating check "
-        f"(job '{job}', by {gates[job].describe(config)}). A "
+        "(cancel-in-progress truthy), and this workflow declares a required "
+        "check ('# required-check: true' or Mergify). A "
         "sibling ref's run shares the one static slot and cancels this run "
         "wholesale — the workflow-level cancel tears down the always() reporter "
         "too, no status posts for this ref's head, and the required check hangs "
@@ -168,14 +154,12 @@ def check_file(
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    source = source_from_argv(argv, __doc__, REPO_ROOT, WORKFLOWS_DIR)
-    if source is None:
-        return 1
+def main() -> int:
     files = workflow_files(WORKFLOWS_DIR)
+    names = mergify_check_names(REPO_ROOT)
     total = 0
     for path in files:
-        found = check_file(path, source)
+        found = check_file(path, names)
         if found is None:
             continue
         line, message = found
