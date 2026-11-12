@@ -44,6 +44,11 @@ def test_any_filter_passes_by_default(value: str) -> None:
     assert _lines(_workflow(_filtered(value))) == []
 
 
+@pytest.mark.parametrize("value", ['""', "", "~", "null"])
+def test_an_empty_or_null_filter_sets_no_filter(value: str) -> None:
+    assert _lines(_workflow(_filtered(value))) == [7]
+
+
 def test_a_required_filter_passes_only_its_exact_value() -> None:
     text = _workflow(_filtered(f'"{_PUBLIC_ONLY}"'))
     assert _lines(text, _PUBLIC_ONLY) == []

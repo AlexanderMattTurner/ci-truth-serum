@@ -77,6 +77,18 @@ def _scalar(node: yaml.Node | None) -> str | None:
     return node.value if isinstance(node, yaml.ScalarNode) else None
 
 
+def _filter_text(node: yaml.Node | None) -> str | None:
+    """The `filter:` value NODE holds, or None when it sets no filter.
+
+    `actions/checkout` reads an empty string or a YAML null as no filter, so
+    the step still downloads every blob. Null is a tag, not a spelling: `~`,
+    `null` and a bare `filter:` all carry it.
+    """
+    if node is None or node.tag.endswith(":null"):
+        return None
+    return _scalar(node) or None
+
+
 def _unfiltered_full_checkouts(job: yaml.Node, required: str | None) -> list[int]:
     """The 1-based `fetch-depth:` lines of JOB's full-history checkouts whose
     filter is absent, or differs from REQUIRED when REQUIRED is set."""
@@ -91,8 +103,8 @@ def _unfiltered_full_checkouts(job: yaml.Node, required: str | None) -> list[int
         depth = _value(inputs, "fetch-depth")
         if not isinstance(depth, yaml.ScalarNode) or depth.value != "0":
             continue
-        filt = _value(inputs, "filter")
-        if filt is None or (required is not None and _scalar(filt) != required):
+        filt = _filter_text(_value(inputs, "filter"))
+        if not filt or (required is not None and filt != required):
             lines.append(depth.start_mark.line + 1)
     return lines
 
