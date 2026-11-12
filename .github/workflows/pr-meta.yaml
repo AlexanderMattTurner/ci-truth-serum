@@ -119,7 +119,7 @@ jobs:
   # branch already had. Fires only on `synchronize` (the sole event carrying the
   # before/after SHAs a rewrite is detected from); `opened` has no prior head, so
   # this is not — and cannot be — a required check. Informational guard.
-  no-dropped-commits:
+  no-dropped-commits: # full-blobs-ok: it runs git range-diff over the old and new heads
     name: No dropped commits on force-push
     if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
     runs-on: ubuntu-24.04
@@ -156,7 +156,7 @@ jobs:
   # write privilege (the pwn-request shape). The comment job instead checks out the
   # BASE ref (trusted, unmodifiable by the PR) for remerge-diff-comment.sh and never
   # touches PR-authored code.
-  report_render:
+  report_render: # full-blobs-ok: it renders --remerge-diff, which reads file content across each merge
     name: Surface hand-authored merge-resolution deltas (render)
     if: >-
       github.event_name == 'pull_request' &&

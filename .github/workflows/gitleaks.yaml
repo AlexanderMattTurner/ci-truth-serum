@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  gitleaks:
+  gitleaks: # full-blobs-ok: gitleaks reads the content of every commit in the range
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:

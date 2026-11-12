@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 jobs:
-  bump:
+  bump: # full-blobs-ok: it pushes the bump commit out of this checkout
     name: Conservative version bump on the PR branch
     if: github.event.label.name == 'release'
     runs-on: ubuntu-24.04

@@ -208,7 +208,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: gh workflow run auto-resolve-conflicts.yaml --ref "${GITHUB_REF_NAME}"
 
-  resolve:
+  resolve: # full-blobs-ok: it merges three file versions and its land job pushes the result
     name: Auto-resolve merge conflicts
     needs: discover
     # untrusted-exec-ok: discover.py emits same-repo heads only, so reaching this
@@ -548,7 +548,7 @@ jobs:
 
   # Job 2 of 2: land the resolution. Holds the push credential; runs no model,
   # no PR-authored install, no PR-authored script, no local composite.
-  land:
+  land: # full-blobs-ok: it pushes the resolved merge out of this checkout
     name: Land the auto-resolved merge
     needs: [discover, resolve]
     # always(), gated on `resolve` having run at all: a matrix is one job to

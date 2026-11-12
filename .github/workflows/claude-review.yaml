@@ -258,7 +258,7 @@ jobs:
   # Because pull_request_target always runs the workflow from the base branch, this
   # reviewer only takes effect once merged to the default branch.
   # ────────────────────────────────────────────────────────────────────────────
-  merge_delta_review:
+  merge_delta_review: # full-blobs-ok: it renders --remerge-diff, which reads file content across each merge
     name: Review the PR's merge-resolution deltas
     # Skip drafts (can't merge) and bot-authored PRs (never Claude-reviewed).
     if: >-

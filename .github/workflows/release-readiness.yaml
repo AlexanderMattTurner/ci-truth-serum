@@ -27,7 +27,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  decide:
+  decide: # full-blobs-ok: it rebases and pushes the release commit out of this checkout
     name: Decide whether HEAD merits a release
     runs-on: ubuntu-24.04
     timeout-minutes: 10

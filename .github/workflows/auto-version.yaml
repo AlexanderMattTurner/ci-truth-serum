@@ -32,7 +32,7 @@ permissions:
   id-token: write
 
 jobs:
-  version-and-publish:
+  version-and-publish: # full-blobs-ok: it pushes the release tag out of this checkout
     name: Bump version and publish to npm
     runs-on: ubuntu-24.04
     timeout-minutes: 15
