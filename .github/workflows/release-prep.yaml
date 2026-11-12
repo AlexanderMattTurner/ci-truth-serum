@@ -33,6 +33,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
           # An org PAT lets the bump commit land on the PR branch (and clears
           # branch protection) from an account with write access to this repo —
           # a personal PAT for a different account pushes as its owner and 403s.

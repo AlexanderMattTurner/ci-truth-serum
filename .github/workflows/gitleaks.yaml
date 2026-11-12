@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  gitleaks:
+  gitleaks: # full-blobs-ok: on push, gitleaks scans the content of every commit in history
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
