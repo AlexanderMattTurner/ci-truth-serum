@@ -73,7 +73,15 @@ def test_a_step_that_is_not_checkout_is_ignored() -> None:
     assert _lines(_workflow(body)) == []
 
 
-@pytest.mark.parametrize("text", ["name: not-a-workflow\n", "jobs: []\n", "- a\n"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "name: not-a-workflow\n",
+        "jobs: []\n",
+        "- a\n",
+        "jobs:\n  call:\n    uses: ./.github/workflows/reusable.yaml\n",
+    ],
+)
 def test_a_document_with_no_jobs_mapping_is_clean(text: str) -> None:
     assert _lines(text) == []
 
@@ -109,6 +117,11 @@ def test_a_marker_exempts_only_its_own_job() -> None:
     text = _workflow(key=f"  a: # full-blobs-ok: {_REASON}\n")
     other = "  b:\n    runs-on: ubuntu-latest\n    steps:\n" + _CHECKOUT
     assert _lines(text + other) == [13]
+
+
+def test_a_marker_on_a_step_line_does_not_exempt_the_job() -> None:
+    step = _CHECKOUT.replace("@abc\n", f"@abc # full-blobs-ok: {_REASON}\n")
+    assert _lines(_workflow(step)) == [7]
 
 
 def test_a_marker_inside_a_quoted_value_does_not_exempt() -> None:
@@ -159,10 +172,7 @@ def test_main_refuses_an_unknown_flag(
 
 
 @given(st.text(max_size=300))
-def test_fuzz_violations_returns_line_findings_or_a_known_error(text) -> None:
-    """Fuzz: any text yields findings on real lines, or one of the declared errors."""
-    try:
-        found = fhb.violations(text)
-    except Exception as err:
-        raise AssertionError(f"unexpected {type(err).__name__}: {err}") from err
+def test_fuzz_violations_reports_only_real_lines(text) -> None:
+    """Fuzz: any text yields findings on lines that exist in it."""
+    found = fhb.violations(text)
     assert all(1 <= line <= text.count("\n") + 1 for line, _message in found)

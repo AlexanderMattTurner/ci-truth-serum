@@ -14,13 +14,19 @@ get a missing file, so a repository that has private copies can demand an
 expression that gives an empty filter there.
 
 Opt a job out with `# full-blobs-ok: <reason>` on its key line or in the comment
-block directly above it. The reason is required. These jobs need the opt-out:
+block directly above it. The reason is required. Two kinds of job need it:
 
-- a job that reads file CONTENT across history: `git range-diff`, a
-  `--numstat` walk, or `git archive` of another commit;
-- a job that copies history out of the checkout by push or fetch. A plain
+- a job that reads file content across a long history, such as a secret scan
+  of every commit. Git then fetches the missing files in many small requests,
+  which costs more than one full download;
+- a job that lets another repository fetch from this checkout. A plain
   repository cannot fetch from a blobless clone: `upload-pack` runs with lazy
   fetching off and stops at the first missing file.
+
+Most other history work runs on a blobless clone. A push to the remote that the
+clone came from works, because that remote already holds the old files. A diff,
+a `git range-diff` or a merge over a few commits works too, because git fetches
+the files it needs on demand.
 
 Globs every workflow; the passed file list is ignored.
 """
@@ -48,10 +54,11 @@ ALLOW = "full-blobs-ok"
 MESSAGE = (
     "this full-history checkout downloads every version of every file, and the "
     "job reads almost none of them. Through a slow git cache, that transfer can "
-    "outlast the job's deadline. Add {remedy} beside this `fetch-depth: 0`. A job "
-    "that reads file content across history (`git range-diff`, a `--numstat` "
-    "walk, `git archive` of another commit), or that pushes or fetches history "
-    f"out of the checkout, needs all of it: annotate that job `# {ALLOW}: <reason>`."
+    "outlast the job's deadline. Add {remedy} beside this `fetch-depth: 0`. A push "
+    "to the clone's own remote, a diff, a `range-diff` and a merge all still work. "
+    "A job that reads file content across a long history (a secret scan of every "
+    "commit), or that another repository fetches from, needs every file: annotate "
+    f"that job `# {ALLOW}: <reason>`."
 )
 
 
@@ -82,10 +89,10 @@ def _unfiltered_full_checkouts(job: yaml.Node, required: str | None) -> list[int
             continue
         inputs = _value(step, "with")
         depth = _value(inputs, "fetch-depth")
-        if _scalar(depth) != "0":
+        if not isinstance(depth, yaml.ScalarNode) or depth.value != "0":
             continue
-        found = _value(inputs, "filter")
-        if found is None or (required is not None and _scalar(found) != required):
+        filt = _value(inputs, "filter")
+        if filt is None or (required is not None and _scalar(filt) != required):
             lines.append(depth.start_mark.line + 1)
     return lines
 
