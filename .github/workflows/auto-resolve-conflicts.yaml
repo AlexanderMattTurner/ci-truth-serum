@@ -208,7 +208,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: gh workflow run auto-resolve-conflicts.yaml --ref "${GITHUB_REF_NAME}"
 
-  resolve: # full-blobs-ok: it merges three file versions and its land job pushes the result
+  resolve:
     name: Auto-resolve merge conflicts
     needs: discover
     # untrusted-exec-ok: discover.py emits same-repo heads only, so reaching this
@@ -293,6 +293,8 @@ jobs:
           # push credential is persisted while PR code runs.
           ref: ${{ matrix.pr.head_ref }}
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
           persist-credentials: false
 
       - name: Set up Node + install deps
@@ -548,7 +550,7 @@ jobs:
 
   # Job 2 of 2: land the resolution. Holds the push credential; runs no model,
   # no PR-authored install, no PR-authored script, no local composite.
-  land: # full-blobs-ok: it pushes the resolved merge out of this checkout
+  land:
     name: Land the auto-resolved merge
     needs: [discover, resolve]
     # always(), gated on `resolve` having run at all: a matrix is one job to
@@ -594,6 +596,8 @@ jobs:
           # base-ref staging below.
           ref: ${{ matrix.pr.head_ref }}
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
           persist-credentials: false
 
       - name: Stage the resolver scripts from the trusted base ref

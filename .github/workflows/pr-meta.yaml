@@ -119,7 +119,7 @@ jobs:
   # branch already had. Fires only on `synchronize` (the sole event carrying the
   # before/after SHAs a rewrite is detected from); `opened` has no prior head, so
   # this is not — and cannot be — a required check. Informational guard.
-  no-dropped-commits: # full-blobs-ok: it runs git range-diff over the old and new heads
+  no-dropped-commits:
     name: No dropped commits on force-push
     if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
     runs-on: ubuntu-24.04
@@ -136,6 +136,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
       - name: Check the push dropped no prior commit
         env:
           BEFORE: ${{ github.event.before }}
@@ -156,7 +158,7 @@ jobs:
   # write privilege (the pwn-request shape). The comment job instead checks out the
   # BASE ref (trusted, unmodifiable by the PR) for remerge-diff-comment.sh and never
   # touches PR-authored code.
-  report_render: # full-blobs-ok: it renders --remerge-diff, which reads file content across each merge
+  report_render:
     name: Surface hand-authored merge-resolution deltas (render)
     if: >-
       github.event_name == 'pull_request' &&
@@ -181,6 +183,8 @@ jobs:
           # this frozen event field for anything after the checkout completes.
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
           persist-credentials: false
       - name: Render the report
         env:
