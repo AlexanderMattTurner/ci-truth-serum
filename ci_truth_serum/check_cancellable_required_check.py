@@ -34,7 +34,7 @@ pull-request run and one fixed string on every `schedule` run. The message names
 the event that flattens the group. See `_cts_linecheck.group_collapse_event`.
 
 Keyed off the explicit `# required-check: true` marker (mandatory on such
-workflows), so false positives are low: this repo's required-check workflows all
+workflows), or a check `.mergify.yml` names in `check-success=<name>`, so false positives are low: this repo's required-check workflows all
 use per-ref cancellable groups — the blessed pattern — and none are flagged.
 
 Opt out with "# cancellable-required-check-ok" for a workflow whose static
@@ -51,8 +51,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     declared_events,
     group_is_per_ref,
+    _job_blocks,
+    gating_jobs,
+    mergify_check_names,
     opted_out,
-    required_check_contexts,
     static_group_reason,
     workflow_files,
 )
@@ -93,9 +95,11 @@ def _is_cancellable(value: object) -> bool:
     return str(value).strip().lower() != "false"
 
 
-def check_file(path: Path) -> tuple[int | None, str] | None:
-    """Return (line, message) if PATH declares a required check (via a
-    `# required-check: true` marker) and carries a workflow-level concurrency
+def check_file(
+    path: Path, names: frozenset[str] = frozenset()
+) -> tuple[int | None, str] | None:
+    """Return (line, message) if PATH declares a required check (a
+    `# required-check: true` marker, or a Mergify check in NAMES) and carries a workflow-level concurrency
     group that is both static (no per-ref key) and cancellable.
 
     A file that cannot be parsed as YAML is itself reported as a violation
@@ -128,14 +132,15 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
         return None  # not cancel-on-supersede — nothing tears down the reporter
 
     # Only a workflow that actually declares a required check can be stranded.
-    if not required_check_contexts(text):
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict) or not gating_jobs(_job_blocks(text), jobs, names):
         return None
 
     line = _concurrency_line(text)
     return line, (
         f"{static_group_reason(group, events)} The group is also cancellable "
         "(cancel-in-progress truthy), and this workflow declares a required "
-        "check ('# required-check: true'). A "
+        "check ('# required-check: true' or Mergify). A "
         "sibling ref's run shares the one static slot and cancels this run "
         "wholesale — the workflow-level cancel tears down the always() reporter "
         "too, no status posts for this ref's head, and the required check hangs "
@@ -151,9 +156,10 @@ def check_file(path: Path) -> tuple[int | None, str] | None:
 
 def main() -> int:
     files = workflow_files(WORKFLOWS_DIR)
+    names = mergify_check_names(REPO_ROOT)
     total = 0
     for path in files:
-        found = check_file(path)
+        found = check_file(path, names)
         if found is None:
             continue
         line, message = found
