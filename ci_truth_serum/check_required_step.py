@@ -15,8 +15,8 @@ The check follows each `run:` step into the repository scripts that
 `_cts_step_reach` resolves, and into local composite actions. The walk reads
 the step's working directory and environment. When a reached shell script
 carries the comment, an earlier step in the same job must use exactly that
-value. A trailing `/` does not count, and a remote action counts only when the
-job pins the same ref that the comment names.
+value. A trailing `/` on either value is ignored. A remote action counts only
+when the job pins the same ref that the comment names.
 
 The comment is the opt-in, so the check has no opt-out marker. The check does
 not read the comment in a Python file that a step hands an interpreter, and it
@@ -47,9 +47,8 @@ MARKER = "requires-step"
 
 MESSAGE = (
     "job '{job}' runs {script}, which declares `# {marker}: {needed}`, and no "
-    "earlier step in the job uses `{needed}`. A job that runs only on a schedule "
-    "or after a merge then fails on the default branch. Add `- uses: {needed}` "
-    "to the job before this step."
+    "earlier step in the job uses `{needed}`. Add `- uses: {needed}` to the job "
+    "before this step."
 )
 
 
@@ -112,14 +111,11 @@ def _violations(text: str, path: Path) -> list[tuple[int, str]]:
         return []
     found: list[tuple[int, str]] = []
     for name, job in jobs.items():
-        default_directory = (
-            uncached._default_directory(doc, job) if isinstance(job, dict) else ""  # pylint: disable=protected-access
-        )
         used: set[str] = set()
         for flat in uncached.job_steps(doc, job, 1, path):
             script = flat.step.get("run")
             if isinstance(script, str):
-                run = uncached.step_run(flat, default_directory)
+                run = uncached.step_run(flat, doc, job)
                 for needed, holder in sorted(_needs(script, run).items()):
                     if needed not in used:
                         message = MESSAGE.format(

@@ -83,27 +83,32 @@ def test_a_marker_in_the_run_body_declares_nothing(repo: Path) -> None:
     assert _lines(repo, _workflow(step)) == []
 
 
-@pytest.mark.parametrize(
-    ("directory", "where"),
-    [
-        ("        working-directory: scripts\n", "step"),
-        ("    defaults:\n      run:\n        working-directory: scripts\n", "job"),
-    ],
-)
-def test_the_script_resolves_against_the_working_directory(
-    repo: Path, directory: str, where: str
-) -> None:
-    step = "run: bash install.sh\n"
-    if where == "step":
-        text = _workflow(step + directory.rstrip("\n"))
-    else:
-        text = _workflow(step.rstrip("\n")).replace(
-            "    steps:\n", directory + "    steps:\n"
-        )
-    assert len(_lines(repo, text)) == 1
-    assert _lines(repo, text.replace("install.sh", "../" + INSTALL)) == _lines(
-        repo, text
+def test_the_script_resolves_against_the_step_working_directory(repo: Path) -> None:
+    step = "run: bash install.sh\n        working-directory: scripts"
+    assert _lines(repo, _workflow(step)) == [5]
+    assert _lines(repo, _workflow("run: bash install.sh")) == []
+
+
+def test_the_script_resolves_against_the_job_default_directory(repo: Path) -> None:
+    defaults = "    defaults:\n      run:\n        working-directory: scripts\n"
+    text = _workflow("run: bash install.sh").replace(
+        "    steps:\n", defaults + "    steps:\n"
     )
+    assert _lines(repo, text) == [8]
+
+
+def test_the_job_default_directory_does_not_reach_an_action_step(repo: Path) -> None:
+    """`defaults.run` applies only to the workflow's own `run:` steps."""
+    _write(
+        repo,
+        ".github/actions/tool/action.yaml",
+        "runs:\n  steps:\n    - run: bash scripts/install.sh\n      shell: bash\n",
+    )
+    defaults = "    defaults:\n      run:\n        working-directory: elsewhere\n"
+    text = _workflow("uses: ./.github/actions/tool").replace(
+        "    steps:\n", defaults + "    steps:\n"
+    )
+    assert _lines(repo, text) == [8]
 
 
 def test_a_required_step_in_another_job_does_not_count(repo: Path) -> None:

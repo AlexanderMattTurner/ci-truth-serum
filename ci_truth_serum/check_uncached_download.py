@@ -2643,13 +2643,12 @@ class StepRun(NamedTuple):
     environment: frozenset[str]
 
 
-def step_run(flat: FlatStep, default_directory: object) -> StepRun:
-    """The StepRun of FLAT. DEFAULT_DIRECTORY is the job's `defaults.run`
-    directory, which reaches only the workflow's own steps."""
+def step_run(flat: FlatStep, doc: dict, job: dict) -> StepRun:
+    """The StepRun of FLAT, a step of JOB in the workflow DOC. The job's
+    `defaults.run` directory reaches only the workflow's own steps."""
     step, origin = flat.step, flat.origin
-    directory = _directory(
-        step.get("working-directory", "" if origin else default_directory)
-    )
+    default = "" if origin else _default_directory(doc, job)
+    directory = _directory(step.get("working-directory", default))
     # A name set to the empty string reads as unset to `${X:-default}`.
     environment = frozenset(
         name
@@ -2687,7 +2686,6 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
             for index, f in enumerate(flat)
             if (scope := cache_scope(f.step, f.context)) is not None
         ]
-        default_directory = _default_directory(doc, job)
         for index, flat_step in enumerate(flat):
             step, line, origin = flat_step.step, flat_step.line, flat_step.origin
             script = step.get("run")
@@ -2695,7 +2693,7 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
                 continue
             if any(annotated(text, OPT_OUT) for text in script.splitlines()):
                 continue
-            run = step_run(flat_step, default_directory)
+            run = step_run(flat_step, doc, job)
             holder = _relative(_action_path(origin) if origin else REPO_ROOT / path)
             earlier = [scope for at, scope in scopes if at < index]
             uncovered = [

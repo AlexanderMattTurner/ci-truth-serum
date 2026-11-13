@@ -576,7 +576,14 @@
   description: "A script that works only after an earlier step declares it with `# requires-step: <uses value>`. The check follows each `run:` step into the scripts it runs, and refuses a job with no earlier step that uses that value. Without the check, a job that runs only on a schedule or after a merge finds the gap on the default branch."
   entry: python -m ci_truth_serum.check_required_step
   language: python
-  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
   pass_filenames: false
   types_or: [yaml, shell]
 
