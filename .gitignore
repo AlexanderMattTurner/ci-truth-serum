@@ -40,6 +40,7 @@ pnpm-debug.log*
 
 # Coverage
 coverage/
+.coverage
 
 # Python
 __pycache__/
