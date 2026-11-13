@@ -491,6 +491,10 @@ class Namespace:
             # Asked of every command, in walk order: an answer `directory_at`
             # caches can decide a later one, so the order is part of the result.
             here = self.directory_at(command, owner)
+            # A function that this namespace defines may run its arguments as a
+            # command (`retry bash x.sh`), so the arguments are read as one too.
+            if words and words[0] in self.functions:
+                words = words[1:]
             py = self.file_in(_python_target(words), here)
             target = self.file_in(_shell_target(words), here)
             if py is not None and py.suffix != ".py":

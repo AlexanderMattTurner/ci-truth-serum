@@ -368,6 +368,15 @@ def test_a_wrapper_hides_no_script_and_invents_none(tmp_path, run):
     assert len(reached.namespaces) == 1
 
 
+def test_a_defined_function_in_front_runs_the_script_it_is_handed(tmp_path):
+    """`retry bash a.sh` runs a.sh when `retry` is a function the namespace
+    defines. The same words with an undefined `retry` launch nothing."""
+    write(tmp_path, "a.sh", "curl one\n")
+    defined = sr.reach('retry() { "$@"; }\nretry bash a.sh', tmp_path, None)
+    assert commands(defined, "curl") == [["curl", "one"]]
+    assert len(sr.reach("retry bash a.sh", tmp_path, None).namespaces) == 1
+
+
 def test_a_string_handed_to_a_shell_is_not_a_file(tmp_path):
     write(tmp_path, "a.sh", "curl one\n")
     reached = sr.reach("bash -c a.sh", tmp_path, None)
