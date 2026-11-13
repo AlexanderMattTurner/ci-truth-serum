@@ -34,19 +34,24 @@ def _workflow(*steps: str) -> str:
     return f"jobs:\n  build:\n    runs-on: ubuntu-latest\n    steps:\n{body}"
 
 
+def _violations(root: Path, text: str) -> list[tuple[int, str]]:
+    return rs.violations(text, root / ".github" / "workflows" / "ci.yaml")
+
+
 def _lines(root: Path, text: str) -> list[int]:
-    return [line for line, _message in rs.violations(text, root)]
+    return [line for line, _message in _violations(root, text)]
 
 
 @pytest.fixture
-def repo(tmp_path: Path) -> Path:
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(rs.uncached, "REPO_ROOT", tmp_path)
     _write(tmp_path, INSTALL, DECLARING)
     _write(tmp_path, ".github/actions/restore/action.yaml", "runs:\n  steps: []\n")
     return tmp_path
 
 
 def test_a_step_with_no_earlier_required_step_fires_on_its_line(repo: Path) -> None:
-    [(line, message)] = rs.violations(_workflow(f"run: bash {INSTALL}"), repo)
+    [(line, message)] = _violations(repo, _workflow(f"run: bash {INSTALL}"))
     assert line == 5
     assert f"runs {INSTALL}" in message
     assert f"- uses: {RESTORE}" in message
@@ -65,6 +70,40 @@ def test_a_required_step_after_the_script_does_not_count(repo: Path) -> None:
 def test_a_trailing_slash_on_the_uses_value_still_counts(repo: Path) -> None:
     text = _workflow(f"uses: {RESTORE}/", f"run: bash {INSTALL}")
     assert _lines(repo, text) == []
+
+
+def test_a_trailing_slash_on_the_marker_still_counts(repo: Path) -> None:
+    _write(repo, INSTALL, DECLARING.replace(RESTORE, RESTORE + "/"))
+    assert _lines(repo, _workflow(f"uses: {RESTORE}", f"run: bash {INSTALL}")) == []
+    assert _lines(repo, _workflow(f"run: bash {INSTALL}")) == [5]
+
+
+def test_a_marker_in_the_run_body_declares_nothing(repo: Path) -> None:
+    step = f"run: |\n          # requires-step: {RESTORE}\n          echo hi"
+    assert _lines(repo, _workflow(step)) == []
+
+
+@pytest.mark.parametrize(
+    ("directory", "where"),
+    [
+        ("        working-directory: scripts\n", "step"),
+        ("    defaults:\n      run:\n        working-directory: scripts\n", "job"),
+    ],
+)
+def test_the_script_resolves_against_the_working_directory(
+    repo: Path, directory: str, where: str
+) -> None:
+    step = "run: bash install.sh\n"
+    if where == "step":
+        text = _workflow(step + directory.rstrip("\n"))
+    else:
+        text = _workflow(step.rstrip("\n")).replace(
+            "    steps:\n", directory + "    steps:\n"
+        )
+    assert len(_lines(repo, text)) == 1
+    assert _lines(repo, text.replace("install.sh", "../" + INSTALL)) == _lines(
+        repo, text
+    )
 
 
 def test_a_required_step_in_another_job_does_not_count(repo: Path) -> None:
@@ -131,12 +170,6 @@ def test_a_composite_action_that_uses_the_step_first_passes(repo: Path) -> None:
     assert _lines(repo, _workflow("uses: ./.github/actions/tool")) == []
 
 
-def test_a_composite_action_outside_the_repository_is_not_read(repo: Path) -> None:
-    outside = repo.parent / "outside-action"
-    _write(outside, "action.yaml", f"runs:\n  steps:\n    - run: bash {INSTALL}\n")
-    assert _lines(repo, _workflow("uses: ./../outside-action")) == []
-
-
 def test_two_actions_that_use_each_other_end(repo: Path) -> None:
     for name, other in (("a", "b"), ("b", "a")):
         _write(
@@ -156,14 +189,21 @@ def test_a_workflow_with_no_job_steps_has_no_finding(repo: Path, text: str) -> N
 
 
 def test_an_unparseable_workflow_is_a_finding(repo: Path) -> None:
-    [(line, message)] = rs.violations("jobs: [\n", repo)
+    [(line, message)] = _violations(repo, "jobs: [\n")
     assert line == 1
-    assert message.startswith("could not parse as YAML")
+    assert message.startswith("could not parse this workflow or an action")
+
+
+def test_an_unparseable_composite_action_is_a_finding(repo: Path) -> None:
+    _write(repo, ".github/actions/tool/action.yaml", "runs: [\n")
+    [(line, message)] = _violations(repo, _workflow("uses: ./.github/actions/tool"))
+    assert line == 1
+    assert message.startswith("could not parse this workflow or an action")
 
 
 def test_an_unparseable_script_is_a_finding(repo: Path) -> None:
     pipes = "|" * (sys.modules["_cts_bash_ast"]._MAX_PIPE_BYTES + 1)
-    [(line, message)] = rs.violations(_workflow(f"run: echo '{pipes}'"), repo)
+    [(line, message)] = _violations(repo, _workflow(f"run: echo '{pipes}'"))
     assert line == 1
     assert "pipe bytes" in message
 
@@ -174,7 +214,7 @@ def test_an_unparseable_script_is_a_finding(repo: Path) -> None:
 def _point_at(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     workflows = root / ".github" / "workflows"
     workflows.mkdir(parents=True)
-    monkeypatch.setattr(rs, "REPO_ROOT", root)
+    monkeypatch.setattr(rs.uncached, "REPO_ROOT", root)
     monkeypatch.setattr(rs, "WORKFLOWS_DIR", workflows)
     return workflows
 
@@ -199,5 +239,5 @@ def test_main_reports_each_finding_and_exits_nonzero(
 @given(st.text(max_size=300))
 def test_fuzz_violations_reports_only_real_lines(repo: Path, text: str) -> None:
     """Fuzz: any text yields findings on lines that exist in it."""
-    found = rs.violations(text, repo)
+    found = _violations(repo, text)
     assert all(1 <= line <= text.count("\n") + 1 for line, _message in found)

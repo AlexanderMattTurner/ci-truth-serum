@@ -573,7 +573,7 @@
 
 - id: check-required-step
   name: "opinionated: a job must run the step that a script it runs declares"
-  description: "A script that works only after an earlier step declares it with `# requires-step: <uses value>`. The check follows each `run:` step into the scripts it runs, and refuses a job with no earlier step that uses that value. The script refuses at run time anyway, but a job that runs only on a schedule or after a merge then fails on the default branch."
+  description: "A script that works only after an earlier step declares it with `# requires-step: <uses value>`. The check follows each `run:` step into the scripts it runs, and refuses a job with no earlier step that uses that value. Without the check, a job that runs only on a schedule or after a merge finds the gap on the default branch."
   entry: python -m ci_truth_serum.check_required_step
   language: python
   additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
