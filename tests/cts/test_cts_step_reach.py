@@ -368,13 +368,38 @@ def test_a_wrapper_hides_no_script_and_invents_none(tmp_path, run):
     assert len(reached.namespaces) == 1
 
 
-def test_a_defined_function_in_front_runs_the_script_it_is_handed(tmp_path):
-    """`retry bash a.sh` runs a.sh when `retry` is a function the namespace
-    defines. The same words with an undefined `retry` launch nothing."""
+@pytest.mark.parametrize(
+    "functions",
+    [
+        'retry() { "$@"; }',
+        'retry() { timeout 60 "$@" || return 1; }',
+        'retry() { out="$("${@}")"; }',
+        'attempt() { "$@"; }\nretry() { shift; attempt "$@"; }',
+    ],
+    ids=["direct", "behind-a-wrapper", "in-a-substitution", "through-a-call"],
+)
+def test_a_function_that_runs_its_arguments_runs_the_script(tmp_path, functions):
     write(tmp_path, "a.sh", "curl one\n")
-    defined = sr.reach('retry() { "$@"; }\nretry bash a.sh', tmp_path, None)
-    assert commands(defined, "curl") == [["curl", "one"]]
-    assert len(sr.reach("retry bash a.sh", tmp_path, None).namespaces) == 1
+    reached = sr.reach(f"{functions}\nretry bash a.sh", tmp_path, None)
+    assert commands(reached, "curl") == [["curl", "one"]]
+
+
+@pytest.mark.parametrize(
+    "functions",
+    [
+        "",
+        'retry() { source "$1"; }',
+        'retry() { echo "$@"; }',
+        'retry() { attempt "$@"; }\nattempt() { echo "$@"; }',
+        'retry() { attempt "$@"; }\nattempt() { retry "$@"; }',
+    ],
+    ids=["undefined", "source", "printed", "through-a-printer", "cycle"],
+)
+def test_a_function_that_does_not_run_its_arguments_runs_no_script(tmp_path, functions):
+    """`retry bash a.sh` launches a.sh only when `retry` runs `"$@"`."""
+    write(tmp_path, "a.sh", "curl one\n")
+    reached = sr.reach(f"{functions}\nretry bash a.sh", tmp_path, None)
+    assert commands(reached, "curl") == []
 
 
 def test_a_string_handed_to_a_shell_is_not_a_file(tmp_path):
