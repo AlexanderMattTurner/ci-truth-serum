@@ -102,6 +102,8 @@ def test_clean_lines_do_not_fire(text: str) -> None:
         # Same three tokens as the suppressing order, opposite meaning.
         ("dup before the stdout redirect", "docker build -t img . 2>&1 >/dev/null", []),
         ("dup after the stdout redirect", "docker build -t img . >/dev/null 2>&1", [1]),
+        # `>&word` with no descriptor moves both streams, the same as `&>word`.
+        ("both streams through >&", "docker build -t img . >&/dev/null", [1]),
         # Recall: a logging call at the head of the line no longer excuses the
         # launch that follows it.
         ("launch after a logging call", 'log "up"; docker compose up 2>/dev/null', [1]),

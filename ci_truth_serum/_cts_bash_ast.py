@@ -476,16 +476,21 @@ class RedirectParts(NamedTuple):
 _BRACE_DESCRIPTOR = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 
-def _brace_descriptor(redirect: Node) -> "str | None":
-    """`{name}` when REDIRECT is `{name}>…`. The grammar parses `{name}` as the
-    command's last argument word, ending where the redirect starts."""
+def _argument_descriptor(redirect: Node) -> "str | None":
+    """The descriptor the grammar hands to the command as its last argument.
+
+    Two forms parse that way: `{name}>…`, a word, and the `0` of `0>…`, a
+    `number`. Each one ends where the redirect starts. Bash allows no space there, so
+    `cmd 0 >f` passes `0` as an argument and redirects stdout."""
     before = redirect.prev_sibling
     if before is not None and before.type == "command" and before.children:
         before = before.children[-1]
     if before is None or before.end_byte != redirect.start_byte:
         return None
     text = node_text(before)
-    return text if _BRACE_DESCRIPTOR.fullmatch(text) else None
+    if _BRACE_DESCRIPTOR.fullmatch(text) or (before.type == "number" and text == "0"):
+        return text
+    return None
 
 
 def redirect_parts(redirect: Node) -> RedirectParts:
@@ -498,12 +503,47 @@ def redirect_parts(redirect: Node) -> RedirectParts:
     index = next((i for i, c in enumerate(children) if not c.is_named), None)
     descriptor = next(
         (node_text(c) for c in children if c.type == "file_descriptor"), None
-    ) or _brace_descriptor(redirect)
+    ) or _argument_descriptor(redirect)
     if index is None:
         return RedirectParts(descriptor, "", "")
     after = children[index + 1] if index + 1 < len(children) else None
     destination = "" if after is None else unquote(node_text(after))
     return RedirectParts(descriptor, children[index].type, destination)
+
+
+def own_redirects(node: Node) -> list[Node]:
+    """The `file_redirect` children of NODE, plus those a `heredoc_redirect` child
+    carries: the grammar puts the `>f` of `cat <<EOF >f` inside the heredoc node.
+    A redirect deeper in the tree belongs to another command."""
+    found = []
+    for child in node.children:
+        if child.type == "file_redirect":
+            found.append(child)
+        elif child.type == "heredoc_redirect":
+            found += [c for c in child.children if c.type == "file_redirect"]
+    return found
+
+
+def apply_redirect(streams: dict[str, str], redirect: RedirectParts) -> None:
+    """Point the descriptors in STREAMS where bash points them after REDIRECT.
+
+    Bash applies redirects from left to right, so a caller replays them in source
+    order. A target of "" is the stream the shell inherited, and "-" is a closed
+    one. A `>&` with no descriptor and a target that is not a number moves stdout
+    and stderr together, the same as `&>`."""
+    descriptor, operator, destination = redirect
+    duplicate = operator in (">&", "<&") and destination.isdigit()
+    default = "0" if operator.startswith("<") else "1"
+    if operator in ("&>", "&>>") or (
+        operator == ">&" and not (descriptor or duplicate)
+    ):
+        streams["1"] = streams["2"] = destination
+    elif operator in (">", ">>", ">|"):
+        streams[descriptor or "1"] = destination
+    elif duplicate:
+        streams[descriptor or default] = streams.get(destination, "")
+    elif operator in (">&-", "<&-"):
+        streams[descriptor or default] = "-"
 
 
 def program_name(word: str) -> str:
