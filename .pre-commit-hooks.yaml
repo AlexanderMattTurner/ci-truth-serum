@@ -192,6 +192,16 @@
   # a clean repo costs one git call plus two small file reads — always run.
   always_run: true
 
+- id: check-moving-runner-alias
+  name: "identity: name the OS release of a GitHub-hosted runner"
+  description: "GitHub moves `ubuntu-latest` and its siblings to a new OS release with no commit in the repository, so CI changes under an unchanged diff."
+  entry: python -m ci_truth_serum.check_moving_runner_alias
+  language: python
+  additional_dependencies: [PyYAML, tree-sitter, tree-sitter-bash]
+  pass_filenames: false
+  files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
 # ───────────────────────── Tier 1 · Security (default-on) ────────────────────
 - id: check-trusted-base
   name: "security: forbid privileged checkout of an author-chosen ref (pwn-request)"
@@ -489,6 +499,13 @@
   language: python
   types: [shell]
 
+- id: check-silent-exit
+  name: "opinionated: require a message before an `exit N` that a failed probe reaches"
+  description: '`[[ -f "$cfg" ]] || exit 2` stops the script and prints nothing, so the log names no cause.'
+  entry: python -m ci_truth_serum.check_silent_exit
+  language: python
+  types: [shell]
+
 - id: check-lockstep-pins
   name: "opinionated: verify configured twin pins agree (the enforced 'keep in lockstep' comment)"
   description: Each --pair extracts one value from each of two files and fails unless they are equal; zero or multiple matches is a hard error. Config-driven, so it is NOT in the check-tier2 aggregate — enable it standalone with args.
@@ -560,6 +577,16 @@
   additional_dependencies: [PyYAML]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-full-history-blobs
+  name: "opinionated: a full-history checkout must filter blobs"
+  description: "An actions/checkout step with `fetch-depth: 0` and no `filter:` input downloads every version of every file, and most jobs read none of them. A slow git cache can make that transfer outlast the job's deadline. `--require-filter=<value>` demands one exact filter."
+  entry: python -m ci_truth_serum.check_full_history_blobs
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
   types: [yaml]
 
 - id: check-secondary-checkout-imports
@@ -1035,10 +1062,19 @@
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
 
+- id: check-stale-opt-out
+  name: "extra: report an opt-out annotation that suppresses nothing"
+  description: An opt-out stays after its check stops firing, so the file keeps an exemption that nothing needs. This check runs each covered check again. It reports each annotation that no opt-out lookup finds. Delete the annotation to fix the finding.
+  entry: python -m ci_truth_serum.check_stale_opt_out
+  language: python
+  types: [text]
+
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
-# picked up with no consumer change. Four checks are not aggregated — enable
-# each on its own: `check-absolute-symlinks` (a language:script shell hook),
+# picked up with no consumer change. Five checks are not aggregated — enable
+# each on its own: `check-stale-opt-out` (it runs the covered checks again, so
+# in an aggregate it would double their time), `check-absolute-symlinks` (a
+# language:script shell hook),
 # `check-lockstep-pins` (config-driven; it hard-errors without the per-repo
 # --pair args an aggregate cannot supply), `check-env-symmetry` (needs a
 # per-project --prefix arg an aggregate can't supply), and

@@ -51,7 +51,7 @@ jobs:
       github.event.action == 'closed' &&
       github.event.pull_request.merged == true &&
       github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # GH_TOKEN authenticates the `gh` CLI the prompt drives (inside the composite
     # action's Claude step); the action only auths its own internal tools, not the
@@ -122,7 +122,7 @@ jobs:
   no-dropped-commits:
     name: No dropped commits on force-push
     if: github.event_name == 'pull_request' && github.event.action == 'synchronize'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:
       group: history-integrity-${{ github.event.pull_request.number || github.ref }}-${{ (github.event_name == 'pull_request' && github.event.action == 'synchronize') && 'shared' || format('inert-{0}', github.run_id) }}
@@ -136,6 +136,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 # zizmor: ignore[artipacked]
         with:
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
       - name: Check the push dropped no prior commit
         env:
           BEFORE: ${{ github.event.before }}
@@ -161,7 +163,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request' &&
       contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -181,6 +183,8 @@ jobs:
           # this frozen event field for anything after the checkout completes.
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
           persist-credentials: false
       - name: Render the report
         env:
@@ -212,7 +216,7 @@ jobs:
       github.event_name == 'pull_request' &&
       contains(fromJSON('["opened", "synchronize", "reopened"]'), github.event.action) &&
       github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

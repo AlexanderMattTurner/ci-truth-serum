@@ -8,7 +8,9 @@ resolves the values the workflow text fixes: a composite action's `inputs.*`,
 that a `run:` script writes as `NAME=VALUE`, and `env.*` in a path. A context
 that can hold a pin (`env`, `vars`, `matrix`, `inputs`) stays as written, so
 a caller can find the pin's name in the key. A key with a value the module
-cannot read gives `CacheScope(None)`: that value could name any pin. A part of
+cannot read gives `CacheScope(None)`: that value could name any pin. So does an
+`env.*` that an earlier `run:` step computes, when its name does not say it holds
+a pin, because no pin can match that name. A part of
 a path the module cannot read is `**`, any directory.
 
 `check_uncached_download` asks this module which caches a job has, and then
@@ -24,7 +26,7 @@ from typing import NamedTuple
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: I001  # pylint: disable=wrong-import-position
     command_arguments,
     iter_nodes,
     node_text,
@@ -32,7 +34,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     program_name,
     unquote,
 )
-from _cts_gha_expr import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_gha_expr import (  # pylint: disable=wrong-import-position
     Call,
     Expression,
     Literal,
@@ -40,7 +42,7 @@ from _cts_gha_expr import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     format_string,
     parse as parse_expression,
 )
-from _cts_step_reach import tokens  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_step_reach import tokens  # pylint: disable=wrong-import-position
 
 # An action that caches. `actions/cache` and its `restore`/`save` sub-actions
 # cache whatever their `path` names. A setup action caches one package manager's
@@ -78,6 +80,9 @@ ANY_INSTALLER = "*"
 
 # One `${{ }}` in workflow text, with its body.
 _EXPRESSION = re.compile(r"\$\{\{(?P<body>.*?)\}\}", re.DOTALL)
+# A variable whose name says it holds a pin. REF is left out: it is a substring
+# of PREFIX, a word that names a directory far more often than a release.
+PIN_NAME = re.compile(r"VERSION|RELEASE|TAG|SHA|DIGEST|CHECKSUM|HASH", re.IGNORECASE)
 # The contexts a cache key keeps as written when the text does not fix their
 # value. `env`, `vars`, `matrix` and a workflow's own `inputs` can hold a pin,
 # and a caller finds that pin by the variable it reads. The runner, the
@@ -208,6 +213,8 @@ def _evaluate(
         return context.inputs.get(tree.path[1], Text(""))
     if head == "steps" and len(tree.path) == 4 and tree.path[2] == "outputs":
         return _step_output(tree.path[1], tree.path[3], step, context)
+    if head == "env" and not path and _set_at_run_time(tree.path, step, context):
+        return None
     if head == "env" and path and len(tree.path) == 2:
         value = {**context.env, **env_of(step)}.get(tree.path[1])
         # The value renders without PATH, so an `env.*` inside it is `**`
@@ -216,6 +223,26 @@ def _evaluate(
         if pieces is not None:
             return Text(_path_text(pieces))
     return _computed(tree.path) if head in _KEPT_CONTEXTS else None
+
+
+def _set_at_run_time(path: tuple[str, ...], step: dict, context: Context) -> bool:
+    """Whether `env.<NAME>` in a key holds a value an earlier `run:` step computes.
+    No `env:` block sets NAME, and the script of a step before STEP writes
+    `NAME=VALUE`, as `echo "NAME=…" >> "$GITHUB_ENV"` or `gha_env "NAME=…"` does.
+    The name alone then says nothing: a pin can only match a name that says it
+    holds one. So the key holds a value this module cannot read. A name that
+    says it holds a pin (`TOOL_VERSION`) stays as written."""
+    if len(path) != 2 or PIN_NAME.search(path[1]):
+        return False
+    name = path[1]
+    if name in {**context.env, **env_of(step)}:
+        return False
+    index = next((i for i, s in enumerate(context.steps) if s is step), 0)
+    return any(
+        isinstance(script := producer.get("run"), str)
+        and any(True for _ in _assignments(script, name))
+        for producer in context.steps[:index]
+    )
 
 
 def _step_output(
@@ -252,6 +279,19 @@ def _written_output(script: str, name: str) -> Text | None:
     write NAME, or when VALUE holds a command substitution or is a `printf`
     format."""
     values = set()
+    for command, first, pieces in _assignments(script, name):
+        if program_name(tokens(command)[0]) == "printf":
+            values.add(None)  # the value is a format, not the text
+            continue
+        rest = [Text(first[len(name) + 1 :])]
+        rest += [_shell_piece(piece) for piece in pieces[1:]]
+        values.add(None if None in rest else _joined(rest))
+    return values.pop() if len(values) == 1 else None
+
+
+def _assignments(script: str, name: str):
+    """Each argument `NAME=VALUE` of a command in SCRIPT, as the command, the
+    argument's leading literal text, and the argument's parts."""
     for command in iter_nodes(parse_shell(script), "command"):
         for argument in command_arguments(command):
             pieces = _pieces(argument)
@@ -259,15 +299,8 @@ def _written_output(script: str, name: str) -> Text | None:
             if head is None or head.type not in _LITERAL_PIECES:
                 continue
             first = _literal_piece(head)
-            if not first.startswith(f"{name}="):
-                continue
-            if program_name(tokens(command)[0]) == "printf":
-                values.add(None)  # the value is a format, not the text
-                continue
-            rest = [Text(first[len(name) + 1 :])]
-            rest += [_shell_piece(piece) for piece in pieces[1:]]
-            values.add(None if None in rest else _joined(rest))
-    return values.pop() if len(values) == 1 else None
+            if first.startswith(f"{name}="):
+                yield command, first, pieces
 
 
 def _pieces(node: Node) -> list[Node]:

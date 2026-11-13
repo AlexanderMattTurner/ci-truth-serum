@@ -23,7 +23,7 @@ Then add the Tier 1 aggregate to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v1.8.1 # the release tag; matches the package version (vX.Y.Z)
+    rev: v1.12.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       - id: check-tier1 # every honesty + identity + security check
 ```
@@ -87,6 +87,7 @@ These checks make CI run the exact bytes you reviewed, not whatever a mutable na
 | `check-pinned-downloads`    | A download with no checksum can be swapped by a tampered release or a compromised mirror. Also flags `curl … \| sh` one-liners, and a `# pin-exempt`'d file that runs without a size check, since `curl -f` succeeds on an empty body. Opt out with `# empty-download-ok: <reason>`.                                               | `curl -sL get.example.com \| bash`     |
 | `check-versionless-install` | An install naming no version gets whatever the index serves that day, and the version that changed appears nowhere in the diff. Measured: `apt-get install docker-sbx` served v0.37.1 while the repo pinned v0.35.0, costing days of red end-to-end runs. Dockerfiles are left to hadolint. Opt out with `# pin-exempt: <reason>`. | `pip install pre-commit`               |
 | `check-provenance-repo-url` | A fork whose manifest still names upstream fails its first `npm publish --provenance` with `E422`. No opt-out: a fork must correct its URL.                                                                                                                                                                                        | `repository.url` still naming upstream |
+| `check-moving-runner-alias` | GitHub moves `ubuntu-latest`, `macos-latest` and `windows-latest` to a new OS release, and no commit records the move. In 2026 `ubuntu-latest` moved from 24.04 to 26.04 and held one merge queue red. The check reads every value in a workflow or composite action. Opt out with `# allow-moving-runner-alias: <reason>`.        | `runs-on: ubuntu-latest`               |
 
 ### Security (Tier 1, default-on)
 
@@ -131,6 +132,7 @@ These checks assume one CI architecture. Enable them only if you follow it. Two 
 | `check-stderr-merge-parse`         | Parsing a `2>&1`-merged stream lets a warning line pass as real output. Opt out with `# stderr-merge-ok: <reason>`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `cmd 2>&1 \| jq .`                                                      |
 | `check-echo-fallback`              | `$(cmd \|\| echo "…")` turns a failure into a value that looks normal, and later code trusts it. A fallback that writes to stderr and aborts passes. Opt out with `# echo-fallback-ok: <reason>`.                                                                                                                                                                                                                                                                                                                                                                                               | `$(cmd \|\| echo error)` read as a version                              |
 | `check-bare-return-status`         | A bare `return` forwards the last command's status, so `A && return` is always 0 and `[[ … ]] \|\| return` is always 1 — two spellings that look alike and return opposites. Opt out with `# allow-bare-return: <reason>`.                                                                                                                                                                                                                                                                                                                                                                      | `[[ … ]] \|\| return` in a guard                                        |
+| `check-silent-exit`                | `[[ -f "$cfg" ]] \|\| exit 2` stops the script and prints nothing, so the CI log holds a red step and no cause. Flags a literal `exit N` that a failed file or string probe reaches with nothing printed first. Opt out with `# allow-silent-exit: <reason>`.                                                                                                                                                                                                                                                                                                                                   | a guard that exits 2 with no message                                    |
 | `check-lockstep-pins`              | Two pins that must stay equal, linked only by a comment. Config-driven: each `--pair FILE REGEX FILE REGEX` must match exactly once per file. Not in the tier aggregate; enable it on its own.                                                                                                                                                                                                                                                                                                                                                                                                  | `.python-version` says 3.11, `requires-python` says >=3.12              |
 | `check-bare-mkdir`                 | On macOS and BSD `mkdir -p "$X"` exits 0 when `$X` is a dangling symlink, so a caller that trusts the status dies later and far away.                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `mkdir -p "$d"` with no `[[ -d "$d" ]]` after it                        |
 | `check-env-arith`                  | An environment variable inside `$(( ))` is trusted to be an integer: a typo aborts a `set -e` caller, and some garbage coerces to 0 and disables the limit.                                                                                                                                                                                                                                                                                                                                                                                                                                     | `$((SECONDS + ${TIMEOUT:-90}))` with `TIMEOUT=abc`                      |
@@ -139,11 +141,14 @@ These checks assume one CI architecture. Enable them only if you follow it. Two 
 | `check-unbounded-waits`            | A `git fetch` against a wedged endpoint hangs forever, eating a Ctrl-C in a hook or stranding a teardown. A `docker exec` in a `while`/`until` condition hangs the poll loop on its first probe to a wedged runtime. The bound goes first, so the call becomes its argument, and in a loop it bounds each probe.                                                                                                                                                                                                                                                                                | `git ls-remote origin` or `until docker exec c true` with no `timeout`  |
 | `check-shell-source-declarations`  | A `# shellcheck source=` path the tree lacks, masked by a nearby `disable=SC1091`, makes shellcheck exit 0 having read no library.                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `source=lib/x.bash` for a file that lives elsewhere                     |
 | `check-sparse-checkout-closure`    | A sparse checkout that omits a tracked file the job runs dies on the runner, and `git ls-files` still shows a complete tree so nothing else sees it coming. Declare run-time opens with `sparse-checkout-needs: <path>`.                                                                                                                                                                                                                                                                                                                                                                        | `sparse-checkout: .github/scripts` for a script importing `lib/util.py` |
+| `check-full-history-blobs`         | A checkout with `fetch-depth: 0` and no `filter:` downloads every version of every file, and a slow git cache can make that outlast the job's deadline. `--require-filter=<value>` demands one exact filter. Opt out with `# full-blobs-ok: <reason>` for a job that scans file content across a long history, or that another repository fetches from.                                                                                                                                                                                                                                         | `fetch-depth: 0` with no `filter: blob:none`                            |
 | `check-artifact-pattern-overlap`   | A download `pattern:` that matches two different uploads in one run merges them, so the next step reads a file of the wrong shape. A matrix counts as one upload. Opt out with `# artifact-pattern-ok: <reason>`.                                                                                                                                                                                                                                                                                                                                                                               | `pattern: durations-*` beside an upload named `durations-map`           |
 | `check-embedded-program-length`    | A program passed to an interpreter as `-c`/`-e` text or a heredoc is a string, so no linter reads it. Opt out with `# allow-inline-program: <reason>`.                                                                                                                                                                                                                                                                                                                                                                                                                                          | `python3 - <<'PY'` with 40 lines                                        |
 | `check-main-push`                  | A script that pushes straight to a protected branch skips review and the required checks, and a merge queue restarts every queued group. Reads the refspec destination, so `main:topic` is clean. Opt out with `# main-push-ok: <reason>`.                                                                                                                                                                                                                                                                                                                                                      | `git push origin HEAD:main`                                             |
 | `check-rename-onto-symlink`        | A rename replaces a destination symlink instead of following it, so an atomic write detaches a config file kept as a link. Opt out with `# allow-rename-onto-symlink: <reason>`.                                                                                                                                                                                                                                                                                                                                                                                                                | `mv "$f.tmp" "$f"`                                                      |
 | `check-secondary-checkout-imports` | A Node script run out of a second `actions/checkout` `path:` tree has no `node_modules` there, so a bare import fails on the runner alone. Fires only when the job installs no Node dependencies. Opt out with `# allow-secondary-checkout-import: <reason>`.                                                                                                                                                                                                                                                                                                                                   | `bash _ci/x.sh` whose script runs `node …/y.mjs` importing `smol-toml`  |
+
+`check-cancellable-required-check`, `check-pending-cancel-concurrency` and `check-required-event-closure` treat a job as gating when it carries `# required-check: true` or when `.mergify.yml` names its check in a `check-success=<name>` condition of a queue rule's `queue_conditions` or `merge_conditions`. Any such name counts, whatever `or:` or `base=` surrounds it.
 
 ### Unrelated bonus checks (Extras)
 
@@ -175,6 +180,7 @@ These checks are about shell scripts, Python, tests, and docs rather than CI rep
 | `check-toolchain-skips`            | A test that skips itself when a tool is missing leaves the suite green and the guarded scripts uncovered. In CI it must fail instead. Opt out with `# toolchain-skip-ok: <reason>`.                                                                                                                                       | `skipif(shutil.which("node") is None)`                              |
 | `check-env-symmetry`               | A half-finished env-var rename leaves the reader on an unset value and a silent default. Flags a prefixed variable written and never read, or read and never written. Needs `--prefix`, so it is not in a tier aggregate.                                                                                                 | `FOO_BAR` written but never read                                    |
 | `check-bash32-portability`         | `grep -P` or `${v,,}` passes a Linux runner and aborts on macOS BSD tools or bash 3.2. Judges every file it gets, so it needs your `files:`, and it is not in a tier aggregate. Opt out with `# bash32-portability-ok: <reason>`.                                                                                         | `readarray -t lines < f`                                            |
+| `check-stale-opt-out`              | An opt-out stays after its check stops firing, and nothing removes it. It runs each covered check again and reports each annotation that no opt-out lookup finds. It runs those checks twice, so no tier aggregate holds it. Delete the annotation.                                                                       | `# allow-sleep:` above a sleep a refactor deleted                   |
 | `check-test-predicate-shadow`      | Redefining a production pure predicate in a test asserts against the test's own weaker copy, so the regression it covers can never fail. Stubbing a dependency is fine. Opt out with `# predicate-shadow-ok: <reason>`.                                                                                                   | a stub matching `^[0-9]+$` where the real one rejects leading zeros |
 | `check-stray-tool-markup`          | An agent leaves its file-authoring scaffolding behind and it renders as literal text. Flags a line that is entirely a stray tool-call tag. Suppress with `allow-stray-markup: <reason>`.                                                                                                                                  | a leaked `<function_calls>` fragment in shipped prose               |
 | `check-dead-shell-functions`       | A function no production code calls rots, and it tells a reader a code path exists.                                                                                                                                                                                                                                       | `cleanup_tmp()` called by nothing outside `tests/`                  |
@@ -202,7 +208,7 @@ Start here enables Tier 1 through one aggregate id. This section is the full men
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v1.8.1 # the release tag; matches the package version (vX.Y.Z)
+    rev: v1.12.0 # the release tag; matches the package version (vX.Y.Z)
     hooks:
       # ── Tier 1 · honesty, identity and security (default-on) ──
       # One id, so a Tier 1 check added in a later release runs as soon as you
@@ -212,6 +218,7 @@ repos:
       # ── Tier 2 · Opinionated (opt-in: uncomment to enable) ──
       # - id: check-job-timeout          # every job must declare timeout-minutes
       # - id: check-uncached-download    # a pinned download in a job with no cache
+      # - id: check-full-history-blobs  # fetch-depth: 0 must carry a blob filter
       # - id: check-always-reporter      # assumes a decide job; takes an always() reporter or a fail-closed twin
       # - id: check-required-reporter    # classify each always() reporter required-check: true|false
       # - id: check-required-event-closure  # every job a required check needs runs on every event it gates
@@ -235,6 +242,7 @@ repos:
       # - id: check-stderr-merge-parse   # never parse a 2>&1-merged stream
       # - id: check-echo-fallback        # no `|| echo` fallback that invents a value
       # - id: check-bare-return-status   # a `&&`/`||` guarded return must state its status
+      # - id: check-silent-exit          # an `exit N` after a failed probe says why
       # - id: check-lockstep-pins        # config-driven twin-pin equality (needs --pair args)
       # ── Extras · Unrelated bonus checks (opt-in) ──
       # - id: check-absolute-symlinks  # a tracked symlink must not point at an absolute or gitignored path
@@ -261,6 +269,7 @@ repos:
       # - id: check-toolchain-skips      # a which()-gated pytest skip must fail, not skip, in CI
       # - id: check-env-symmetry         # a prefixed env var must be both written and read
       #   args: [--prefix, GLOVEBOX_]    # required: the check reads only <PREFIX>… vars
+      # - id: check-stale-opt-out        # an opt-out annotation must still suppress a finding
       # - id: check-test-predicate-shadow  # a test may stub a dependency, not redefine a pure predicate
       # - id: check-stray-tool-markup    # ban a leaked tool-call tag committed into a file
 ```
@@ -269,6 +278,7 @@ repos:
 
 Add each `- id:` on its own if you want it:
 
+- `check-stale-opt-out` runs each covered check again, so an aggregate that held it would run those checks twice.
 - `check-absolute-symlinks` is a shell `language: script` hook, not a Python module.
 - `check-lockstep-pins` is config-driven. It hard-errors without the per-repo `--pair` arguments that an aggregate cannot supply.
 - `check-env-symmetry` scans the whole tree and needs a per-project `--prefix` argument that an aggregate cannot supply.
@@ -286,7 +296,7 @@ Select on either axis with `check-select`. It takes `--select` (repeatable, unio
 ```yaml
 repos:
   - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-    rev: v1.8.1
+    rev: v1.12.0
     hooks:
       - id: check-select
         args: [--select, "tag:security", --select, "tag:secrets"]
@@ -331,7 +341,7 @@ The tag vocabulary is closed. These are the values:
 
 A tag is not a file type. The files a check reads come from its own `types:`, so there is no `shell` or `python` tag to restate them.
 
-The four checks that sit in no aggregate carry no tag either, so no selector reaches them. `check-absolute-symlinks`, `check-lockstep-pins`, `check-env-symmetry`, and `check-bash32-portability` stay standalone ids.
+The five checks that sit in no aggregate carry no tag either, so no selector reaches them. `check-stale-opt-out`, `check-absolute-symlinks`, `check-lockstep-pins`, `check-env-symmetry`, and `check-bash32-portability` stay standalone ids.
 
 ### Scope one check to specific paths
 
@@ -339,7 +349,7 @@ One check in a tier can need tighter file scoping than the rest. For example, `c
 
 ```yaml
 - repo: https://github.com/AlexanderMattTurner/ci-truth-serum
-  rev: v1.8.1
+  rev: v1.12.0
   hooks:
     - id: check-tier1
       args: [--skip, check_exit_suppression] # drop it from the aggregate...
@@ -353,6 +363,17 @@ One check in a tier can need tighter file scoping than the rest. For example, `c
 This keeps the property that matters. A new check added to the tier upstream still arrives automatically through the aggregate. You opt out only of the checks you scope on purpose.
 
 `check-exit-suppression` also takes `--producer-only`, which restricts it to the captured-producer rule (a suppressed `$(gh api …)`/`$(jq …)` capture) and skips the uncaptured rule (a bare `cmd || true` with output kept). A consumer that wants the producer rule over a wider tree than it has ever enforced the uncaptured rule on adds a second `check-exit-suppression` entry with that flag and a broader `files:`, instead of widening the first entry's scope and inheriting uncaptured findings it never opted into.
+
+### Configure a check in a tier
+
+A tier hook runs many checks, so its `args:` cannot say which flag belongs to which check. Write those flags once, in `.ci-truth-serum.toml` at the repository root:
+
+```toml
+[checks.check-retry-loop]
+args = ["--wrapper=retry_cmd", "--retry-helper=bin/lib/retry.bash"]
+```
+
+Each table names one aggregated check, by its hook id or its module name. Its `args` reach the check before its file arguments, one token per item. Every tier hook and `check-select` read the file. A `--check-arg <check>=<flag>` in a hook's `args:` adds flags after the configured ones. **A table that names no aggregated check, a key other than `args`, or an empty `args` list is a hard error**, because it would otherwise configure nothing while the run looks configured. A standalone hook keeps its flags in its own `args:`.
 
 ### Autofix (opt-in): digest-pin base images
 
@@ -460,6 +481,17 @@ The scan reads the whole window for each workflow, and not the newest page of it
 The cost is one request for each 100 completed runs, plus one for each failing run that did not conclude `startup_failure`. A successful run costs nothing. The Actions API stops paginating at 1000 items, so one workflow costs at most 10 listings. A workflow busier than that is the one case the scan cannot read in full, and the report names it and marks its count as a floor.
 
 **The obvious version of this scan reports every repo healthy.** A run that failed to load concludes `startup_failure`, and not `failure`. The `status=` filter on the runs listing matches the conclusion, so `status=failure` never returns one. This tool asks for `status=completed` and classifies each conclusion itself. It leaves out `cancelled` and `skipped`, because a run cancelled in the queue also holds zero jobs and is not a broken file.
+
+## Actions
+
+### Mute-failure guard
+
+The `mute-failure-guard` action records every bash command that fails in a CI job. When the job fails, the action prints the failed step's records, so a failure that no step printed still has a cause. It also reports the open-file and process counts. Add it as the first step of a job, before the first bash step. It refuses a job that already sets `BASH_ENV`.
+
+```yaml
+steps:
+  - uses: AlexanderMattTurner/ci-truth-serum/actions/mute-failure-guard@<commit SHA>
+```
 
 ## Contributing
 

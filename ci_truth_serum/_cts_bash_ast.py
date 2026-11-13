@@ -128,12 +128,13 @@ def parse(script: str) -> Node:
 
     tree-sitter NEVER raises on malformed input — a syntax error surfaces as
     ``ERROR`` nodes in the tree, so callers fail OPEN (treat unparseable spans as
-    benign) instead of crashing a pre-commit hook on an unrelated commit. The one
-    exception is a pipe-byte count past ``_MAX_PIPE_BYTES``, which raises
-    ``PathologicalInputError`` (loud, never a silent pass) rather than letting
-    the C parser's quadratic allocation kill the process. Supplementary-plane
-    characters, which segfault that same C parser, are folded to U+FFFD up front
-    (see ``_neutralize_supplementary``)."""
+    benign) instead of crashing a pre-commit hook on an unrelated commit. The
+    exceptions are a pipe-byte count past ``_MAX_PIPE_BYTES`` and negated groups
+    nested past ``_MAX_NEGATION_ROUNDS``, which raise ``PathologicalInputError``
+    (loud, never a silent pass). Supplementary-plane characters, which segfault
+    that same C parser, are folded to U+FFFD up front (see
+    ``_neutralize_supplementary``), and a ``!`` the grammar cannot hold is
+    rewritten one byte for one byte (see ``_hold_negations``)."""
     if script.count("|") > _MAX_PIPE_BYTES:
         raise PathologicalInputError(
             f"input carries more than {_MAX_PIPE_BYTES} pipe bytes; "
@@ -141,7 +142,79 @@ def parse(script: str) -> Node:
             "parsing it could exhaust memory. Split the file or reduce the "
             "pipeline chain to lint it."
         )
-    return _parser().parse(_neutralize_supplementary(script).encode("utf-8")).root_node
+    source = bytearray(_neutralize_supplementary(script).encode("utf-8"))
+    return _hold_negations(source, _parser().parse(bytes(source)).root_node)
+
+
+# A `! {` nested inside another one shows in the tree only once its parent's `!`
+# is blanked, so `_hold_negations` needs one probe parse per level of nesting.
+_MAX_NEGATION_ROUNDS = 32
+
+_COMPOUND_OPENERS = frozenset({"{", "if", "while", "until", "for", "select", "case"})
+
+
+def _hold_negations(source: bytearray, root: Node) -> Node:
+    """ROOT, or the tree of SOURCE (ROOT's text) rewritten so that each `!` before
+    a compound command gets its real tree. Every rewrite is one byte for one
+    byte, so every offset and line number stays true.
+
+    * `! { a; }` becomes `! ( a; )`: the grammar holds a subshell, so the tree
+      keeps its `negated_command`. A check that asks whether a group runs in
+      its own shell reads this one as if it did.
+    * Before `if`, `while`, `until`, `for`, `select` or `case`, the `!` itself
+      is blanked, because no spelling of the same length keeps it. A check that
+      asks about negation reads those statements as not negated.
+
+    A probe copy with every such `!` blanked shows the real brace structure,
+    which is where each `{` finds its own `}`. When the rewrite holds a syntax
+    error that ROOT did not, such as a here-string after a group, ROOT stands."""
+    found, probe, tree = [], bytearray(source), root
+    for _ in range(_MAX_NEGATION_ROUNDS + 1):
+        unheld = _unheld_negations(tree, probe)
+        if not unheld:
+            break
+        found += unheld
+        for bang, _ in unheld:
+            probe[bang] = ord(" ")
+        tree = _parser().parse(bytes(probe)).root_node
+    else:
+        raise PathologicalInputError(
+            f"input nests more than {_MAX_NEGATION_ROUNDS} negated compound "
+            "commands (`! { ! {`); each level costs one more parse. Flatten the "
+            "nesting to lint it."
+        )
+    if not found:
+        return root
+    closers = {
+        g.start_byte: g.end_byte - 1 for g in iter_nodes(tree, "compound_statement")
+    }
+    for bang, opener in found:
+        closer = closers.get(opener) if source[opener] == ord("{") else None
+        if closer is None or probe[closer] != ord("}"):
+            source[bang] = ord(" ")
+        else:
+            source[opener], source[closer] = ord("("), ord(")")
+    held = _parser().parse(bytes(source)).root_node
+    return root if held.has_error and not root.has_error else held
+
+
+def _unheld_negations(root: Node, probe: bytearray) -> list[tuple[int, int]]:
+    """(`!` offset, operand offset) for each `!` under ROOT that negates a
+    compound command the grammar read as a plain command."""
+    found = []
+    for negation in iter_nodes(root, "negated_command"):
+        operands = negation.named_children
+        if not operands or operands[0].type != "command":
+            continue
+        name = next((c for c in operands[0].children if c.type == "command_name"), None)
+        bang = negation.start_byte
+        # Bash reads `!{` as one word: only a `!` that stands alone negates. The
+        # test also keeps the probe loop finite, since it blanks only a `!`.
+        if probe[bang : bang + 2] not in (b"! ", b"!\t") or name is None:
+            continue
+        if (node_text(name).split() or [""])[0] in _COMPOUND_OPENERS:
+            found.append((bang, name.start_byte))
+    return found
 
 
 def assert_parseable(script: str) -> None:
@@ -214,6 +287,17 @@ def _walk_missing(node: Node):
         stack.extend(current.children)
 
 
+def code_children(node: Node) -> list[Node]:
+    """NODE's children without its comment nodes.
+
+    A comment on its own line inside a `||` chain is a child of the `list` node,
+    between the operator and the operand it introduces. A check that pairs an
+    operator with the next sibling then reads the comment as the operand, and
+    the finding behind the comment disappears.
+    """
+    return [child for child in node.children if child.type != "comment"]
+
+
 def iter_nodes(node: Node, *types: str):
     """Every descendant of NODE (inclusive) whose ``type`` is in TYPES, yielded in
     document (pre-order) order."""
@@ -247,6 +331,39 @@ ARGUMENT_TYPES = frozenset(
         "expansion",
     }
 )
+
+
+# Leaf types that separate siblings in a list. A trailing comment after one
+# speaks for the item it ends, never for the next item.
+SEPARATORS = frozenset({";", "&", ";;", ","})
+
+
+def opening_lines(root: Node) -> frozenset[int]:
+    """The 1-based lines whose last token opens a construct that continues
+    onto the next line (see ``_cts_linecheck.CommentMap``).
+
+    The construct a token belongs to is its parent node. `if` belongs to the
+    `if` statement, `&&` to its list, and `{` to its block. Works on any
+    tree-sitter tree, so the JavaScript grammar uses it too.
+    """
+    last: dict[int, Node] = {}
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.type == "comment":
+            continue
+        if node.child_count == 0:
+            row = node.start_point[0]
+            if row not in last or node.start_byte > last[row].start_byte:
+                last[row] = node
+        stack.extend(node.children)
+    return frozenset(
+        row + 1
+        for row, leaf in last.items()
+        if leaf.type not in SEPARATORS
+        and leaf.parent is not None
+        and leaf.parent.end_point[0] > row
+    )
 
 
 def node_text(node: Node) -> str:
@@ -542,6 +659,31 @@ def in_condition(node: Node) -> bool:
     return parent is not None and any(
         part.id == node.id for part in condition_parts(parent)
     )
+
+
+_GROUPS = frozenset({"compound_statement", "subshell"})
+
+
+def status_carrier(node: Node) -> Node:
+    """NODE, or the outermost statement whose exit status is NODE's. A `{ …; }` or
+    `( … )` exits with the status of its last statement, unless it backgrounds
+    it, and a redirected statement exits with the status of its body."""
+    while (parent := node.parent) is not None:
+        if parent.type == "redirected_statement":
+            body = parent.child_by_field_name("body")
+            if body is None or body.id != node.id:
+                break
+        elif parent.type in _GROUPS:
+            statements = [c for c in parent.named_children if c.type != "comment"]
+            after = node.next_sibling
+            if statements[-1].id != node.id or (
+                after is not None and after.type == "&"
+            ):
+                break
+        else:
+            break
+        node = parent
+    return node
 
 
 def condition_commands(root: Node, statements: frozenset[str]) -> list[Node]:

@@ -1,7 +1,7 @@
 {
   "name": "ci-truth-serum",
   "private": true,
-  "version": "1.8.1",
+  "version": "1.12.0",
   "description": "Fast, offline pre-commit lints that catch CI honesty lies (exit codes masked by pipes, required checks that never report) and supply-chain identity lies (mutable image tags, unpinned downloads) before a green check can hide them.",
   "keywords": [
     "ci",
@@ -37,8 +37,8 @@
     "dev": "echo 'ERROR: Configure dev script in package.json' && exit 1",
     "build": "echo 'ERROR: Configure build script in package.json' && exit 1",
     "start": "echo 'ERROR: Configure start script in package.json' && exit 1",
-    "pretest": "ls scripts/*.test.mjs .github/scripts/*.test.mjs .github/actions/*/*.test.mjs >/dev/null && bash .github/scripts/install-input-sanitizer.sh",
-    "test": "node --test \"scripts/*.test.mjs\" \".github/scripts/**/*.test.mjs\" \".github/actions/**/*.test.mjs\"",
+    "pretest": "ls scripts/*.test.mjs .github/scripts/*.test.mjs .github/actions/*/*.test.mjs actions/*/*.test.mjs >/dev/null && bash .github/scripts/install-input-sanitizer.sh",
+    "test": "node --test \"scripts/*.test.mjs\" \".github/scripts/**/*.test.mjs\" \".github/actions/**/*.test.mjs\" \"actions/**/*.test.mjs\"",
     "lint": "markdownlint-cli2 \"**/*.md\"",
     "lint:fix": "markdownlint-cli2 --fix \"**/*.md\"",
     "check": "echo 'ERROR: Configure check script in package.json' && exit 1",

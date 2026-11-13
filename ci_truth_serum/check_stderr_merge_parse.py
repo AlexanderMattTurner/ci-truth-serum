@@ -58,6 +58,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     node_text,
     parse,
     redirect_parts,
+    status_carrier,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     annotated,
@@ -382,7 +383,11 @@ def _exit_status_tested(assign) -> bool:
         if parent.type in ("negated_command", "list") or in_condition(node):
             return True
         if parent.type in _BLOCKS:
-            return False
+            carrier = status_carrier(node)
+            if carrier.id == node.id:
+                return False
+            node = carrier
+            continue
         node = parent
     return False
 

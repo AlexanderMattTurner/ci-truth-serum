@@ -142,6 +142,55 @@ def test_only_a_step_before_the_cache_sets_its_output():
     assert _scope(step, after=(producer,)) == cs.CacheScope(None)
 
 
+ENV_WRITER = {"run": 'gha_env "CACHE_KEY=gate-$digest"'}
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "env", "key", "expected"),
+    [
+        ((ENV_WRITER,), (), {}, "${{ env.CACHE_KEY }}", None),
+        (
+            ({"run": 'echo "CACHE_KEY=x" >> "$GITHUB_ENV"'},),
+            (),
+            {},
+            "t-${{ env.CACHE_KEY }}",
+            None,
+        ),
+        ((), (ENV_WRITER,), {}, "${{ env.CACHE_KEY }}", "${{ env.CACHE_KEY }}"),
+        ((), (), {}, "${{ env.CACHE_KEY }}", "${{ env.CACHE_KEY }}"),
+        (
+            (ENV_WRITER,),
+            (),
+            {"CACHE_KEY": "k"},
+            "${{ env.CACHE_KEY }}",
+            "${{ env.CACHE_KEY }}",
+        ),
+        (
+            ({"run": 'gha_env "TOOL_VERSION=$v"'},),
+            (),
+            {},
+            "t-${{ env.TOOL_VERSION }}",
+            "t-${{ env.TOOL_VERSION }}",
+        ),
+    ],
+    ids=[
+        "written-by-an-earlier-step",
+        "written-to-github-env",
+        "written-only-after-the-cache",
+        "written-by-no-step",
+        "set-in-an-env-block",
+        "pin-name-stays",
+    ],
+)
+def test_an_env_key_an_earlier_step_computes_is_unreadable(
+    before, after, env, key, expected
+):
+    """A key that reads `env.NAME` names no pin when an earlier step computes
+    NAME and the name says nothing about a pin, so the key is unreadable."""
+    scope = _scope(_cache(key), before=before, after=after, env=env)
+    assert scope == cs.CacheScope(expected)
+
+
 def test_a_step_output_of_a_step_that_is_not_a_run_step_is_unreadable():
     producer = {"id": "p", "uses": "actions/checkout@v4"}
     step = _cache("t-${{ steps.p.outputs.v }}")

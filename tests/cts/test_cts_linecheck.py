@@ -620,10 +620,10 @@ def test_annotated_near_reads_only_the_comments_it_is_given() -> None:
     """The window's line numbers index the COMMENTS mapping, and a line it leaves
     out says nothing. A raw line that carries a marker inside a string is that
     case: the marker is data, so it suppresses nothing."""
-    lines = ['echo "write # tok: why"', "cmd"]
-    assert lc.annotated_near(lines, 2, "tok", comments={}) is False
+    lines = ['echo "write # tok: why"']
+    assert lc.annotated_near(lines, 1, "tok", comments={}) is False
     # Non-vacuity: the same line, reported as a comment, suppresses.
-    assert lc.annotated_near(lines, 2, "tok", comments={1: "# tok: why"}) is True
+    assert lc.annotated_near(lines, 1, "tok", comments={1: "# tok: why"}) is True
 
 
 # ── yaml_script_view / yaml_run_scalars / is_yaml_source ─────────────────────
@@ -1656,13 +1656,14 @@ def test_is_python_source(path: str, is_python: bool) -> None:
     assert lc.is_python_source(path) is is_python
 
 
-# ── the window includes the line directly above, comment-only or not ─────
-def test_annotation_window_always_includes_the_line_directly_above() -> None:
+# ── the code line above counts only when it opens the construct below ─────
+def test_annotation_window_includes_a_code_line_above_only_when_it_opens() -> None:
     """A reason often rides a code line that opens the construct below it —
-    `if  # pin-exempt: …` above a `curl`. Walking only comment-ONLY lines stops
-    at that line, which silently narrowed the window in a real tree."""
+    `if  # pin-exempt: …` above a `curl`. A code line that closes its own
+    construct speaks for nothing below it."""
     lines = ["if  # pin-exempt: inert JSON data", "  curl -fsSL -o x url", "then"]
-    assert 1 in lc.annotation_window(lines, 2)
+    assert lc.annotation_window(lines, 2, opens={1}) == [1, 2]
+    assert lc.annotation_window(lines, 2) == [2]
 
 
 def test_annotation_window_spans_a_wrapped_comment_block() -> None:
@@ -1672,7 +1673,7 @@ def test_annotation_window_spans_a_wrapped_comment_block() -> None:
 
 def test_annotation_window_stops_at_a_blank_line() -> None:
     lines = ["# tok: about something else", "", "code()"]
-    assert lc.annotation_window(lines, 3) == [2, 3]
+    assert lc.annotation_window(lines, 3) == [3]
 
 
 # ── run_message_checks: one pass, and each hit carries its own message ───────
@@ -1744,3 +1745,90 @@ def test_yaml_script_view_errs_closed_on_an_escaped_double_quoted_run() -> None:
     assert [line.strip() for line in lc.yaml_script_view(quoted)] == ["", ""]
     block = "-\n  run: |\n    echo ok\n    # tok: reviewed\n"
     assert lc.yaml_script_view(block)[3].strip() == "# tok: reviewed"
+
+
+# ── a trailing marker covers what its line opens, never a sibling ──────────
+_SIBLINGS = (
+    "on: push\njobs:\n  b:\n    strategy:\n      matrix:\n        os:\n"
+    "          - macos-latest  # tok: this entry only\n"
+    "          - ubuntu-latest\n"
+    "    runs-on:  # tok: the value below\n"
+    "      - self-hosted\n"
+    "    if:\n      >- # tok: the expression below\n      a == b\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("line", "covered"),
+    [(7, True), (8, False), (10, True), (13, True)],
+)
+def test_a_yaml_marker_covers_the_value_its_line_opens(
+    line: int, covered: bool
+) -> None:
+    lines = lc.source_lines(_SIBLINGS)
+    comments = lc.yaml_marker_comments(_SIBLINGS)
+    assert lc.annotated_near(lines, line, "tok", comments=comments) is covered
+
+
+@pytest.mark.parametrize(
+    ("script", "covered"),
+    [
+        ("if  # tok: the condition below\n  curl -o x url\nthen :; fi\n", True),
+        ("echo a  # tok: this command only\necho b\n", False),
+        ("echo a;  # tok: this command only\necho b\n", False),
+    ],
+)
+def test_a_bash_marker_in_a_run_covers_what_its_line_opens(
+    script: str, covered: bool
+) -> None:
+    body = "".join(f"          {line}\n" for line in script.splitlines())
+    text = f"on: push\njobs:\n  b:\n    steps:\n      - run: |\n{body}"
+    lines = lc.source_lines(text)
+    comments = lc.yaml_marker_comments(text)
+    assert lc.annotated_near(lines, 7, "tok", comments=comments) is covered
+
+
+@pytest.mark.parametrize(
+    ("config", "names"),
+    [
+        ("queue_rules:\n  - queue_conditions: [check-success=ci]\n", {"ci"}),
+        (
+            "queue_rules:\n  - merge_conditions:\n"
+            "      - or: [check-success-or-neutral == a, {and: ['check-success: b']}]\n"
+            "      - check-success=@github-actions/c\n",
+            {"a", "b", "c"},
+        ),
+        (
+            "queue_rules:\n  - queue_conditions: [check-failure=x, base=main, -draft]\n",
+            set(),
+        ),
+        ("queue_rules: oops\n", set()),
+        ("[unclosed\n", set()),
+        (None, set()),
+    ],
+)
+def test_mergify_check_names(tmp_path: Path, config: str | None, names: set[str]):
+    if config is not None:
+        (tmp_path / ".mergify.yml").write_text(config, encoding="utf-8")
+    assert lc.mergify_check_names(tmp_path) == names
+
+
+@pytest.mark.parametrize(
+    ("jobs", "names", "gating"),
+    [
+        ({"lint": {"name": "Lint"}}, {"Lint"}, ["lint"]),
+        ({"lint": {"name": "Lint"}}, {"Other"}, []),
+        (
+            {"ci": {"name": "CI", "uses": "org/r/.github/workflows/c.yml@v1"}},
+            {"CI / test"},
+            ["ci"],
+        ),
+        (
+            {"test": {"strategy": {"matrix": {"os": ["a", "b"]}}}},
+            {"test (a)"},
+            ["test"],
+        ),
+    ],
+)
+def test_gating_jobs_mergify_names(jobs: dict, names: set[str], gating: list[str]):
+    assert lc.gating_jobs({}, jobs, names) == gating

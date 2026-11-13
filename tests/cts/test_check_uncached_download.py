@@ -78,6 +78,38 @@ def test_a_pinned_download_in_an_uncached_job_is_flagged(tmp_path, script, named
     assert "build" in messages[0]
 
 
+API = "https://api.github.com/repos/$repo/releases"
+
+
+@pytest.mark.parametrize(
+    ("url", "fires"),
+    [
+        (f"{API}/tags/$tag", False),
+        (f"{API}/tags/v1.2.3", False),
+        (f"{API}/assets/$asset_id", False),
+        (f"{API}/assets/${{TOOL_RELEASE_ID}}", True),
+        ("https://github.com/$repo/releases/download/${VERSION}/t.tgz", True),
+        ("https://github.com/o/r/releases/download/v1.2.3/t.tgz", True),
+        ("https://api.github.com/repos/o/r/tarball/${VERSION}", True),
+    ],
+    ids=[
+        "tags-var",
+        "tags-literal",
+        "assets-id",
+        "assets-var",
+        "download-var",
+        "download-literal",
+        "tarball",
+    ],
+)
+def test_a_release_metadata_read_is_not_a_pinned_download(tmp_path, url, fires):
+    """`releases/tags/<tag>` returns JSON, so it is not a download. `releases/assets/
+    <id>` streams the asset itself under `Accept: application/octet-stream`, so a
+    versioned asset URL is judged like any other download."""
+    messages = _messages(_write(tmp_path, _job(_run(f'curl -fsSL -o t "{url}"'))))
+    assert len(messages) == int(fires), messages
+
+
 def test_the_finding_points_at_the_step_line(tmp_path):
     path = _write(tmp_path, _job(_run("pip install ruff==0.14.0")))
     line, _ = uc.check_file(path)[0]
@@ -108,10 +140,20 @@ def test_a_cache_step_anywhere_in_the_job_exempts_it(tmp_path):
     assert uc.check_file(path) == []
 
 
-def test_a_cache_below_the_install_still_exempts_the_job(tmp_path):
-    """Step order does not matter: the question is whether the job caches at all."""
-    path = _write(tmp_path, _job(_run("pip install ruff==0.14.0") + CACHE_STEP))
-    assert uc.check_file(path) == []
+@pytest.mark.parametrize(
+    ("steps", "fires"),
+    [
+        (CACHE_STEP + _run("pip install ruff==0.14.0"), False),
+        (_run("pip install ruff==0.14.0") + CACHE_STEP, True),
+    ],
+    ids=["above", "below"],
+)
+def test_only_a_cache_restored_before_the_install_covers_it(tmp_path, steps, fires):
+    """A cache step restores where it stands. A cache below the install restores
+    after the download ran, so the job pays for the download on every run."""
+    messages = _messages(_write(tmp_path, _job(steps)))
+    assert messages == ([messages[0]] if fires else [])
+    assert not fires or uc.NO_COVER in messages[0]
 
 
 @pytest.mark.parametrize(
@@ -133,20 +175,26 @@ def test_a_cache_below_the_install_still_exempts_the_job(tmp_path):
             "uv pip install ruff==0.14.0",
         ),
         (
-            "      - uses: astral-sh/setup-uv@v5\n        with:\n          enable-cache: true\n"
-            '          prune-cache: "false"\n',
+            (
+                "      - uses: astral-sh/setup-uv@v5\n        with:\n          enable-cache: true\n"
+                '          prune-cache: "false"\n'
+            ),
             "uv tool install ruff==0.14.0",
             "pip install ruff==0.14.0",
         ),
         (
-            "      - uses: astral-sh/setup-uv@v6\n        with:\n"
-            "          prune-cache: false\n",
+            (
+                "      - uses: astral-sh/setup-uv@v6\n        with:\n"
+                "          prune-cache: false\n"
+            ),
             "uv tool install ruff==0.14.0",
             "uv tool install --no-cache ruff==0.14.0",
         ),
         (
-            "      - uses: astral-sh/setup-uv@v6\n        with:\n"
-            "          enable-cache: true\n",
+            (
+                "      - uses: astral-sh/setup-uv@v6\n        with:\n"
+                "          enable-cache: true\n"
+            ),
             None,
             "uv tool install ruff==0.14.0",
         ),
@@ -161,8 +209,10 @@ def test_a_cache_below_the_install_still_exempts_the_job(tmp_path):
             "pip install ruff==0.14.0",
         ),
         (
-            "      - uses: actions/setup-node@v4\n        with:\n"
-            "          cache: ${{ inputs.manager }}\n",
+            (
+                "      - uses: actions/setup-node@v4\n        with:\n"
+                "          cache: ${{ inputs.manager }}\n"
+            ),
             "yarn global add pre-commit@4.6.1",
             "curl -fsSLo t https://example.com/v2.7.0/tool",
         ),
@@ -524,7 +574,12 @@ def test_a_composite_action_script_resolves_through_the_action_path(rooted):
 # ── which cache covers which download ───────────────────────────────────────
 
 
-def _cache(key: str, path: str = "/tmp/elsewhere") -> str:
+# A cache path whose text fixes no directory. It can hold any download, so a
+# test that uses it judges the key alone.
+ANY_PATH = "${{ runner.temp }}/key-only"
+
+
+def _cache(key: str, path: str = ANY_PATH) -> str:
     return (
         "      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n"
         f"        with:\n          path: {path}\n          key: {key}\n"
@@ -574,7 +629,224 @@ def test_a_cache_covers_a_download_only_when_it_can_hold_it(rooted, cache, fires
     messages = _messages(path)
     assert len(messages) == (1 if fires else 0), messages
     if fires:
-        assert "no cache in the job keyed on its pin" in messages[0]
+        assert uc.NO_COVER in messages[0]
+
+
+VERSIONS = {"s/versions.sh": "TOOL_VERSION=v2.7.0\n"}
+VERSIONS_KEY = "other-${{ hashFiles('s/versions.sh') }}"
+
+
+@pytest.mark.parametrize(
+    ("path", "fires"),
+    [
+        ("~/.cache/some-other-tool", True),
+        ("/tmp/tool", True),
+        ("~/.cache/tool/linux/deeper", False),
+        ("/home/runner/.cache/tool/linux", False),
+        ("~/.cache/**/linux", False),
+        ("~/.cache/tool", False),
+        ("${{ env.TOOL_DIR }}", False),
+    ],
+    ids=[
+        "another-directory",
+        "another-root",
+        "below-the-computed-part",
+        "the-runner-home",
+        "a-glob",
+        "holds-the-output",
+        "no-fixed-directory",
+    ],
+)
+def test_a_key_that_names_the_pin_covers_only_a_path_that_can_hold_it(
+    rooted, path, fires
+):
+    """A key that hashes the file that sets the pin still needs a path that can
+    hold the download. `$ARCH` can take any value, so only the parts before it
+    compare: `~/.cache/tool`. A cache path the text does not fix can hold it."""
+    _tree(rooted, VERSIONS)
+    script = (
+        "source s/versions.sh\n"
+        'curl -fsSLo "$HOME/.cache/tool/$ARCH/tool" '
+        '"https://github.com/o/tool/releases/download/${TOOL_VERSION}/tool"'
+    )
+    messages = _messages(
+        _write(rooted, _job(_cache(VERSIONS_KEY, path) + _run(script)))
+    )
+    assert messages == ([messages[0]] if fires else [])
+    assert not fires or uc.NO_COVER in messages[0]
+
+
+@pytest.mark.parametrize(
+    ("hashed", "fires"),
+    [("pins/tool.json", False), ("pins/other.json", True), ("pins/near.json", True)],
+    ids=["holds-the-value", "holds-another-value", "holds-a-longer-version"],
+)
+def test_a_key_that_hashes_the_source_of_a_generated_pin_names_it(
+    rooted, hashed, fires
+):
+    """`s/versions.sh` is generated from `pins/tool.json`, so both hold `v2.7.0`. A
+    key that hashes the JSON changes whenever the pin does, so it names the pin.
+    A JSON file that holds another value, or a longer version that contains it
+    (`12.7.0`), does not. An unrelated script the parser refuses (`s/huge.sh`)
+    does not stop the check."""
+    _tree(
+        rooted,
+        {
+            **VERSIONS,
+            "pins/tool.json": '{"version": "v2.7.0"}\n',
+            "pins/other.json": '{"version": "v9.9.9"}\n',
+            "pins/near.json": '{"version": "12.7.0"}\n',
+            "s/huge.sh": "true" + " | true" * 2100 + "\n",
+        },
+    )
+    script = (
+        "source s/versions.sh\n"
+        'curl -fsSLo "$HOME/.cache/tool/$ARCH/tool" '
+        '"https://github.com/o/tool/releases/download/${TOOL_VERSION}/tool"'
+    )
+    key = f"t-${{{{ hashFiles('{hashed}') }}}}"
+    cache = _cache(key, "~/.cache/tool/linux")
+    messages = _messages(_write(rooted, _job(cache + _run(script))))
+    assert len(messages) == fires, messages
+
+
+def test_a_value_an_unrelated_script_assigns_names_no_pin(rooted):
+    """Only the files the fetch reads give a pin variable its value. Another
+    script that assigns the same name `v9.9.9` does not let a key hashing a file
+    that holds `v9.9.9` cover a download of `v2.7.0`."""
+    _tree(
+        rooted,
+        {
+            **VERSIONS,
+            "other/versions.sh": "TOOL_VERSION=v9.9.9\n",
+            "pins/other.json": '{"version": "v9.9.9"}\n',
+        },
+    )
+    script = (
+        "source s/versions.sh\n"
+        'curl -fsSLo "$HOME/.cache/tool/$ARCH/tool" '
+        '"https://github.com/o/tool/releases/download/${TOOL_VERSION}/tool"'
+    )
+    key = "t-${{ hashFiles('pins/other.json') }}"
+    cache = _cache(key, "~/.cache/tool/linux")
+    assert len(_messages(_write(rooted, _job(cache + _run(script))))) == 1
+
+
+@pytest.mark.parametrize(
+    ("digest", "hashed", "fires"),
+    [
+        ("a" * 64, "pins/tool.json", False),
+        ("0" * 64, "pins/tool.json", False),
+        ("a" * 64, "pins/none.json", True),
+    ],
+    ids=["letter-led", "digit-led", "unrelated-key"],
+)
+def test_a_key_that_hashes_a_file_holding_the_digest_names_the_pin(
+    rooted, digest, hashed, fires
+):
+    """A 64-hex digest is a value even when it starts with a letter and so also
+    reads as a variable name."""
+    _tree(
+        rooted,
+        {
+            "pins/tool.json": f'{{"sha256": "{digest}"}}\n',
+            "pins/none.json": "{}\n",
+        },
+    )
+    out = "$HOME/.cache/tool/$ARCH/tool"
+    script = f'curl -fsSLo "{out}" "https://example.com/v1.2.3/{digest}/tool"'
+    key = f"t-${{{{ hashFiles('{hashed}') }}}}"
+    cache = _cache(key, "~/.cache/tool/linux")
+    messages = _messages(_write(rooted, _job(cache + _run(script))))
+    assert len(messages) == fires, messages
+
+
+@pytest.mark.parametrize(
+    ("script", "fires"),
+    [
+        ("uv tool install pre-commit==4.6.1", False),
+        ("curl -fsSLo /tmp/pc/pc https://example.com/v4.6.1/pc", True),
+    ],
+    ids=["installer", "download"],
+)
+def test_an_installer_fetch_keeps_coverage_by_its_key(rooted, script, fires):
+    """`uv tool install` writes where UV_TOOL_DIR says, which the lint does
+    not read, so a key that names the pin covers it whatever the path. A
+    curl says where it writes, so the path must be able to hold it."""
+    key = "t-${{ hashFiles('wf.yaml') }}"
+    workflow = _job(_cache(key, "~/.local/share/uv/tools") + _run(script))
+    assert len(_messages(_write(rooted, workflow))) == fires
+
+
+NIX_FETCH = (
+    "source s/versions.sh\n"
+    'cache_dir="${NIX_INSTALLER_CACHE_DIR:-$HOME/.cache/nix-installer}"\n'
+    'curl -fsSLo "$cache_dir/install" '
+    '"https://releases.nixos.org/nix/nix-$TOOL_VERSION/install"'
+)
+
+
+@pytest.mark.parametrize(
+    ("key", "fires"),
+    [("tool-1.2.3", False), ("tool-9.9.9", True)],
+    ids=["names-the-version", "another-version"],
+)
+def test_a_version_read_through_a_variable_is_a_pin_a_key_can_name(
+    tmp_path, key, fires
+):
+    """The URL in `$url` fixes the version 1.2.3, though `$ARCH` is unknown.
+    The download writes where `$DEST` says, so a key that names 1.2.3 covers
+    it by the key alone."""
+    script = 'url="https://example.com/1.2.3/tool-$ARCH"\ncurl -fsSLo "$DEST" "$url"'
+    messages = _messages(_write(tmp_path, _job(_cache(key) + _run(script))))
+    assert len(messages) == fires
+
+
+@pytest.mark.parametrize(
+    ("path", "fires"),
+    [(".", False), ("./", False), ("other/", True)],
+    ids=["workspace", "workspace-slash", "another-directory"],
+)
+def test_a_workspace_cache_holds_every_relative_output(tmp_path, path, fires):
+    """A cache of `.` saves the whole workspace, so it holds `bin/tool`. A
+    cache of `other/` does not, though its key names the version."""
+    script = "curl -fsSLo bin/tool https://example.com/v1.2.3/tool"
+    workflow = _job(_cache("tool-1.2.3", path) + _run(script))
+    assert len(_messages(_write(tmp_path, workflow))) == fires
+
+
+@pytest.mark.parametrize(
+    ("job_env", "step_env", "fires"),
+    [
+        ("", "NIX_INSTALLER_CACHE_DIR: /tmp/nix-cache", False),
+        ("NIX_INSTALLER_CACHE_DIR: /tmp/nix-cache", "", False),
+        ("", "OTHER: x", True),
+        (
+            "NIX_INSTALLER_CACHE_DIR: /tmp/nix-cache",
+            "NIX_INSTALLER_CACHE_DIR: ''",
+            True,
+        ),
+    ],
+    ids=["step-env", "job-env", "unset", "set-empty"],
+)
+def test_a_default_the_step_environment_overrides_is_not_the_output(
+    rooted, job_env, step_env, fires
+):
+    """`${X:-default}` reads the default only when X is unset. The `env:` of
+    the step or the job sets X, so the default `~/.cache/nix-installer` is not
+    where the download lands, and a cache of `/tmp/nix-cache` can hold it."""
+    _tree(rooted, VERSIONS)
+    body = "\n".join(f"          {line}" for line in NIX_FETCH.splitlines())
+    workflow = (
+        "name: x\non:\n  push:\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        + (f"    env:\n      {job_env}\n" if job_env else "")
+        + "    steps:\n"
+        + _cache(VERSIONS_KEY, "/tmp/nix-cache")
+        + "      - name: install\n"
+        + (f"        env:\n          {step_env}\n" if step_env else "")
+        + f"        run: |\n{body}\n"
+    )
+    assert len(_messages(_write(rooted, workflow))) == fires
 
 
 def test_a_key_naming_the_variable_a_pin_is_derived_from_covers_it(rooted):
@@ -1152,16 +1424,24 @@ def test_a_checksum_file_names_the_file_it_vouches_for(tmp_path):
     [
         'curl -fsSLo t.sha256 "$URL.sha256"\nsha256sum -c t.sha256',
         'curl -fsSLo sums "$URL.sums"\ngrep " t$" sums | sha256sum -c -',
-        'sums="$(mktemp)"\ncurl -fsSLo "$sums" "$URL.sums"\n'
-        'line="$(grep " t$" "$sums")"\nsha="${line%% *}"\n'
-        "printf '%s  %s\\n' \"$sha\" t | sha256sum -c -",
+        (
+            'sums="$(mktemp)"\ncurl -fsSLo "$sums" "$URL.sums"\n'
+            'line="$(grep " t$" "$sums")"\nsha="${line%% *}"\n'
+            "printf '%s  %s\\n' \"$sha\" t | sha256sum -c -"
+        ),
         'sha256sum -c <<< "$(curl -fsSL "$URL.sha256")  t"',
-        'sha="$(gh api repos/o/r/releases/latest --jq .body)"\n'
-        'echo "$sha  t" | sha256sum -c -',
-        'sha="$(git ls-remote https://example.com/r HEAD)"\n'
-        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$sha" ]] || exit 1',
-        'curl -fsSLo t.sha256 "$URL.sha256"\nsha="$(<t.sha256)"\n'
-        'echo "$sha  t" | sha256sum -c -',
+        (
+            'sha="$(gh api repos/o/r/releases/latest --jq .body)"\n'
+            'echo "$sha  t" | sha256sum -c -'
+        ),
+        (
+            'sha="$(git ls-remote https://example.com/r HEAD)"\n'
+            '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$sha" ]] || exit 1'
+        ),
+        (
+            'curl -fsSLo t.sha256 "$URL.sha256"\nsha="$(<t.sha256)"\n'
+            'echo "$sha  t" | sha256sum -c -'
+        ),
     ],
     ids=[
         "downloaded-checksum-file",
@@ -1211,8 +1491,10 @@ def test_a_digest_looked_up_in_a_committed_file_pins(tmp_path, lookup):
 @pytest.mark.parametrize(
     "script",
     [
-        'EXPECTED="$(cat sums)"\nOUT=t\ncurl -fsSLo "$OUT" "$URL"\n'
-        'sha256sum -c <<< "${EXPECTED}  ${OUT}"',
+        (
+            'EXPECTED="$(cat sums)"\nOUT=t\ncurl -fsSLo "$OUT" "$URL"\n'
+            'sha256sum -c <<< "${EXPECTED}  ${OUT}"'
+        ),
         'OUT="$1"\ncurl -fsSLo "$OUT" "$URL"\nsha256sum -c <<< "$(cat sums)  ${OUT}"',
     ],
     ids=["known-name", "name-only-the-run-knows"],
@@ -1279,8 +1561,10 @@ def _finding(path: Path) -> str:
         'ARGV=(sha256sum)\n[[ "$("${ARGV[@]}" <t | cut -d\' \' -f1)" == "$SHA" ]]',
         'H=(shasum)\nH+=(-a 256)\n[[ "$("${H[@]}" <t | cut -d\' \' -f1)" == "$SHA" ]]',
         'h() { sha256sum | cut -d\' \' -f1; }\n[[ "$(h <t)" == "$SHA" ]]',
-        'pin() { echo "$SHA"; }\nwant="$(pin kata)"\n'
-        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$want" ]]',
+        (
+            'pin() { echo "$SHA"; }\nwant="$(pin kata)"\n'
+            '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$want" ]]'
+        ),
         '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$(cat pins/t.sha256)" ]]',
     ],
     ids=[
@@ -1315,10 +1599,14 @@ def test_a_download_compared_against_a_digest_is_pinned(tmp_path, check):
         '[[ "$(sha256sum <t)" != "" ]] || exit 1',
         'got="$(sha256sum t)"\n[ "$got" != "" ] || exit 1',
         'got="$(sha256sum t)"\nverify() { [[ "$got" == "$SHA" ]]; }',
-        'want="$(curl -fsSL https://example.com/latest/t.sha256)"\n'
-        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$want" ]] || exit 1',
-        'curl -fsSLo t.sha256 "$URL.sha256"\n'
-        '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$(cat t.sha256)" ]] || exit 1',
+        (
+            'want="$(curl -fsSL https://example.com/latest/t.sha256)"\n'
+            '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$want" ]] || exit 1'
+        ),
+        (
+            'curl -fsSLo t.sha256 "$URL.sha256"\n'
+            '[[ "$(sha256sum <t | cut -d\' \' -f1)" == "$(cat t.sha256)" ]] || exit 1'
+        ),
     ],
     ids=[
         "another-file",
@@ -1458,23 +1746,31 @@ def test_a_function_that_does_not_both_download_and_check_pins_nothing(
 @pytest.mark.parametrize(
     "script",
     [
-        "get_latest() { curl -fsSL -o tool https://example.com/latest/tool; }\n"
-        'verify_config() { [[ "$(sha256sum <cfg)" == "$CFG_SHA" ]]; }\n'
-        "install() { get_latest; verify_config; }\n"
-        "install\n",
-        "get_tool() {\n"
-        "  curl -fsSL https://example.com/latest/t -o t\n"
-        '  [[ "$(sha256sum <other)" == "$SHA" ]]\n'
-        "}\n"
-        "get_tool\n",
-        "get_tool() {\n"
-        "  curl -fsSL https://example.com/latest/t -o t\n"
-        '  [[ "$(sha256sum <package.json)" == "$STAMP" ]]\n'
-        "}\n"
-        "get_tool\n",
-        f"SHA={DIGEST}\n"
-        'fetch() { curl -fsSL "$1" 2>"$2"; echo "$SHA  $2" | sha256sum -c -; }\n'
-        'fetch "$URL" tool\n',
+        (
+            "get_latest() { curl -fsSL -o tool https://example.com/latest/tool; }\n"
+            'verify_config() { [[ "$(sha256sum <cfg)" == "$CFG_SHA" ]]; }\n'
+            "install() { get_latest; verify_config; }\n"
+            "install\n"
+        ),
+        (
+            "get_tool() {\n"
+            "  curl -fsSL https://example.com/latest/t -o t\n"
+            '  [[ "$(sha256sum <other)" == "$SHA" ]]\n'
+            "}\n"
+            "get_tool\n"
+        ),
+        (
+            "get_tool() {\n"
+            "  curl -fsSL https://example.com/latest/t -o t\n"
+            '  [[ "$(sha256sum <package.json)" == "$STAMP" ]]\n'
+            "}\n"
+            "get_tool\n"
+        ),
+        (
+            f"SHA={DIGEST}\n"
+            'fetch() { curl -fsSL "$1" 2>"$2"; echo "$SHA  $2" | sha256sum -c -; }\n'
+            'fetch "$URL" tool\n'
+        ),
     ],
     ids=[
         "check-in-a-sibling-function",
@@ -1711,6 +2007,137 @@ def test_what_the_python_walk_leaves_alone(rooted, install, check):
     assert uc.check_file(path) == []
 
 
+# A Python module that downloads through a `bash -c` script, the way
+# agent-glovebox's pkg_fetch.py calls fetch.bash. Its directory reaches
+# `sys.path` only through another module, from a base the fold cannot read.
+SUBPROCESS_FETCHER = """\
+import subprocess
+from pathlib import Path
+
+_LIB = Path(__file__).resolve().parent / "fetch.bash"
+
+
+def get(url, sha256, dest):
+    owner = ["download_pinned", url, sha256, dest] if sha256 else ["true"]
+    subprocess.run(["bash", "-c", 'source "$1"; shift; "$@"', "_", str(_LIB), *owner])
+
+
+def wrap():
+    get(URL, SHA, "f")
+
+
+def other():
+    return 1
+"""
+PATHS_PY = (
+    "import sys\nfrom pathlib import Path\n"
+    "sys.path.insert(0, str(find_root(Path(__file__)) / 'lib'))\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("main", "fires"),
+    [
+        ("import paths\nimport fetcher\nfetcher.get(URL, SHA, 'f')\n", 1),
+        ("import paths\nfrom fetcher import get\nget(URL, SHA, 'f')\n", 1),
+        ("import paths\nimport fetcher\nfetcher.wrap()\n", 1),
+        ("import paths\nfrom fetcher import *\nget(URL, SHA, 'f')\n", 1),
+        ("import paths\nimport fetchpkg\nfetchpkg.get(URL, SHA, 'f')\n", 1),
+        ("import paths\nimport fetcher\nfetcher.other()\n", 0),
+        ("import fetcher\nfetcher.get(URL, SHA, 'f')\n", 0),
+    ],
+    ids=[
+        "calls-the-fetch",
+        "imports-the-fetch",
+        "calls-a-caller-of-the-fetch",
+        "star-import",
+        "package-re-export",
+        "calls-another-function",
+        "no-path-insert",
+    ],
+)
+def test_a_python_fetch_through_a_shell_subprocess_fires(rooted, main, fires):
+    _tree(
+        rooted,
+        {
+            "lib/fetch.bash": CHECKED_LIB,
+            "lib/fetcher.py": SUBPROCESS_FETCHER,
+            "lib/fetchpkg/__init__.py": "from .fetcher import get\n",
+            "lib/fetchpkg/fetch.bash": CHECKED_LIB,
+            "lib/fetchpkg/fetcher.py": SUBPROCESS_FETCHER,
+            "scripts/paths.py": PATHS_PY,
+            "scripts/main.py": main,
+        },
+    )
+    messages = _messages(_write(rooted, _job(_run("python3 scripts/main.py"))))
+    assert ["fetcher.py:get)" in m for m in messages] == [True] * fires
+
+
+CURL_PY = (
+    "import subprocess\nVERSION = '2.7.0'\nsubprocess.check_call(\n"
+    "    ['curl', '-fsSLo', '/tmp/tool-cache/tool',\n"
+    "     f'https://example.com/releases/download/v{VERSION}/tool'])\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("cache", "fires"),
+    [
+        ("", 1),
+        (_cache("tool-${{ hashFiles('fetch.py') }}", "/tmp/tool-cache"), 0),
+        (_cache("deps-1", "~/.cache/some-other-tool"), 1),
+    ],
+    ids=["no-cache", "cached", "cache-holds-something-else"],
+)
+def test_a_python_curl_subprocess_is_a_fetch(rooted, cache, fires):
+    _tree(rooted, {"fetch.py": CURL_PY})
+    path = _write(rooted, _job(cache + _run("python3 fetch.py")))
+    assert len(_messages(path)) == fires
+
+
+IMPORT_TIME_FETCHER = """\
+import urllib.request
+
+
+def download():
+    urllib.request.urlretrieve("https://example.com/v2.7.0/tool", "tool")
+
+
+download()
+"""
+
+
+@pytest.mark.parametrize(
+    ("call", "fires"),
+    [("download()\n", 1), ('if __name__ == "__main__":\n    download()\n', 0)],
+    ids=["at-import", "under-the-main-guard"],
+)
+def test_a_download_an_imported_module_runs_at_import_fires(rooted, call, fires):
+    """The module calls its downloader at module level, so importing it is
+    enough: the importer names nothing from it. A main guard runs nothing on
+    import."""
+    fetcher = IMPORT_TIME_FETCHER.replace("download()\n", call)
+    _tree(rooted, {"main.py": "import fetcher\n", "fetcher.py": fetcher})
+    assert len(_messages(_write(rooted, _job(_run("python3 main.py"))))) == fires
+
+
+@pytest.mark.parametrize(
+    ("local", "fires"),
+    [
+        ("    URL = 'https://example.com/latest/tool'\n", 0),
+        ("", 1),
+    ],
+    ids=["local-floating-url-shadows-the-pin", "module-pin"],
+)
+def test_a_local_binding_shadows_a_module_constant_in_argv(rooted, local, fires):
+    fetch = (
+        "import subprocess\nURL = 'https://example.com/v2.7.0/tool'\n\n\n"
+        f"def get():\n{local}    subprocess.run(['curl', '-o', '/tmp/t', URL])\n\n\nget()\n"
+    )
+    _tree(rooted, {"fetch.py": fetch})
+    assert len(_messages(_write(rooted, _job(_run("python3 fetch.py"))))) == fires
+
+
 def test_a_hash_compare_in_another_function_does_not_pin_a_method_fetch(rooted):
     """The fetch sits in a class method, and the only compare sits in a
     different function, so nothing checks the bytes this fetch reads."""
@@ -1896,6 +2323,78 @@ def test_a_step_output_only_a_later_step_writes_is_not_read(rooted):
     assert _messages(path) == []
 
 
+# The shape of a prefetch that tries each mirror in turn: the hosts come from a
+# here-string, a `local url` in the loop's function hides the `url` of the
+# library's own downloader, and the downloader is a function.
+PREFETCH = {
+    "s/versions.sh": "UV_VERSION=0.13.7\n",
+    "s/lib.sh": 'pinned_curl() { local url="$1" dest="$2"; curl -fsSLo "$dest" "$url"; }\n',
+    "s/prefetch.sh": (
+        "source s/versions.sh\nsource s/lib.sh\n"
+        'read -r -a bases <<<"${BASES:-https://mirror.example/uv https://github.com/a/uv/releases/download}"\n'
+        'fetch() { pinned_curl "$1" "$2"; }\n'
+        "fetch_any() {\n  local base url\n"
+        '  for base in "${bases[@]}"; do\n'
+        '    url="${base}/${UV_VERSION}/uv-${triple}.tar.gz"\n'
+        '    if fetch "$url" "$work/uv.tgz"; then return 0; fi\n'
+        "  done\n  return 1\n}\nfetch_any\n"
+    ),
+}
+UV_KEY = "uv-python-${{ steps.pin.outputs.uv }}"
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "why"),
+    [
+        ("", "", uc.NO_CACHE),
+        ("", _cache(UV_KEY, "${{ env.UV_PYTHON_INSTALL_DIR }}"), uc.NO_COVER),
+        (_cache(UV_KEY, "${{ env.UV_PYTHON_INSTALL_DIR }}"), "", None),
+    ],
+    ids=["no-cache", "keyed-on-the-pin-but-restored-after", "restored-before"],
+)
+def test_a_mirror_loop_download_needs_a_cache_restored_before_it(
+    rooted, before, after, why
+):
+    """Each host the loop tries is a URL, and the URL names the pinned uv, so
+    the fetch is pinned. A cache that `gha_output` keys on the pin covers it
+    only when it restores before the fetch runs."""
+    _tree(rooted, PREFETCH)
+    pin = _pin_step('source s/versions.sh\ngha_output "uv=$UV_VERSION"')
+    workflow = _job(pin + before + _run("bash s/prefetch.sh") + after)
+    messages = _messages(_write(rooted, workflow))
+    assert messages == ([] if why is None else [messages[0]])
+    if why is not None:
+        assert why in messages[0]
+        assert "https://mirror.example/uv/0.13.7/uv-*.tar.gz" in messages[0]
+
+
+@pytest.mark.parametrize(
+    ("script", "fires"),
+    [
+        (
+            'url="https://e.example/1.2.3/t-$(uname -m)"\ncurl -fsSLo /tmp/t "$url"',
+            True,
+        ),
+        (
+            (
+                'tarball="$(curl -fsSL https://e.example/latest)"\n'
+                'version="${tarball#t-}"\nversion="${version%.tgz}"\n'
+                'dist="https://e.example/${version}"\ncurl -fsSLo /tmp/t "${dist}/t"'
+            ),
+            False,
+        ),
+    ],
+    ids=["a-fixed-version", "a-version-the-run-reads"],
+)
+def test_a_url_held_in_a_variable_is_pinned_by_the_version_the_text_fixes(
+    tmp_path, script, fires
+):
+    """A URL read through a variable is pinned when its text fixes a version.
+    A version the run reads (`latest`) floats, so the download is not pinned,
+    though the variable that holds it is named `version`."""
+    assert len(_messages(_write(tmp_path, _job(_run(script))))) == fires
+
+
 @pytest.mark.parametrize(
     ("restore_key", "save_key", "fires"),
     [
@@ -1916,12 +2415,12 @@ def test_a_cache_steps_outputs_read_as_its_own_key(
     step's key. `cache-hit` reports how the restore went and names no pin."""
     _tree(rooted, PIN_LIB)
     restore = _step(
-        f"        with:\n          path: /tmp/elsewhere\n          key: {restore_key}\n",
+        f"        with:\n          path: {ANY_PATH}\n          key: {restore_key}\n",
         id="restore",
         uses="actions/cache/restore@v4",
     )
     save = _step(
-        f"        with:\n          path: /tmp/elsewhere\n          key: {save_key}\n",
+        f"        with:\n          path: {ANY_PATH}\n          key: {save_key}\n",
         uses="actions/cache/save@v4",
     )
     path = _write(
@@ -1936,7 +2435,7 @@ def test_a_cache_steps_outputs_read_as_its_own_key(
 ACTION_CACHE = (
     "    - uses: actions/cache@v4\n"
     "      with:\n"
-    "        path: /tmp/elsewhere\n"
+    f"        path: {ANY_PATH}\n"
     "        key: ${{ inputs.tool }}-${{ hashFiles(format('scripts/{0}.bash', inputs.tool)) }}\n"
 )
 
@@ -2195,19 +2694,25 @@ def test_a_setup_actions_cache_input_reads_the_composite_input(rooted, passed, f
             None,
         ),
         (
-            'specs=()\nfor t in "$@"; do\n  case "$t" in\n  ruff) specs+=(ruff==0.14.0) ;;\n  esac\n'
-            'done\npip install "${specs[@]}"',
+            (
+                'specs=()\nfor t in "$@"; do\n  case "$t" in\n  ruff) specs+=(ruff==0.14.0) ;;\n  esac\n'
+                'done\npip install "${specs[@]}"'
+            ),
             None,
         ),
         ('specs="ruff==0.14.0"\npip install "${specs[@]}"', None),
         (
-            'specs=(ruff==0.14.0)\nif [[ -n "$X" ]]; then specs+=(black); fi\n'
-            'pip install "${specs[@]}"',
+            (
+                'specs=(ruff==0.14.0)\nif [[ -n "$X" ]]; then specs+=(black); fi\n'
+                'pip install "${specs[@]}"'
+            ),
             None,
         ),
         (
-            'specs=(ruff==0.14.0)\nif [[ -n "$X" ]]; then specs+=(black==24.1.0); fi\n'
-            'pip install "${specs[@]}"',
+            (
+                'specs=(ruff==0.14.0)\nif [[ -n "$X" ]]; then specs+=(black==24.1.0); fi\n'
+                'pip install "${specs[@]}"'
+            ),
             "ruff==0.14.0",
         ),
         (

@@ -1259,6 +1259,11 @@ def _config(command: str, job: str = "") -> str:
             id="one shell runs a .ONESHELL recipe",
         ),
         pytest.param(
+            {"Makefile": f".ONESHELL:\ncheck:\n{TAB}! {{ false; }}\n{TAB}echo ok\n"},
+            [],
+            id="a negated group, like a negated command, loses no status",
+        ),
+        pytest.param(
             {"Makefile": ".RECIPEPREFIX := >\ncheck:\n>-false\n"},
             [("Makefile", 3, "ignored-error")],
             id="a custom recipe prefix",

@@ -201,3 +201,70 @@ def test_yaml_comments_falls_back_on_a_workflow_that_scans_but_will_not_compose(
         1: "# hi",
         2: "# y",
     }
+
+
+# ── OPENS: which code lines open a construct that continues below ──────────
+@pytest.mark.parametrize(
+    ("path", "text", "opens"),
+    [
+        ("s.sh", "if  # m\n  curl -o x url\nthen :; fi\n", {1}),
+        ("s.sh", "a &&  # m\n  b\n", {1}),
+        ("s.sh", "echo a  # m\necho b\n", set()),
+        ("s.sh", "echo a;  # m\necho b\n", set()),
+        ("m.py", "x = foo(  # m\n    1)\ny = 2  # m\nz = 3\n", {1}),
+        ("m.py", "if x:  # m\n    y()\n", {1}),
+        ("m.py", "def f():\n    y = 2  # m\n    z = 3\n", {1}),
+        ("m.py", "t = (a,  # m\n     b)\n", set()),
+        ("m.py", "s = 'caf\u00e9' + f(  # m\n    1)\n", {1}),
+        ("m.js", "const a = [x,  // m\n  y];\n", set()),
+        ("m.js", "if (z) {  // m\n  w();\n}\n", {1}),
+        ("w.yaml", "os:\n  - a  # m\n  - b\n", {1}),
+        ("w.yaml", "k:  # m\n  - b\n", {1}),
+        ("w.yaml", "k: >-  # m\n  a\n  b\n", {1}),
+        ("w.yaml", "e: {A: 1,  # m\n  B: 2}\n", set()),
+        ("w.yaml", "a: &x foo\nb: *x  # m\nc: 1\n", set()),
+        ("w.yaml", "s:\n  - &x a\n  - *x  # m\n  - b\n", {1}),
+        ("notes.md", "a\nb\n", set()),
+    ],
+)
+def test_opens_holds_each_line_whose_last_token_opens_a_construct(
+    path: str, text: str, opens: set[int]
+) -> None:
+    assert comments.comment_lines(text, path).opens == opens
+
+
+def test_python_that_does_not_parse_opens_nothing() -> None:
+    assert comments.py_comments("x = foo(  # m\n").opens == frozenset()
+
+
+def test_python_that_tokenizes_but_does_not_parse_keeps_its_exact_comments() -> None:
+    # A `#` inside a string is not a comment. The delimiter fallback, which
+    # is only for source that will not tokenize, would read it as one.
+    found = comments.py_comments("x = = 1  # m\nt = 'a # formerly z'\n")
+    assert (dict(found), found.opens) == ({1: "# m"}, frozenset())
+
+
+def test_python_opener_lines_are_computed_once_and_only_when_read(monkeypatch):
+    """Most files have no finding, so no opt-out lookup reads `opens`. Computing it
+    is a second tokenize, parse and tree walk, which tripled the comment readers'
+    cost over a large tree, so a reader defers it to the first read."""
+    calls = []
+
+    def _counted(source):
+        calls.append(source)
+        return frozenset({1})
+
+    monkeypatch.setattr(comments, "python_opening_lines", _counted)
+    found = comments.py_comments("if x:  # a note\n    y = 1\n")
+
+    assert found == {1: "# a note"}
+    assert calls == []
+    assert found.opens == frozenset({1})
+    assert found.opens == frozenset({1})
+    assert len(calls) == 1
+
+
+def test_python_that_tokenizes_but_does_not_parse_has_no_opener_lines():
+    found = comments.py_comments("x = = 1  # a note\n")
+    assert found == {1: "# a note"}
+    assert found.opens == frozenset()

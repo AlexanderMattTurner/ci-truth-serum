@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 jobs:
-  gitleaks:
-    runs-on: ubuntu-latest
+  gitleaks: # full-blobs-ok: on push, gitleaks scans the content of every commit in history
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
       GITLEAKS_VERSION: "8.30.1"
@@ -56,7 +56,7 @@ jobs:
   gitleaks-passed: # required-check: true
     if: always()
     needs: [gitleaks]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

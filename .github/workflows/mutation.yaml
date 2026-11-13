@@ -1,4 +1,5 @@
 name: Mutation testing
+run-name: Mutation testing (${{ inputs.scope }})
 
 # Mutation testing over the lint parsers (cosmic-ray, Python) and the changelog
 # assembler (Stryker, JS). cosmic-ray reruns the offline suite once per mutant,
@@ -7,31 +8,33 @@ name: Mutation testing
 # .github/scripts/mutation_shards.py). Slices run in parallel so wall-clock is
 # the slowest single module, not the serial sum, and an aggregate step demands
 # one report per shard so a vanished slice can't score a subset as the whole.
-# This runs on a DAILY schedule and on demand, never on a pull request. One
-# cosmic-ray pass reruns the offline suite once per mutant, so the cost is paid
-# once a day against main rather than on every push to every branch. The gate job
-# skips a scheduled run when main has not moved since the last passing run. A
-# mutant that survives is a prompt to add a test, and the ledger job keeps one
-# issue listing every survivor, closed again once a run finds none.
+# It runs only on demand: a full pass costs hundreds of runner-minutes, so it
+# has no schedule and no pull_request trigger. The `daily` scope skips the
+# modules cosmic-ray.toml's `[mutation] weekly-modules` lists, whose oracle is
+# too slow for a short shard; `full` mutates them too, with a longer shard
+# timeout. A mutant that survives is a prompt to add a test, and the ledger job
+# keeps one issue listing every survivor, closed again once a run finds none.
 #
 # The Python side is INCREMENTAL. Each shard caches its cosmic-ray session under
 # a key that is a content hash of the shard's own inputs, so a run recomputes a
 # mutant only when something it depends on changed and restores the rest. Each
-# daily run therefore pays for the modules the day's merges touched.
+# run therefore pays for the modules that changed since the last one.
 #
 # Gate semantics: a shard fails only when its unmutated baseline is red or
 # cosmic-ray errors — a surviving mutant is diagnostic, not a build break. The
 # mutation-passed reporter is an `if: always()` summary so a run always reaches a
 # conclusion. It is NOT a required check: this workflow has no pull_request
-# trigger, so it posts no status on a pull request. A red daily run reaches a
-# person through build-publish-notify.yaml's workflow_run notifier and the ledger.
+# trigger, so it posts no status on a pull request. A red run reaches a person
+# through build-publish-notify.yaml's workflow_run notifier and the ledger.
 
 on:
-  schedule:
-    # cron-alert: false  # alerted repo-wide by build-publish-notify.yaml's workflow_run notifier, which check-failure-notifier-coverage holds exhaustive over every push/schedule workflow — this workflow has no in-workflow sink for this lint to credit
-    - cron: "0 6 * * *" # daily 06:00 UTC
   workflow_dispatch:
     inputs:
+      scope:
+        description: daily skips the weekly modules; full mutates every module.
+        type: choice
+        options: [daily, full]
+        default: daily
       hypothesis_profile:
         description: Hypothesis profile for the property suites (dev = fast).
         type: string
@@ -50,16 +53,17 @@ permissions:
   contents: read
 
 jobs:
-  # Skip a scheduled run when main has not moved since the last passing run. Its
-  # verdicts would repeat that run's, and so would the issue it writes.
+  # Check the scope and hand it on. A scheduled run would skip a head that a passing
+  # run already judged at the same scope or wider; with no schedule, every dispatch runs.
   gate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       actions: read
     outputs:
       run: ${{ steps.gate.outputs.run }}
+      scope: ${{ steps.gate.outputs.scope }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,6 +73,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           HEAD_SHA: ${{ github.sha }}
+          SCOPE: ${{ inputs.scope }}
         run: bash .github/scripts/mutation-gate.sh
 
   # Expand the shard matrix from the committed tree (one shard per mutated hook
@@ -77,7 +82,7 @@ jobs:
   plan:
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       shards: ${{ steps.shards.outputs.shards }}
@@ -87,7 +92,10 @@ jobs:
           persist-credentials: false
       - name: Compute shard matrix
         id: shards
-        run: echo "shards=$(python3 .github/scripts/mutation_shards.py)" >> "$GITHUB_OUTPUT"
+        env:
+          SCOPE: ${{ needs.gate.outputs.scope }}
+        run: |
+          echo "shards=$(python3 .github/scripts/mutation_shards.py --scope "${SCOPE}")" >>"$GITHUB_OUTPUT"
 
   # One shard per mutated module, in parallel. Each runs cosmic-ray over its one
   # module with the per-mutant oracle scoped to that module's example suite, and
@@ -96,8 +104,8 @@ jobs:
   mutation:
     needs: plan
     if: needs.plan.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ matrix.shard.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -149,7 +157,7 @@ jobs:
   aggregate: # required-check: false  # rolled up by mutation-passed (which needs: aggregate)
     needs: [gate, plan, mutation]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       # `ran` is the only condition under which reports are owed. The gate has to
@@ -183,11 +191,13 @@ jobs:
           pattern: mutation-report-*
           path: shard-reports
 
-      # aggregate-mutation.py is stdlib-only (json + tomllib); ubuntu-latest ships
+      # aggregate-mutation.py is stdlib-only (json + tomllib); ubuntu-24.04 ships
       # Python 3.12, so no toolchain setup is needed to enforce the coverage gate.
       - name: Aggregate and enforce one report per shard
         if: steps.owed.outputs.ran == 'true'
-        run: python3 .github/scripts/aggregate-mutation.py shard-reports survivors.md
+        env:
+          SCOPE: ${{ needs.gate.outputs.scope }}
+        run: python3 .github/scripts/aggregate-mutation.py --scope "${SCOPE}" shard-reports survivors.md
 
       - name: Upload the survivors list for the ledger
         if: steps.owed.outputs.ran == 'true'
@@ -202,7 +212,7 @@ jobs:
   mutation-js:
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -234,12 +244,16 @@ jobs:
   mutation-passed: # required-check: false  # the workflow has no pull_request trigger, so no pull request can wait on it
     if: always()
     needs: [gate, plan, mutation, aggregate, mutation-js]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Fail if any required job did not pass
         if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          exit 1
 
   # Keep ONE issue in step with this run: a survivor or a red job rewrites it, a
   # clean run closes it. A gated-out run measured nothing, so it leaves the issue.
@@ -247,7 +261,7 @@ jobs:
     needs: [gate, plan, mutation, aggregate, mutation-js]
     # A gate that failed before it chose is red too, so the issue records it.
     if: always() && github.ref == 'refs/heads/main' && (needs.gate.outputs.run == 'true' || needs.gate.result == 'failure')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     concurrency:
       # GitHub claims the group when it creates the job, before it reads `if:`, so
@@ -280,6 +294,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SURVIVORS_FILE: survivors.md
           STRYKER_REPORT: mutation.json
+          MUTATION_SCOPE: ${{ needs.gate.outputs.scope }}
           RESULTS: |
             gate=${{ needs.gate.result }}
             plan=${{ needs.plan.result }}

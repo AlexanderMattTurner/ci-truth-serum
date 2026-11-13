@@ -130,6 +130,10 @@ def test_diagnostic_corpus_yields_zero_findings(src: str) -> None:
         'if ! h=$(curl -sSf -I url 2>&1); then\n  echo "$h" >&2\n  exit 1\nfi\n'
         'echo "$h" | grep -qi "^x-scopes:"\n',
         'h=$(curl -sSf -I url 2>&1) || exit 1\necho "$h" | grep -qi "^x-scopes:"\n',
+        # a group exits with its last statement's status, so its test is the
+        # capture's test, with or without a `!`
+        'if ! { h=$(curl -sSf url 2>&1); }; then exit 1; fi\necho "$h" | jq .\n',
+        'if ( h=$(curl -sSf url 2>&1) ); then :; fi\necho "$h" | jq .\n',
     ],
 )
 def test_depicted_or_guarded_idiom_yields_zero_findings(src: str) -> None:

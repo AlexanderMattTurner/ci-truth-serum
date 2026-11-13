@@ -148,12 +148,14 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _cts_py_ast import opening_lines  # noqa: E402,I001  # pylint: disable=wrong-import-position
 from _cts_comments import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     comment_lines,
     python_comments,
     text_comments,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    CommentMap,
     annotated_near,
     annotation_re,
     annotation_window,
@@ -772,7 +774,7 @@ def _is_structural_guard(
 
 def _annotated(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
-    comments: dict[int, str],
+    comments: CommentMap,
     lines: list[str],
     marker: "re.Pattern[str]",
 ) -> bool:
@@ -799,7 +801,7 @@ def _annotated(
     span = _source_span(node)
     return any(
         line in comments and marker.search(comments[line])
-        for line in annotation_window(lines, span.start, span.stop - 1)
+        for line in annotation_window(lines, span.start, span.stop - 1, comments.opens)
     )
 
 
@@ -902,7 +904,7 @@ def violations(source: str) -> list[DriftFinding]:
     justifies."""
     try:
         tree = parse_whole(source)
-        comments = python_comments(source)
+        comments = CommentMap(python_comments(source).items(), opening_lines(source))
     except (SyntaxError, ValueError, tokenize.TokenError):
         return []
 

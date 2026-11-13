@@ -29,7 +29,9 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
@@ -136,9 +138,22 @@ class AnnotationMatcher(NamedTuple):
 
     pattern: "re.Pattern[str]"
     require_reason: bool
+    token: str = ""
 
     def search(self, text: str) -> "re.Match[str] | None":
-        """The first annotation in TEXT that satisfies this token's contract."""
+        """The first annotation in TEXT that satisfies this token's contract.
+
+        Under ``audit_opt_outs`` this records the token as read for the whole
+        file: this call is not told a line, so it cannot say which one it read.
+        """
+        audit = _AUDIT.get()
+        if audit is not None:
+            audit.whole_file.add(self.token)
+        return self.first(text)
+
+    def first(self, text: str) -> "re.Match[str] | None":
+        """``search`` without the audit record. Only the pack's own helpers
+        that record a more exact answer call this."""
         for match in self.pattern.finditer(text):
             if not self.require_reason or not is_placeholder_reason(
                 match.group("reason")
@@ -180,6 +195,7 @@ def annotation_re(token: str, require_reason: bool = True) -> AnnotationMatcher:
     return AnnotationMatcher(
         re.compile(rf"{_COMMENT_INTRO}{lead}{re.escape(token)}{tail}"),
         require_reason,
+        token,
     )
 
 
@@ -214,8 +230,47 @@ def comment_block_above(lines: list[str], lineno: int) -> range:
     return range(start, lineno)
 
 
+class CommentMap(dict[int, str]):
+    """1-based line -> the comment text on it, plus where constructs OPEN.
+
+    OPENS holds each line whose trailing comment speaks for the next line too.
+    That is true when the construct that the line's last code token belongs to
+    continues onto the next line: `if` opens an `if` statement, `key:` opens
+    its value, and `>-` opens a block scalar. A separator (`;`, `&`, `,`)
+    belongs to the list it separates, so its line opens nothing.
+
+    Only a language's own parser can say this, so each comment reader that has
+    one fills OPENS. A plain dict carries none, and ``annotation_window`` then
+    reads no code line above a finding: an opt-out can be lost, never invented.
+
+    OPENS may be a function that computes the lines. It then runs once, on the
+    first read. Most files have no finding and so no opt-out lookup, and for
+    Python the computation is a second tokenize, parse and tree walk of the file.
+    """
+
+    def __init__(
+        self,
+        items: Iterable[tuple[int, str]] = (),
+        opens: "Iterable[int] | Callable[[], Iterable[int]]" = (),
+    ) -> None:
+        super().__init__(items)
+        self._opens = opens
+
+    @property
+    def opens(self) -> frozenset[int]:
+        """The opener lines, computed on the first read when OPENS was a function."""
+        if callable(self._opens):
+            self._opens = self._opens()
+        if not isinstance(self._opens, frozenset):
+            self._opens = frozenset(self._opens)
+        return self._opens
+
+
 def annotation_window(
-    lines: list[str], start: int, end: int | None = None
+    lines: list[str],
+    start: int,
+    end: int | None = None,
+    opens: "frozenset[int] | set[int]" = frozenset(),
 ) -> list[int]:
     """The 1-based lines that may carry the opt-out for a construct spanning
     START..END (1-based, inclusive; END defaults to START).
@@ -238,16 +293,68 @@ def annotation_window(
     the first line that is not a comment. A blank line therefore ends it, so an
     annotation written about something else cannot drift down onto a later
     construct.
+
+    The code line directly above counts only when it is in OPENS (see
+    ``CommentMap``). `if  # pin-exempt: …` opens the statement that holds the
+    `curl` below it, so its reason covers that `curl`. `- macos-latest  # …`
+    closes its entry, so its reason does not cover the sibling entry below.
     """
     end = start if end is None else end
     span = range(start, min(end, len(lines)) + 1)
-    # The line DIRECTLY above always counts, whether or not it is comment-only.
-    # A trailing comment on a code line is where a reason goes when the construct
-    # opens on the line before it (`if  # pin-exempt: …` above a `curl`), and
-    # `comment_block_above` stops at that line because it carries code.
-    direct = [start - 1] if start >= 2 else []
+    direct = [start - 1] if start - 1 in opens else []
     candidates = {*comment_block_above(lines, start), *direct, *span}
     return sorted(n for n in candidates if 1 <= n <= len(lines))
+
+
+class OptOutRead(NamedTuple):
+    """One opt-out that an ``annotated_near`` window found."""
+
+    line: int
+    token: str
+    text: str
+
+
+class OptOutAudit:
+    """What the checks run under ``audit_opt_outs`` read while judging one file.
+
+    READS holds each (1-based line, token, comment text) where an
+    ``annotated_near`` window found the opt-out. The line counts from the text
+    the check passed in, which is not always the file (a script the check
+    found inside a heredoc), so the reader of this record matches the comment
+    text too. SCRIPTS holds (line, token) for every line of a `run:` value that
+    held one, because there the window counts lines from the decoded value
+    (``per_run_script``). WHOLE_FILE holds each token that a read without a
+    line asked about, so every annotation of that token in the file counts as
+    read.
+    """
+
+    def __init__(self) -> None:
+        self.reads: set[OptOutRead] = set()
+        self.scripts: set[tuple[int, str]] = set()
+        self.whole_file: set[str] = set()
+
+
+_AUDIT: "ContextVar[OptOutAudit | None]" = ContextVar("opt_out_audit", default=None)
+# The 1-based lines of the `run:` value that ``per_run_script`` is judging. The
+# check reads that value as decoded text, so its line numbers count from the
+# value and not from the file. The record then credits the whole value.
+_SCRIPT_LINES: "ContextVar[range | None]" = ContextVar("script_lines", default=None)
+
+
+@contextmanager
+def audit_opt_outs() -> Iterator[OptOutAudit]:
+    """Record which opt-out annotations the checks find while they run.
+
+    Every lookup still returns its real answer, so a check takes the same path
+    as in a normal run. An opt-out that gates a second lookup therefore still
+    reaches it. ``check_stale_opt_out`` reads the record: an annotation that no
+    lookup found can change no lookup's answer, so deleting it changes nothing.
+    """
+    token = _AUDIT.set(OptOutAudit())
+    try:
+        yield _AUDIT.get()
+    finally:
+        _AUDIT.reset(token)
 
 
 def annotated_near(
@@ -275,11 +382,23 @@ def annotated_near(
     language's own grammar reports it — ``_cts_comments.comment_lines`` (or
     ``shell_comments`` / ``py_comments`` for a text with no path), and
     ``yaml_marker_comments`` for a workflow. A line it leaves out says nothing.
+    A ``CommentMap`` also says which code lines open a construct (OPENS).
+
+    Under ``audit_opt_outs`` this also records each window line that held it.
     """
-    return any(
-        annotated(comments.get(n, ""), token, require_reason)
-        for n in annotation_window(lines, lineno, span_end)
-    )
+    opens = comments.opens if isinstance(comments, CommentMap) else frozenset()
+    window = annotation_window(lines, lineno, span_end, opens)
+    matcher = annotation_re(token, require_reason)
+    audit = _AUDIT.get()
+    if audit is None:
+        return any(matcher.first(comments.get(n, "")) for n in window)
+    held = [n for n in window if matcher.first(comments.get(n, ""))]
+    script = _SCRIPT_LINES.get()
+    if held and script is None:
+        audit.reads.update(OptOutRead(n, token, comments[n].strip()) for n in held)
+    elif held:
+        audit.scripts.update((n, token) for n in script)
+    return bool(held)
 
 
 # A line that ends in a backslash, a pipe, or a boolean operator is continued on
@@ -521,7 +640,7 @@ def _refusal_message(err: BaseException) -> str:
     return str(err)
 
 
-def _unreadable_reason(path: str, text: str) -> str | None:
+def unreadable_reason(path: str, text: str) -> str | None:
     """The refusal message when PATH's TEXT cannot be parsed, else None.
 
     Every kind a refusal takes, in one place: shell the bash grammar cannot
@@ -574,7 +693,7 @@ def run_message_checks(
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
             continue
-        reason = _unreadable_reason(path, text)
+        reason = unreadable_reason(path, text)
         if reason is None:
             try:
                 found = find_violations(text, path)
@@ -606,7 +725,7 @@ def refuse_unparseable(paths: Iterable[str]) -> set[str]:
                 text = handle.read()
         except (OSError, UnicodeDecodeError):
             continue
-        reason = _unreadable_reason(path, text)
+        reason = unreadable_reason(path, text)
         if reason is not None:
             print(f"{path}: {reason}", file=sys.stderr)
             refused.add(path)
@@ -640,13 +759,17 @@ def per_run_script(
 
     def detect(text: str, path: str) -> list[tuple[int, str]]:
         if is_workflow_path(path):
-            return sorted(
-                {
-                    (scalar.line, message)
-                    for scalar in bash_run_scripts(text)
-                    for _line, message in find_violations(scalar.value, path)
-                }
-            )
+            found = set()
+            for scalar in bash_run_scripts(text):
+                first = text.count("\n", 0, scalar.start) + 1
+                last = _last_content_line(text, scalar.end)
+                judging = _SCRIPT_LINES.set(range(first, last + 1))
+                try:
+                    hits = find_violations(scalar.value, path)
+                finally:
+                    _SCRIPT_LINES.reset(judging)
+                found.update((scalar.line, message) for _line, message in hits)
+            return sorted(found)
         if is_yaml_source(path):
             return []
         return find_violations(text, path)
@@ -2907,7 +3030,7 @@ def _yaml_script_text(text: str, scripts: "list[RunScalar] | None" = None) -> st
 
 def yaml_marker_comments(
     text: str, scripts: "list[RunScalar] | None" = None
-) -> dict[int, str]:
+) -> CommentMap:
     """1-based line -> the marker surface on that line of a workflow TEXT.
 
     ``yaml_script_view`` as the mapping ``annotated_near`` reads, numbered by
@@ -2917,13 +3040,130 @@ def yaml_marker_comments(
     SCRIPTS names the `run:` values whose comments count, and defaults to the
     bash steps. A check that reports findings in some other set of scripts
     passes that same list, so every step it can flag is a step that can carry
-    its opt-out.
+    its opt-out. OPENS comes from ``yaml_opening_lines``, plus each bash
+    script's own ``opening_lines`` at its offset in TEXT.
     """
-    return {
-        n: line
-        for n, line in enumerate(_yaml_script_text(text, scripts).split("\n"), 1)
-        if line.strip()
-    }
+    if scripts is None:
+        try:
+            scripts = bash_run_scripts(text)
+        except yaml.YAMLError:
+            scripts = []
+    return CommentMap(
+        (
+            (n, line)
+            for n, line in enumerate(_yaml_script_text(text, scripts).split("\n"), 1)
+            if line.strip()
+        ),
+        workflow_opening_lines(text, scripts),
+    )
+
+
+def workflow_opening_lines(text: str, scripts: "list[RunScalar]") -> frozenset[int]:
+    """``yaml_opening_lines`` of TEXT, plus the bash ``opening_lines`` of each
+    script in SCRIPTS at its own line offset in TEXT.
+
+    A workflow holds two languages, and a line of a `run:` value opens a
+    construct only as the bash grammar reads it.
+    """
+    # Imported here for the reason `unparseable_shell_reason` gives: most
+    # checks that load this module never read a workflow script.
+    from _cts_bash_ast import (  # pylint: disable=import-outside-toplevel
+        opening_lines,
+        parse,
+    )
+
+    opens = set(yaml_opening_lines(text))
+    for scalar in scripts:
+        offset = text.count("\n", 0, scalar.start)
+        opens |= {
+            offset + n for n in opening_lines(parse(yaml_run_script(text, scalar)))
+        }
+    return frozenset(opens)
+
+
+# The YAML tokens that hold no source text: the scanner emits them at the
+# position of a neighbouring token, so none is ever the last token of a line.
+_SYNTHETIC_YAML_TOKENS = (
+    yaml.StreamStartToken,
+    yaml.StreamEndToken,
+    yaml.BlockMappingStartToken,
+    yaml.BlockSequenceStartToken,
+    yaml.BlockEndToken,
+    yaml.KeyToken,
+)
+
+
+def _last_content_line(text: str, end: int) -> int:
+    """The 1-based line of the last non-blank character before offset END.
+
+    A block node's end mark often sits at the start of the next line, which
+    no content of the node reaches.
+    """
+    index = end - 1
+    while index >= 0 and text[index] in " \t\r\n":
+        index -= 1
+    return text.count("\n", 0, max(index, 0)) + 1
+
+
+def yaml_opening_lines(text: str) -> frozenset[int]:
+    """The 1-based lines of TEXT whose last token opens a construct that
+    continues onto the next line (see ``CommentMap``).
+
+    The construct a token belongs to is the smallest node, or key-value pair,
+    whose span holds it. `key:` ends in the pair's `:`, whose value may start
+    below. `- macos-latest` ends in a scalar that ends on its own line. A `,`
+    in a flow collection separates siblings. An alias (`*x`) ends where it is
+    written: its node's marks point at the anchor, so no span here holds it. A text PyYAML cannot read opens
+    nothing, so the window stays narrow.
+    """
+    try:
+        root = compose(text)
+        tokens = [t for t in scan(text) if not isinstance(t, _SYNTHETIC_YAML_TOKENS)]
+    except yaml.YAMLError:
+        return frozenset()
+    spans: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    stack = [root] if root is not None else []
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        spans.append((node.start_mark.index, node.end_mark.index))
+        if isinstance(node, yaml.SequenceNode):
+            stack.extend(node.value)
+        elif isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                spans.append(
+                    (
+                        key.start_mark.index,
+                        max(key.end_mark.index, value.end_mark.index),
+                    )
+                )
+                stack.extend((key, value))
+    last: dict[int, yaml.Token] = {}
+    for token in tokens:
+        last[token.start_mark.line + 1] = token
+    # One sweep in source order. ACTIVE holds the spans that start at or
+    # before the token; a span that ended before it drops out. The spans nest,
+    # so ACTIVE is as deep as the tree, never as long as the file.
+    spans.sort()
+    active: list[tuple[int, int]] = []
+    following = iter(spans)
+    upcoming = next(following, None)
+    opens: set[int] = set()
+    for line, token in sorted(last.items(), key=lambda item: item[1].start_mark.index):
+        at = token.start_mark.index
+        while upcoming is not None and upcoming[0] <= at:
+            active.append(upcoming)
+            upcoming = next(following, None)
+        active = [span for span in active if span[1] > at]
+        if isinstance(token, (yaml.FlowEntryToken, yaml.AliasToken)) or not active:
+            continue
+        smallest = min(active, key=lambda span: span[1] - span[0])
+        if _last_content_line(text, smallest[1]) > line:
+            opens.add(line)
+    return frozenset(opens)
 
 
 def default_run_shell(*scopes: object) -> str | None:
@@ -3195,6 +3435,66 @@ def _job_names(key: str, cfg: dict) -> list[str]:
     return expand_name(
         str(cfg.get("name", key)), matrix if isinstance(matrix, dict) else {}
     )
+
+
+# `check-success=<name>` and its `-or-neutral`, `==` and `:` spellings.
+_MERGIFY_CHECK = re.compile(
+    r"^check-success(?:-or-neutral)?\s*(?:==|=|:)\s*(?:@github-actions/)?(?P<name>\S.*?)\s*$"
+)
+
+
+def _condition_checks(node: object) -> Iterator[str]:
+    """Every check name a `check-success` leaf under NODE names, through and/or."""
+    if isinstance(node, str):
+        if found := _MERGIFY_CHECK.match(node.strip()):
+            yield found["name"]
+    elif isinstance(node, list):
+        for child in node:
+            yield from _condition_checks(child)
+    elif isinstance(node, dict):
+        for key in ("and", "or"):
+            yield from _condition_checks(node.get(key))
+
+
+def mergify_check_names(root: Path) -> frozenset[str]:
+    """Every check name a `.mergify.yml` queue rule names in its queue or merge
+    conditions. An over-approximation: any such name counts as gating, whatever
+    `or:` or `base=` surrounds it. A missing or unreadable config names none."""
+    try:
+        config = safe_load((root / ".mergify.yml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return frozenset()
+    rules = config.get("queue_rules") if isinstance(config, dict) else None
+    return frozenset(
+        name
+        for rule in (rules if isinstance(rules, list) else [])
+        if isinstance(rule, dict)
+        for key in ("queue_conditions", "merge_conditions")
+        for name in _condition_checks(rule.get(key))
+    )
+
+
+def gating_jobs(
+    blocks: dict[str, tuple[int, str]], jobs: dict, names: Iterable[str] = ()
+) -> list[str]:
+    """The keys of JOBS that carry a `# required-check: true` marker, or whose
+    check name (over its matrix) is one of NAMES, a Mergify config's gates.
+
+    Each name also matches its `<caller>` half of `<caller> / <callee>` and its
+    stem before GitHub's default ` (<matrix values>)` suffix, so a reusable
+    workflow's caller and an unnamed matrix job still count as gating."""
+    marked = set(_marked_jobs(blocks, jobs))
+    wanted = {
+        form
+        for name in names
+        for form in (name, name.split(" / ")[0], name.split(" (")[0])
+    }
+    return [
+        key
+        for key, cfg in jobs.items()
+        if isinstance(cfg, dict)
+        and (key in marked or wanted.intersection(_job_names(str(key), cfg)))
+    ]
 
 
 def _called_contexts(

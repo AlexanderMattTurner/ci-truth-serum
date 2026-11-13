@@ -1,0 +1,17 @@
+name: mute-failure-guard
+description: >-
+  Record every failed bash command in a ledger, and at job end print it for a failed job. A failed
+  step that printed no error text gets its own "mute failure" error.
+inputs:
+  error-words:
+    description: >-
+      Extra words, separated by commas, that mark a line as error text. The built-in list covers
+      error, fail, fatal, refused, denied, cannot, could not, not found, no such, traceback,
+      exception, panic, abort, killed and timed out.
+    required: false
+    default: ""
+runs:
+  using: node24
+  main: main.mjs
+  post: post.mjs
+  post-if: failure() || cancelled()

@@ -55,7 +55,7 @@ jobs:
       contains(fromJSON('["failure","timed_out","startup_failure","action_required"]'),
       github.event.workflow_run.conclusion) &&
       github.event.workflow_run.event != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       # workflow_run workflows always execute from the default branch, so this

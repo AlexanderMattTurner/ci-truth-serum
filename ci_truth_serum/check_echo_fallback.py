@@ -61,6 +61,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+    code_children,
     command_name,
     iter_nodes,
     node_text,
@@ -116,7 +117,8 @@ def _fallbacks(root):
     A chain (`a || b || echo x`) nests one `list` per operator, so the node
     yielded is the innermost one whose own right operand is the printer."""
     for node in iter_nodes(root, "list"):
-        for operator, right in zip(node.children, node.children[1:], strict=False):
+        children = code_children(node)
+        for operator, right in zip(children, children[1:], strict=False):
             if (
                 operator.type == "||"
                 and right.type == "command"

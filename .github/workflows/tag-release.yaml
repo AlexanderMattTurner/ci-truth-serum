@@ -21,7 +21,7 @@ permissions:
 jobs:
   tag:
     name: Tag the merged release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout

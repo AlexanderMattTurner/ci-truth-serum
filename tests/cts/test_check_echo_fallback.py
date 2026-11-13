@@ -223,3 +223,17 @@ def test_abort_on_a_later_line_does_not_excuse_the_fallback() -> None:
     """The abort must belong to the fallback's own statement or line — a bare
     `exit` further down the file recovers nothing at the failure site."""
     assert mod.violations('cmd || echo "x"\nexit 1\n') == [1]
+
+
+def test_a_comment_inside_the_or_chain_hides_no_fallback() -> None:
+    """A comment line between `||` and the next operand is a child of the `list`
+    node. Paired with the operator, it read as the operand and the fallback went
+    unseen. The shape is agent-glovebox's `app_watch_summary.sh` probe."""
+    src = (
+        'awk 1 "$1" 2>/dev/null ||\n'
+        "  # a guest with no awk still gets a report\n"
+        '  tail -n 40 "$1" 2>/dev/null ||\n'
+        "  # the line is the diagnostic\n"
+        '  echo "(neither awk nor tail could read $1)"\n'
+    )
+    assert mod.violations(src) == [1]

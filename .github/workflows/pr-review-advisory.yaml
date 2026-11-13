@@ -33,7 +33,7 @@ concurrency:
 jobs:
   compute:
     name: Review-advisory diff data (compute)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -42,6 +42,8 @@ jobs:
         with:
           # Need both base and head commits present to diff BASE...HEAD.
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
           persist-credentials: false
       - name: Extract the diff data
         env:

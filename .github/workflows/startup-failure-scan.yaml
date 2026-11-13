@@ -21,7 +21,7 @@ name: Startup failure scan
 
 on:
   schedule:
-    - cron: "0 7 * * 1" # Mondays 07:00 UTC, one hour after the mutation run
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC
   workflow_dispatch:
 
 concurrency:
@@ -36,7 +36,7 @@ permissions:
 jobs:
   scan:
     name: Scan for runs that started no job
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read

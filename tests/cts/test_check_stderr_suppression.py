@@ -109,6 +109,11 @@ def test_clean_lines_do_not_fire(text: str) -> None:
         ("launch behind an absolute path", "/usr/bin/docker build . 2>/dev/null", [1]),
         # A group's redirect suppresses every command inside it.
         ("suppressed by a group redirect", "{ docker build . ; } >/dev/null 2>&1", [1]),
+        (
+            "launch inside a negated group",
+            "if ! { docker build . >/dev/null 2>&1; }; then exit 1; fi",
+            [1],
+        ),
         # The verb may come from the array itself, not only from the call site.
         (
             "verb inside the launcher array",

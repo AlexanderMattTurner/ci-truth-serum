@@ -577,3 +577,9 @@ def test_main_producer_only_flag(
     out = capsys.readouterr().err
     assert f"{bad}:1:" in out
     assert f"{bad}:2:" not in out
+
+
+def test_a_comment_inside_the_or_chain_hides_no_suppressor() -> None:
+    """A comment line between `||` and `true` is a child of the `list` node, so
+    counted as an operand it hid the suppressor behind it."""
+    assert mod.violations("#!/bin/bash\nmake ||\n  # why\n  true\n") == [2]

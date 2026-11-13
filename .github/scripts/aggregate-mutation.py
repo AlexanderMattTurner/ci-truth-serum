@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _repo_root import find_repo_root  # noqa: E402
-from mutation_shards import expand_shards  # noqa: E402
+from mutation_shards import FULL, SCOPES, expand_shards  # noqa: E402
 
 
 def _load_reports(reports_dir: Path) -> list[dict]:
@@ -39,10 +39,10 @@ def _load_reports(reports_dir: Path) -> list[dict]:
     ]
 
 
-def aggregate(repo_root: Path, reports: list[dict]) -> list[str]:
+def aggregate(repo_root: Path, reports: list[dict], scope: str = FULL) -> list[str]:
     """Return the diagnostic summary lines, or raise if the report set does not
-    match the shard set exactly (one report per shard, ids identical)."""
-    expected = {s["id"] for s in expand_shards(repo_root)}
+    match SCOPE's shard set exactly (one report per shard, ids identical)."""
+    expected = {s["id"] for s in expand_shards(repo_root, scope)}
     found = [r["id"] for r in reports]
     found_set = set(found)
 
@@ -83,15 +83,22 @@ def survivors_markdown(reports: list[dict]) -> str:
 
 
 def main(argv: list[str]) -> None:
+    scope = FULL
+    if argv[:1] == ["--scope"]:
+        if len(argv) < 2 or argv[1] not in SCOPES:
+            raise SystemExit(f"--scope takes one of {SCOPES}")
+        scope, argv = argv[1], argv[2:]
     if len(argv) not in (1, 2):
-        raise SystemExit("usage: aggregate-mutation.py <reports-dir> [<survivors-out>]")
+        raise SystemExit(
+            "usage: aggregate-mutation.py [--scope daily|full] <reports-dir> [<survivors-out>]"
+        )
     repo_root = find_repo_root(Path(__file__).resolve().parent)
     reports_dir = Path(argv[0])
     if not reports_dir.is_dir():
         raise SystemExit(f"reports dir {reports_dir} does not exist")
 
     reports = _load_reports(reports_dir)
-    lines = aggregate(repo_root, reports)
+    lines = aggregate(repo_root, reports, scope)
     if len(argv) == 2:
         Path(argv[1]).write_text(survivors_markdown(reports), encoding="utf-8")
     summary = "\n".join(lines)

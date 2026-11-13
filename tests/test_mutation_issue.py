@@ -301,3 +301,56 @@ def test_main_opens_the_issue_for_stryker_survivors_alone(
     monkeypatch.setenv("RESULTS", "mutation-js=success\n")
     mi.main()
     assert [c[:2] for c in calls if c[:2] != ("issue", "list")] == [("issue", "create")]
+
+
+_WEEKLY_BODY = (
+    "intro\n\n## Surviving mutants\n\n"
+    "### `check_a` (survival rate 0.1)\n\n- `ci_truth_serum/check_a.py:1:1` `X`\n\n"
+    "### `trace_ci-3` (survival rate 0.2)\n\n- `ci_truth_serum/trace_ci.py:9:1` `Y`\n"
+)
+
+
+def test_carried_sections_keep_only_the_weekly_modules_shards() -> None:
+    assert mi.carried_sections(_WEEKLY_BODY, {"trace_ci"}) == (
+        "### `trace_ci-3` (survival rate 0.2)\n\n- `ci_truth_serum/trace_ci.py:9:1` `Y`"
+    )
+    assert mi.carried_sections(_WEEKLY_BODY, set()) == ""
+
+
+@pytest.mark.parametrize(
+    ("scope", "writes"),
+    [
+        ("daily", [("issue", "edit", "4")]),
+        ("full", [("issue", "edit", "4"), ("issue", "close", "4")]),
+    ],
+)
+def test_a_clean_daily_run_keeps_the_weekly_survivors_it_did_not_measure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, scope, writes
+) -> None:
+    """A daily run skips the weekly modules, so it cannot prove them clean: it
+    carries their survivors forward and leaves the issue open. A full run that
+    finds nothing closes it."""
+    calls = _stub_gh(monkeypatch, tmp_path, "", (4, 9), None)
+    found = {"open": (4, mi.STAMP.format(9) + _WEEKLY_BODY), "closed": None}
+
+    def fake_gh(*args: str) -> str:
+        calls.append(args)
+        if args[:2] != ("issue", "list"):
+            return ""
+        issue = found[args[args.index("--state") + 1]]
+        if issue is None:
+            return "[]"
+        return json.dumps([{"number": issue[0], "body": issue[1]}])
+
+    monkeypatch.setattr(mi, "_gh", fake_gh)
+    monkeypatch.setattr(
+        mi, "weekly_modules", lambda root: {"ci_truth_serum/trace_ci.py"}
+    )
+    monkeypatch.setenv("RESULTS", "mutation=success\n")
+    monkeypatch.setenv("MUTATION_SCOPE", scope)
+    mi.main()
+    assert [c[:3] for c in calls if c[:2] != ("issue", "list")] == writes
+    if scope == "daily":
+        (edit,) = [c for c in calls if c[:2] == ("issue", "edit")]
+        assert "`trace_ci-3`" in edit[4]
+        assert "`check_a`" not in edit[4]
