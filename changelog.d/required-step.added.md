@@ -1,0 +1,1 @@
+- `check-required-step` (Tier 2): a script that works only after an earlier step declares that step with `# requires-step: <uses value>`. The check follows each `run:` step into the scripts it runs, and refuses a job that has no earlier step with that `uses:` value. Without the check, a job that runs only on a schedule or after a merge finds the gap on the default branch.

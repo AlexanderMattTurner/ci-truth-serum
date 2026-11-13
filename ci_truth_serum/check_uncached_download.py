@@ -2623,6 +2623,43 @@ def _directory(value: object) -> str | None:
     return value.removeprefix("./")
 
 
+def job_steps(doc: dict, job: object, anchor: int, path: Path) -> list[FlatStep]:
+    """Every step that JOB in the workflow DOC at PATH really runs, through
+    each local composite action. ANCHOR is the line of the job's key."""
+    steps = _steps(job)
+    env = {**env_of(doc), **env_of(job)} if isinstance(job, dict) else env_of(doc)
+    return flatten(
+        steps, anchor, "", frozenset({path}), Context(tuple(steps), None, env)
+    )
+
+
+class StepRun(NamedTuple):
+    """Where a step's `run:` body runs: the composite action directory it
+    comes from, its directory relative to the repo root (None when the text
+    does not fix it), and the names its environment sets to a value."""
+
+    action_dir: str | None
+    directory: str | None
+    environment: frozenset[str]
+
+
+def step_run(flat: FlatStep, doc: dict, job: dict) -> StepRun:
+    """The StepRun of FLAT, a step of JOB in the workflow DOC. The job's
+    `defaults.run` directory reaches only the workflow's own steps."""
+    step, origin = flat.step, flat.origin
+    default = "" if origin else _default_directory(doc, job)
+    directory = _directory(step.get("working-directory", default))
+    # A name set to the empty string reads as unset to `${X:-default}`.
+    environment = frozenset(
+        name
+        for name, value in {**flat.context.env, **env_of(step)}.items()
+        if value not in ("", None)
+    )
+    return StepRun(
+        origin.removeprefix("./") if origin else None, directory, environment
+    )
+
+
 def _check_parsed(path: Path) -> list[tuple[int, str]]:
     doc = _load(path)
     jobs = doc.get("jobs") if doc else None
@@ -2631,12 +2668,10 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
     blocks = _job_blocks(path.read_text(encoding="utf-8"))
     violations: list[tuple[int, str]] = []
     for name, job in jobs.items():
-        steps = _steps(job)
-        if not steps:
-            continue  # a `uses:` job runs another workflow's steps, not its own
         key_line, block = blocks.get(str(name), (1, ""))
-        context = Context(tuple(steps), None, {**env_of(doc), **env_of(job)})
-        flat = flatten(steps, key_line, "", frozenset({path}), context)
+        flat = job_steps(doc, job, key_line, path)
+        if not flat:
+            continue  # a `uses:` job runs another workflow's steps, not its own
         # The job-scoped marker reads the surfaces a `#` may open a comment on:
         # a real YAML comment, and a `run:` value. A `#` inside any other scalar
         # is content. The step-scoped read below keeps the raw script, because
@@ -2651,30 +2686,20 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
             for index, f in enumerate(flat)
             if (scope := cache_scope(f.step, f.context)) is not None
         ]
-        default_directory = _default_directory(doc, job)
-        for index, (step, line, origin, step_context) in enumerate(flat):
+        for index, flat_step in enumerate(flat):
+            step, line, origin = flat_step.step, flat_step.line, flat_step.origin
             script = step.get("run")
             if not isinstance(script, str):
                 continue
             if any(annotated(text, OPT_OUT) for text in script.splitlines()):
                 continue
-            action_dir = origin.removeprefix("./") if origin else None
-            # `defaults.run` reaches only the workflow's own steps.
-            directory = _directory(
-                step.get("working-directory", "" if origin else default_directory)
-            )
+            run = step_run(flat_step, doc, job)
             holder = _relative(_action_path(origin) if origin else REPO_ROOT / path)
-            # A name set to the empty string reads as unset to `${X:-default}`.
-            environment = frozenset(
-                name
-                for name, value in {**step_context.env, **env_of(step)}.items()
-                if value not in ("", None)
-            )
             earlier = [scope for at, scope in scopes if at < index]
             uncovered = [
                 fetch
                 for fetch in _script_fetches(
-                    script, holder, action_dir, directory, environment
+                    script, holder, run.action_dir, run.directory, run.environment
                 )
                 if not any(_covers(scope, fetch) for scope in earlier)
             ]
