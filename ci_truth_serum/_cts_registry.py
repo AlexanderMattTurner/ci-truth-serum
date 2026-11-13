@@ -179,6 +179,7 @@ CHECKS: tuple[Check, ...] = (
     _check("check_job_timeout", "2", WORKFLOW, COST),
     _check("check_uncached_download", "2", WORKFLOW, COST),
     _check("check_full_history_blobs", "2", WORKFLOW, COST),
+    _check("check_required_step", "2", WORKFLOW, CORRECTNESS),
     _check("check_always_reporter", "2", WORKFLOW, REQUIRED_CHECKS),
     _check("check_required_reporter", "2", WORKFLOW, REQUIRED_CHECKS),
     _check("check_required_event_closure", "2", WORKFLOW, REQUIRED_CHECKS),
