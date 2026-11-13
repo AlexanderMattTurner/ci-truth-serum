@@ -362,8 +362,8 @@ _BRACE_DESCRIPTOR = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 def _argument_descriptor(redirect: Node) -> "str | None":
     """The descriptor the grammar hands to the command as its last argument.
 
-    Two forms parse that way, ending where the redirect starts: `{name}>…`, a
-    word, and the `0` of `0>…`, a `number`. Bash allows no space there, so
+    Two forms parse that way: `{name}>…`, a word, and the `0` of `0>…`, a
+    `number`. Each one ends where the redirect starts. Bash allows no space there, so
     `cmd 0 >f` passes `0` as an argument and redirects stdout."""
     before = redirect.prev_sibling
     if before is not None and before.type == "command" and before.children:

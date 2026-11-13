@@ -1,8 +1,8 @@
 """Tests for ci_truth_serum/check_redirect_order.py — the lint that refuses an
 input redirect written before the stderr redirect that should silence it.
 
-The first test runs real bash on the refused order, so the defect is observed,
-not assumed. The two probes every shell lint must survive — the idiom inside a
+The first test runs real bash on the refused order, so the test observes the
+defect and does not assume it. The two probes every shell lint must survive — the idiom inside a
 printed message, and inside a heredoc body — have their own cases.
 """
 
@@ -45,6 +45,8 @@ _SAFE = (
     "cmd <f >/dev/null",
     "cmd 0 >f 2>/dev/null",
     'cmd <"$path" 2>"$log"',
+    "cmd < <(gen) 2>/dev/null",
+    "done < <(gen) 2>/dev/null",
 )
 
 
@@ -81,10 +83,19 @@ def test_each_safe_order_passes(line: str) -> None:
         (_body('x="$(tr -d " " <"$f" 2>/dev/null | head -1)"'), [1]),
         (_body('a <"$f" 2>/dev/null; b 2>/dev/null <"$g"'), [1]),
         (_body("cat <<EOF 2>/dev/null", "text <f 2>/dev/null", "EOF"), []),
+        (_body("cat <f <<EOF 2>/dev/null", "x", "EOF"), [1]),
         (_body('gb_warn "write cmd <f 2>/dev/null"'), []),
         (_body("cat <<'EOF' >doc.txt", "cmd <f 2>/dev/null", "EOF"), []),
     ],
-    ids=["loop", "substitution", "two-commands", "heredoc", "message", "doc-heredoc"],
+    ids=[
+        "loop",
+        "substitution",
+        "two-commands",
+        "heredoc",
+        "heredoc-and-input",
+        "message",
+        "doc-heredoc",
+    ],
 )
 def test_the_redirect_list_is_one_command(body: str, expected: list[int]) -> None:
     assert mod.violations(body) == expected

@@ -11,9 +11,10 @@ Measured: a merge-queue build failed when a `/proc` entry vanished before a read
   * A VIOLATION is an input redirect written before one of `SILENCERS` in the
     redirect list of one command or one compound command (`done <f 2>/dev/null`).
 
-A heredoc or a here-string opens no path. The decision reads the bash grammar, so
-a redirect in a printed string or in a heredoc body is text. Opt out with
-`# allow-redirect-order: <reason>` on the line or the line above.
+A heredoc, a here-string or a process substitution has no open that can fail, and
+`< <(gen) 2>/dev/null` swapped would also hide the errors of `gen`. A redirect in
+a printed string or a heredoc body is text, because the check reads the grammar.
+Opt out with `# allow-redirect-order: <reason>` on the line or the line above.
 """
 
 import sys
@@ -41,7 +42,7 @@ OPT_OUT = "allow-redirect-order"
 
 MESSAGE = (
     "an input redirect comes before the stderr redirect, so a failed open prints "
-    "its error before stderr is silenced (bash applies redirects left to right). "
+    "its error before `2>/dev/null` takes effect (bash applies redirects left to right). "
     "Write the stderr redirect first (`cmd 2>/dev/null <f`), or group the command "
     f"(`{{ cmd <f; }} 2>/dev/null`), or annotate `# {OPT_OUT}: <reason>`."
 )
@@ -56,8 +57,11 @@ SILENCERS = frozenset(
 )
 
 
-def is_input(redirect: RedirectParts) -> bool:
-    """Whether REDIRECT opens something to read, so that its failure prints."""
+def is_input(node: Node, redirect: RedirectParts) -> bool:
+    """Whether the redirect NODE, read as REDIRECT, opens a path whose failure prints."""
+    destination = node.child_by_field_name("destination")
+    if destination is not None and destination.type == "process_substitution":
+        return False
     if redirect.destination in ("", _NULL):
         return False
     if redirect.operator == "<&" and redirect.destination == "2":
@@ -101,7 +105,9 @@ def violations(text: str) -> list[int]:
     for nodes in _redirect_lists(parse(text)):
         ordered = sorted(nodes, key=lambda n: n.start_byte)
         parts = [redirect_parts(n) for n in ordered]
-        first = next((i for i, p in enumerate(parts) if is_input(p)), None)
+        first = next(
+            (i for i, (n, p) in enumerate(zip(ordered, parts)) if is_input(n, p)), None
+        )
         if first is None:
             continue
         if any(tuple(p) in SILENCERS for p in parts[first + 1 :]):
