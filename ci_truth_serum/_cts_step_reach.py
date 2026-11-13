@@ -125,9 +125,6 @@ _MAX_CALL_DEPTH = 32
 # The words that run the builtin they name: `command cd sub` moves the shell.
 _BUILTIN_RUNNERS = frozenset({"command", "builtin"})
 
-# The words that expand to every argument of a function, as `tokens` spells them.
-_ALL_ARGUMENTS = frozenset({"$@", "${@}"})
-
 
 class Unit(NamedTuple):
     """One parsed shell text: a followed file, or a `run:` body (PATH None).
@@ -483,26 +480,6 @@ class Namespace:
         the default of `${NAME:-default}` may not be its value."""
         return name in self.assignments or name in self.environment
 
-    def forwards(self, name: str, calling: frozenset[str] = frozenset()) -> bool:
-        """True when the function NAME runs its arguments as a command. Its
-        body runs `"$@"` as a command, behind any wrapper, or hands `"$@"` to
-        a function that does. CALLING ends a cycle of calls."""
-        if name in calling:
-            return False
-        for command, _ in self.function_commands(name):
-            words = tokens(command)
-            launched = _launched(words)
-            if launched and launched[0] in _ALL_ARGUMENTS:
-                return True
-            if (
-                words
-                and words[0] in self.functions
-                and _ALL_ARGUMENTS & set(words[1:])
-                and self.forwards(words[0], calling | {name})
-            ):
-                return True
-        return False
-
     @functools.cached_property
     def launches(self) -> tuple["Launch", ...]:
         """Each executed command that hands a repo file to Python or to a
@@ -514,9 +491,6 @@ class Namespace:
             # Asked of every command, in walk order: an answer `directory_at`
             # caches can decide a later one, so the order is part of the result.
             here = self.directory_at(command, owner)
-            # `retry bash x.sh` runs x.sh when `retry` runs its arguments.
-            if words and words[0] is not None and self.forwards(words[0]):
-                words = words[1:]
             py = self.file_in(_python_target(words), here)
             target = self.file_in(_shell_target(words), here)
             if py is not None and py.suffix != ".py":

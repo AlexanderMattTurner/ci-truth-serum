@@ -1,1 +1,0 @@
-- `check-uncached-download` now follows a script that a shell function runs for its caller. Before, `retry bash install.sh` hid `install.sh` when `retry` was a function that runs `"$@"`, so the check did not read the downloads in that script.

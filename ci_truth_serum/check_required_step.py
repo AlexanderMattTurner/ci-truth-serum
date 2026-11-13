@@ -1,26 +1,19 @@
 #!/usr/bin/env python3
 """Refuse a job that runs a script before the step that the script declares it needs.
 
-Some scripts work only after an earlier step in the same job. One example is an
-install script that refuses to run unless a cache restore ran first and left a
-record. Such a script refuses at run time, but only in a job that runs. A job
-that runs only on a schedule or after a merge then fails on the default
-branch, after review. This check reads every job before the merge.
+Some scripts work only after an earlier step in the same job, such as an
+installer that refuses to run until a cache restore leaves a record. A job that
+runs only on a schedule or after a merge finds that gap on the default branch.
 
 A script declares the step it needs with a comment that names a `uses:` value:
 
     # requires-step: ./.github/actions/cache-pip-tools
 
-The check follows each `run:` step into the repository scripts that
-`_cts_step_reach` resolves, and into local composite actions. The walk reads
-the step's working directory and environment. When a reached shell script
-carries the comment, an earlier step in the same job must use exactly that
-value. A trailing `/` on either value is ignored. A remote action counts only
-when the job pins the same ref that the comment names.
-
-The comment is the opt-in, so the check has no opt-out marker. The check does
-not read the comment in a Python file that a step hands an interpreter, and it
-ignores `if:` conditions.
+The check follows each `run:` step, in its working directory, into the shell
+scripts that `_cts_step_reach` resolves, and into local composite actions. An
+earlier step in the same job must use the declared value. A trailing `/` on
+either value is ignored. The comment is the opt-in, so there is no opt-out
+marker. The check ignores `if:` conditions and Python files.
 
 Globs every workflow; the passed file list is ignored.
 """

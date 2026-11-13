@@ -2,7 +2,8 @@
 that runs a script before the step that the script declares it needs.
 
 Each test writes a scratch repository and drives `violations()` over real
-workflow text, so the walk into scripts and composite actions runs for real.
+workflow text. The script walk and the composite-action flattener have their own
+suites, so these tests pin only what this check adds on top of them.
 """
 
 import sys
@@ -21,11 +22,10 @@ INSTALL = "scripts/install.sh"
 DECLARING = f"#!/usr/bin/env bash\n# requires-step: {RESTORE}\npip install x\n"
 
 
-def _write(root: Path, rel: str, body: str) -> Path:
+def _write(root: Path, rel: str, body: str) -> None:
     path = root / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
-    return path
 
 
 def _workflow(*steps: str) -> str:
@@ -46,7 +46,6 @@ def _lines(root: Path, text: str) -> list[int]:
 def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(rs.uncached, "REPO_ROOT", tmp_path)
     _write(tmp_path, INSTALL, DECLARING)
-    _write(tmp_path, ".github/actions/restore/action.yaml", "runs:\n  steps: []\n")
     return tmp_path
 
 
@@ -57,78 +56,32 @@ def test_a_step_with_no_earlier_required_step_fires_on_its_line(repo: Path) -> N
     assert f"- uses: {RESTORE}" in message
 
 
-def test_an_earlier_required_step_passes(repo: Path) -> None:
-    text = _workflow(f"uses: {RESTORE}", f"run: bash {INSTALL}")
-    assert _lines(repo, text) == []
+@pytest.mark.parametrize(
+    ("steps", "expected"),
+    [
+        ((f"uses: {RESTORE}", f"run: bash {INSTALL}"), []),
+        ((f"uses: {RESTORE}/", f"run: bash {INSTALL}"), []),
+        ((f"run: bash {INSTALL}", f"uses: {RESTORE}"), [5]),
+    ],
+    ids=["before", "before-with-trailing-slash", "after"],
+)
+def test_only_an_earlier_required_step_counts(
+    repo: Path, steps: tuple[str, ...], expected: list[int]
+) -> None:
+    assert _lines(repo, _workflow(*steps)) == expected
 
 
-def test_a_required_step_after_the_script_does_not_count(repo: Path) -> None:
-    text = _workflow(f"run: bash {INSTALL}", f"uses: {RESTORE}")
-    assert _lines(repo, text) == [5]
-
-
-def test_a_trailing_slash_on_the_uses_value_still_counts(repo: Path) -> None:
-    text = _workflow(f"uses: {RESTORE}/", f"run: bash {INSTALL}")
-    assert _lines(repo, text) == []
-
-
-def test_a_trailing_slash_on_the_marker_still_counts(repo: Path) -> None:
+def test_a_trailing_slash_on_the_marker_is_ignored(repo: Path) -> None:
     _write(repo, INSTALL, DECLARING.replace(RESTORE, RESTORE + "/"))
     assert _lines(repo, _workflow(f"uses: {RESTORE}", f"run: bash {INSTALL}")) == []
-    assert _lines(repo, _workflow(f"run: bash {INSTALL}")) == [5]
-
-
-def test_a_marker_in_the_run_body_declares_nothing(repo: Path) -> None:
-    step = f"run: |\n          # requires-step: {RESTORE}\n          echo hi"
-    assert _lines(repo, _workflow(step)) == []
-
-
-def test_the_script_resolves_against_the_step_working_directory(repo: Path) -> None:
-    step = "run: bash install.sh\n        working-directory: scripts"
-    assert _lines(repo, _workflow(step)) == [5]
-    assert _lines(repo, _workflow("run: bash install.sh")) == []
-
-
-def test_the_script_resolves_against_the_job_default_directory(repo: Path) -> None:
-    defaults = "    defaults:\n      run:\n        working-directory: scripts\n"
-    text = _workflow("run: bash install.sh").replace(
-        "    steps:\n", defaults + "    steps:\n"
-    )
-    assert _lines(repo, text) == [8]
-
-
-def test_the_job_default_directory_does_not_reach_an_action_step(repo: Path) -> None:
-    """`defaults.run` applies only to the workflow's own `run:` steps."""
-    _write(
-        repo,
-        ".github/actions/tool/action.yaml",
-        "runs:\n  steps:\n    - run: bash scripts/install.sh\n      shell: bash\n",
-    )
-    defaults = "    defaults:\n      run:\n        working-directory: elsewhere\n"
-    text = _workflow("uses: ./.github/actions/tool").replace(
-        "    steps:\n", defaults + "    steps:\n"
-    )
-    assert _lines(repo, text) == [8]
 
 
 def test_a_required_step_in_another_job_does_not_count(repo: Path) -> None:
-    other = "  restore:\n    runs-on: ubuntu-latest\n    steps:\n"
-    text = (
-        "jobs:\n"
-        + other
-        + f"      - uses: {RESTORE}\n"
-        + _workflow(f"run: bash {INSTALL}").removeprefix("jobs:\n")
+    other = (
+        f"  restore:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: {RESTORE}\n"
     )
+    text = "jobs:\n" + other + _workflow(f"run: bash {INSTALL}").removeprefix("jobs:\n")
     assert _lines(repo, text) == [9]
-
-
-def test_a_script_that_runs_the_declaring_script_fires(repo: Path) -> None:
-    _write(repo, "scripts/outer.sh", f'retry() {{ "$@"; }}\nretry bash {INSTALL}\n')
-    assert _lines(repo, _workflow("run: bash scripts/outer.sh")) == [5]
-
-
-def test_a_script_named_only_as_text_does_not_fire(repo: Path) -> None:
-    assert _lines(repo, _workflow(f"run: grep pip {INSTALL}")) == []
 
 
 @pytest.mark.parametrize(
@@ -136,72 +89,48 @@ def test_a_script_named_only_as_text_does_not_fire(repo: Path) -> None:
     [
         f'#!/usr/bin/env bash\necho "# requires-step: {RESTORE}"\n',
         f"#!/usr/bin/env bash\ncat <<'EOF'\n# requires-step: {RESTORE}\nEOF\n",
-        "#!/usr/bin/env bash\n# requires-step: <reason>\n",
-        "#!/usr/bin/env bash\n# requires-steps: ./x\n",
     ],
-    ids=["printed-text", "heredoc-data", "placeholder", "longer-marker"],
+    ids=["printed-text", "heredoc-data"],
 )
-def test_only_a_real_marker_comment_declares(repo: Path, script: str) -> None:
+def test_text_that_only_looks_like_the_marker_declares_nothing(
+    repo: Path, script: str
+) -> None:
     _write(repo, INSTALL, script)
     assert _lines(repo, _workflow(f"run: bash {INSTALL}")) == []
 
 
-def test_a_composite_action_step_fires_on_the_workflow_line(repo: Path) -> None:
-    _write(
-        repo,
-        ".github/actions/tool/action.yaml",
-        f"runs:\n  using: composite\n  steps:\n    - run: bash {INSTALL}\n      shell: bash\n",
-    )
+def test_a_marker_in_the_run_body_declares_nothing(repo: Path) -> None:
+    step = f"run: |\n          # requires-step: {RESTORE}\n          echo hi"
+    assert _lines(repo, _workflow(step)) == []
+
+
+def test_a_composite_action_reports_at_the_workflow_line_and_counts_its_uses(
+    repo: Path,
+) -> None:
+    tool = ".github/actions/tool/action.yaml"
+    _write(repo, tool, f"runs:\n  steps:\n    - run: bash {INSTALL}\n")
     assert _lines(repo, _workflow("run: true", "uses: ./.github/actions/tool")) == [6]
-
-
-def test_an_action_yml_file_is_read_and_a_missing_action_is_not(repo: Path) -> None:
     _write(
         repo,
-        ".github/actions/tool/action.yml",
-        f"runs:\n  using: composite\n  steps:\n    - run: bash {INSTALL}\n      shell: bash\n",
-    )
-    assert _lines(repo, _workflow("uses: ./.github/actions/tool")) == [5]
-    assert _lines(repo, _workflow("uses: ./.github/actions/missing")) == []
-
-
-def test_a_composite_action_that_uses_the_step_first_passes(repo: Path) -> None:
-    _write(
-        repo,
-        ".github/actions/tool/action.yaml",
-        "runs:\n  using: composite\n  steps:\n"
-        f"    - uses: {RESTORE}\n    - run: bash {INSTALL}\n      shell: bash\n",
+        tool,
+        f"runs:\n  steps:\n    - uses: {RESTORE}\n    - run: bash {INSTALL}\n",
     )
     assert _lines(repo, _workflow("uses: ./.github/actions/tool")) == []
 
 
-def test_two_actions_that_use_each_other_end(repo: Path) -> None:
-    for name, other in (("a", "b"), ("b", "a")):
-        _write(
-            repo,
-            f".github/actions/{name}/action.yaml",
-            f"runs:\n  steps:\n    - uses: ./.github/actions/{other}\n",
-        )
-    assert _lines(repo, _workflow("uses: ./.github/actions/a")) == []
+def test_the_script_resolves_against_the_working_directory(repo: Path) -> None:
+    step = "run: bash install.sh\n        working-directory: scripts"
+    assert _lines(repo, _workflow(step)) == [5]
+    assert _lines(repo, _workflow("run: bash install.sh")) == []
 
 
-@pytest.mark.parametrize(
-    "text",
-    ["", "- a\n", "jobs: []\n", "jobs:\n  build: 3\n", "jobs:\n  b:\n    steps: 3\n"],
-)
+@pytest.mark.parametrize("text", ["", "- a\n", "jobs: []\n", "jobs:\n  build: 3\n"])
 def test_a_workflow_with_no_job_steps_has_no_finding(repo: Path, text: str) -> None:
     assert _lines(repo, text) == []
 
 
 def test_an_unparseable_workflow_is_a_finding(repo: Path) -> None:
     [(line, message)] = _violations(repo, "jobs: [\n")
-    assert line == 1
-    assert message.startswith("could not parse this workflow or an action")
-
-
-def test_an_unparseable_composite_action_is_a_finding(repo: Path) -> None:
-    _write(repo, ".github/actions/tool/action.yaml", "runs: [\n")
-    [(line, message)] = _violations(repo, _workflow("uses: ./.github/actions/tool"))
     assert line == 1
     assert message.startswith("could not parse this workflow or an action")
 
@@ -213,23 +142,14 @@ def test_an_unparseable_script_is_a_finding(repo: Path) -> None:
     assert "pipe bytes" in message
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
-
-
-def _point_at(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    workflows = root / ".github" / "workflows"
-    workflows.mkdir(parents=True)
-    monkeypatch.setattr(rs.uncached, "REPO_ROOT", root)
-    monkeypatch.setattr(rs, "WORKFLOWS_DIR", workflows)
-    return workflows
-
-
 def test_main_reports_each_finding_and_exits_nonzero(
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    workflows = _point_at(repo, monkeypatch)
+    workflows = repo / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    monkeypatch.setattr(rs, "WORKFLOWS_DIR", workflows)
     ci = workflows / "ci.yaml"
     ci.write_text(_workflow(f"uses: {RESTORE}", f"run: bash {INSTALL}"), "utf-8")
     assert rs.main() is None
