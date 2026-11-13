@@ -7,7 +7,7 @@ result (the same contract as the sibling fuzz suites).
 Covered here: check_token_fallback, check_workflow_secret_names,
 check_provenance_repo_url (URL normalization), check_pin_comment_truth,
 check_divergent_action_pins, check_stderr_merge_parse, check_echo_fallback,
-check_case_default, check_soft_timeout, check_flock_fixed_fd,
+check_case_default, check_soft_timeout, check_flock_fixed_fd, check_redirect_order,
 check_bare_return_status,
 check_lockstep_pins, check_cron_comment, check_toolchain_skips,
 check_conclusion_coverage, and release_canary's changelog/semver parsing.
@@ -32,6 +32,7 @@ echo_fallback = load_hook("check_echo_fallback.py", "fuzz_check_echo_fallback")
 case_default = load_hook("check_case_default.py", "fuzz_check_case_default")
 soft_timeout = load_hook("check_soft_timeout.py", "fuzz_check_soft_timeout")
 flock_fd = load_hook("check_flock_fixed_fd.py", "fuzz_check_flock_fixed_fd")
+redirect_order = load_hook("check_redirect_order.py", "fuzz_check_redirect_order")
 bare_return = load_hook("check_bare_return_status.py", "fuzz_check_bare_return_status")
 lockstep = load_hook("check_lockstep_pins.py", "fuzz_check_lockstep_pins")
 cron_comment = load_hook("check_cron_comment.py", "fuzz_check_cron_comment")
@@ -137,6 +138,7 @@ _LINE_DETECTORS = [
     ("check_case_default", case_default.violations),
     ("check_soft_timeout", soft_timeout.violations),
     ("check_flock_fixed_fd", flock_fd.violations),
+    ("check_redirect_order", redirect_order.violations),
     ("check_bare_return_status", bare_return.violations),
     ("check_cron_comment", cron_comment.violations),
     ("check_toolchain_skips", toolchain.violations),

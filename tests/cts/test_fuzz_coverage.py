@@ -102,6 +102,7 @@ FUZZ_REQUIRED = {
     "check_soft_timeout": "violations",
     "check_embedded_program_length": "violations",
     "check_flock_fixed_fd": "violations",
+    "check_redirect_order": "violations",
     "check_bare_return_status": "violations",
     "check_lockstep_pins": "check_pair",
     "check_cron_comment": "violations",

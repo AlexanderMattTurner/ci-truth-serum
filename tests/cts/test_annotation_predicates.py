@@ -243,6 +243,7 @@ def test_the_handrolled_window_detector_actually_matches() -> None:
 _SHELL_OPT_OUT_CASES = {
     "check_exit_suppression": "cmd || true",
     "check_soft_timeout": "timeout 60 make test",
+    "check_redirect_order": 'read -r x <"$f" 2>/dev/null',
     "check_curl_retry": "curl -fsSL -o f https://example.com/x",
     "check_pinned_downloads": "curl -fsSL https://x/y.sh | bash",
     "check_bare_mkdir": 'mkdir -p "$D"',
