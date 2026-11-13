@@ -7,9 +7,11 @@ prints the error on the old stderr, because `2>/dev/null` is not in effect yet.
 Measured: a merge-queue build failed when a `/proc` entry vanished before a read.
 
   * An INPUT REDIRECT is a `<` or `<&` redirect, or any redirect of descriptor 0.
-    A close (`<&-`), `</dev/null` and `<&2` cannot print an error, so they are not.
-  * A VIOLATION is an input redirect written before one of `SILENCERS` in the
-    redirect list of one command or one compound command (`done <f 2>/dev/null`).
+    A close (`<&-`), `</dev/null` and a copy of stderr (`<&2`) print nothing.
+  * A VIOLATION is an input redirect applied while stderr is still the inherited
+    stream, in the redirect list of one command or compound command, when the
+    list leaves stderr at `/dev/null` or closed. The replay of the list catches
+    `cmd <f >/dev/null 2>&1`, and passes `cmd <f 2>&1 >/dev/null`.
 
 A heredoc, a here-string or a process substitution has no open that can fail, and
 `< <(gen) 2>/dev/null` swapped would also hide the errors of `gen`. A redirect in
@@ -26,7 +28,9 @@ from tree_sitter import Node
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     RedirectParts,
+    apply_redirect,
     iter_nodes,
+    own_redirects,
     parse,
     redirect_parts,
 )
@@ -48,13 +52,8 @@ MESSAGE = (
 )
 
 _NULL = "/dev/null"
-# (descriptor, operator, destination) triples that send stderr nowhere. A close
-# names no destination.
-SILENCERS = frozenset(
-    {("2", op, _NULL) for op in (">", ">>", ">|")}
-    | {("2", ">&-", "")}
-    | {(None, op, _NULL) for op in ("&>", "&>>", ">&")}
-)
+# Where `apply_redirect` leaves a silenced stderr: the null device, or closed.
+SILENT = frozenset({_NULL, "-"})
 
 
 def is_input(node: Node, redirect: RedirectParts) -> bool:
@@ -64,18 +63,9 @@ def is_input(node: Node, redirect: RedirectParts) -> bool:
         return False
     if redirect.destination in ("", _NULL):
         return False
-    if redirect.operator == "<&" and redirect.destination == "2":
+    if redirect.operator in ("<&", ">&") and redirect.destination == "2":
         return False
     return redirect.operator in ("<", "<&") or redirect.descriptor == "0"
-
-
-def _own_redirects(node: Node) -> Iterator[Node]:
-    """NODE's own `file_redirect` children, and those a heredoc redirect carries."""
-    for child in node.children:
-        if child.type == "file_redirect":
-            yield child
-        elif child.type == "heredoc_redirect":
-            yield from (c for c in child.children if c.type == "file_redirect")
 
 
 def _redirect_lists(root: Node) -> Iterator[list[Node]]:
@@ -90,28 +80,35 @@ def _redirect_lists(root: Node) -> Iterator[list[Node]]:
             scopes = [node]
             if node.parent is not None and node.parent.type == "redirected_statement":
                 scopes.append(node.parent)
-            yield [r for scope in scopes for r in _own_redirects(scope)]
+            yield [r for scope in scopes for r in own_redirects(scope)]
             continue
         body = node.child_by_field_name("body")
         if body is None or body.type != "command":
-            yield list(_own_redirects(node))
+            yield own_redirects(node)
+
+
+def _exposed_open(nodes: list[Node]) -> Node | None:
+    """The first input redirect in NODES that can print to the inherited stderr
+    before the list silences it, or None. NODES are in source order."""
+    streams = {"1": "", "2": ""}
+    exposed = None
+    for node in nodes:
+        redirect = redirect_parts(node)
+        if exposed is None and streams["2"] == "" and is_input(node, redirect):
+            exposed = node
+        apply_redirect(streams, redirect)
+    return exposed if streams["2"] in SILENT else None
 
 
 def violations(text: str) -> list[int]:
-    """1-based lines of each input redirect written before a silencer of its command."""
+    """1-based lines of each input redirect that prints before its list silences stderr."""
     lines = source_lines(text)
     said = shell_comments(text)
     hits: set[int] = set()
     for nodes in _redirect_lists(parse(text)):
-        ordered = sorted(nodes, key=lambda n: n.start_byte)
-        parts = [redirect_parts(n) for n in ordered]
-        first = next(
-            (i for i, (n, p) in enumerate(zip(ordered, parts)) if is_input(n, p)), None
-        )
-        if first is None:
-            continue
-        if any(tuple(p) in SILENCERS for p in parts[first + 1 :]):
-            hits.add(ordered[first].start_point[0] + 1)
+        exposed = _exposed_open(sorted(nodes, key=lambda n: n.start_byte))
+        if exposed is not None:
+            hits.add(exposed.start_point[0] + 1)
     return sorted(
         line for line in hits if not annotated_near(lines, line, OPT_OUT, comments=said)
     )

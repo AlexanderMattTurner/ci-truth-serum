@@ -33,6 +33,8 @@ _SILENCER_FORMS = (
     'cmd <"$path" &>/dev/null',
     'cmd <"$path" &>>/dev/null',
     'cmd <"$path" >&/dev/null',
+    'cmd <"$path" >/dev/null 2>&1',
+    'cmd <"$path" 2>&1 >/dev/null 2>&1',
 )
 _SAFE = (
     "{ cmd <f; } 2>/dev/null",
@@ -47,6 +49,10 @@ _SAFE = (
     'cmd <"$path" 2>"$log"',
     "cmd < <(gen) 2>/dev/null",
     "done < <(gen) 2>/dev/null",
+    "cmd <f 2>&1 >/dev/null",
+    "cmd 2>/dev/null <f 2>/dev/null",
+    "cmd 0>&2 2>/dev/null",
+    "cmd 2>log <f 2>/dev/null",
 )
 
 

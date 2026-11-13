@@ -42,6 +42,8 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     iter_nodes,
     node_text,
     parse,
+    apply_redirect,
+    own_redirects,
     redirect_parts,
 )
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -94,13 +96,6 @@ _VALUE_FLAGS = frozenset(
     }
 )
 
-# The operator of a redirect that WRITES a stream to a file: `>` truncates, `>>`
-# appends, `&>`/`&>>` send both stdout and stderr. `>&` is a descriptor DUP
-# (`2>&1`), which points a stream at another stream rather than at a file.
-_WRITE_OPERATORS = frozenset({">", ">>"})
-_BOTH_OPERATORS = frozenset({"&>", "&>>"})
-_DUP_OPERATOR = ">&"
-
 
 def _suppresses_stderr(redirects: list) -> bool:
     """True when REDIRECTS leave file descriptor 2 pointing at /dev/null.
@@ -112,15 +107,9 @@ def _suppresses_stderr(redirects: list) -> bool:
     THEN dups stderr onto it (suppressed), while `2>&1 >/dev/null` dups stderr
     onto the still-live stdout first and only then moves stdout (stderr
     survives). The two carry the same three tokens."""
-    streams = {"1": "", "2": ""}  # "" — still attached to the caller's stream
+    streams = {"1": "", "2": ""}
     for redirect in sorted(redirects, key=lambda node: node.start_byte):
-        descriptor, operator, destination = redirect_parts(redirect)
-        if operator in _BOTH_OPERATORS:
-            streams["1"] = streams["2"] = destination
-        elif operator in _WRITE_OPERATORS:
-            streams[descriptor or "1"] = destination
-        elif operator == _DUP_OPERATOR and descriptor:
-            streams[descriptor] = streams.get(destination, "")
+        apply_redirect(streams, redirect_parts(redirect))
     return streams["2"] == _DEVNULL
 
 
@@ -138,11 +127,7 @@ def _redirects(command) -> list:
     node = command
     while node is not None:
         if node is command or node.type == "redirected_statement":
-            for child in node.children:
-                if child.type == "file_redirect":
-                    found.append(child)
-                elif child.type == "heredoc_redirect":
-                    found += [c for c in child.children if c.type == "file_redirect"]
+            found += own_redirects(node)
         node = node.parent
     return found
 

@@ -92,6 +92,7 @@ from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     command_words,
     iter_nodes,
     node_text,
+    own_redirects,
     parse,
     unquote,
 )
@@ -405,14 +406,15 @@ def _suppressed_command(node) -> tuple[object, list]:
         # search would read `diff <(a >/dev/null) || true` as discarding `diff`'s
         # output. The one nesting that is still this command's own is a
         # `heredoc_redirect`, which parks the trailing `> file` of `cat <<EOF >f`.
-        body = None
-        for child in children:
-            if child.type == "file_redirect":
-                redirects.append(child)
-            elif child.type == "heredoc_redirect":
-                redirects += [c for c in child.children if c.type == "file_redirect"]
-            elif body is None:
-                body = child
+        redirects += own_redirects(node)
+        body = next(
+            (
+                c
+                for c in children
+                if c.type not in ("file_redirect", "heredoc_redirect")
+            ),
+            None,
+        )
         if node.type != "redirected_statement" or body is None:
             return node, redirects
         node = body

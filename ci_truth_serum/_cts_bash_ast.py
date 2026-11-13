@@ -511,6 +511,41 @@ def redirect_parts(redirect: Node) -> RedirectParts:
     return RedirectParts(descriptor, children[index].type, destination)
 
 
+def own_redirects(node: Node) -> list[Node]:
+    """The `file_redirect` children of NODE, plus those a `heredoc_redirect` child
+    carries: the grammar puts the `>f` of `cat <<EOF >f` inside the heredoc node.
+    A redirect deeper in the tree belongs to another command."""
+    found = []
+    for child in node.children:
+        if child.type == "file_redirect":
+            found.append(child)
+        elif child.type == "heredoc_redirect":
+            found += [c for c in child.children if c.type == "file_redirect"]
+    return found
+
+
+def apply_redirect(streams: dict[str, str], redirect: RedirectParts) -> None:
+    """Point the descriptors in STREAMS where bash points them after REDIRECT.
+
+    Bash applies redirects from left to right, so a caller replays them in source
+    order. A target of "" is the stream the shell inherited, and "-" is a closed
+    one. A `>&` with no descriptor and a target that is not a number moves stdout
+    and stderr together, the same as `&>`."""
+    descriptor, operator, destination = redirect
+    duplicate = operator in (">&", "<&") and destination.isdigit()
+    default = "0" if operator.startswith("<") else "1"
+    if operator in ("&>", "&>>") or (
+        operator == ">&" and not (descriptor or duplicate)
+    ):
+        streams["1"] = streams["2"] = destination
+    elif operator in (">", ">>", ">|"):
+        streams[descriptor or "1"] = destination
+    elif duplicate:
+        streams[descriptor or default] = streams.get(destination, "")
+    elif operator in (">&-", "<&-"):
+        streams[descriptor or default] = "-"
+
+
 def program_name(word: str) -> str:
     """WORD as a program name: quotes removed, directories stripped, so
     `/usr/bin/timeout` reads as `timeout`."""
