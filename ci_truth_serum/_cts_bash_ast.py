@@ -359,16 +359,21 @@ class RedirectParts(NamedTuple):
 _BRACE_DESCRIPTOR = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 
-def _brace_descriptor(redirect: Node) -> "str | None":
-    """`{name}` when REDIRECT is `{name}>…`. The grammar parses `{name}` as the
-    command's last argument word, ending where the redirect starts."""
+def _argument_descriptor(redirect: Node) -> "str | None":
+    """The descriptor the grammar hands to the command as its last argument.
+
+    Two forms parse that way, ending where the redirect starts: `{name}>…`, a
+    word, and the `0` of `0>…`, a `number`. Bash allows no space there, so
+    `cmd 0 >f` passes `0` as an argument and redirects stdout."""
     before = redirect.prev_sibling
     if before is not None and before.type == "command" and before.children:
         before = before.children[-1]
     if before is None or before.end_byte != redirect.start_byte:
         return None
     text = node_text(before)
-    return text if _BRACE_DESCRIPTOR.fullmatch(text) else None
+    if _BRACE_DESCRIPTOR.fullmatch(text) or (before.type == "number" and text == "0"):
+        return text
+    return None
 
 
 def redirect_parts(redirect: Node) -> RedirectParts:
@@ -381,7 +386,7 @@ def redirect_parts(redirect: Node) -> RedirectParts:
     index = next((i for i, c in enumerate(children) if not c.is_named), None)
     descriptor = next(
         (node_text(c) for c in children if c.type == "file_descriptor"), None
-    ) or _brace_descriptor(redirect)
+    ) or _argument_descriptor(redirect)
     if index is None:
         return RedirectParts(descriptor, "", "")
     after = children[index + 1] if index + 1 < len(children) else None
