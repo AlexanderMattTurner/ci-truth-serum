@@ -1,0 +1,11 @@
+overrides:
+  # Path traversal via unsanitized prefix/postfix (GHSA-ph9p-34f9-6g65)
+  tmp: ">=0.2.6"
+  # Quadratic-time rendering (GHSA-r7fv-28h4-cvq7, GHSA-gfr2-rv44-r23c)
+  markdown-it: ">=15.0.3"
+  # ReDoS with $data option (GHSA-2g4f-4pwh-qvx6)
+  ajv: ">=8.18.0"
+  # Quadratic-time parseKey (GHSA-r4xh-jqrq-34v2)
+  smol-toml: ">=1.8.1"
+  # DoS via globparts amplification (GHSA-g3hv-75wg-m249)
+  minimatch: ">=11.0.1"
