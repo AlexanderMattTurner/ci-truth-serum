@@ -60,6 +60,14 @@ The check reads the spelling of P from the grammar, never from the text:
     A comment and a heredoc body are not code, and a message with a space in it
     never spells a path.
 
+A leading value can be a directory other than the checkout. When its spelling
+names the home, a temporary or working directory (`$HOME`, `Path.home()`), or
+the file's own location (`__file__`, `BASH_SOURCE`), the tail after it is not
+read. A list that another list splices in (`("${BASE[@]}" x)`, `[*BASE, "x"]`)
+is not read either, because the other list is the one that ships. A Python list
+gains the literal strings that `+=`, `append`, `extend`, `add` and `update` give
+it.
+
 BLIND SPOT, and the direction it errs. The check reads only literals. A path
 that the code computes, a path relative to its own file
 (`Path(__file__).parent / "models.json"`), a list built in a loop, and an
@@ -84,6 +92,7 @@ the grammar cannot parse is refused loudly, on argv or in that sweep.
 
 import argparse
 import ast
+import re
 import subprocess
 import sys
 from collections.abc import Iterable, Iterator
@@ -182,15 +191,23 @@ def _shell_word(node) -> str | None:
 
 
 def shell_lists(text: str, path: str) -> list[PathList]:
-    """Every array assignment in the shell TEXT whose members are all literal
-    words, with literal appends merged into the first assignment of a name."""
-    found: dict[str, PathList] = {}
+    """Every array in the shell TEXT whose members are all literal words.
+
+    Assignments are read in source order, the way bash runs them: `X=(…)`
+    replaces the list, and `X+=(…)` adds its literal words. A computed member in
+    a `=` assignment spoils the name, so a later append cannot stand in for the
+    members this check could not read. An array that another array splices in
+    (`Y=("${X[@]}" more)`) is not read, because the list that ships is the
+    other one."""
+    state: dict[str, PathList | None] = {}
+    spliced: set[str] = set()
     for assignment in iter_nodes(parse_bash(text), "variable_assignment"):
         value = assignment.child_by_field_name("value")
         name = assignment.child_by_field_name("name")
         if value is None or name is None or value.type != "array":
             continue
-        appends = any(child.type == "+=" for child in assignment.children)
+        for expansion in iter_nodes(value, *_EXPANSIONS):
+            spliced.update(map(node_text, iter_nodes(expansion, "variable_name")))
         words = [
             _shell_word(child)
             for child in value.named_children
@@ -198,38 +215,77 @@ def shell_lists(text: str, path: str) -> list[PathList]:
         ]
         literal = tuple(word for word in words if word is not None)
         key = node_text(name)
-        if appends and key in found:
-            first = found[key]
-            found[key] = first._replace(members=first.members + literal)
-            continue
-        if len(literal) == len(words):
-            line = assignment.start_point[0] + 1
-            found.setdefault(key, PathList(path, line, key, literal))
-    return list(found.values())
+        appends = any(child.type == "+=" for child in assignment.children)
+        if appends and key in state:
+            current = state[key]
+            if current is not None:
+                state[key] = current._replace(members=current.members + literal)
+        elif len(literal) == len(words):
+            state[key] = PathList(path, assignment.start_point[0] + 1, key, literal)
+        else:
+            state[key] = None
+    return [
+        listing
+        for key, listing in state.items()
+        if listing is not None and key not in spliced
+    ]
 
 
-def _python_members(value: ast.expr) -> tuple[str, ...] | None:
-    """The string members of the collection literal VALUE, or None when VALUE is
-    not one, or holds a member that is not a plain string."""
+def _strings(value: ast.expr) -> tuple[str, ...] | None:
+    """The members of the collection literal VALUE when every one is a plain
+    string, else None."""
     if isinstance(value, ast.Call) and name_of(value.func) in _WRAPPERS:
         if len(value.args) != 1 or value.keywords:
             return None
         value = value.args[0]
     if not isinstance(value, _COLLECTIONS):
         return None
-    members = []
-    for element in value.elts:
-        if not (isinstance(element, ast.Constant) and isinstance(element.value, str)):
-            return None
-        members.append(element.value)
-    return tuple(members)
+    members = tuple(_constant(element) for element in value.elts)
+    return None if None in members else members  # type: ignore[return-value]
+
+
+def _python_additions(tree: ast.AST) -> dict[str, tuple[str, ...]]:
+    """The literal strings each name gains from `X += […]`, `X.append("…")`,
+    `X.extend([…])`, `X.add("…")` or `X.update({…})`."""
+    added: dict[str, tuple[str, ...]] = {}
+    for node in walk(tree):
+        name, gained = None, None
+        if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.Add):
+            name, gained = name_of(node.target), _strings(node.value)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            name = name_of(node.func.value)
+            if node.func.attr in {"append", "add"} and len(node.args) == 1:
+                one = _constant(node.args[0])
+                gained = None if one is None else (one,)
+            elif node.func.attr in {"extend", "update"} and len(node.args) == 1:
+                gained = _strings(node.args[0])
+        if name is not None and gained is not None:
+            added[name] = added.get(name, ()) + gained
+    return added
+
+
+def _python_spliced(tree: ast.AST) -> set[str]:
+    """The names that another collection splices in, as `[*X, …]` or `X + […]`."""
+    out = set()
+    for node in walk(tree):
+        if isinstance(node, ast.Starred):
+            out.add(name_of(node.value))
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            out.update((name_of(node.left), name_of(node.right)))
+    out.discard(None)
+    return out  # type: ignore[return-value]
 
 
 def python_lists(text: str, path: str) -> list[PathList]:
     """Every assignment in the Python TEXT whose value is a collection literal of
-    plain strings."""
+    plain strings, with the literal strings the file adds to it later. A list
+    that another collection splices in is not read, because the list that ships
+    is the other one."""
+    tree = parse_whole(LINE_ENDING.sub("\n", text))
+    added = _python_additions(tree)
+    spliced = _python_spliced(tree)
     out = []
-    for node in walk(parse_whole(LINE_ENDING.sub("\n", text))):
+    for node in walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target, value = node.targets[0], node.value
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
@@ -237,8 +293,9 @@ def python_lists(text: str, path: str) -> list[PathList]:
         else:
             continue
         name = name_of(target)
-        members = _python_members(value)
-        if name is not None and members is not None:
+        members = _strings(value)
+        if name is not None and members is not None and name not in spliced:
+            members += added.get(name, ())
             out.append(PathList(path, node.lineno, name, members))
     return out
 
@@ -254,35 +311,52 @@ def candidate_lists(text: str, path: str) -> list[PathList]:
 
 # ── References ───────────────────────────────────────────────────────────────
 
+# A leading value whose name says it is the user's home, a temporary directory
+# or the working directory. A path under one of them is not the checkout, so the
+# literal tail after it names no repo path. Matched on the value's spelling, so
+# the rule errs toward silence: a root named this way is skipped.
+_FOREIGN_ROOT = re.compile(r"home|tmp|temp|xdg|cwd|pwd|expanduser", re.IGNORECASE)
 
-def _shell_parts(node) -> list[str | None]:
-    """NODE as a run of literal pieces, with None for each computed piece."""
+# A leading value that names the file's own location. The tail after it is
+# relative to that file, not to the repository root.
+_OWN_LOCATION = re.compile(r"__file__|BASH_SOURCE|\$0\b|dirname")
+
+
+def _rooted(root: str, tail: str) -> str | None:
+    """TAIL when ROOT, the text of the leading value, may be the checkout."""
+    if _FOREIGN_ROOT.search(root) or _OWN_LOCATION.search(root):
+        return None
+    return tail
+
+
+def _shell_parts(node) -> list[tuple[str | None, str]]:
+    """NODE as a run of (literal text or None, source text) pieces. A computed
+    piece has None for its literal text."""
     if node.type in {"word", "raw_string"}:
-        return [unquote(node_text(node))]
+        return [(unquote(node_text(node)), node_text(node))]
     if node.type in _EXPANSIONS or node.type == "command_substitution":
-        return [None]
+        return [(None, node_text(node))]
     if node.type == "concatenation":
         return [piece for child in node.children for piece in _shell_parts(child)]
     if node.type == "string":
-        pieces: list[str | None] = []
-        for child in node.named_children:
-            if child.type == "string_content":
-                pieces.append(node_text(child))
-            else:
-                pieces.append(None)
-        return pieces
-    return [None]
+        return [
+            (node_text(child) if child.type == "string_content" else None,)
+            + (node_text(child),)
+            for child in node.named_children
+        ]
+    return [(None, node_text(node))]
 
 
-def _tail(pieces: list[str | None]) -> str | None:
+def _tail(pieces: list[tuple[str | None, str]]) -> str | None:
     """The literal path PIECES spell: all of them when all are literal, or the
     rest after one leading computed piece when the rest starts with `/`."""
-    if pieces and all(piece is not None for piece in pieces):
-        return "".join(pieces)  # type: ignore[arg-type]
-    if len(pieces) < 2 or pieces[0] is not None or None in pieces[1:]:
+    literal = [text for text, _ in pieces]
+    if literal and None not in literal:
+        return "".join(literal)  # type: ignore[arg-type]
+    if len(literal) < 2 or literal[0] is not None or None in literal[1:]:
         return None
-    rest = "".join(pieces[1:])  # type: ignore[arg-type]
-    return rest[1:] if rest.startswith("/") else None
+    rest = "".join(literal[1:])  # type: ignore[arg-type]
+    return _rooted(pieces[0][1], rest[1:]) if rest.startswith("/") else None
 
 
 def shell_references(text: str) -> Iterator[Reference]:
@@ -321,7 +395,7 @@ def _joined(parts: list[ast.expr]) -> str | None:
     tail = [_constant(part) for part in parts[1:]]
     if len(parts) < 2 or _constant(parts[0]) is not None or None in tail:
         return None
-    return "/".join(tail)  # type: ignore[arg-type]
+    return _rooted(ast.unparse(parts[0]), "/".join(tail))  # type: ignore[arg-type]
 
 
 def _division_operands(node: ast.expr) -> list[ast.expr]:
@@ -335,16 +409,24 @@ def python_references(text: str) -> Iterator[Reference]:
     """Every literal repo-path spelling in the Python TEXT."""
     tree = parse_whole(LINE_ENDING.sub("\n", text))
     skip = _docstrings(tree)
+    # The inner steps of `root / "a" / "b"` spell only a prefix of the path.
+    inner = {
+        id(node.left)
+        for node in walk(tree)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)
+    }
     for node in walk(tree):
         if isinstance(node, ast.JoinedStr):
             skip.update(id(value) for value in node.values)
             values = node.values
             first = _constant(values[-1]) if len(values) == 2 else None
-            rooted = isinstance(values[0], ast.FormattedValue)
-            if rooted and first is not None and first.startswith("/"):
-                yield Reference(node.lineno, first[1:])
+            lead = values[0]
+            if isinstance(lead, ast.FormattedValue) and first and first[0] == "/":
+                spelled = _rooted(ast.unparse(lead.value), first[1:])
+                if spelled is not None:
+                    yield Reference(node.lineno, spelled)
         elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-            spelled = _joined(_division_operands(node))
+            spelled = None if id(node) in inner else _joined(_division_operands(node))
             if spelled is not None:
                 yield Reference(node.lineno, spelled)
         elif isinstance(node, ast.Call) and name_of(node.func) == "os.path.join":
@@ -413,8 +495,8 @@ def picked_directories(members: tuple[str, ...], tree: Tree) -> set[str]:
     A directory member does not count. `bin/lib` on a list says "this whole
     tree", and the trees beside it under `bin` are a separate decision, not a
     sibling the author forgot. Measured on the motivating repository, counting
-    directory members as picks raised the findings from 3 to 12, and every
-    added one named a host-only file."""
+    directory members as picks raised the cited lines from 3 to 12, and every
+    added one was a host-only file."""
     return {
         parent(m)
         for m in members

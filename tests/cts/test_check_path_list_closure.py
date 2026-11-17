@@ -320,3 +320,103 @@ def test_an_unparseable_list_file_is_refused_not_raised(tmp_path: Path) -> None:
     repo = _repo(tmp_path, {"bin/lib/ship.py": "P=(lib a/b.py c/d.py)\n"})
     findings, refused = mod.find([str(repo / "bin/lib/ship.py")], repo)
     assert (findings, refused) == ([], True)
+
+
+# ── regressions: each case once reported a path that the list covers, or a
+# path that is not the checkout's ──────────────────────────────────────────────
+@pytest.mark.parametrize(
+    ("rel", "text"),
+    [
+        ("bin/lib/run.bash", '#!/bin/bash\ncat "$HOME/.claude/hooks/monitor.py"\n'),
+        ("bin/lib/run.bash", '#!/bin/bash\ncat "$TMPDIR/.claude/hooks/monitor.py"\n'),
+        ("bin/lib/p.py", 'P = Path.home() / ".claude" / "hooks" / "monitor.py"\n'),
+        ("bin/lib/p.py", 'P = f"{home}/.claude/hooks/monitor.py"\n'),
+        (
+            "bin/lib/p.py",
+            'P = Path(__file__).parent / ".claude" / "hooks" / "monitor.py"\n',
+        ),
+    ],
+)
+def test_a_root_that_is_not_the_checkout_is_not_read(
+    tmp_path: Path, rel: str, text: str
+) -> None:
+    repo = _repo(tmp_path, {"bin/lib/env.bash": _PAYLOAD, rel: text})
+    assert _omitted(repo) == []
+
+
+@pytest.mark.parametrize(
+    ("rel", "listing"),
+    [
+        (
+            "bin/lib/env.bash",
+            _PAYLOAD + 'SHIPPED=("${PAYLOAD[@]}" .claude/hooks/monitor.py)\n',
+        ),
+        (
+            "bin/lib/ship.py",
+            'BASE = ("bin/lib", ".claude/hooks/secret_env_vars.py",'
+            ' ".claude/hooks/redactor_config.py")\n'
+            'SHIPPED = (*BASE, ".claude/hooks/monitor.py")\n',
+        ),
+    ],
+)
+def test_a_list_that_another_list_splices_in_is_not_read(
+    tmp_path: Path, rel: str, listing: str
+) -> None:
+    repo = _repo(tmp_path, {rel: listing, "bin/lib/spawn.py": _SPAWN})
+    assert _omitted(repo, rel) == []
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        'P += [".claude/hooks/monitor.py"]',
+        'P.append(".claude/hooks/monitor.py")',
+        'P.extend([".claude/hooks/monitor.py"])',
+    ],
+)
+def test_a_python_addition_adds_its_members(tmp_path: Path, addition: str) -> None:
+    listing = (
+        'P = ["bin/lib", ".claude/hooks/secret_env_vars.py",'
+        f' ".claude/hooks/redactor_config.py"]\n{addition}\n'
+    )
+    repo = _repo(tmp_path, {"bin/lib/ship.py": listing, "bin/lib/spawn.py": _SPAWN})
+    assert _omitted(repo, "bin/lib/ship.py") == []
+
+
+def test_the_inner_steps_of_a_slash_chain_are_not_paths(tmp_path: Path) -> None:
+    """`root / ".claude" / "hooks" / "gone.json"` once also spelled the prefix
+    `.claude/hooks`, which is tracked, although the code names only an untracked
+    file below it."""
+    listing = "PAYLOAD=(bin/lib .claude/secret.py .claude/other.py)\n"
+    consumer = 'P = root / ".claude" / "hooks" / "gone.json"\n'
+    repo = _repo(
+        tmp_path,
+        {
+            "bin/lib/env.bash": listing,
+            "bin/lib/p.py": consumer,
+            ".claude/secret.py": "",
+            ".claude/other.py": "",
+        },
+    )
+    assert _omitted(repo) == []
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        # A computed member spoils the name, so the append cannot stand in.
+        'P=(bin/lib .claude/hooks/secret_env_vars.py "$x")\n'
+        "P+=(bin/lib .claude/hooks/redactor_config.py config)\n",
+        # A later `=` replaces an earlier append, the way bash runs it.
+        "P+=(bin/lib .claude/hooks/secret_env_vars.py .claude/hooks/redactor_config.py)\n"
+        'P=(bin/lib .claude/hooks/secret_env_vars.py "$x")\n',
+    ],
+)
+def test_an_append_never_stands_in_for_an_unread_list(
+    tmp_path: Path, listing: str
+) -> None:
+    repo = _repo(
+        tmp_path,
+        {"bin/lib/env.bash": listing, "bin/lib/spawn.py": _SPAWN, "config/a": ""},
+    )
+    assert _omitted(repo) == []
