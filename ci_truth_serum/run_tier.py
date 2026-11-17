@@ -73,6 +73,7 @@ from _cts_registry import (  # noqa: E402,I001  # pylint: disable=wrong-import-p
     REFERENCING_TEXT,
     SHELL,
     SHELL_OR_DOCKERFILE,
+    SHELL_OR_PYTHON,
     SHELL_OR_WORKFLOW_YAML,
     PER_FILE,
     SHELL_PYTHON_OR_WORKFLOW_YAML,
@@ -102,6 +103,8 @@ def matches(path: str, kind: str) -> bool:
         return "dockerfile" in tags
     if kind == SHELL_OR_DOCKERFILE:
         return "shell" in tags or "dockerfile" in tags
+    if kind == SHELL_OR_PYTHON:
+        return bool(tags & {"shell", "python"})
     if kind == SHELL_OR_WORKFLOW_YAML:
         return "shell" in tags or ("yaml" in tags and is_workflow_path(path))
     if kind == MARKDOWN:

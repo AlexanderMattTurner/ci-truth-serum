@@ -1043,6 +1043,22 @@
     [PyYAML, tree-sitter, tree-sitter-javascript, tree-sitter-typescript]
   types_or: [javascript, jsx, ts, tsx]
 
+- id: check-path-list-closure
+  name: "extra: a hand-kept list of shipped repo paths must cover what its code names"
+  description: "A list of repo paths that a script copies to a VM, a container or an archive omits a file that the shipped code names, so the copy fails at run time with No such file or directory. The list must pick files out of that directory by hand, so a tree it never touches stays quiet."
+  entry: python -m ci_truth_serum.check_path_list_closure
+  language: python
+  # The JS grammars because `_cts_comments`, which reads the opt-out, imports them.
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
+  types_or: [shell, python]
+
 - id: check-path-shadowed-interpreter
   name: "extra: no step after an agent step may reach Python by bare name"
   description: "`claude-code-action` writes /usr/bin to $GITHUB_PATH, and the runner rebuilds PATH by prepending each line, so every later step resolves a bare `python3` to the system interpreter and dies on a package `uv sync` installed. Name the interpreter by path."
