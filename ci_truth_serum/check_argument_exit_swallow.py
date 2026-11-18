@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Ban SC2155's sibling: a command substitution passed as an ARGUMENT to a
-locally defined function, in a file that runs under ``set -e``.
+locally defined function, in a file that runs under ``set -e``, or to an
+``eval`` that carries a ``||`` handler.
 
 Shellcheck's SC2155 flags ``local x="$(cmd)"``: the assignment reports the
 status of ``local``, so ``cmd``'s failure is discarded. One syntactic step over
@@ -44,13 +45,21 @@ The whole decision is a node shape (``_cts_bash_ast``), never a text match:
     one inside ``command_name`` (``"$(get_tool)" --flag``) stops there too.
   * The callee name must be a literal ``word``. A computed name (``"$tool" a``)
     matches no definition, so it cannot be read as a local function.
+  * An ``eval`` is in scope when a ``||`` follows it, in every file. Its
+    argument is the program it runs, so a failed producer hands it nothing,
+    and ``eval ""`` exits 0. The ``|| return`` in
+    ``eval "$(apt-config shell …)" || return`` can never fire, and the
+    caller goes on with its variables unset. An ``eval`` with no handler
+    stays out of scope even under errexit: the test idiom
+    ``eval "f() $(declare -f g)"`` fails loudly on the syntax error instead.
   * A substitution written inside a printed message is ``string`` content that
     holds no command, and one in a heredoc body is data — neither is reachable.
 
-GATE — the file must enable ``errexit``: a ``set`` command with a short-flag
-cluster carrying ``e`` (``set -e``, ``set -euo pipefail``), a ``set -o
-errexit``, or a shebang whose flags carry ``e``. Without errexit the script
-never claimed a failure would stop it, so there is no broken promise to report.
+GATE — a call to a local function is judged only when the file enables
+``errexit``: a ``set`` command with a short-flag cluster carrying ``e``
+(``set -e``, ``set -euo pipefail``), a ``set -o errexit``, or a shebang whose
+flags carry ``e``. Without errexit the script never claimed a failure would
+stop it, so there is no broken promise to report.
 The shebang is read as text, because a shebang is a comment to the bash grammar
 and carries no command node to inspect. A later ``set +e`` does not close the
 gate: it turns errexit off for a span this lint does not track, and the
@@ -95,9 +104,10 @@ OPT_OUT = "allow-argument-exit"
 
 MESSAGE = (
     "this substitution runs as an argument, so the shell discards its exit "
-    "status and `set -e` never sees the failure — the callee runs on empty "
-    'output. Assign it on its own line first (`out="$(cmd)"`, which does '
-    'propagate) and pass `"$out"`, or annotate '
+    "status: neither `set -e` nor a `||` on the call sees the failure, and the "
+    'callee runs on empty output (`eval ""` exits 0). Assign it on its own '
+    'line first (`out="$(cmd)" || …`, which does propagate) and pass `"$out"`, '
+    "or annotate "
     f"`# {OPT_OUT}: <reason>`"
 )
 
@@ -105,6 +115,9 @@ MESSAGE = (
 # of its arguments. `command_name` is deliberately absent: stopping there is what
 # keeps `"$(get_tool)" --flag` — a computed PROGRAM, not an argument — out.
 _VALUE_WRAPPERS = frozenset({"string", "concatenation", "expansion"})
+
+# The builtin that runs its argument as a program, judged when a `||` follows it.
+_EVAL = "eval"
 
 # The commands that read another file into the current shell.
 _SOURCE_COMMANDS = frozenset({"source", "."})
@@ -329,13 +342,20 @@ def _literal_name(command: Node) -> str | None:
     return command_name(command)
 
 
+def _or_handled(command: Node) -> bool:
+    """True when a `||` follows COMMAND in its `list`, as in `eval "$(x)" || return`."""
+    after = command.next_sibling
+    return command.parent.type == "list" and after is not None and after.type == "||"
+
+
 def violations(
     text: str,
     functions: frozenset[str] | set[str] = frozenset(),
     root: Node | None = None,
 ) -> list[int]:
     """1-based line numbers in TEXT where a command substitution is passed as an
-    argument to a locally defined function under ``set -e``.
+    argument to a locally defined function under ``set -e``, or to an ``eval``
+    that a ``||`` handler follows.
 
     FUNCTIONS names the functions reachable through `source`; the functions TEXT
     itself defines are always added. Omitting it scans TEXT alone, which is what
@@ -345,22 +365,26 @@ def violations(
     lost, and the line a reader writes the annotation on.
     """
     root = parse(text) if root is None else root
-    if not sets_errexit(text, root):
-        return []
-    known = set(functions) | defined_functions(text, root)
-    if not known:
+    known = set()
+    if sets_errexit(text, root):
+        known = set(functions) | defined_functions(text, root)
+    found = set()
+    for substitution in iter_nodes(root, "command_substitution"):
+        callee = _callee(substitution)
+        if callee is None:
+            continue
+        name = _literal_name(callee)
+        if name in known or (name == _EVAL and _or_handled(callee)):
+            found.add(substitution.start_point[0] + 1)
+    if not found:
         return []
     lines = source_lines(text)
     said = shell_comments(text)
-    hits = set()
-    for substitution in iter_nodes(root, "command_substitution"):
-        callee = _callee(substitution)
-        if callee is None or _literal_name(callee) not in known:
-            continue
-        lineno = substitution.start_point[0] + 1
-        if not annotated_near(lines, lineno, OPT_OUT, comments=said):
-            hits.add(lineno)
-    return sorted(hits)
+    return sorted(
+        lineno
+        for lineno in found
+        if not annotated_near(lines, lineno, OPT_OUT, comments=said)
+    )
 
 
 def main(argv: list[str]) -> int:
