@@ -171,6 +171,9 @@ def test_a_later_set_plus_e_does_not_close_the_gate() -> None:
         # agent-glovebox's shape: the `|| return` never sees apt-config fail
         'eval "$(apt-config shell dest Dir::Cache::archives/d)" || return',
         "eval `ssh-agent -s` || exit 1",
+        # a redirect or a group passes eval's status through to the `||`
+        'eval "$(ssh-agent -s)" >/dev/null || exit 1',
+        '{ eval "$(ssh-agent -s)"; } || exit 1',
         'eval "x=$(risky)" || die "no x"',
     ],
 )

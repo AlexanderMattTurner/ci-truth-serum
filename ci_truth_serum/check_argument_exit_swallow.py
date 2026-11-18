@@ -88,6 +88,7 @@ from _cts_bash_ast import (  # pylint: disable=wrong-import-position
     iter_nodes,
     node_text,
     parse,
+    status_carrier,
     unquote,
 )
 from _cts_comments import (
@@ -343,9 +344,11 @@ def _literal_name(command: Node) -> str | None:
 
 
 def _or_handled(command: Node) -> bool:
-    """True when a `||` follows COMMAND in its `list`, as in `eval "$(x)" || return`."""
-    after = command.next_sibling
-    return command.parent.type == "list" and after is not None and after.type == "||"
+    """True when a `||` follows the statement that carries COMMAND's status, as in
+    `eval "$(x)" >/dev/null || return`: a redirect or a `{ …; }` passes it through."""
+    carrier = status_carrier(command)
+    after = carrier.next_sibling
+    return carrier.parent.type == "list" and after is not None and after.type == "||"
 
 
 def violations(
