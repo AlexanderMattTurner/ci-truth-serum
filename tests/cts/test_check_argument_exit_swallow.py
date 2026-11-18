@@ -164,6 +164,54 @@ def test_a_later_set_plus_e_does_not_close_the_gate() -> None:
     assert mod.violations(text) == [4]
 
 
+# ── `eval`: the substitution IS the program, so `eval ""` exits 0 ───────────
+@pytest.mark.parametrize(
+    "line",
+    [
+        # agent-glovebox's shape: the `|| return` never sees apt-config fail
+        'eval "$(apt-config shell dest Dir::Cache::archives/d)" || return',
+        "eval `ssh-agent -s` || exit 1",
+        # a redirect or a group passes eval's status through to the `||`
+        'eval "$(ssh-agent -s)" >/dev/null || exit 1',
+        '{ eval "$(ssh-agent -s)"; } || exit 1',
+        'eval "x=$(risky)" || die "no x"',
+    ],
+)
+@pytest.mark.parametrize("prologue", ["", "set -e"])
+def test_a_handled_eval_fires_with_or_without_errexit(prologue: str, line: str) -> None:
+    assert mod.violations(f"{prologue}\n{line}\n") == [2]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # the fix: the plain assignment reports the producer's status to the `||`
+        'out="$(apt-config shell dest Dir::Cache::archives/d)" || return\neval "$out"',
+        # no handler claims to see the failure, errexit or not
+        'eval "$(ssh-agent -s)"',
+        'eval "f() $(declare -f g | tail -n +2)"',
+        # the `||` belongs to a different command
+        'eval "$(ssh-agent -s)"; other || return',
+        # the handler is the `&&` arm, which runs on success only
+        'eval "$(ssh-agent -s)" && echo ok',
+    ],
+)
+@pytest.mark.parametrize("prologue", ["", "set -e"])
+def test_an_eval_with_no_handler_on_it_is_clean(prologue: str, line: str) -> None:
+    assert mod.violations(f"{prologue}\n{line}\n") == []
+
+
+def test_an_eval_substitution_is_judged_by_bash() -> None:
+    # The premise of the arm, observed on the real shell: the handler is dead.
+    run = subprocess.run(
+        ["bash", "-c", 'eval "$(false)" || echo handled'],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert run.stdout == ""
+
+
 # ── verdicts only the grammar can reach ──────────────────────────────────────
 @pytest.mark.parametrize(
     "name, text, expected",
@@ -176,6 +224,16 @@ def test_a_later_set_plus_e_does_not_close_the_gate() -> None:
         (
             "a heredoc body is data written to a file, not code",
             _lines("cat <<'EOF' > doc.txt", 'my_helper "$(risky)"', "EOF"),
+            [],
+        ),
+        (
+            "a handled eval quoted inside a printed message is not a command",
+            _lines('gb_warn "bad: eval \\"$(risky)\\" || return"'),
+            [],
+        ),
+        (
+            "a handled eval in a heredoc body is data, not code",
+            _lines("cat <<'EOF' > doc.txt", 'eval "$(risky)" || return', "EOF"),
             [],
         ),
         (

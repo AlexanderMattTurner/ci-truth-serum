@@ -47,8 +47,8 @@
   types: [shell]
 
 - id: check-argument-exit-swallow
-  name: "honesty: ban a command substitution passed as an argument to a local function"
-  description: '`f "$(cmd)"` discards cmd''s exit status, so `set -e` never stops the script. This is SC2155 one step over, and shellcheck does not report it.'
+  name: "honesty: ban a command substitution passed as an argument to a local function or a handled eval"
+  description: '`f "$(cmd)"` discards cmd''s exit status, so `set -e` never stops the script. `eval "$(cmd)" || return` never returns, because `eval ""` exits 0. This is SC2155 one step over, and shellcheck does not report it.'
   entry: python -m ci_truth_serum.check_argument_exit_swallow
   language: python
   types: [shell]
