@@ -115,6 +115,15 @@ whose `env:` path starts with `~/` never fills: bash does not expand it.
 The rule does not judge an install whose packages are arguments of a wrapper
 function (`apt_install "$@"`), or an index refresh alone (`apt-get update`).
 
+The shapes above are the whole scope of the rule, and the scope is frozen.
+The ways to reach a package host have no end, and each new shape cost a
+parser branch, tests and exemptions. Fix a wrong verdict on a shape that the
+rule reads now, and add no new shape. The known misses give no finding: a
+`docker compose` build, a guest store that `limactl create --set` adds, and a
+Dockerfile outside the repo. Two known false findings take a
+`# cache-exempt:` reason: a container that a `-v` mount fills from a host
+store, and a local `.deb` install with an apt `-o` option.
+
 Deliberately NOT reported, because the download is the point or has no stable key:
 
   * an unpinned URL, which no cache key can track;
