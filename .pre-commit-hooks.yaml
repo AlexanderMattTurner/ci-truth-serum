@@ -1122,6 +1122,7 @@
   additional_dependencies:
     [
       PyYAML,
+      dockerfile-parse,
       identify,
       tree-sitter,
       tree-sitter-bash,
