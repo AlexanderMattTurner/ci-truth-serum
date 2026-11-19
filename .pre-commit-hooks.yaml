@@ -302,8 +302,8 @@
   types: [yaml]
 
 - id: check-uncached-download
-  name: "opinionated: require a cache in any job that downloads a pinned tool"
-  description: A job that downloads a pinned tool with no cache that holds it gets the same bytes on every run. A slow registry turns that cost into a job timeout, and GitHub reports it as "cancelled". The check follows the repo scripts that a step runs.
+  name: "opinionated: require a cache in any job that downloads a pinned tool or installs from a moving index"
+  description: A job that downloads a pinned tool with no cache that holds it gets the same bytes on every run. A slow registry turns that cost into a job timeout, and GitHub reports it as "cancelled". An install from a moving index with no store in front of it asks the package host on every run, so a slow or dead host turns the job red. The check follows the repo scripts that a step runs.
   entry: python -m ci_truth_serum.check_uncached_download
   language: python
   additional_dependencies:

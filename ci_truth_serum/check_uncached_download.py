@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Demand a cache in any job that downloads bytes that cannot change between runs.
+"""Demand a cache in any job that downloads fixed bytes or installs from a moving index.
 
 A `run:` step that fetches a pinned tool — `pip install ruff==0.14.0`, `npm
 install -g pkg@2.1.0`, `curl -O …/releases/download/v2.12.0/tool` — pulls the
@@ -77,10 +77,42 @@ step that restores that directory then covers it, when the key of that step
 names the pin or hashes the fetcher. The lint cannot read where a Python fetch
 writes, so a `path:` alone does not cover one.
 
+A second rule covers an install that takes a MOVING index: a spec with no
+version, or a version that is not one (`pkg@latest`). The bytes change, so
+this is not waste. The cost is availability. Every run asks the package host,
+so a slow or dead host turns the job red, and no diff caused it. Worked case:
+Ubuntu's mirrors degraded, and a required job that ran `apt-get install` went
+red on every open pull request at once. A `# pin-exempt:` reason excuses the
+missing pin in `check-versionless-install`, not the missing store, so an
+exempt install is judged here too. The rule covers apt, pip, pipx, `uv tool`
+and global npm, read as `check-versionless-install` reads them. dnf, yum, apk
+and pacman are not read yet.
+
+A cache covers a moving install when it restores before the install, its
+`path:` holds the store of the installer (`/var/cache/apt/archives` for apt),
+and its key can both restore and refresh. No version names a moving install,
+so a key qualifies in two ways. It hashes a file that holds the install, and
+so changes when the package list changes. Or it holds a per-run value
+(`github.run_id`) and the step has `restore-keys`, so it restores the newest
+older entry and saves a new one on each run. A fixed key never refreshes, and
+a per-run key with no `restore-keys` never restores. A key the lint cannot
+read may do either, so only its path is judged. A setup action that caches
+the store of the installer (`cache: pip`) covers it.
+
+The rule covers every job, not only the jobs that a required check depends
+on. The pack knows "required" only from `# required-check: true` comments,
+which a stranger's repository does not write, so a required-only rule would
+never fire there. A red that no diff caused also costs a rerun in any job.
+
+The walk does not reach an install that runs in another machine: a `docker
+run IMAGE sh -c '…'` body, a Dockerfile, or a VM guest that a template
+provisions. It also does not judge an install whose packages are arguments
+of a wrapper function (`apt_install "$@"`), or an index refresh alone
+(`apt-get update`).
+
 Deliberately NOT reported, because the download is the point or has no stable key:
 
-  * an install with any unpinned spec — `check-versionless-install` owns that, and
-    a floating install has no cache key that could stay correct;
+  * an unpinned URL, which no cache key can track;
   * a `docker pull`;
   * a program the job does not run from the repo, such as a pip-installed CLI.
 
@@ -173,6 +205,7 @@ from _cts_step_reach import (  # pylint: disable=wrong-import-position
 from check_path_gate_deps import glob_to_regex  # pylint: disable=wrong-import-position
 from check_versionless_install import (  # pylint: disable=wrong-import-position
     NODE,
+    _APT_PROGRAMS,
     _PIP_ALIAS,
     _find_install,
     spec_scan,
@@ -192,11 +225,28 @@ MESSAGE = (
     "download, and skip the download when the cache restores, or annotate "
     f"'# {OPT_OUT}: <reason>'."
 )
+MOVING_MESSAGE = (
+    "job '{job}' installs {what} from a moving package index with {why} — "
+    "every run fetches from the package host, so a slow or dead host turns "
+    "the job red for a reason no diff caused. Restore a cache of the "
+    "installer's store before the install, keyed on hashFiles() of the file "
+    "that lists the packages or on a per-run key with restore-keys, or "
+    f"annotate '# {OPT_OUT}: <reason>'. A root-owned store such as "
+    "/var/cache/apt/archives needs a step that makes it writable by the "
+    "runner user first, because the cache action only warns when it cannot "
+    "write there."
+)
 NO_CACHE = "no cache step anywhere in the job"
 NO_COVER = (
     "no cache restored before it that can hold it: a cache must hold its "
     "output path, or be keyed on its pin with a path that can hold its output"
 )
+MOVING_NO_COVER = (
+    "no cache restored before it that holds the installer's store under a key "
+    "that can both restore and refresh"
+)
+# A key part that changes on every run of a workflow.
+_PER_RUN_KEY = re.compile(r"\bgithub\.(?:sha|run_id|run_number|run_attempt)\b")
 
 # The install flags that keep an installer from writing its store.
 _NO_STORE_FLAGS = frozenset({"--no-cache-dir", "--no-cache"})
@@ -326,7 +376,7 @@ _PY_DIGEST_COMPARES = frozenset({"hmac.compare_digest", "secrets.compare_digest"
 
 
 class Fetch(NamedTuple):
-    """One pinned download a step causes.
+    """One download a step causes.
 
     WHAT names it for the message. PINS are the words a cache key may carry to
     name it: variable names, versions, digests. SOURCES are the repo-relative
@@ -334,7 +384,8 @@ class Fetch(NamedTuple):
     bytes land at, as far as the text fixes them. OUTPUT_NAMES are the
     relative paths the bytes land at in a directory the text does not fix.
     INSTALLER is the package manager that makes the fetch, empty for a
-    download."""
+    download. MOVING is True for an install from a moving index, which has
+    no pin."""
 
     what: str
     pins: frozenset[str]
@@ -342,6 +393,7 @@ class Fetch(NamedTuple):
     outputs: frozenset[str]
     output_names: frozenset[str] = frozenset()
     installer: str = ""
+    moving: bool = False
 
 
 # ── shell: what a namespace downloads ───────────────────────────────────────
@@ -1220,14 +1272,29 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
     if _expands_an_array(command):
         install_args, sometimes = _with_array_elements(args, namespace)
         install_words = [unquote(node_text(node)) for node in install_args]
-        installer, specs = _pinned_install(install_words, install_args)
+        installer, specs, moving = _install_specs(install_words, install_args)
     else:
         install_args, sometimes, install_words = args, set(), words
-        installer, specs = _command_install(command)
-    where = f" in {rel}" if specs and (rel := _relative(unit.path)) else ""
+        installer, specs, moving = _command_install(command)
+    where = f" in {rel}" if (rel := _relative(unit.path)) else ""
     if not _NO_STORE_FLAGS.isdisjoint(install_words):
         installer = ""  # the bytes reach no store, so no store cache holds them
-    store = _INSTALLER_STORES.get(installer, "")
+    store = _store_flag(install_words) or _INSTALLER_STORES.get(installer, "")
+    if moving:
+        nodes = [install_args[install_words.index(spec)] for spec in moving]
+        # The file that fills an array the install expands lists its packages.
+        arrays = {name for node in args if (name := _whole_array(node))}
+        fetches.append(
+            Fetch(
+                " ".join(moving) + where,
+                frozenset(),
+                frozenset(_sources_of(nodes, arrays, namespace, unit)),
+                frozenset(_at_each_home(store)),
+                frozenset(),
+                installer,
+                moving=True,
+            )
+        )
     for spec in specs:
         node = install_args[install_words.index(spec)]
         if node.id in sometimes:
@@ -1245,7 +1312,6 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
         )
     if not _runs_downloader(command) and shell.downloaders.isdisjoint(words):
         return fetches
-    where = f" in {rel}" if (rel := _relative(unit.path)) else ""
     values = [namespace.value(node, unit) for node in args]
     spelled = [_spelled(node, namespace, unit) for node in args]
     written = _outputs(command, words, spelled)
@@ -1279,6 +1345,22 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
             )
         )
     return fetches
+
+
+# The install flags that move an installer's store: pip's and uv's
+# `--cache-dir`, and npm's `--cache`.
+_STORE_FLAGS = ("--cache-dir", "--cache")
+
+
+def _store_flag(words: list[str]) -> str:
+    """The store that a flag in WORDS names, when the text fixes it, else the
+    empty string."""
+    for at, word in enumerate(words):
+        flag, equals, value = word.partition("=")
+        if flag in _STORE_FLAGS:
+            value = value if equals else (words[at + 1] if at + 1 < len(words) else "")
+            return "" if value.startswith("$") else value
+    return ""
 
 
 def _at_each_home(store: str) -> set[str]:
@@ -1335,34 +1417,42 @@ def _copy_commands(namespace: Namespace) -> list[tuple[frozenset[str], str]]:
 
 
 @functools.cache
-def _command_install(command: Node) -> tuple[str, list[str]]:
-    """`_pinned_install` of COMMAND's own words, read once per command: a
+def _command_install(command: Node) -> "_Install":
+    """`_install_specs` of COMMAND's own words, read once per command: a
     shared file's commands run in many namespaces."""
-    return _pinned_install(tokens(command), command_arguments(command))
+    return _install_specs(tokens(command), command_arguments(command))
 
 
-def _pinned_install(words: list[str], args: list) -> tuple[str, list[str]]:
-    """The installer of the install invocation in WORDS, and its pinned
-    package specs."""
+class _Install(NamedTuple):
+    """The INSTALLER of one install command, its PINNED specs, and its MOVING
+    specs."""
+
+    installer: str
+    pinned: list[str]
+    moving: list[str]
+
+
+def _install_specs(words: list[str], args: list) -> _Install:
+    """The installer of the install invocation in WORDS, its pinned package
+    specs, and the specs that take a moving index: a spec with no version,
+    or with a version that is not one (`pkg@latest`). An install with a
+    moving spec gets different bytes on a later run, so it has no pinned
+    specs."""
     invocation = _find_install(words)
     if not invocation:
-        return "", []
+        return _Install("", [], [])
     family, index = invocation
     if family == NODE and not writes_outside_the_lockfile(words, index):
-        return (
-            "",
-            [],
-        )  # a local install is covered by the lockfile and setup-node's cache
+        # A local install is covered by the lockfile and setup-node's cache.
+        return _Install("", [], [])
     pinned, unpinned = spec_scan(args[index:], family)
-    if unpinned:
-        return "", []
     # A spec that opens with an expansion (`"$@"`, `${ARGS[@]}`) names no
     # package the text fixes, so it is no download this lint can name.
-    return _installer(words, index), [
-        spec
-        for spec in pinned
-        if not _FLOATING.search(spec) and not spec.startswith("$")
-    ]
+    fixed = [spec for spec in pinned if not spec.startswith("$")]
+    moving = unpinned + [spec for spec in fixed if _FLOATING.search(spec)]
+    if moving:
+        return _Install(_installer(words, index), [], moving)
+    return _Install(_installer(words, index), fixed, [])
 
 
 def _with_array_elements(
@@ -1447,6 +1537,10 @@ def _installer(words: list[str], index: int) -> str:
     first = words[index - 3] if index >= 3 else ""
     if first in ("uv", "yarn"):
         return first
+    # apt options may stand between the program and its verb.
+    apt = [word for word in words[: index - 1] if word in _APT_PROGRAMS]
+    if apt:
+        return apt[-1]
     second = program_name(words[index - 2])
     return "pip" if _PIP_ALIAS.match(second) else second
 
@@ -2390,9 +2484,15 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
     """True when SCOPE's path holds FETCH's output, it is the store of FETCH's
     installer, or its key names FETCH's pin or a file that sets it and its
     path can hold FETCH's output."""
-    if scope.key is None:
-        return True
     if fetch.installer and scope.installers & {fetch.installer, ANY_INSTALLER}:
+        return True
+    if fetch.moving:
+        # A key the lint cannot read may still hit and refresh, but only a
+        # path that holds the installer's store can hold the packages.
+        return _holds(scope, fetch) and (
+            scope.key is None or _hits_and_refreshes(scope, fetch)
+        )
+    if scope.key is None:
         return True
     return _holds(scope, fetch) or (
         _key_names(scope, fetch) and _may_hold(scope, fetch)
@@ -2422,6 +2522,19 @@ def _key_names(scope: CacheScope, fetch: Fetch) -> bool:
         ):
             return True
     return False
+
+
+def _hits_and_refreshes(scope: CacheScope, fetch: Fetch) -> bool:
+    """True when SCOPE's key can restore an entry for the moving install FETCH
+    and can also save a newer one. No version names a moving install, so two
+    keys qualify. A key that hashes a file holding the install changes when
+    its package list changes. A per-run key changes on every run, and its
+    `restore-keys` restore the newest older entry. A per-run key with no
+    `restore-keys` never restores. A key with neither part never changes, so
+    its one entry ages while the index moves on."""
+    if _PER_RUN_KEY.search(scope.key or ""):
+        return scope.restores
+    return _key_names(scope, fetch)
 
 
 # A path part the text does not fix: a variable, or a glob a cache path holds.
@@ -2703,13 +2816,18 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
                 )
                 if not any(_covers(scope, fetch) for scope in earlier)
             ]
-            if not uncovered:
-                continue
-            what = ", ".join(sorted({fetch.what for fetch in uncovered})[:3])
-            if origin:
-                what += f" (installed by {origin})"
-            why = NO_COVER if scopes else NO_CACHE
-            violations.append((line, MESSAGE.format(job=name, what=what, why=why)))
+            for moving, template, no_cover in (
+                (False, MESSAGE, NO_COVER),
+                (True, MOVING_MESSAGE, MOVING_NO_COVER),
+            ):
+                kind = [fetch for fetch in uncovered if fetch.moving == moving]
+                if not kind:
+                    continue
+                what = ", ".join(sorted({fetch.what for fetch in kind})[:3])
+                if origin:
+                    what += f" (installed by {origin})"
+                why = no_cover if scopes else NO_CACHE
+                violations.append((line, template.format(job=name, what=what, why=why)))
     return violations
 
 

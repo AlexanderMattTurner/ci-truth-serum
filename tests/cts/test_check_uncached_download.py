@@ -267,10 +267,6 @@ def test_a_setup_action_with_caching_off_does_not_exempt_the_job(tmp_path):
 @pytest.mark.parametrize(
     "script",
     [
-        "pip install ruff",
-        "apt-get install -y curl",
-        "npm install -g prettier",
-        "npm install -g prettier@latest",
         "docker pull ubuntu:24.04",
         "curl -fsSL -o t https://example.com/latest/t",
         'curl -O "https://host/${GITHUB_SHA}/tool"',
@@ -283,10 +279,6 @@ def test_a_setup_action_with_caching_off_does_not_exempt_the_job(tmp_path):
         "# pip install ruff==0.14.0",
     ],
     ids=[
-        "unpinned-pip",
-        "unpinned-apt",
-        "unpinned-npm",
-        "npm-latest",
         "docker-pull",
         "unpinned-url",
         "github-sha-url",
@@ -300,20 +292,24 @@ def test_a_setup_action_with_caching_off_does_not_exempt_the_job(tmp_path):
     ],
 )
 def test_what_this_lint_leaves_alone(tmp_path, script):
-    """An unpinned download has no stable cache key, so flagging it would be an
-    unfixable finding — check-versionless-install owns that class. A local `npm`
-    or `yarn` install records its pins in package.json. A URL built from the
-    runner's own $GITHUB_SHA / $GITHUB_REF_NAME changes on every run, so no cache
-    key could track it either. A string a command prints, and a comment, are not
-    commands at all."""
+    """An unpinned URL has no stable cache key, so flagging it would be an
+    unfixable finding. A local `npm` or `yarn` install records its pins in
+    package.json. A URL built from the runner's own $GITHUB_SHA /
+    $GITHUB_REF_NAME changes on every run, so no cache key could track it
+    either. A string a command prints, and a comment, are not commands at
+    all. An unpinned package install is a moving-index finding; the tests
+    under "a moving package index" own it."""
     assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
 
 
-def test_a_pinned_install_beside_an_unpinned_one_is_not_flagged(tmp_path):
-    """One command, two specs: the unpinned spec makes the whole command
-    un-cacheable, so this lint stays out of it."""
+def test_a_pinned_install_beside_an_unpinned_one_is_one_moving_install(tmp_path):
+    """One command, two specs: the unpinned spec makes the whole command take
+    a moving index, so the command gets the moving-index finding only."""
     path = _write(tmp_path, _job(_run("pip install ruff==0.14.0 black")))
-    assert uc.check_file(path) == []
+    message = _finding(path)
+    assert "moving package index" in message
+    assert "black" in message
+    assert "downloads pinned" not in message
 
 
 def test_a_uses_job_is_skipped(tmp_path):
@@ -2739,9 +2735,177 @@ def test_a_setup_actions_cache_input_reads_the_composite_input(rooted, passed, f
 )
 def test_an_install_reads_the_specs_an_array_holds(tmp_path, script, named):
     """`pip install "${specs[@]}"` installs what every assignment of `specs`
-    gives it. An unpinned element makes the install the versionless lint's
-    concern, even when a condition adds it. A pinned element added under a
-    condition is not fixed by the text, so no finding names it."""
+    gives it. An unpinned element makes the install take a moving index, even
+    when a condition adds it, so no pinned-download finding names it. A pinned
+    element added under a condition is not fixed by the text, so no finding
+    names it."""
     messages = _messages(_write(tmp_path, _job(_run(script))))
-    assert [named in m for m in messages] == ([True] if named else [])
-    assert not any("black" in m for m in messages)
+    pinned = [m for m in messages if "moving package index" not in m]
+    assert [named in m for m in pinned] == ([True] if named else [])
+    assert not any("black" in m for m in pinned)
+    assert [m for m in messages if m not in pinned] == [
+        m for m in messages if "black" in m
+    ]
+
+
+# ── a moving package index ──────────────────────────────────────────────────
+
+MOVING = "moving package index"
+APT_STORE = "/var/cache/apt/archives"
+WORKFLOW_KEY = "apt-${{ hashFiles('wf.yaml') }}"
+APT = _run("apt-get install -y curl")
+
+
+@pytest.mark.parametrize(
+    ("script", "named"),
+    [
+        ("apt-get install -y curl", "curl"),
+        ("sudo apt-get install -y curl jq", "curl jq"),
+        ("apt-get install -y curl  # pin-exempt: tracks the Ubuntu archive", "curl"),
+        ("sudo apt-get -qq -o Acquire::Retries=3 install -y curl", "curl"),
+        ("pip install ruff", "ruff"),
+        ("uv tool install ruff", "ruff"),
+        ("npm install -g prettier", "prettier"),
+        ("npm install -g prettier@latest", "prettier@latest"),
+    ],
+    ids=[
+        "apt",
+        "sudo-apt",
+        "pin-exempt",
+        "apt-options-before-the-verb",
+        "pip",
+        "uv-tool",
+        "npm-global",
+        "latest",
+    ],
+)
+def test_a_moving_index_install_in_an_uncached_job_is_flagged(tmp_path, script, named):
+    """An install with no version fetches from the package host on every run.
+    A `pin-exempt` reason excuses the missing pin, not the missing store."""
+    message = _finding(_write(tmp_path, _job(_run(script))))
+    assert MOVING in message
+    assert named in message
+    assert uc.NO_CACHE in message
+
+
+def _store(key: str, path: str = APT_STORE, restore: str = "") -> str:
+    extra = f"          restore-keys: {restore}\n" if restore else ""
+    return _cache(key, path) + extra
+
+
+@pytest.mark.parametrize(
+    ("steps", "fires"),
+    [
+        (_store(WORKFLOW_KEY) + APT, False),
+        (_store(WORKFLOW_KEY, "/var/cache/apt") + APT, False),
+        (_store(WORKFLOW_KEY) + _run("apt-get -qq install -y curl"), False),
+        (APT + _store(WORKFLOW_KEY), True),
+        (_store(WORKFLOW_KEY, "~/.cache/pip") + APT, True),
+        (_store(WORKFLOW_KEY, "/var/cache/apt/archives/partial") + APT, True),
+        (_store("apt-${{ runner.os }}-v1") + APT, True),
+        (_store("apt-${{ hashFiles('other.txt') }}") + APT, True),
+        (_store("apt-${{ github.run_id }}") + APT, True),
+        (_store("apt-${{ github.run_id }}", restore="apt-") + APT, False),
+        (_store(WORKFLOW_KEY, "~/.cache/pip") + _run("pip install ruff"), False),
+        (
+            _store(WORKFLOW_KEY, "~/.cache/pip")
+            + _run("pip install --no-cache-dir ruff"),
+            True,
+        ),
+        (_store("${{ steps.day.outputs.key }}") + APT, False),
+        (_store("${{ steps.day.outputs.key }}", "~/.cache/pip") + APT, True),
+        (
+            _store(WORKFLOW_KEY, "/tmp/pc")
+            + _run("pip install --cache-dir /tmp/pc ruff"),
+            False,
+        ),
+        (
+            _store(WORKFLOW_KEY, "/tmp/pc")
+            + _run("pip install --cache-dir=/tmp/pc ruff"),
+            False,
+        ),
+        (
+            _store(WORKFLOW_KEY, "~/.cache/pip")
+            + _run("pip install --cache-dir /tmp/pc ruff"),
+            True,
+        ),
+    ],
+    ids=[
+        "store-before-keyed-on-the-list",
+        "parent-of-the-store",
+        "apt-options-before-the-verb",
+        "store-after-the-install",
+        "path-of-another-installer",
+        "path-below-the-store",
+        "key-that-never-refreshes",
+        "key-on-an-unrelated-file",
+        "per-run-key-that-never-hits",
+        "per-run-key-with-restore-keys",
+        "pip-store",
+        "install-that-skips-the-store",
+        "unreadable-key",
+        "unreadable-key-on-another-path",
+        "store-moved-by-a-flag",
+        "store-moved-by-a-flag-with-equals",
+        "default-store-of-a-moved-store",
+    ],
+)
+def test_a_moving_install_needs_a_store_that_can_hit_and_refresh(rooted, steps, fires):
+    """The cache must restore before the install and hold the installer's store.
+    Its key must also change with the file that lists the packages, or change
+    on every run with `restore-keys` to fall back on. A fixed key saves one
+    entry and never refreshes it. A per-run key with no fallback never
+    restores."""
+    messages = _messages(_write(rooted, _job(steps)))
+    assert len(messages) == int(fires), messages
+    assert not fires or (MOVING in messages[0] and uc.MOVING_NO_COVER in messages[0])
+
+
+def test_a_key_on_the_script_that_lists_the_packages_covers_its_install(rooted):
+    """The walk follows the script, so the file that lists the packages is the
+    script. A key that hashes it changes when the list changes."""
+    _tree(rooted, {"scripts/deps.sh": "sudo apt-get install -y curl jq\n"})
+    run = _run("bash scripts/deps.sh")
+    keyed = _store("apt-${{ hashFiles('scripts/deps.sh') }}")
+    assert uc.check_file(_write(rooted, _job(keyed + run))) == []
+    message = _finding(_write(rooted, _job(_store("apt-v1") + run)))
+    assert "curl jq in scripts/deps.sh" in message
+
+
+def test_a_key_on_the_file_that_fills_a_package_array_covers_its_install(rooted):
+    """An array that a sourced file fills lists the packages in that file."""
+    _tree(rooted, {"packages.sh": "packages=(curl jq)\n"})
+    run = _run('source packages.sh\nsudo apt-get install -y "${packages[@]}"')
+    keyed = _store("apt-${{ hashFiles('packages.sh') }}")
+    assert uc.check_file(_write(rooted, _job(keyed + run))) == []
+    assert MOVING in _finding(_write(rooted, _job(_store("apt-v1") + run)))
+
+
+def test_a_setup_action_store_covers_a_moving_install_of_its_installer(tmp_path):
+    """setup-python's pip cache holds pip's store, and nothing apt fetches."""
+    step = (
+        "      - uses: actions/setup-python@v5\n        with:\n          cache: pip\n"
+    )
+    assert uc.check_file(_write(tmp_path, _job(step + _run("pip install ruff")))) == []
+    assert MOVING in _finding(_write(tmp_path, _job(step + APT)))
+
+
+@pytest.mark.parametrize(
+    ("annotation", "fires"),
+    [
+        ("# cache-exempt: the job tests the live mirror", False),
+        ("# cache-exempt:", True),
+    ],
+    ids=["with-a-reason", "empty-reason"],
+)
+def test_the_opt_out_needs_a_reason_on_a_moving_install(tmp_path, annotation, fires):
+    script = f"{annotation}\napt-get install -y curl"
+    assert len(uc.check_file(_write(tmp_path, _job(_run(script))))) == int(fires)
+
+
+def test_a_moving_install_and_a_pinned_one_report_apart(tmp_path):
+    """One step can do both. Each finding names its own cost."""
+    script = "pip install ruff==0.14.0\napt-get install -y curl"
+    messages = _messages(_write(tmp_path, _job(_run(script))))
+    assert len(messages) == 2, messages
+    assert ["ruff==0.14.0" in messages[0], MOVING in messages[1]] == [True, True]
