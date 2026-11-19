@@ -2882,3 +2882,108 @@ def test_a_moving_install_and_a_pinned_one_report_apart(tmp_path):
     messages = _messages(_write(tmp_path, _job(_run(script))))
     assert len(messages) == 2, messages
     assert ["ruff==0.14.0" in messages[0], MOVING in messages[1]] == [True, True]
+
+
+# ── installs in an image, a guest or a container the job starts ──────────────
+
+MACHINE = "reads a live package mirror"
+DEB_CACHE = (
+    "      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n"
+    "        with:\n          path: debs\n          key: debs-${{ hashFiles('t.yaml') }}\n"
+)
+
+
+def _guest(script: str) -> dict[str, str]:
+    body = "\n".join(f"      {line}" for line in script.splitlines())
+    return {"t.yaml": f"provision:\n  - mode: system\n    script: |\n{body}\n"}
+
+
+def _image(run: str) -> dict[str, str]:
+    return {"Dockerfile": f"FROM x\nRUN {run}\n"}
+
+
+BUILD = _run("docker build .")
+ACTION = (
+    "      - uses: docker/build-push-action@0057852bfaa89a56745cba8c7296529d2fc39830\n"
+)
+BOOT = _run("limactl start t.yaml")
+
+
+@pytest.mark.parametrize(
+    ("files", "steps", "fires"),
+    [
+        # A Dockerfile RUN, in each package manager an image can run.
+        ({"i/Dockerfile": "FROM x\nRUN apt-get update && \\\n  apt-get install -y c\n"}, _run("docker build -f i/Dockerfile ."), True),
+        (_image("apk add --no-cache curl"), BUILD, True),
+        (_image("dnf -y install curl"), BUILD, True),
+        (_image("pacman -Syu --noconfirm curl"), BUILD, True),
+        (_image('["apk", "add", "curl"]'), BUILD, True),
+        (_image("--mount=type=cache,target=/var/cache/apk apk add curl"), BUILD, True),
+        (_image("apt-get install -y -t bookworm curl/bookworm-backports"), BUILD, True),
+        (_image("apk add curl"), _run("docker buildx build -t i ."), True),
+        (_image("apk add curl"), ACTION, True),
+        # A registry cache is the store in front of the build.
+        (_image("apk add curl"), _run("docker buildx build --cache-from type=gha ."), False),
+        (_image("apk add curl"), ACTION + "        with:\n          cache-from: type=gha\n", False),
+        (_image("apt-get install -y ./tool.deb"), BUILD, False),
+        (_image("echo 'apk add curl'"), BUILD, False),
+        # A Lima guest's provision script, reached through a variable.
+        (_guest("apt-get -qq install -y curl"), _run('t="$GITHUB_WORKSPACE/t.yaml"\nlimactl create "$t"'), True),
+        (_guest("apt-get install -y /mnt/debs/*.deb"), DEB_CACHE + BOOT, False),
+        # A local install with no cache restored before the boot has nothing to read.
+        (_guest("apt-get install -y /mnt/debs/*.deb\napt-get install -y curl"), BOOT, True),
+        (_guest("cat <<'EOF' > doc.txt\napt-get install -y curl\nEOF"), BOOT, False),
+        # A stand-in container's shell body.
+        ({}, _run("docker run --rm fedora:41 sh -c 'dnf install -y sudo && true'"), True),
+        ({}, _run("docker run --rm fedora:41 sh -c 'echo dnf install -y sudo'"), False),
+        # On the host, only apt is read: a host's dnf is a branch an Ubuntu runner skips.
+        ({}, _run("if command -v dnf; then dnf install -y sudo; fi"), False),
+    ],
+)  # fmt: skip
+def test_an_install_in_a_machine_the_job_starts(rooted, files, steps, fires):
+    """A live install in an image, guest or container fails the job the same
+    way a host install does, and the host step names none of it."""
+    _tree(rooted, files)
+    messages = [m for m in _messages(_write(rooted, _job(steps))) if MACHINE in m]
+    assert bool(messages) is fires, messages
+
+
+@pytest.mark.parametrize(
+    ("marker", "fires"),
+    [
+        ("# cache-exempt: the smoke tests the upstream mirror", False),
+        ("# cache-exempt", True),
+    ],
+)
+def test_an_install_smoke_states_its_exemption(rooted, marker, fires):
+    """A job whose purpose is the upstream install opts out with a reason."""
+    _tree(rooted, _image("apk add curl"))
+    path = _write(rooted, _job(_run(f"{marker}\ndocker build .")))
+    assert any(MACHINE in m for m in _messages(path)) is fires
+
+
+@pytest.mark.parametrize(
+    ("value", "fires"), [("~/debs", True), ("${{ github.workspace }}/debs", False)]
+)
+def test_a_store_whose_path_reaches_bash_with_a_tilde_never_fills(
+    tmp_path, value, fires
+):
+    """actions/cache expands `~`, and bash does not expand one from a variable."""
+    steps = (
+        "      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830\n"
+        "        with:\n          path: ${{ env.STORE }}\n          key: debs-${{ github.run_id }}\n"
+        "          restore-keys: debs-\n" + _run('compgen -G "$STORE/*.deb"')
+    )
+    body = _job(steps).replace(
+        "    steps:\n", f"    env:\n      STORE: {value}\n    steps:\n"
+    )
+    messages = [m for m in _messages(_write(tmp_path, body)) if "never fills" in m]
+    assert messages == (
+        [
+            "job 'build' reads $STORE, whose value '~/debs' starts with '~'. Bash does "
+            "not expand a tilde that comes from a variable, so the step reads a directory "
+            "named '~' and the cache of '~/debs' never fills. Spell the value with $HOME."
+        ]
+        if fires
+        else []
+    )
