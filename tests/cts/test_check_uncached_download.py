@@ -2814,6 +2814,21 @@ def _store(key: str, path: str = APT_STORE, restore: str = "") -> str:
         ),
         (_store("${{ steps.day.outputs.key }}") + APT, False),
         (_store("${{ steps.day.outputs.key }}", "~/.cache/pip") + APT, True),
+        (
+            _store(WORKFLOW_KEY, "/tmp/pc")
+            + _run("pip install --cache-dir /tmp/pc ruff"),
+            False,
+        ),
+        (
+            _store(WORKFLOW_KEY, "/tmp/pc")
+            + _run("pip install --cache-dir=/tmp/pc ruff"),
+            False,
+        ),
+        (
+            _store(WORKFLOW_KEY, "~/.cache/pip")
+            + _run("pip install --cache-dir /tmp/pc ruff"),
+            True,
+        ),
     ],
     ids=[
         "store-before-keyed-on-the-list",
@@ -2830,6 +2845,9 @@ def _store(key: str, path: str = APT_STORE, restore: str = "") -> str:
         "install-that-skips-the-store",
         "unreadable-key",
         "unreadable-key-on-another-path",
+        "store-moved-by-a-flag",
+        "store-moved-by-a-flag-with-equals",
+        "default-store-of-a-moved-store",
     ],
 )
 def test_a_moving_install_needs_a_store_that_can_hit_and_refresh(rooted, steps, fires):
@@ -2852,6 +2870,15 @@ def test_a_key_on_the_script_that_lists_the_packages_covers_its_install(rooted):
     assert uc.check_file(_write(rooted, _job(keyed + run))) == []
     message = _finding(_write(rooted, _job(_store("apt-v1") + run)))
     assert "curl jq in scripts/deps.sh" in message
+
+
+def test_a_key_on_the_file_that_fills_a_package_array_covers_its_install(rooted):
+    """An array that a sourced file fills lists the packages in that file."""
+    _tree(rooted, {"packages.sh": "packages=(curl jq)\n"})
+    run = _run('source packages.sh\nsudo apt-get install -y "${packages[@]}"')
+    keyed = _store("apt-${{ hashFiles('packages.sh') }}")
+    assert uc.check_file(_write(rooted, _job(keyed + run))) == []
+    assert MOVING in _finding(_write(rooted, _job(_store("apt-v1") + run)))
 
 
 def test_a_setup_action_store_covers_a_moving_install_of_its_installer(tmp_path):
