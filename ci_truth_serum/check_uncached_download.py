@@ -231,7 +231,10 @@ MOVING_MESSAGE = (
     "the job red for a reason no diff caused. Restore a cache of the "
     "installer's store before the install, keyed on hashFiles() of the file "
     "that lists the packages or on a per-run key with restore-keys, or "
-    f"annotate '# {OPT_OUT}: <reason>'."
+    f"annotate '# {OPT_OUT}: <reason>'. A root-owned store such as "
+    "/var/cache/apt/archives needs a step that makes it writable by the "
+    "runner user first, because the cache action only warns when it cannot "
+    "write there."
 )
 NO_CACHE = "no cache step anywhere in the job"
 NO_COVER = (
@@ -1276,14 +1279,16 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
     where = f" in {rel}" if (rel := _relative(unit.path)) else ""
     if not _NO_STORE_FLAGS.isdisjoint(install_words):
         installer = ""  # the bytes reach no store, so no store cache holds them
-    store = _INSTALLER_STORES.get(installer, "")
+    store = _store_flag(install_words) or _INSTALLER_STORES.get(installer, "")
     if moving:
         nodes = [install_args[install_words.index(spec)] for spec in moving]
+        # The file that fills an array the install expands lists its packages.
+        arrays = {name for node in args if (name := _whole_array(node))}
         fetches.append(
             Fetch(
                 " ".join(moving) + where,
                 frozenset(),
-                frozenset(_sources_of(nodes, set(), namespace, unit)),
+                frozenset(_sources_of(nodes, arrays, namespace, unit)),
                 frozenset(_at_each_home(store)),
                 frozenset(),
                 installer,
@@ -1340,6 +1345,22 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
             )
         )
     return fetches
+
+
+# The install flags that move an installer's store: pip's and uv's
+# `--cache-dir`, and npm's `--cache`.
+_STORE_FLAGS = ("--cache-dir", "--cache")
+
+
+def _store_flag(words: list[str]) -> str:
+    """The store that a flag in WORDS names, when the text fixes it, else the
+    empty string."""
+    for at, word in enumerate(words):
+        flag, equals, value = word.partition("=")
+        if flag in _STORE_FLAGS:
+            value = value if equals else (words[at + 1] if at + 1 < len(words) else "")
+            return "" if value.startswith("$") else value
+    return ""
 
 
 def _at_each_home(store: str) -> set[str]:
