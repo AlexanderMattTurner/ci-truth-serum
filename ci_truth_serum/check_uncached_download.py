@@ -107,13 +107,10 @@ never fire there. A red that no diff caused also costs a rerun in any job.
 The rule also reads an install in a machine the job starts: an image built
 from a repo Dockerfile (`cache-from` is its store), a Lima guest's
 `provision:` scripts, and a `docker run IMAGE sh -c BODY`. That text runs in
-the machine, so the rule reads apk, dnf, yum, zypper and pacman there. A host
-script can hold a `dnf` branch that an Ubuntu runner skips, so the host walk
-reads apt alone. An install of local package files alone reads a store. A
-Dockerfile inside a third-party package is not in the repo, so the rule
-cannot read it. The rule also reports a store that can never fill: an `env:`
-value that starts with `~/`, which a cache `path:` names and a step reads as
-`$X`. The cache action expands the tilde, and bash does not.
+the machine, so the rule reads apk, dnf, yum, zypper and pacman there, and
+apt alone on the host, where a `dnf` branch may never run. A Dockerfile in a
+third-party package is not in the repo, so the rule cannot read it. A cache
+whose `env:` path starts with `~/` never fills: bash does not expand it.
 
 The rule does not judge an install whose packages are arguments of a wrapper
 function (`apt_install "$@"`), or an index refresh alone (`apt-get update`).
@@ -2788,14 +2785,10 @@ def step_run(flat: FlatStep, doc: dict, job: dict) -> StepRun:
 MACHINE_MESSAGE = (
     "job '{job}' runs '{what}' in {machine}, and that install reads a live "
     "package mirror with no store the repo controls in front of it, so a slow "
-    "or dead mirror turns the job red. {remedy}, or annotate "
-    f"'# {OPT_OUT}: <reason>'."
+    "or dead mirror turns the job red. Build an image with a registry cache "
+    "(`cache-from`), or install package files the job restored from a cache, "
+    f"or annotate '# {OPT_OUT}: <reason>'."
 )
-_REMEDIES = {
-    "image": "Build with a registry cache (`cache-from`)",
-    "guest": "Restore the packages from a cache and install those files",
-    "container": "Bake the packages into an image built with a registry cache",
-}
 TILDE_MESSAGE = (
     "job '{job}' reads ${name}, whose value '{value}' starts with '~'. Bash "
     "does not expand a tilde that comes from a variable, so the step reads a "
@@ -2809,7 +2802,7 @@ _MACHINE_VERBS = {"apk": "add", "pacman": "-S[yuw]*|--sync"} | dict.fromkeys(
 _PREFIX_PROGRAMS = frozenset({"sudo", "env", "nice", "command", "exec"})
 _SHELLS = frozenset({"sh", "bash", "ash", "dash"})
 # The `docker build` options that take no value.
-_BOOL_FLAGS = frozenset({"--no-cache", "--pull", "--push", "--load", "-q", "--rm"})
+_BOOL_FLAGS = frozenset("--no-cache --pull --push --load -q --quiet --rm".split())
 # A package file on disk. A path opens with `/`, since `pkg/release` names a
 # release of the mirror, and a URL is a download.
 _LOCAL_SPEC = re.compile(r"^(?!.*://)(?:\.{0,2}/|.*\.(?:deb|rpm|apk)$)")
@@ -2862,7 +2855,7 @@ def _dockerfile_installs(path: Path) -> list[tuple[str, bool]]:
             else:
                 scripts[-1] += content
         elif instruction["instruction"] == "RUN":
-            opener = re.match(r"<<-?['\"]?(?P<tag>\w+)", value)
+            opener = re.match(r"(?:--\S+\s+)*<<-?['\"]?(?P<tag>\w+)", value)
             heredoc = opener["tag"] if opener else None
             scripts.append("" if opener else _shell_form(value))
     return [install for script in scripts for install in machine_installs(script)]
@@ -2892,10 +2885,8 @@ def _guest_installs(path: Path) -> list[tuple[str, bool]]:
 
 
 class _Machine(NamedTuple):
-    """An image, guest or container that a step starts. STORED is True when
-    the step feeds it from a store that the repo controls."""
+    """An image, guest or container that a step starts, STORED from a cache."""
 
-    kind: str
     machine: str
     installs: list[tuple[str, bool]]
     stored: bool = False
@@ -2915,7 +2906,7 @@ def _repo_machine(
     if not path.is_file() or not path.is_relative_to(REPO_ROOT):
         return None
     read = _guest_installs if kind == "guest" else _dockerfile_installs
-    return _Machine(kind, f"the {kind} of {_relative(path)}", read(path), stored)
+    return _Machine(f"the {kind} of {_relative(path)}", read(path), stored)
 
 
 def _started_machine(
@@ -2925,11 +2916,15 @@ def _started_machine(
     create` or `start` boots, a container that `docker run … sh -c BODY`
     runs, or an image that `docker build` builds. VALUES are the expanded
     words, None where the text does not fix one."""
+    while words and program_name(words[0]) in _PREFIX_PROGRAMS:
+        words, values = words[1:], values[1:]
     program = program_name(words[0]) if words else ""
     if program == "limactl" and words[1:2] in (["create"], ["start"]):
         yamls = [v for v in values if v and v.endswith((".yaml", ".yml"))]
         return _repo_machine("guest", yamls[0] if yamls else None, directory)
-    verbs = [w for w in words[1:3] if w[:1] != "-"] if program == "docker" else []
+    # `docker compose` reads a compose file, which this pass does not.
+    docker = program == "docker" and words[1:2] != ["compose"]
+    verbs = [w for w in words[1:3] if w[:1] != "-"] if docker else []
     if "run" in verbs:
         bodies = [
             words[at + 2]
@@ -2937,13 +2932,13 @@ def _started_machine(
             if program_name(words[at]) in _SHELLS and _SHELL_C.fullmatch(words[at + 1])
         ]
         installs = machine_installs(bodies[0]) if bodies else []
-        return _Machine("container", "a container it starts", installs)
+        return _Machine("a container it starts", installs)
     if "build" not in verbs:
         return None
     at = words.index("build") + 1
     files = [
         values[i + 1] for i in range(at, len(words) - 1) if words[i] in ("-f", "--file")
-    ]
+    ] + [str(v).partition("=")[2] for v in values[at:] if str(v).startswith("--file=")]
     context, skip = ".", False
     for word, value in zip(words[at:], values[at:]):
         if not skip and word[:1] != "-":
@@ -3000,7 +2995,6 @@ def _machine_findings(name: str, flat: FlatStep, run: StepRun) -> list[tuple[int
                 job=name,
                 what="', '".join(live[:3]),
                 machine=machine.machine,
-                remedy=_REMEDIES[machine.kind],
             )
             findings[flat.line, message] = None
     return list(findings)
@@ -3011,10 +3005,11 @@ def _tilde_findings(name: str, flat: list[FlatStep]) -> list[tuple[int, str]]:
     `env:` value of X starts with `~/` and a cache `path:` of the job names
     X or its value. The cache action expands that tilde, and bash does not."""
     paths = [
-        str(step.step["with"].get("path", ""))
+        line.strip()
         for step in flat
         if cache_scope(step.step, step.context)
         and isinstance(step.step.get("with"), dict)
+        for line in str(step.step["with"].get("path", "")).splitlines()
     ]
     findings = []
     for step in flat:
@@ -3030,7 +3025,7 @@ def _tilde_findings(name: str, flat: list[FlatStep]) -> list[tuple[int, str]]:
             if (
                 key in read
                 and str(value).startswith("~/")
-                and any(value in p or f"env.{key}" in p for p in paths)
+                and any(value == p or f"env.{key}" in p for p in paths)
             ):
                 findings.append(
                     (step.line, TILDE_MESSAGE.format(job=name, name=key, value=value))
