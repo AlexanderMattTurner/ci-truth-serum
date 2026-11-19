@@ -104,25 +104,16 @@ on. The pack knows "required" only from `# required-check: true` comments,
 which a stranger's repository does not write, so a required-only rule would
 never fire there. A red that no diff caused also costs a rerun in any job.
 
-The rule also reads an install that runs in a machine the job starts. The
-text of that machine runs there, so the rule reads apk, dnf, yum, zypper and
-pacman as well as apt. A host script can hold a `dnf` branch that an Ubuntu
-runner skips, so the host walk reads apt alone. The machines are these:
-
-  * an image that `docker build` or `docker/build-push-action` builds from a
-    repo Dockerfile, read with `dockerfile-parse`. A registry cache
-    (`cache-from`) is its store.
-  * a Lima guest that `limactl create` or `start` boots from a repo template,
-    read from its `provision:` scripts. The guest reads a store when the job
-    restores a cache before the boot and the guest installs local package
-    files.
-  * a container that `docker run IMAGE sh -c BODY` starts, read from BODY. No
-    host cache fills it.
-
-A Dockerfile that a third-party package holds is not in the repo, so the rule
+The rule also reads an install in a machine the job starts: an image built
+from a repo Dockerfile (`cache-from` is its store), a Lima guest's
+`provision:` scripts, and a `docker run IMAGE sh -c BODY`. That text runs in
+the machine, so the rule reads apk, dnf, yum, zypper and pacman there. A host
+script can hold a `dnf` branch that an Ubuntu runner skips, so the host walk
+reads apt alone. An install of local package files alone reads a store. A
+Dockerfile inside a third-party package is not in the repo, so the rule
 cannot read it. The rule also reports a store that can never fill: an `env:`
-value that starts with `~/`, a cache `path:` that names it, and a step that
-reads it as `$X`. The cache action expands the tilde, and bash does not.
+value that starts with `~/`, which a cache `path:` names and a step reads as
+`$X`. The cache action expands the tilde, and bash does not.
 
 The rule does not judge an install whose packages are arguments of a wrapper
 function (`apt_install "$@"`), or an index refresh alone (`apt-get update`).
@@ -2779,27 +2770,30 @@ MACHINE_MESSAGE = (
     "or dead mirror turns the job red. {remedy}, or annotate "
     f"'# {OPT_OUT}: <reason>'."
 )
-_IMAGE = "Build with a registry cache (`cache-from`)"
-_GUEST = "Restore the packages from a cache before the boot and install those files"
-_CONTAINER = "Bake the packages into an image built with a registry cache"
+_REMEDIES = {
+    "image": "Build with a registry cache (`cache-from`)",
+    "guest": "Restore the packages from a cache and install those files",
+    "container": "Bake the packages into an image built with a registry cache",
+}
 TILDE_MESSAGE = (
     "job '{job}' reads ${name}, whose value '{value}' starts with '~'. Bash "
     "does not expand a tilde that comes from a variable, so the step reads a "
     "directory named '~' and the cache of '{value}' never fills. Spell the "
     "value with $HOME."
 )
-# The verb that makes each package manager read its mirror. The walk reads
-# them only in a machine that runs the text: on the host, a `dnf` behind
-# `command -v dnf` never runs on an Ubuntu runner, so the host reads apt alone.
-_MACHINE_VERBS = {"apk": "add", "pacman": "-S"} | dict.fromkeys(
+# The verb that makes each package manager read its mirror, as a pattern.
+_MACHINE_VERBS = {"apk": "add", "pacman": "-S[yuw]*|--sync"} | dict.fromkeys(
     ("apt-get", "apt", "aptitude", "dnf", "microdnf", "yum", "zypper"), "install"
 )
-_PACMAN_SYNC = re.compile(r"-S[yuw]*|--sync")
 _PREFIX_PROGRAMS = frozenset({"sudo", "env", "nice", "command", "exec"})
 _SHELLS = frozenset({"sh", "bash", "ash", "dash"})
-# A spec that names a package file, which the install reads from disk. A
-# `pkg/release` spec names a release of the mirror, so a path must open with `/`.
-_LOCAL_SPEC = re.compile(r"^\.{0,2}/|\.(?:deb|rpm|apk)$")
+# The `docker build` options that take no value.
+_BOOL_FLAGS = frozenset({"--no-cache", "--pull", "--push", "--load", "-q", "--rm"})
+# A package file on disk. A path opens with `/`, since `pkg/release` names a
+# release of the mirror, and a URL is a download.
+_LOCAL_SPEC = re.compile(r"^(?!.*://)(?:\.{0,2}/|.*\.(?:deb|rpm|apk)$)")
+# A shell option cluster that holds `-c`: `-c`, `-ec`, `-xc`.
+_SHELL_C = re.compile(r"-[a-z]*c[a-z]*")
 
 
 def machine_installs(script: str) -> list[tuple[str, bool]]:
@@ -2809,21 +2803,23 @@ def machine_installs(script: str) -> list[tuple[str, bool]]:
     found = []
     for command in iter_nodes(parse(script), "command"):
         words = tokens(command)
-        # A prefix program, or a Dockerfile `RUN --mount=…` flag, only starts
-        # the program after it.
+        # A prefix program, its options and `NAME=value` words, or a
+        # Dockerfile `RUN --mount=…` flag, only start the program after them.
         while words and (
-            program_name(words[0]) in _PREFIX_PROGRAMS or words[0][:1] == "-"
+            program_name(words[0]) in _PREFIX_PROGRAMS
+            or words[0][:1] == "-"
+            or re.match(r"\w+=", words[0])
         ):
             words = words[1:]
         program = program_name(words[0]) if words else ""
-        if program in _SHELLS and "-c" in words[:-1]:
-            found += machine_installs(words[words.index("-c") + 1])
-        verb = _MACHINE_VERBS.get(program)
-        verbs = [
-            w
-            for w in words
-            if w == verb or (verb == "-S" and _PACMAN_SYNC.fullmatch(w))
+        found += [
+            install
+            for at, word in enumerate(words[1:-1], 1)
+            if program in _SHELLS and _SHELL_C.fullmatch(word)
+            for install in machine_installs(words[at + 1])
         ]
+        verb = _MACHINE_VERBS.get(program)
+        verbs = [w for w in words if verb and re.fullmatch(verb, w)]
         if verbs:
             specs = [w for w in words[words.index(verbs[0]) + 1 :] if w[:1] != "-"]
             local = bool(specs) and all(_LOCAL_SPEC.search(spec) for spec in specs)
@@ -2834,15 +2830,31 @@ def machine_installs(script: str) -> list[tuple[str, bool]]:
 def _dockerfile_installs(path: Path) -> list[tuple[str, bool]]:
     """Each package install that the `RUN` instructions of the Dockerfile at
     PATH make. An exec form is a JSON list of words."""
-    found = []
+    scripts, heredoc = [], None
     for instruction in DockerfileParser(fileobj=path.open("rb")).structure:
-        value = instruction["value"]
-        if instruction["instruction"] == "RUN":
-            exec_form = value.lstrip().startswith("[")
-            found += machine_installs(
-                shlex.join(json.loads(value)) if exec_form else value
-            )
-    return found
+        value, content = instruction["value"], instruction["content"]
+        # dockerfile-parse reads each line of a `RUN <<EOF` body as an
+        # instruction of its own, so the body is rebuilt from those lines.
+        if heredoc is not None:
+            if content.strip() == heredoc:
+                heredoc = None
+            else:
+                scripts[-1] += content
+        elif instruction["instruction"] == "RUN":
+            opener = re.match(r"<<-?['\"]?(\w+)", value)
+            heredoc = opener[1] if opener else None
+            scripts.append("" if opener else _shell_form(value))
+    return [install for script in scripts for install in machine_installs(script)]
+
+
+def _shell_form(value: str) -> str:
+    """The script that the `RUN` VALUE runs. Docker reads a value that is not
+    a JSON list as shell form, as in `RUN [ -f x ] && apk add y`."""
+    try:
+        words = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return shlex.join(words) if isinstance(words, list) else value
 
 
 def _guest_installs(path: Path) -> list[tuple[str, bool]]:
@@ -2862,8 +2874,8 @@ class _Machine(NamedTuple):
     """An image, guest or container that a step starts. STORED is True when
     the step feeds it from a store that the repo controls."""
 
+    kind: str
     machine: str
-    remedy: str
     installs: list[tuple[str, bool]]
     stored: bool = False
 
@@ -2881,13 +2893,8 @@ def _repo_machine(
     )
     if not path.is_file() or not path.is_relative_to(REPO_ROOT):
         return None
-    guest = kind == "guest"
-    return _Machine(
-        f"the {kind} of {_relative(path)}",
-        _GUEST if guest else _IMAGE,
-        (_guest_installs if guest else _dockerfile_installs)(path),
-        stored,
-    )
+    read = _guest_installs if kind == "guest" else _dockerfile_installs
+    return _Machine(kind, f"the {kind} of {_relative(path)}", read(path), stored)
 
 
 def _started_machine(
@@ -2906,20 +2913,24 @@ def _started_machine(
         bodies = [
             words[at + 2]
             for at in range(len(words) - 2)
-            if words[at + 1 : at + 2] == ["-c"] and program_name(words[at]) in _SHELLS
+            if program_name(words[at]) in _SHELLS and _SHELL_C.fullmatch(words[at + 1])
         ]
-        return _Machine(
-            "a container it starts",
-            _CONTAINER,
-            machine_installs(bodies[0]) if bodies else [],
-        )
+        installs = machine_installs(bodies[0]) if bodies else []
+        return _Machine("container", "a container it starts", installs)
     if "build" not in verbs:
         return None
     at = words.index("build") + 1
     files = [
         values[i + 1] for i in range(at, len(words) - 1) if words[i] in ("-f", "--file")
     ]
-    context = values[-1] if len(words) > at and words[-1][:1] != "-" else "."
+    context, skip = ".", False
+    for word, value in zip(words[at:], values[at:]):
+        if not skip and word[:1] != "-":
+            context = value
+            break
+        skip = (
+            not skip and word[:1] == "-" and "=" not in word and word not in _BOOL_FLAGS
+        )
     dockerfile = files[0] if files else posixpath.join(context or "", "Dockerfile")
     stored = any(w.startswith("--cache-from") for w in words[at:])
     return _repo_machine("image", dockerfile, directory, stored)
@@ -2935,7 +2946,7 @@ def _step_machines(flat: FlatStep, run: StepRun) -> list[_Machine]:
         machine = _repo_machine(
             "image",
             inputs.get("file", default),
-            run.directory,
+            None,  # `working-directory` applies to a `run:` step alone
             bool(inputs.get("cache-from")),
         )
         return [machine] if machine else []
@@ -2956,33 +2967,22 @@ def _step_machines(flat: FlatStep, run: StepRun) -> list[_Machine]:
     ]
 
 
-def _machine_findings(
-    name: str, flat: FlatStep, run: StepRun, cached: bool
-) -> list[tuple[int, str]]:
+def _machine_findings(name: str, flat: FlatStep, run: StepRun) -> list[tuple[int, str]]:
     """A finding for each machine that the step FLAT of job NAME starts and
-    that installs from a live mirror. CACHED is True when the job restored a
-    cache before the step. A guest that installs local package files after
-    such a restore reads a store."""
-    findings = []
+    that installs from a live mirror. A guest that installs only local
+    package files reads a store, and so makes no finding."""
+    findings = {}
     for machine in _step_machines(flat, run):
-        local = any(only_local for _, only_local in machine.installs)
         live = sorted({text for text, only_local in machine.installs if not only_local})
-        if (
-            machine.stored
-            or not live
-            or (cached and local and machine.remedy == _GUEST)
-        ):
-            continue
-        what = "', '".join(live[:3])
-        finding = (
-            flat.line,
-            MACHINE_MESSAGE.format(
-                job=name, what=what, machine=machine.machine, remedy=machine.remedy
-            ),
-        )
-        if finding not in findings:
-            findings.append(finding)
-    return findings
+        if live and not machine.stored:
+            message = MACHINE_MESSAGE.format(
+                job=name,
+                what="', '".join(live[:3]),
+                machine=machine.machine,
+                remedy=_REMEDIES[machine.kind],
+            )
+            findings[flat.line, message] = None
+    return list(findings)
 
 
 def _tilde_findings(name: str, flat: list[FlatStep]) -> list[tuple[int, str]]:
@@ -3001,10 +3001,9 @@ def _tilde_findings(name: str, flat: list[FlatStep]) -> list[tuple[int, str]]:
         if not isinstance(script, str):
             continue
         read = {
-            node_text(child)
-            for node in iter_nodes(parse(script), "simple_expansion", "expansion")
-            for child in node.children
-            if child.type == "variable_name"
+            node_text(node)
+            for node in iter_nodes(parse(script), "variable_name")
+            if node.parent.type in ("simple_expansion", "expansion")
         }
         for key, value in sorted({**step.context.env, **env_of(step.step)}.items()):
             if (
@@ -3053,8 +3052,7 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
             ):
                 continue
             run = step_run(flat_step, doc, job)
-            cached = any(at < index for at, _ in scopes)
-            violations += _machine_findings(name, flat_step, run, cached)
+            violations += _machine_findings(name, flat_step, run)
             if not isinstance(script, str):
                 continue
             holder = _relative(_action_path(origin) if origin else REPO_ROOT / path)

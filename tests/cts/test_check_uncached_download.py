@@ -2921,6 +2921,12 @@ BOOT = _run("limactl start t.yaml")
         (_image("--mount=type=cache,target=/var/cache/apk apk add curl"), BUILD, True),
         (_image("apt-get install -y -t bookworm curl/bookworm-backports"), BUILD, True),
         (_image("apk add curl"), _run("docker buildx build -t i ."), True),
+        (_image("apk add curl"), _run("docker build --no-cache . -t i"), True),
+        (_image("[ -f /etc/os-release ] && apk add curl"), BUILD, True),
+        (_image("env DEBIAN_FRONTEND=noninteractive apt-get install -y curl"), BUILD, True),
+        (_image("<<EOF\napt-get update\napt-get install -y curl\nEOF"), BUILD, True),
+        (_image("<<EOF\ncat <<'X' > doc.txt\napk add curl\nX\nEOF"), BUILD, False),
+        (_image("dnf install -y https://e.org/epel-release-latest-9.noarch.rpm"), BUILD, True),
         (_image("apk add curl"), ACTION, True),
         # A registry cache is the store in front of the build.
         (_image("apk add curl"), _run("docker buildx build --cache-from type=gha ."), False),
@@ -2930,11 +2936,12 @@ BOOT = _run("limactl start t.yaml")
         # A Lima guest's provision script, reached through a variable.
         (_guest("apt-get -qq install -y curl"), _run('t="$GITHUB_WORKSPACE/t.yaml"\nlimactl create "$t"'), True),
         (_guest("apt-get install -y /mnt/debs/*.deb"), DEB_CACHE + BOOT, False),
-        # A local install with no cache restored before the boot has nothing to read.
-        (_guest("apt-get install -y /mnt/debs/*.deb\napt-get install -y curl"), BOOT, True),
+        # A local install beside a live one still reads the mirror.
+        (_guest("apt-get install -y /mnt/debs/*.deb\napt-get install -y curl"), DEB_CACHE + BOOT, True),
         (_guest("cat <<'EOF' > doc.txt\napt-get install -y curl\nEOF"), BOOT, False),
         # A stand-in container's shell body.
         ({}, _run("docker run --rm fedora:41 sh -c 'dnf install -y sudo && true'"), True),
+        ({}, _run("docker run --rm fedora:41 bash -ec 'dnf install -y sudo'"), True),
         ({}, _run("docker run --rm fedora:41 sh -c 'echo dnf install -y sudo'"), False),
         # On the host, only apt is read: a host's dnf is a branch an Ubuntu runner skips.
         ({}, _run("if command -v dnf; then dnf install -y sudo; fi"), False),
@@ -2978,12 +2985,15 @@ def test_a_store_whose_path_reaches_bash_with_a_tilde_never_fills(
         "    steps:\n", f"    env:\n      STORE: {value}\n    steps:\n"
     )
     messages = [m for m in _messages(_write(tmp_path, body)) if "never fills" in m]
-    assert messages == (
-        [
-            "job 'build' reads $STORE, whose value '~/debs' starts with '~'. Bash does "
-            "not expand a tilde that comes from a variable, so the step reads a directory "
-            "named '~' and the cache of '~/debs' never fills. Spell the value with $HOME."
-        ]
-        if fires
-        else []
+    expected = uc.TILDE_MESSAGE.format(job="build", name="STORE", value="~/debs")
+    assert messages == ([expected] if fires else [])
+
+
+def test_a_build_action_reads_its_dockerfile_from_the_repo_root(rooted):
+    """`defaults.run.working-directory` moves a `run:` step, not a `uses:` one."""
+    _tree(rooted, _image("apk add curl"))
+    body = _job(ACTION).replace(
+        "    steps:",
+        "    defaults:\n      run:\n        working-directory: app\n    steps:",
     )
+    assert any(MACHINE in m for m in _messages(_write(rooted, body)))
