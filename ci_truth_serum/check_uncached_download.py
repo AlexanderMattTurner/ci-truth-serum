@@ -2862,8 +2862,8 @@ def _dockerfile_installs(path: Path) -> list[tuple[str, bool]]:
             else:
                 scripts[-1] += content
         elif instruction["instruction"] == "RUN":
-            opener = re.match(r"<<-?['\"]?(\w+)", value)
-            heredoc = opener[1] if opener else None
+            opener = re.match(r"<<-?['\"]?(?P<tag>\w+)", value)
+            heredoc = opener["tag"] if opener else None
             scripts.append("" if opener else _shell_form(value))
     return [install for script in scripts for install in machine_installs(script)]
 
