@@ -10,17 +10,18 @@ check_divergent_action_pins, check_stderr_merge_parse, check_echo_fallback,
 check_case_default, check_soft_timeout, check_flock_fixed_fd, check_redirect_order,
 check_bare_return_status, check_silent_exit,
 check_lockstep_pins, check_cron_comment, check_toolchain_skips,
-check_conclusion_coverage, _cts_config (the `.ci-truth-serum.toml` reader), and
-release_canary's changelog/semver parsing.
+check_conclusion_coverage, check_path_list_closure, _cts_config (the
+`.ci-truth-serum.toml` reader), and release_canary's changelog/semver parsing.
 """
 
+import subprocess
 import tempfile
 from pathlib import Path
 
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tests._helpers import load_hook
+from tests._helpers import init_test_repo, load_hook
 
 token_fallback = load_hook("check_token_fallback.py", "fuzz_check_token_fallback")
 secret_names = load_hook(
@@ -44,6 +45,7 @@ lockstep = load_hook("check_lockstep_pins.py", "fuzz_check_lockstep_pins")
 cron_comment = load_hook("check_cron_comment.py", "fuzz_check_cron_comment")
 toolchain = load_hook("check_toolchain_skips.py", "fuzz_check_toolchain_skips")
 canary = load_hook("release_canary.py", "fuzz_release_canary")
+path_list = load_hook("check_path_list_closure.py", "fuzz_check_path_list_closure")
 external_clock = load_hook(
     "check_external_clock_targets.py", "fuzz_check_external_clock_targets"
 )
@@ -326,3 +328,57 @@ def test_config_reader_returns_flags_or_refuses(text: str) -> None:
     assert all(
         args and all(isinstance(a, str) for a in args) for args in flags.values()
     )
+
+
+# Pieces of a path list and of the code it ships: array and collection
+# literals, appends, root-joined tails, comments, heredocs and opt-outs.
+_PATH_TOKENS = [
+    "P=(lib a/one.py a/two.py)",
+    "P+=(a/three.py)",
+    "P+=($x)",
+    'P = frozenset({"lib", "a/one.py", "a/two.py"})',
+    'X = f"{root}/a/three.py"',
+    'X = root / "a" / "three.py"',
+    'python3 "$root/a/three.py"',
+    "# path-list-closure-ok: host only",
+    "cat <<EOF",
+    "EOF",
+    '"""a/three.py"""',
+    "def f(:",
+    "(",
+    ")",
+]
+_path_text = st.lists(
+    st.one_of(st.sampled_from(_PATH_TOKENS), st.text(max_size=12)), max_size=10
+).map("\n".join)
+
+
+# Each example builds a git repository, which costs about a second; the CI
+# profile's 400 examples would add minutes for no new branch.
+@settings(max_examples=40)
+@given(_path_text, _path_text, st.sampled_from(["lib/ship.bash", "lib/ship.py"]))
+def test_path_list_find_is_total(listing: str, consumer: str, name: str) -> None:
+    """`find` reads a real tree, so each case is a small git repository. It must
+    never raise, and each site must be a real line of the consumer it names."""
+    with tempfile.TemporaryDirectory() as root:
+        repo = Path(root)
+        init_test_repo(repo)
+        files = {
+            name: listing,
+            "lib/use.py": consumer,
+            "lib/use.bash": consumer,
+            "a/one.py": "",
+            "a/two.py": "",
+            "a/three.py": "",
+        }
+        for rel, text in files.items():
+            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+            (repo / rel).write_text(text, encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        findings, refused = path_list.find([str(repo / name)], repo)
+        assert isinstance(refused, bool)
+        for finding in findings:
+            assert finding.sites
+            for site in finding.sites:
+                text = files[site.consumer]
+                assert 1 <= site.line <= len(text.split("\n"))

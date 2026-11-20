@@ -47,6 +47,9 @@ JS = "js"
 # defect is three copies of one answer drifting apart: a workflow expression, a
 # shell test, and a Python comparison.
 SHELL_PYTHON_OR_WORKFLOW_YAML = "shell_python_or_workflow_yaml"
+# check_path_list_closure reads a path list in either language, and the code
+# that list ships is shell or Python too.
+SHELL_OR_PYTHON = "shell_or_python"
 
 # The closed tag vocabulary. Each value names the defect a check is about, never
 # the file it reads — the file class is the `kind` field, and a `shell` tag would
@@ -330,6 +333,7 @@ CHECKS: tuple[Check, ...] = (
     _check("check_wall_clock_assertions", "extras", JS_OR_PYTHON, TESTS, per_file=True),
     _check("check_relative_imports", "extras", JS, CORRECTNESS, per_file=True),
     _check("check_path_shadowed_interpreter", "extras", WORKFLOW, AGENTS, CORRECTNESS),
+    _check("check_path_list_closure", "extras", SHELL_OR_PYTHON, CORRECTNESS),
 )
 
 # The tier view the `check-tier1` / `check-tier2` / `check-extras` aggregates run.

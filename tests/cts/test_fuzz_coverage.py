@@ -135,6 +135,7 @@ FUZZ_REQUIRED = {
     "check_curl_retry": "violations",
     "check_cwd_scoped_git": "violations",
     "check_dead_shell_functions": "find_dead",
+    "check_path_list_closure": "find",
     "check_duplicate_class_names": "top_level_classes",
     "check_duplicate_module_constant": "violations",
     "check_env_arith": "violations",
