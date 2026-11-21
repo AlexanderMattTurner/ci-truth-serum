@@ -142,6 +142,9 @@ def test_only_a_step_before_the_cache_sets_its_output():
     assert _scope(step, after=(producer,)) == cs.CacheScope(None)
 
 
+BUILT = {"run": 'echo "KEY_$tool=x" >> "$GITHUB_ENV"'}
+KEY = "t-${{ env.KEY_ruff }}"
+PIN_KEY = "t-${{ env.KEY_ruff_VERSION }}"
 ENV_WRITER = {"run": 'gha_env "CACHE_KEY=gate-$digest"'}
 
 
@@ -172,76 +175,22 @@ ENV_WRITER = {"run": 'gha_env "CACHE_KEY=gate-$digest"'}
             "t-${{ env.TOOL_VERSION }}",
             "t-${{ env.TOOL_VERSION }}",
         ),
-        (
-            ({"run": 'echo "KEY_$tool=x" >> "$GITHUB_ENV"'},),
-            (),
-            {},
-            "t-${{ env.KEY_ruff }}",
-            None,
-        ),
+        ((BUILT,), (), {}, KEY, None),
         (
             ({"run": 'for t in a b; do echo "KEY_${t}=x" >> "$GITHUB_ENV"; done'},),
             (),
             {},
-            "t-${{ env.KEY_ruff }}",
+            KEY,
             None,
         ),
-        (
-            ({"run": "gha_env KEY_$(echo a)=x"},),
-            (),
-            {},
-            "t-${{ env.KEY_ruff }}",
-            None,
-        ),
-        (
-            ({"run": 'echo "OTHER_$tool=x" >> "$GITHUB_ENV"'},),
-            (),
-            {},
-            "t-${{ env.KEY_ruff }}",
-            "t-${{ env.KEY_ruff }}",
-        ),
-        (
-            ({"run": 'echo "KEY_ruff_$tool=x" >> "$GITHUB_ENV"'},),
-            (),
-            {},
-            "t-${{ env.KEY_ruff }}",
-            "t-${{ env.KEY_ruff }}",
-        ),
-        (
-            ({"run": 'echo "KEY_$tool is a=b"'},),
-            (),
-            {},
-            "t-${{ env.KEY_ruff }}",
-            "t-${{ env.KEY_ruff }}",
-        ),
-        (
-            ({"run": 'echo "KEY_$tool"'},),
-            (),
-            {},
-            "t-${{ env.KEY_ruff }}",
-            "t-${{ env.KEY_ruff }}",
-        ),
-        (
-            ({"run": 'echo "KEY_$tool=x" >> "$GITHUB_ENV"'},),
-            (),
-            {"KEY_ruff": "k"},
-            "t-${{ env.KEY_ruff }}",
-            "t-${{ env.KEY_ruff }}",
-        ),
-        (
-            (),
-            ({"run": 'echo "KEY_$tool=x" >> "$GITHUB_ENV"'},),
-            {},
-            "t-${{ env.KEY_ruff }}",
-            "t-${{ env.KEY_ruff }}",
-        ),
-        (
-            ({"run": 'echo "KEY_$tool=x" >> "$GITHUB_ENV"'},),
-            (),
-            {},
-            "t-${{ env.KEY_ruff_VERSION }}",
-            "t-${{ env.KEY_ruff_VERSION }}",
-        ),
+        (({"run": "gha_env KEY_$(echo a)=x"},), (), {}, KEY, None),
+        (({"run": 'echo "OTHER_$tool=x" >> "$GITHUB_ENV"'},), (), {}, KEY, KEY),
+        (({"run": 'echo "KEY_ruff_$tool=x" >> "$GITHUB_ENV"'},), (), {}, KEY, KEY),
+        (({"run": 'echo "KEY_$tool is a=b"'},), (), {}, KEY, KEY),
+        (({"run": 'echo "KEY_$tool"'},), (), {}, KEY, KEY),
+        ((BUILT,), (), {"KEY_ruff": "k"}, KEY, KEY),
+        ((), (BUILT,), {}, KEY, KEY),
+        ((BUILT,), (), {}, PIN_KEY, PIN_KEY),
     ],
     ids=[
         "written-by-an-earlier-step",
