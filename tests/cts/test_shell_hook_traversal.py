@@ -21,9 +21,7 @@ from tests._helpers import HOOKS_DIR, load_hook
 rt = load_hook("run_tier.py", "rt_for_traversal_contract")
 
 # The run_tier selector kinds under which a lint receives shell file content.
-_SHELL_KINDS = frozenset(
-    {rt.SHELL, rt.SHELL_OR_DOCKERFILE, rt.SHELL_OR_PYTHON, rt.SHELL_OR_WORKFLOW_YAML}
-)
+_SHELL_KINDS = frozenset({rt.SHELL, rt.SHELL_OR_DOCKERFILE, rt.SHELL_OR_WORKFLOW_YAML})
 
 
 def _shell_lints() -> list[str]:

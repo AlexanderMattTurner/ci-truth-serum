@@ -1045,8 +1045,8 @@
   types_or: [javascript, jsx, ts, tsx]
 
 - id: check-path-list-closure
-  name: "extra: a hand-kept list of shipped repo paths must cover what its code names"
-  description: "A list of repo paths that a script copies to a VM, a container or an archive omits a file that the shipped code names, so the copy fails at run time with No such file or directory. The list must pick files out of that directory by hand, so a tree it never touches stays quiet."
+  name: "extra: a bash list of shipped repo paths must cover what its code names"
+  description: "A bash array of repo paths that a script copies to a VM, a container or an archive omits a file that the shipped code names, so the copy fails at run time. The check reads the whole tracked tree, so a change to a consumer alone still reaches the list."
   entry: python -m ci_truth_serum.check_path_list_closure
   language: python
   # The JS grammars because `_cts_comments`, which reads the opt-out, imports them.
@@ -1058,6 +1058,7 @@
       tree-sitter-javascript,
       tree-sitter-typescript,
     ]
+  pass_filenames: false
   types_or: [shell, python]
 
 - id: check-path-shadowed-interpreter
