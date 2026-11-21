@@ -1532,6 +1532,38 @@ def test_a_downloader_function_with_a_hidden_output_is_not_digest_pinned(tmp_pat
     assert uc.check_file(_write(tmp_path, _job(_run(script)))) == []
 
 
+BUILT_NAME_WRITER = (
+    "      - name: publish keys\n"
+    "        run: |\n"
+    "          for tool in mytool; do\n"
+    '            echo "_PINNED_CACHE_KEY_$tool=mytool-abc" >> "$GITHUB_ENV"\n'
+    "          done\n"
+)
+PIN_VARIABLE_FETCH = 'curl -fsSL -O "https://example.com/dl/${TOOL_VERSION}/t.tgz"'
+
+
+@pytest.mark.parametrize(
+    ("key", "flagged"),
+    [
+        ("tool-${{ env._PINNED_CACHE_KEY_mytool }}", False),
+        ("tool-${{ env._OTHER_KEY_mytool }}", True),
+    ],
+    ids=["a-name-the-step-builds", "a-name-with-another-prefix"],
+)
+def test_a_key_on_a_name_a_step_builds_at_run_time_is_unreadable(
+    tmp_path, key, flagged
+):
+    """The step that writes `_PINNED_CACHE_KEY_$tool` may set the key's variable,
+    so the key holds a value the lint cannot read and covers the download. A
+    variable with another prefix is no such write, so the cache names no pin."""
+    cache = (
+        CACHE_STEP
+        + f"        with:\n          path: /opt/store\n          key: {key}\n"
+    )
+    steps = BUILT_NAME_WRITER + cache + _run(PIN_VARIABLE_FETCH)
+    assert bool(_messages(_write(tmp_path, _job(steps)))) is flagged
+
+
 def test_a_cache_keyed_on_the_digest_covers_a_digest_pinned_download(tmp_path):
     script = DIGEST_SCRIPT.format(check='echo "$SHA  t" | sha256sum -c -')
     path = _write(tmp_path, _job(_cache(f"tool-{DIGEST}") + _run(script)))
