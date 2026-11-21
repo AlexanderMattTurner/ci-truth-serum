@@ -86,7 +86,10 @@ def test_a_quoted_entry_word_is_one_argument() -> None:
 
 
 def _in(language: str, hook_id: str, entry: str, extra: str = "") -> str:
-    return _hook(hook_id, entry).replace("system", language) + extra
+    return (
+        _hook(hook_id, entry).replace("language: system", f"language: {language}")
+        + extra
+    )
 
 
 _QUOTE = "'[\"'']'"  # one unbalanced quote: `shlex.split` raises on it
@@ -97,8 +100,8 @@ _FLAG = '        args: ["-i"]\n'
     ("language", "extra", "command"),
     [
         ("pygrep", "", ("<pygrep>", "x y")),
-        ("pygrep", '        args: ["-i"]\n', ("<pygrep>", "-i", "x y")),
-        ("fail", '        args: ["-i"]\n', ("<fail>", "x y")),
+        ("pygrep", _FLAG, ("<pygrep>", "-i", "x y")),
+        ("fail", _FLAG, ("<fail>", "x y")),
     ],
 )
 def test_an_unsplit_entry_stays_one_word(language, extra, command) -> None:
