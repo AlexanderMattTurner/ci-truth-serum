@@ -37,11 +37,6 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
 
 OPT_OUT = "duplicate-hook-ok"
 DEFAULT_CONFIG = ".pre-commit-config.yaml"
-# The languages whose `entry` pre-commit does NOT split as shell words. Every
-# other language passes it through `lang_base.hook_cmd`, which calls
-# `shlex.split`. `pygrep` hands the whole entry to the regex engine, and `fail`
-# prints it as its message. A quote in either is plain text.
-UNSPLIT_LANGUAGES = frozenset({"pygrep", "fail"})
 
 
 class Hook(NamedTuple):
@@ -49,7 +44,6 @@ class Hook(NamedTuple):
 
     hook_id: str
     command: tuple[str, ...]
-    shell: bool
     start: int
     end: int
 
@@ -86,44 +80,30 @@ def _end_line(node: yaml.MappingNode) -> int:
     return mark.line if mark.column == 0 else mark.line + 1
 
 
-def splits_entry(hook: dict) -> bool:
-    """Whether pre-commit reads the hook's `entry` as shell words.
-
-    A hook with no `language` counts as shell-split: pre-commit refuses it, and
-    the common case is a command.
-    """
-    return str(hook.get("language", "")) not in UNSPLIT_LANGUAGES
-
-
 def command_of(hook: dict) -> tuple[str, ...]:
-    """The hook's argv, built the way pre-commit builds it for its language.
+    """The hook's argv: its `entry` split as a shell splits it, then its `args`.
 
     Two hooks that run one script under different args are a legitimate pair, so
     the args are part of the command, not just the script name. A tuple keeps
     each word whole: `entry: tool` with `args: ["a b"]` is one argument, and
     `entry: tool a` with `args: [b]` is two.
-
-    A shell-split language reads `entry` as shell words, then the `args`. A
-    `pygrep` hook keeps `entry` as one regex and puts the `args` before it. A
-    `fail` hook prints `entry` and never reads `args`.
     """
     args = hook.get("args") or []
     if not isinstance(args, list):
         raise ValueError(f"hook {hook.get('id')!r}: `args:` is not a list")
     entry = str(hook.get("entry", ""))
     argv = tuple(str(arg) for arg in args)
-    if splits_entry(hook):
-        try:
-            words = shlex.split(entry)
-        except ValueError as error:
-            raise ValueError(
-                f"hook {hook.get('id')!r}: `entry: {entry}` is not valid shell "
-                f"words ({error}). pre-commit cannot run it."
-            ) from error
-        return (*words, *argv)
+    # pre-commit hands a `pygrep` entry to the regex engine and prints a `fail`
+    # entry. Neither splits it as shell words, so a quote there is plain text.
+    # The tag keeps a regex from matching a command with the same text.
+    if hook.get("language") == "pygrep":
+        return ("<pygrep>", *argv, entry)
     if hook.get("language") == "fail":
-        return (entry,)
-    return (*argv, entry)
+        return ("<fail>", entry)
+    try:
+        return (*shlex.split(entry), *argv)
+    except ValueError as error:
+        raise ValueError(f"hook {hook.get('id')!r}: bad `entry` ({error})") from error
 
 
 def local_hooks(text: str) -> list[Hook]:
@@ -142,10 +122,8 @@ def local_hooks(text: str) -> list[Hook]:
         for node in _field(repo, "hooks", yaml.SequenceNode).value:
             hook_id = _value(_field(node, "id", yaml.ScalarNode))
             start = node.start_mark.line + 1
-            fields = _value(node)
-            command = command_of(fields)
-            end = _end_line(node)
-            hooks.append(Hook(str(hook_id), command, splits_entry(fields), start, end))
+            hook = Hook(str(hook_id), command_of(_value(node)), start, _end_line(node))
+            hooks.append(hook)
     return hooks
 
 
@@ -165,11 +143,10 @@ def duplicates(hooks: list[Hook], excused: set[int]) -> list[tuple[int, str]]:
         for hook_id, count in counts.items()
         if count > 1
     ]
-    # A regex and a command with the same text are different things to run.
-    by_command: dict[tuple[bool, tuple[str, ...]], list[int]] = defaultdict(list)
+    by_command: dict[tuple[str, ...], list[int]] = defaultdict(list)
     for position, hook in enumerate(hooks):
-        by_command[(hook.shell, hook.command)].append(position)
-    for (_, command), positions in by_command.items():
+        by_command[hook.command].append(position)
+    for command, positions in by_command.items():
         counted = [p for p in positions if p not in excused]
         if len(counted) > 1:
             ids = sorted(hooks[p].hook_id for p in positions)
@@ -226,8 +203,6 @@ def main(argv: list[str]) -> int:
     try:
         hits = findings(path.read_text(encoding="utf-8"))
     except ValueError as error:
-        # A config this check cannot read is a defect in the config. Name it
-        # and the file; a traceback would hide both behind check internals.
         print(f"{path}: {error}", file=sys.stderr)
         return 1
     for line, message in hits:

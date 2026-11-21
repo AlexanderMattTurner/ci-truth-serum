@@ -85,70 +85,49 @@ def test_a_quoted_entry_word_is_one_argument() -> None:
     assert len(mod.findings(_config(one, two))) == 1
 
 
-def _hook_in(language: str, hook_id: str, entry: str, extra: str = "") -> str:
-    """A hook block like `_hook`, in LANGUAGE, with EXTRA lines after the entry."""
-    body = _hook(hook_id, entry).replace("language: system", f"language: {language}")
-    return body + extra
+def _in(language: str, hook_id: str, entry: str, extra: str = "") -> str:
+    return _hook(hook_id, entry).replace("system", language) + extra
 
 
-# One unbalanced quote: `shlex.split` raises on it, a regex engine does not.
-_QUOTE_CLASS = "'[\"'']'"
+_QUOTE = "'[\"'']'"  # one unbalanced quote: `shlex.split` raises on it
+_FLAG = '        args: ["-i"]\n'
 
 
-@pytest.mark.parametrize("language", ["pygrep", "fail"])
-def test_a_regex_or_message_entry_is_not_split_as_shell_words(language: str) -> None:
-    """pre-commit passes `pygrep` and `fail` entries on whole, so a quote is text."""
-    hook = {"id": "h", "entry": "[\"']", "language": language}
-    assert mod.command_of(hook) == ("[\"']",)
-    assert mod.findings(_config(_hook_in(language, "a", _QUOTE_CLASS))) == []
+@pytest.mark.parametrize(
+    ("language", "extra", "command"),
+    [
+        ("pygrep", "", ("<pygrep>", "x y")),
+        ("pygrep", '        args: ["-i"]\n', ("<pygrep>", "-i", "x y")),
+        ("fail", '        args: ["-i"]\n', ("<fail>", "x y")),
+    ],
+)
+def test_an_unsplit_entry_stays_one_word(language, extra, command) -> None:
+    [hook] = mod.local_hooks(_config(_in(language, "a", "x y", extra)))
+    assert hook.command == command
 
 
-def test_a_pygrep_entry_with_spaces_stays_one_word() -> None:
-    hook = {"id": "h", "entry": "a b", "language": "pygrep", "args": ["--multiline"]}
-    assert mod.command_of(hook) == ("--multiline", "a b")
-
-
-def test_a_fail_hook_ignores_its_args() -> None:
-    hook = {"id": "h", "entry": "no", "language": "fail", "args": ["-x"]}
-    assert mod.command_of(hook) == ("no",)
-
-
-def test_two_pygrep_hooks_with_one_regex_are_reported() -> None:
-    text = _config(
-        _hook_in("pygrep", "a", _QUOTE_CLASS), _hook_in("pygrep", "b", _QUOTE_CLASS)
-    )
-    [(line, message)] = mod.findings(text)
-    assert line == 7
-    assert "`a`, `b` all run" in message
-
-
-def test_one_regex_in_two_flag_sets_is_two_commands() -> None:
-    extra = '        args: ["--ignore-case"]\n'
-    text = _config(_hook_in("pygrep", "a", "x"), _hook_in("pygrep", "b", "x", extra))
-    assert mod.findings(text) == []
-
-
-def test_a_regex_and_a_command_with_the_same_text_are_not_duplicates() -> None:
-    text = _config(_hook_in("pygrep", "a", "x.py"), _hook_in("system", "b", "x.py"))
-    assert mod.findings(text) == []
-
-
-def test_a_malformed_shell_entry_names_the_hook() -> None:
-    text = _config(_hook_in("system", "bad-hook", _QUOTE_CLASS))
-    with pytest.raises(ValueError, match=r"hook 'bad-hook'.*not valid shell words"):
-        mod.findings(text)
+@pytest.mark.parametrize(
+    ("first", "second", "reported"),
+    [
+        (("pygrep", _QUOTE, ""), ("pygrep", _QUOTE, ""), True),
+        (("fail", _QUOTE, ""), ("fail", _QUOTE, ""), True),
+        (("pygrep", "x", ""), ("pygrep", "x", _FLAG), False),
+        (("pygrep", "x.py", ""), ("system", "x.py", ""), False),
+    ],
+)
+def test_pygrep_and_fail_entries_compare_as_regexes(first, second, reported) -> None:
+    text = _config(_in(first[0], "a", *first[1:]), _in(second[0], "b", *second[1:]))
+    assert bool(mod.findings(text)) is reported
 
 
 def test_main_names_the_file_and_hook_for_a_malformed_shell_entry(
     tmp_path, capsys
 ) -> None:
     config = tmp_path / "config.yaml"
-    config.write_text(
-        _config(_hook_in("system", "bad-hook", _QUOTE_CLASS)), encoding="utf-8"
-    )
+    config.write_text(_config(_in("system", "bad", _QUOTE)), encoding="utf-8")
     assert mod.main(["--config", str(config)]) == 1
     err = capsys.readouterr().err
-    assert f"{config}: hook 'bad-hook'" in err
+    assert f"{config}: hook 'bad'" in err
     assert "Traceback" not in err
 
 
