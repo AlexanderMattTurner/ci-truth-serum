@@ -75,7 +75,7 @@ class Array(NamedTuple):
     expands: frozenset[str]
 
 
-class Finding(NamedTuple):
+class Omission(NamedTuple):
     list_file: str
     line: int
     name: str
@@ -279,7 +279,7 @@ def references(text: str, path: str) -> list[tuple[int, str]]:
     return [(line, spelled) for line, spelled in found if spelled is not None]
 
 
-def find() -> tuple[list[Finding], bool]:
+def find() -> tuple[list[Omission], bool]:
     """Every omission in the tracked tree, and whether a file was refused."""
     git = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True)
     files = frozenset(os.fsdecode(p) for p in git.stdout.split(b"\0") if p)
@@ -324,7 +324,7 @@ def find() -> tuple[list[Finding], bool]:
                 if not annotated_near(lines, at, OPT_OUT, comments=comments):
                     sites.setdefault(path, set()).add((consumer, at))
         findings += [
-            Finding(list_file, line, name, path, sorted(at))
+            Omission(list_file, line, name, path, sorted(at))
             for path, at in sorted(sites.items())
         ]
     return findings, bool(refused)
