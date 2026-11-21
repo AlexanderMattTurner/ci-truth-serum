@@ -367,14 +367,17 @@ class CacheScope(NamedTuple):
     """What one cache step can hold. KEY is its key with each expression the
     lint could read resolved, HASHED the patterns its `hashFiles()` calls read,
     PATHS the paths it saves as far as the text fixes them, and INSTALLERS the
-    package managers whose store a setup action caches. KEY is None when the
-    key holds a value this module cannot read: that value could name any pin, so
-    the cache covers every fetch in the job."""
+    package managers whose store a setup action caches. RESTORES is True when
+    the step has `restore-keys`, so a key that misses can still restore an
+    entry that an older key saved. KEY is None when the key holds a value this
+    module cannot read: that value could name any pin, so the cache covers
+    every pinned fetch in the job. PATHS stay readable when KEY is None."""
 
     key: str | None
     hashed: tuple[str, ...] = ()
     paths: tuple[str, ...] = ()
     installers: frozenset[str] = frozenset()
+    restores: bool = False
 
 
 def cache_scope(step: dict, context: Context) -> CacheScope | None:
@@ -389,11 +392,11 @@ def cache_scope(step: dict, context: Context) -> CacheScope | None:
     if not isinstance(with_block, dict):
         return CacheScope(None)
     key = rendered(with_block.get("key"), step, context)
+    paths = _cache_paths(with_block.get("path"), step, context)
+    restores = bool(with_block.get("restore-keys"))
     if key is None:
-        return CacheScope(None)
-    return CacheScope(
-        key.text, key.hashed, _cache_paths(with_block.get("path"), step, context)
-    )
+        return CacheScope(None, paths=paths, restores=restores)
+    return CacheScope(key.text, key.hashed, paths, restores=restores)
 
 
 def _cache_paths(path: object, step: dict, context: Context) -> tuple[str, ...]:

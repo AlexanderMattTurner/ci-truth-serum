@@ -46,6 +46,7 @@ jobs:
       memoize-anchor-jobs: "^hook-lifecycle$"
 
   hook-lifecycle:
+    # cache-exempt: session-setup.sh runs apt-get install only as root on a host with no shellcheck, and a failed install only warns
     needs: decide
     if: needs.decide.outputs.run == 'true'
     runs-on: ubuntu-24.04

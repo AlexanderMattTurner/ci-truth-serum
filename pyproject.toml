@@ -22,6 +22,7 @@ keywords = ["pre-commit", "ci", "github-actions", "linter", "supply-chain"]
 # published ones are the same versions.
 dependencies = [
     "PyYAML==6.0.3",
+    "dockerfile-parse==2.0.1",
     "identify==2.6.19",
     "tree-sitter==0.26.0",
     "tree-sitter-bash==0.25.1",
