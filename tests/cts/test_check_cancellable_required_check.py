@@ -211,3 +211,9 @@ def test_all_shipped_workflows_pass(monkeypatch, capsys):
     monkeypatch.setattr(crc, "REPO_ROOT", REPO_ROOT)
     monkeypatch.setattr(crc, "WORKFLOWS_DIR", workflows)
     assert crc.main() == 0, capsys.readouterr().out
+
+
+def test_mergify_gate_counts_as_a_required_check(tmp_path):
+    path = _write(tmp_path, _wf(STATIC_CANCELLABLE, ADVISORY_JOBS))
+    assert crc.check_file(path) is None
+    assert crc.check_file(path, frozenset({"report"})) is not None

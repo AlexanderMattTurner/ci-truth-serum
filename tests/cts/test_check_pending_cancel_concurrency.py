@@ -1201,3 +1201,12 @@ def test_a_called_workflow_group_with_no_caller_key_stays_an_error(tmp_path):
         CALLED, "github.event_name == 'push'", "${{ github.workflow }}"
     )
     assert "reads the event payload" in _only(pc.check_file(_write(tmp_path, body)))
+
+
+def test_mergify_gate_counts_as_a_required_check(tmp_path):
+    jobs = (
+        "jobs:\n  build:\n    name: Build\n    runs-on: ubuntu-latest\n    steps: []\n"
+    )
+    path = _write(tmp_path, STORM_TRIGGER + REF_GROUP + jobs)
+    assert pc.check_file(path) == []
+    assert len(pc.check_file(path, frozenset({"Build"}))) == 1

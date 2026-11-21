@@ -548,3 +548,23 @@ def test_in_condition_is_true_for_the_condition_not_the_body() -> None:
     commands = {bash_ast.node_text(c): c for c in bash_ast.iter_nodes(root, "command")}
     assert bash_ast.in_condition(commands["a"]) is True
     assert bash_ast.in_condition(commands["b"]) is False
+
+
+@pytest.mark.parametrize(
+    ("source", "descriptor"),
+    [
+        ("cmd 0>f\n", "0"),
+        ("cmd x 0>&3\n", "0"),
+        ("cmd 2>f\n", "2"),
+        ("exec {v}>f\n", "{v}"),
+        ("cmd 0 >f\n", None),
+        ("cmd >f\n", None),
+    ],
+)
+def test_redirect_parts_reads_the_descriptor_the_grammar_hands_to_the_command(
+    source: str, descriptor: str | None
+) -> None:
+    # The grammar parses the `0` of `0>f` as a number argument, not as a
+    # `file_descriptor`. `cmd 0 >f` has a space, so `0` really is an argument.
+    (redirect,) = bash_ast.iter_nodes(bash_ast.parse(source), "file_redirect")
+    assert bash_ast.redirect_parts(redirect).descriptor == descriptor

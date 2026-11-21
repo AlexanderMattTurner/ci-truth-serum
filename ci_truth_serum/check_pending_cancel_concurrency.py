@@ -70,7 +70,8 @@ an `always()` reporter, or a fail-closed twin (`if: always() &&
 needs.<gate>.result != 'success'`). A workflow can also declare a required check
 with nothing but a `# required-check: true` marker on one job — the mandatory
 SSOT marker check_required_reporter enforces and sync_required_checks reads —
-and that shape has no decide gate to find.
+or by a `.mergify.yml` queue rule that names a job's check in
+`check-success=<name>`, and that shape has no decide gate to find.
 
 Which jobs each route judges follows from what reads their results. An always()
 reporter is a funnel every job feeds, so that route judges every job. A twin
@@ -102,12 +103,12 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     CALLED_EVENT,
     TWIN_SHAPE,
     _job_blocks,
-    _marked_jobs,
     annotated,
     annotated_near,
     concurrency_line,
     declared_triggers,
     decide_gate_names,
+    gating_jobs,
     group_has_run_id_escape,
     group_is_event_constant,
     group_is_per_run_on,
@@ -116,6 +117,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     job_concurrency_line,
     job_delivery_split_triggers,
     job_skipped_triggers,
+    mergify_check_names,
     opted_out,
     required_check_shape,
     valid_twin_names,
@@ -377,10 +379,13 @@ def _block_opted_out(comment_lines: list[str], block: tuple[int, str]) -> bool:
     return any(annotated(line, INERT_OPT_OUT) for line in window)
 
 
-def check_file(path: Path) -> list[tuple[int | None, str]]:
+def check_file(
+    path: Path, mergify: frozenset[str] = frozenset()
+) -> list[tuple[int | None, str]]:
     """Return (line, message) for every ref-keyed concurrency group — workflow-
     level OR job-level — on a required-check workflow whose pull_request types
-    can queue multiple runs on one head SHA.
+    can queue multiple runs on one head SHA. MERGIFY holds the check names a
+    Mergify config gates on.
 
     A file that cannot be parsed as YAML is itself reported as a violation
     (line ``None``) rather than silently passed as clean — matching the sibling
@@ -416,12 +421,12 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
         )
 
     heuristic = required_check_shape(jobs, doc)
-    marked = _marked_jobs(blocks, jobs)
+    marked = gating_jobs(blocks, jobs, mergify)
     if not (heuristic or marked):
         return (
             violations  # not a required-check shape — a reddened cancel self-describes
         )
-    basis = heuristic or "the '# required-check: true' marker"
+    basis = heuristic or "the '# required-check: true' marker or Mergify"
 
     if _ref_keyed(group_of(doc.get("concurrency"))):
         violations.append(
@@ -453,10 +458,11 @@ def check_file(path: Path) -> list[tuple[int | None, str]]:
 
 def main() -> int:
     total = 0
+    mergify = mergify_check_names(REPO_ROOT)
     for path in workflow_files(WORKFLOWS_DIR, ACTIONS_DIR):
         rel = path.relative_to(REPO_ROOT)
         try:
-            findings = check_file(path)
+            findings = check_file(path, mergify)
         except PathologicalInputError as err:
             print(f"::error file={rel}::{err}")
             total += 1

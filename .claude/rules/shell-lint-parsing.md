@@ -71,6 +71,7 @@ Neither is executed code, so a finding is a false positive:
 | `check_argument_exit_swallow`     | no                        | no                      |
 | `check_soft_timeout`              | no                        | no                      |
 | `check_curl_retry`                | no                        | no                      |
+| `check_redirect_order`            | no                        | no                      |
 
 The top five fired on one or both probes and were rewritten on the grammar, which
 removed the class rather than the instance. **Every lint in the table now parses**;

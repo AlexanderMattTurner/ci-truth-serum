@@ -18,7 +18,8 @@ carries no version, for four families —
     — pinned by `pkg==1.2.3`;
   * tool installers (`pipx install`, `uv tool install`) — `pkg==1.2.3` or
     `pkg@1.2.3`;
-  * Debian (`apt-get install`, `apt install`, `aptitude install`) — `pkg=1.2.3-1`;
+  * Debian (`apt-get install`, `apt install`, `aptitude install`, with any
+    options before the verb, as in `apt-get -qq install`) — `pkg=1.2.3-1`;
   * global Node (`npm install -g`, `npm i --global`, `pnpm add -g`,
     `yarn global add`) — `pkg@1.2.3`.
 
@@ -69,14 +70,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: I001  # pylint: disable=wrong-import-position
     command_arguments,
     iter_nodes,
     node_text,
     parse,
     unquote,
 )
-from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # pylint: disable=wrong-import-position
     MESSAGE_PREFIX,
     annotated_near,
     run_file_cli,
@@ -84,7 +85,7 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     per_run_script,
     source_lines,
 )
-from _cts_comments import shell_comments  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_comments import shell_comments  # pylint: disable=wrong-import-position
 
 OPT_OUT = "pin-exempt"
 
@@ -119,6 +120,9 @@ _INSTALL_COMMANDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (NODE, ("pnpm", "add")),
     (NODE, ("pnpm", "install")),
     (NODE, ("yarn", "global", "add")),
+)
+_APT_PROGRAMS = frozenset(
+    words[0] for family, words in _INSTALL_COMMANDS if family == APT
 )
 # `pip3`/`pip3.11` are the same installer; `python -m pip` reaches it the long way.
 _PIP_ALIAS = re.compile(r"^pip[\d.]*$")
@@ -238,9 +242,27 @@ def _is_dynamic(node) -> bool:
     return next(iter_nodes(node, *_DYNAMIC_TYPES), None) is not None
 
 
+def _apt_verb(tokens: list[str], start: int) -> int | None:
+    """The index of the `install` verb when TOKENS[START] is an apt program and
+    only options stand between the two: `apt-get -qq install`, `apt-get -o
+    Acquire::Retries=3 install`, or `apt-get "${opts[@]}" install`. apt reads
+    its options before the verb as well as after it. An expansion there
+    names options, since it stands where only options can."""
+    if tokens[start] not in _APT_PROGRAMS:
+        return None
+    index = start + 1
+    while index < len(tokens) and tokens[index] != "install":
+        word = tokens[index]
+        if not word.startswith(("-", "$")):
+            return None
+        index += 2 if word in _VALUE_FLAGS[APT] else 1
+    return index if index < len(tokens) else None
+
+
 def _find_install(tokens: list[str]) -> tuple[str, int] | None:
     """(family, index of the first argument) for the install invocation in TOKENS,
-    or None. `python -m pip install` and `pip3`/`pip3.11` resolve to pip."""
+    or None. `python -m pip install` and `pip3`/`pip3.11` resolve to pip, and
+    apt options may stand before apt's `install` verb."""
     for start, token in enumerate(tokens):
         if _PYTHON.match(token) and tokens[start + 1 : start + 4] == [
             "-m",
@@ -248,6 +270,9 @@ def _find_install(tokens: list[str]) -> tuple[str, int] | None:
             "install",
         ]:
             return PIP, start + 4
+        verb = _apt_verb(tokens, start)
+        if verb is not None:
+            return APT, verb + 1
         for family, words in _INSTALL_COMMANDS:
             end = start + len(words)
             candidate = tokens[start:end]

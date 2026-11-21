@@ -54,6 +54,34 @@ def test_partial_or_loose_pins_are_flagged(line: str) -> None:
     assert mod.violations(f"{line}\n") == [1]
 
 
+@pytest.mark.parametrize(
+    ("line", "hits"),
+    [
+        ("apt-get -qq install -y curl", [1]),
+        ("sudo apt-get -o Acquire::Retries=3 install -y curl", [1]),
+        ('apt-get "${opts[@]}" install -y curl', [1]),
+        ("apt-get -o Acquire::Retries=3 install -y curl=8.5.0-2", []),
+        ("apt-get -qq update", []),
+        ("apt-get -o install update", []),
+        ("apt-get source install", []),
+    ],
+    ids=[
+        "short-option",
+        "value-option",
+        "options-array",
+        "pinned",
+        "other-verb",
+        "verb-word-as-an-option-value",
+        "verb-word-as-an-operand",
+    ],
+)
+def test_apt_options_before_the_verb_do_not_hide_the_install(
+    line: str, hits: list[int]
+) -> None:
+    """apt reads its options before the verb as well as after it."""
+    assert mod.violations(f"{line}\n") == hits
+
+
 def test_each_unpinned_command_on_its_own_line_is_reported() -> None:
     src = "pip install ruff\npip install ruff==0.14.5\napt-get install -y jq\n"
     assert mod.violations(src) == [1, 3]

@@ -135,8 +135,21 @@ def sys_path_roots(importer: Path) -> tuple[Path, ...]:
     is what makes the cache sound.
     """
     tree = ast.parse(importer.read_text(encoding="utf-8"), filename=str(importer))
-    env: dict[str, Path] = {}
+    env = path_bindings(tree, importer)
     roots: list[Path] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and _is_sys_path_call(node)):
+            continue
+        folded = _fold_path(node.args[-1], env, importer) if node.args else None
+        if folded:
+            roots.append(folded)
+    return tuple(roots)
+
+
+def path_bindings(tree: ast.Module, importer: Path) -> dict[str, Path]:
+    """Each module-level name in TREE that an assignment binds to a directory
+    or file the fold can read, with `__file__` as IMPORTER."""
+    env: dict[str, Path] = {}
     for statement in tree.body:
         if not (isinstance(statement, ast.Assign) and len(statement.targets) == 1):
             continue
@@ -150,13 +163,7 @@ def sys_path_roots(importer: Path) -> tuple[Path, ...]:
         env.pop(target.id, None)
         if folded:
             env[target.id] = folded
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and _is_sys_path_call(node)):
-            continue
-        folded = _fold_path(node.args[-1], env, importer) if node.args else None
-        if folded:
-            roots.append(folded)
-    return tuple(roots)
+    return env
 
 
 def local_files(name: str, search: tuple[Path, ...]) -> list[Path]:

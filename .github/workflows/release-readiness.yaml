@@ -49,6 +49,8 @@ jobs:
           # Full history so the release commit rebases onto the branch tip when a
           # push lands between this run's checkout and its own push.
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
           token: ${{ secrets.TEMPLATE_SYNC_TOKEN_ORG }}
 
       - name: Set up Node.js

@@ -87,10 +87,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     ARGUMENT_TYPES,
+    code_children,
     command_name,
     command_words,
     iter_nodes,
     node_text,
+    own_redirects,
     parse,
     unquote,
 )
@@ -340,7 +342,7 @@ def _is_captured_producer(node) -> bool:
 
 def _operands(node) -> list:
     """NODE's branches, with the operator tokens between them dropped."""
-    return [child for child in node.children if child.type not in _OPERATORS]
+    return [child for child in code_children(node) if child.type not in _OPERATORS]
 
 
 def _is_noop(node) -> bool:
@@ -404,14 +406,15 @@ def _suppressed_command(node) -> tuple[object, list]:
         # search would read `diff <(a >/dev/null) || true` as discarding `diff`'s
         # output. The one nesting that is still this command's own is a
         # `heredoc_redirect`, which parks the trailing `> file` of `cat <<EOF >f`.
-        body = None
-        for child in children:
-            if child.type == "file_redirect":
-                redirects.append(child)
-            elif child.type == "heredoc_redirect":
-                redirects += [c for c in child.children if c.type == "file_redirect"]
-            elif body is None:
-                body = child
+        redirects += own_redirects(node)
+        body = next(
+            (
+                c
+                for c in children
+                if c.type not in ("file_redirect", "heredoc_redirect")
+            ),
+            None,
+        )
         if node.type != "redirected_statement" or body is None:
             return node, redirects
         node = body

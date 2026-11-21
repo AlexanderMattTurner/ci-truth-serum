@@ -236,3 +236,10 @@ def test_wrapped_jq_pipe_while_is_flagged() -> None:
     same exit-swallowing pipeline (red on the pre-joiner implementation)."""
     src = 'jq -r ".x[]" f \\\n  | while read -r d; do :; done\n'
     assert mod.violations(src) == [1]
+
+
+def test_a_comment_between_pipeline_stages_hides_no_consumer() -> None:
+    """A comment line after `|` is a child of the `pipeline` node, so counted as
+    a stage it stood between the producer and the loop it feeds."""
+    src = "jq -r .a f |\n  # why\n  while read -r l; do :; done\n"
+    assert mod.violations(src) == [1]

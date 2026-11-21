@@ -47,8 +47,8 @@
   types: [shell]
 
 - id: check-argument-exit-swallow
-  name: "honesty: ban a command substitution passed as an argument to a local function"
-  description: '`f "$(cmd)"` discards cmd''s exit status, so `set -e` never stops the script. This is SC2155 one step over, and shellcheck does not report it.'
+  name: "honesty: ban a command substitution passed as an argument to a local function or a handled eval"
+  description: '`f "$(cmd)"` discards cmd''s exit status, so `set -e` never stops the script. `eval "$(cmd)" || return` never returns, because `eval ""` exits 0. This is SC2155 one step over, and shellcheck does not report it.'
   entry: python -m ci_truth_serum.check_argument_exit_swallow
   language: python
   types: [shell]
@@ -65,6 +65,14 @@
   name: "honesty: ban a lock taken on a hardcoded file descriptor"
   description: "`flock -x 9` in a file that never opens fd 9 locks whatever that number is. When nothing opened it, `flock` exits non-zero. When something else holds it, the lock guards a different file and both runs still report success."
   entry: python -m ci_truth_serum.check_flock_fixed_fd
+  language: python
+  additional_dependencies: [tree-sitter, tree-sitter-bash]
+  types: [shell]
+
+- id: check-redirect-order
+  name: "honesty: ban an input redirect written before its stderr silencer"
+  description: "Bash applies redirects from left to right. In `cmd <f 2>/dev/null`, a failed open of `f` prints its error before `2>/dev/null` takes effect."
+  entry: python -m ci_truth_serum.check_redirect_order
   language: python
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
@@ -294,13 +302,14 @@
   types: [yaml]
 
 - id: check-uncached-download
-  name: "opinionated: require a cache in any job that downloads a pinned tool"
-  description: A job that downloads a pinned tool with no cache that holds it gets the same bytes on every run. A slow registry turns that cost into a job timeout, and GitHub reports it as "cancelled". The check follows the repo scripts that a step runs.
+  name: "opinionated: require a cache in any job that downloads a pinned tool or installs from a moving index"
+  description: A job that downloads a pinned tool with no cache that holds it gets the same bytes on every run. A slow registry turns that cost into a job timeout, and GitHub reports it as "cancelled". An install from a moving index with no store in front of it asks the package host on every run, so a slow or dead host turns the job red. The check follows the repo scripts that a step runs.
   entry: python -m ci_truth_serum.check_uncached_download
   language: python
   additional_dependencies:
     [
       PyYAML,
+      dockerfile-parse,
       tree-sitter,
       tree-sitter-bash,
       tree-sitter-javascript,
@@ -491,6 +500,13 @@
   language: python
   types: [shell]
 
+- id: check-silent-exit
+  name: "opinionated: require a message before an `exit N` that a failed probe reaches"
+  description: '`[[ -f "$cfg" ]] || exit 2` stops the script and prints nothing, so the log names no cause.'
+  entry: python -m ci_truth_serum.check_silent_exit
+  language: python
+  types: [shell]
+
 - id: check-lockstep-pins
   name: "opinionated: verify configured twin pins agree (the enforced 'keep in lockstep' comment)"
   description: Each --pair extracts one value from each of two files and fails unless they are equal; zero or multiple matches is a hard error. Config-driven, so it is NOT in the check-tier2 aggregate — enable it standalone with args.
@@ -562,6 +578,32 @@
   additional_dependencies: [PyYAML]
   pass_filenames: false
   files: ^\.github/(workflows|actions)/
+  types: [yaml]
+
+- id: check-required-step
+  name: "opinionated: a job must run the step that a script it runs declares"
+  description: "A script that works only after an earlier step declares it with `# requires-step: <uses value>`. The check follows each `run:` step into the scripts it runs, and refuses a job with no earlier step that uses that value. Without the check, a job that runs only on a schedule or after a merge finds the gap on the default branch."
+  entry: python -m ci_truth_serum.check_required_step
+  language: python
+  additional_dependencies:
+    [
+      PyYAML,
+      tree-sitter,
+      tree-sitter-bash,
+      tree-sitter-javascript,
+      tree-sitter-typescript,
+    ]
+  pass_filenames: false
+  types_or: [yaml, shell]
+
+- id: check-full-history-blobs
+  name: "opinionated: a full-history checkout must filter blobs"
+  description: "An actions/checkout step with `fetch-depth: 0` and no `filter:` input downloads every version of every file, and most jobs read none of them. A slow git cache can make that transfer outlast the job's deadline. `--require-filter=<value>` demands one exact filter."
+  entry: python -m ci_truth_serum.check_full_history_blobs
+  language: python
+  additional_dependencies: [PyYAML]
+  pass_filenames: false
+  files: ^\.github/workflows/
   types: [yaml]
 
 - id: check-secondary-checkout-imports
@@ -1037,10 +1079,19 @@
   additional_dependencies: [tree-sitter, tree-sitter-bash]
   types: [shell]
 
+- id: check-stale-opt-out
+  name: "extra: report an opt-out annotation that suppresses nothing"
+  description: An opt-out stays after its check stops firing, so the file keeps an exemption that nothing needs. This check runs each covered check again. It reports each annotation that no opt-out lookup finds. Delete the annotation to fix the finding.
+  entry: python -m ci_truth_serum.check_stale_opt_out
+  language: python
+  types: [text]
+
 # ───────────────────────── Aggregates · enable a whole tier ──────────────────
 # One id runs every Python check in the tier; new checks added to the tier are
-# picked up with no consumer change. Four checks are not aggregated — enable
-# each on its own: `check-absolute-symlinks` (a language:script shell hook),
+# picked up with no consumer change. Five checks are not aggregated — enable
+# each on its own: `check-stale-opt-out` (it runs the covered checks again, so
+# in an aggregate it would double their time), `check-absolute-symlinks` (a
+# language:script shell hook),
 # `check-lockstep-pins` (config-driven; it hard-errors without the per-repo
 # --pair args an aggregate cannot supply), `check-env-symmetry` (needs a
 # per-project --prefix arg an aggregate can't supply), and
@@ -1071,6 +1122,7 @@
   additional_dependencies:
     [
       PyYAML,
+      dockerfile-parse,
       identify,
       tree-sitter,
       tree-sitter-bash,

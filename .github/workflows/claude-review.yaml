@@ -290,6 +290,8 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           fetch-depth: 0
+          # A private copy can refuse the lazy blob fetch, so it gets no filter.
+          filter: "${{ !github.event.repository.private && 'blob:none' || '' }}"
 
       - name: Install the input sanitizer
         # Self-contained install (into .github/scripts/node_modules) so repos

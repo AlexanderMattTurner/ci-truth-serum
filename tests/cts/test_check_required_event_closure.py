@@ -553,3 +553,16 @@ def test_main_reads_the_merge_queue_from_the_whole_tree(tmp_path, monkeypatch, c
     assert (
         "::error file=.github/workflows/gate.yaml,line=5::" in capsys.readouterr().out
     )
+
+
+def test_mergify_root_is_judged_but_needs_no_merge_group(tmp_path):
+    # A Mergify-gated job roots the closure, but Mergify sends no merge_group,
+    # so the queue-trigger rule judges marked jobs only.
+    path = tmp_path / "wf.yaml"
+    path.write_text(
+        REQUIRED_JOB_NARROWER_THAN_TYPES.replace(" # required-check: true", ""),
+        encoding="utf-8",
+    )
+    assert crec.check_file(path, merge_queue=True) == []
+    [(_line, message)] = crec.check_file(path, True, frozenset({"changelog"}))
+    assert "pull_request:edited" in message

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Demand a cache in any job that downloads bytes that cannot change between runs.
+"""Demand a cache in any job that downloads fixed bytes or installs from a moving index.
 
 A `run:` step that fetches a pinned tool — `pip install ruff==0.14.0`, `npm
 install -g pkg@2.1.0`, `curl -O …/releases/download/v2.12.0/tool` — pulls the
@@ -37,16 +37,26 @@ The lint reads more than the `run:` text. `_cts_step_reach` follows each repo
 script the step runs or sources, and each function call into that function's
 body. A wrapper in front of a script (`timeout 900 bash setup.bash`) does not
 hide it. It also records a Python file the step hands an interpreter, which this
-module parses with `ast`. A path that the text does not fix ends the walk with
+module parses with `ast`. A `subprocess` call there whose argv starts with
+`curl` or `wget`, or runs `bash -c SCRIPT`, is read as shell. Each `$N` and
+`"$@"` in SCRIPT reads as the argv word it receives, so a `source "$1"` of a
+repo library is followed. A download in an imported module counts when the
+file calls the function that holds it. A path that the text does not fix ends the walk with
 no finding, because a guessed path judges a file the step never runs. Measured
 on agent-glovebox: both osv-scanner jobs download a pinned binary on every run
 through a two-file chain, and only a walk that follows scripts sees it.
 
-A cache in the job covers a download only when the cache can hold it:
+A cache covers a download only when its step runs before the step that
+downloads, because a restore after the download cannot skip it. It must also
+be able to hold the download:
 
-  * its `key:` names the pin. That is the version, the digest, the version
-    variable as `env.NAME`, or a `hashFiles()` of a file that holds the fetch,
-    assigns its pin, or is read to compute its pin (`$(jq -r .v pins.json)`);
+  * its `key:` names the pin, and its `path:` can hold the file the download
+    writes. The pin is the version, the digest, the version variable as
+    `env.NAME`, or a `hashFiles()` of a file that holds the fetch, assigns its
+    pin, or is read to compute its pin (`$(jq -r .v pins.json)`). A computed
+    part of a path can take any value, so only the leading parts the text
+    fixes compare. An installer fetch, a fetch with no output the text can
+    read, and a cache with no path the text fixes compare as able to hold it;
   * its `path:` holds the file the download writes, a path a later `cp`,
     `install` or `mv` copies it to, or an absolute path the step hands a
     downloader function;
@@ -67,10 +77,56 @@ step that restores that directory then covers it, when the key of that step
 names the pin or hashes the fetcher. The lint cannot read where a Python fetch
 writes, so a `path:` alone does not cover one.
 
+A second rule covers an install that takes a MOVING index: a spec with no
+version, or a version that is not one (`pkg@latest`). The bytes change, so
+this is not waste. The cost is availability. Every run asks the package host,
+so a slow or dead host turns the job red, and no diff caused it. Worked case:
+Ubuntu's mirrors degraded, and a required job that ran `apt-get install` went
+red on every open pull request at once. A `# pin-exempt:` reason excuses the
+missing pin in `check-versionless-install`, not the missing store, so an
+exempt install is judged here too. On the host the rule covers apt, pip,
+pipx, `uv tool` and global npm, read as `check-versionless-install` reads
+them.
+
+A cache covers a moving install when it restores before the install, its
+`path:` holds the store of the installer (`/var/cache/apt/archives` for apt),
+and its key can both restore and refresh. No version names a moving install,
+so a key qualifies in two ways. It hashes a file that holds the install, and
+so changes when the package list changes. Or it holds a per-run value
+(`github.run_id`) and the step has `restore-keys`, so it restores the newest
+older entry and saves a new one on each run. A fixed key never refreshes, and
+a per-run key with no `restore-keys` never restores. A key the lint cannot
+read may do either, so only its path is judged. A setup action that caches
+the store of the installer (`cache: pip`) covers it.
+
+The rule covers every job, not only the jobs that a required check depends
+on. The pack knows "required" only from `# required-check: true` comments,
+which a stranger's repository does not write, so a required-only rule would
+never fire there. A red that no diff caused also costs a rerun in any job.
+
+The rule also reads an install in a machine the job starts: an image built
+from a repo Dockerfile (`cache-from` is its store), a Lima guest's
+`provision:` scripts, and a `docker run IMAGE sh -c BODY`. That text runs in
+the machine, so the rule reads apk, dnf, yum, zypper and pacman there, and
+apt alone on the host, where a `dnf` branch may never run. A Dockerfile in a
+third-party package is not in the repo, so the rule cannot read it. A cache
+whose `env:` path starts with `~/` never fills: bash does not expand it.
+
+The rule does not judge an install whose packages are arguments of a wrapper
+function (`apt_install "$@"`), or an index refresh alone (`apt-get update`).
+
+The shapes above are the whole scope of the rule, and the scope is frozen.
+The ways to reach a package host have no end, and each new shape cost a
+parser branch, tests and exemptions. Fix a wrong verdict on a shape that the
+rule reads now, and add no new shape. The known misses give no finding: a
+`docker compose` build, a guest store that `limactl create --set` adds, and a
+Dockerfile outside the repo. Two known false findings take a
+`# cache-exempt:` reason: a container that a `-v` mount fills from a host
+store, and a local `.deb` install with an apt `-o` option.
+
 Deliberately NOT reported, because the download is the point or has no stable key:
 
-  * an install with any unpinned spec — `check-versionless-install` owns that, and
-    a floating install has no cache key that could stay correct;
+  * an unpinned URL, which no cache key can track;
   * a `docker pull`;
   * a program the job does not run from the repo, such as a pip-installed CLI.
 
@@ -95,28 +151,34 @@ is real but never fails loudly.
 
 import ast
 import functools
+import gc
+import json
+import os
 import posixpath
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import NamedTuple, Protocol
 
 import yaml
+from dockerfile_parse import DockerfileParser
 from tree_sitter import Node
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_bash_ast import (  # noqa: I001  # pylint: disable=wrong-import-position
     PathologicalInputError,
     _inside_definition,
     command_arguments,
     is_lookup,
     iter_nodes,
     node_text,
+    parse,
     program_name,
     redirect_parts,
     unquote,
 )
-from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_linecheck import (  # pylint: disable=wrong-import-position
     annotated,
     LineLoader,
     MESSAGE_PREFIX,
@@ -124,10 +186,17 @@ from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-
     _job_blocks,
     yaml_script_view,
 )
-from _cts_py_ast import name_of  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_py_imports import local_files, sys_path_roots  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from _cts_cache_scope import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_py_ast import name_of  # pylint: disable=wrong-import-position
+from _cts_py_imports import (  # pylint: disable=wrong-import-position
+    _fold_path,
+    _is_sys_path_call,
+    local_files,
+    path_bindings,
+    sys_path_roots,
+)
+from _cts_cache_scope import (  # pylint: disable=wrong-import-position
     ANY_INSTALLER,
+    PIN_NAME as _PIN_NAME,
     CacheScope,
     Context,
     Text,
@@ -136,9 +205,11 @@ from _cts_cache_scope import (  # noqa: E402,I001  # pylint: disable=wrong-impor
     home,
     rendered,
 )
-from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from _cts_step_reach import (  # pylint: disable=wrong-import-position
     Namespace,
     Unit,
+    _SHELL_INTERPRETER,
+    _executed,
     _launched,
     body_start,
     callable_words,
@@ -147,9 +218,10 @@ from _cts_step_reach import (  # noqa: E402,I001  # pylint: disable=wrong-import
     reach,
     tokens,
 )
-from check_path_gate_deps import glob_to_regex  # noqa: E402,I001  # pylint: disable=wrong-import-position
-from check_versionless_install import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
+from check_path_gate_deps import glob_to_regex  # pylint: disable=wrong-import-position
+from check_versionless_install import (  # pylint: disable=wrong-import-position
     NODE,
+    _APT_PROGRAMS,
     _PIP_ALIAS,
     _find_install,
     spec_scan,
@@ -169,8 +241,28 @@ MESSAGE = (
     "download, and skip the download when the cache restores, or annotate "
     f"'# {OPT_OUT}: <reason>'."
 )
+MOVING_MESSAGE = (
+    "job '{job}' installs {what} from a moving package index with {why} — "
+    "every run fetches from the package host, so a slow or dead host turns "
+    "the job red for a reason no diff caused. Restore a cache of the "
+    "installer's store before the install, keyed on hashFiles() of the file "
+    "that lists the packages or on a per-run key with restore-keys, or "
+    f"annotate '# {OPT_OUT}: <reason>'. A root-owned store such as "
+    "/var/cache/apt/archives needs a step that makes it writable by the "
+    "runner user first, because the cache action only warns when it cannot "
+    "write there."
+)
 NO_CACHE = "no cache step anywhere in the job"
-NO_COVER = "no cache in the job keyed on its pin or holding its output path"
+NO_COVER = (
+    "no cache restored before it that can hold it: a cache must hold its "
+    "output path, or be keyed on its pin with a path that can hold its output"
+)
+MOVING_NO_COVER = (
+    "no cache restored before it that holds the installer's store under a key "
+    "that can both restore and refresh"
+)
+# A key part that changes on every run of a workflow.
+_PER_RUN_KEY = re.compile(r"\bgithub\.(?:sha|run_id|run_number|run_attempt)\b")
 
 # The install flags that keep an installer from writing its store.
 _NO_STORE_FLAGS = frozenset({"--no-cache-dir", "--no-cache"})
@@ -220,8 +312,14 @@ _COPIERS = frozenset({"cp", "install", "mv"})
 # every run — $GITHUB_SHA is this commit, $GITHUB_REF_NAME is this branch. A URL
 # built from one changes per run, so a cache keyed on it could never restore, and
 # flagging it would contradict the "not a version" exclusion above.
+#
+# The GitHub API's release-METADATA read is excluded (`$repo` may hold
+# `owner/name`): `releases/tags/<tag>` returns a JSON description of the release,
+# not an artifact, so no cache holds its bytes. `releases/assets/<id>` stays
+# judged, because with `Accept: application/octet-stream` it streams the asset.
 _PINNED_URL = re.compile(
-    r"^https?://.*(?:/v?\d+\.\d+[\w.+-]*/"
+    r"^(?!https?://api\.github\.com/repos/[^/]+(?:/[^/]+)?/releases/tags/)"
+    r"https?://.*(?:/v?\d+\.\d+[\w.+-]*/"
     r"|\$\{?(?!(?:GITHUB|RUNNER)_)\w*(?:VERSION|RELEASE|TAG|REF|SHA)\w*)",
     re.IGNORECASE,
 )
@@ -229,9 +327,6 @@ _URL = re.compile(r"^https?://")
 _VERSION_LITERAL = re.compile(r"(?<![\w.])v?(?P<version>\d+\.\d+(?:\.\d+)*)(?![\w])")
 _DIGEST_LITERAL = re.compile(r"\b[0-9a-f]{64}(?:[0-9a-f]{64})?\b")
 _RUNNER_VARIABLE = re.compile(r"^(?:GITHUB|RUNNER)_")
-# A variable whose name says it holds a pin. REF is left out: it is a substring
-# of PREFIX, a word that names a directory far more often than a release.
-_PIN_NAME = re.compile(r"VERSION|RELEASE|TAG|SHA|DIGEST|CHECKSUM|HASH", re.IGNORECASE)
 _IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
 # The suffix a checksum file adds to the name of the file it vouches for.
 _CHECKSUM_SUFFIX = re.compile(r"\.(?:sha(?:1|224|256|384|512)(?:sums?)?|b2|asc)$")
@@ -297,7 +392,7 @@ _PY_DIGEST_COMPARES = frozenset({"hmac.compare_digest", "secrets.compare_digest"
 
 
 class Fetch(NamedTuple):
-    """One pinned download a step causes.
+    """One download a step causes.
 
     WHAT names it for the message. PINS are the words a cache key may carry to
     name it: variable names, versions, digests. SOURCES are the repo-relative
@@ -305,7 +400,8 @@ class Fetch(NamedTuple):
     bytes land at, as far as the text fixes them. OUTPUT_NAMES are the
     relative paths the bytes land at in a directory the text does not fix.
     INSTALLER is the package manager that makes the fetch, empty for a
-    download."""
+    download. MOVING is True for an install from a moving index, which has
+    no pin."""
 
     what: str
     pins: frozenset[str]
@@ -313,6 +409,7 @@ class Fetch(NamedTuple):
     outputs: frozenset[str]
     output_names: frozenset[str] = frozenset()
     installer: str = ""
+    moving: bool = False
 
 
 # ── shell: what a namespace downloads ───────────────────────────────────────
@@ -329,14 +426,18 @@ def _callees(namespace: Namespace) -> dict[str, frozenset[str]]:
     may call."""
     defined = namespace.functions.keys()
     return {
-        name: frozenset(
-            word
-            for command, _ in namespace.function_commands(name)
-            for word in callable_words(command)
-            if word in defined
-        )
-        for name in namespace.functions
+        name: frozenset().union(*(_body_words(body) & defined for body, _ in bodies))
+        for name, bodies in namespace.functions.items()
     }
+
+
+@functools.cache
+def _body_words(body: Node) -> frozenset[str]:
+    """The words the commands a function BODY runs may call a function by,
+    read once per body: a shared file's functions sit in many namespaces."""
+    return frozenset(
+        word for command in _executed(body) for word in callable_words(command)
+    )
 
 
 def _callers_of(
@@ -358,18 +459,45 @@ class _NodeTest(Protocol):
     def __call__(self, node: Node, /) -> bool: ...
 
 
+class _BodyTest(Protocol):
+    """A question about one function body."""
+
+    def __call__(self, body: Node, /) -> bool: ...
+
+
 def _functions_running(
-    namespace: Namespace, callees: dict[str, frozenset[str]], runs: _NodeTest
+    namespace: Namespace, callees: dict[str, frozenset[str]], runs: _BodyTest
 ) -> frozenset[str]:
-    """The functions whose bodies run a command that RUNS accepts, directly or
-    through another such function. With `_runs_downloader`,
+    """The functions with a body that RUNS accepts, directly or through
+    another such function. With `_body_downloads`,
     `pinned_curl() { curl … "$url"; }` is one."""
     seeds = {
         name
-        for name in namespace.functions
-        if any(runs(command) for command, _ in namespace.function_commands(name))
+        for name, bodies in namespace.functions.items()
+        if any(runs(body) for body, _ in bodies)
     }
     return _callers_of(seeds, callees)
+
+
+@functools.cache
+def _body_downloads(body: Node) -> bool:
+    """True when a command the function BODY runs runs curl or wget."""
+    return any(_runs_downloader(command) for command in _executed(body))
+
+
+@functools.cache
+def _body_hashing(body: Node) -> tuple[bool, tuple[Node, ...]]:
+    """Whether a command the function BODY runs names a checksum tool, and
+    the commands whose program is an expansion, which only a namespace can
+    read. Read once per body."""
+    named, expanded = False, []
+    for command in _executed(body):
+        args = command_arguments(command)
+        if _names_digest_tool(command):
+            named = True
+        elif args and _expansion_word(args[0]) is not None:
+            expanded.append(command)
+    return named, tuple(expanded)
 
 
 def _ancestor(node: Node, kind: str) -> Node | None:
@@ -390,7 +518,9 @@ def _enclosing_function(node: Node) -> str | None:
 def _downloads(command: Node, downloaders: frozenset[str]) -> bool:
     """True when COMMAND runs curl or wget, or calls a function DOWNLOADERS
     names."""
-    return _runs_downloader(command) or bool(set(callable_words(command)) & downloaders)
+    return _runs_downloader(command) or not downloaders.isdisjoint(
+        callable_words(command)
+    )
 
 
 @functools.lru_cache(maxsize=65536)
@@ -533,14 +663,20 @@ def _read_glob(spelled: str, directory: Path | None) -> str | None:
     return _relative(Path(posixpath.normpath(posixpath.join(str(directory), spelled))))
 
 
+def _expansion_word(word: Node) -> Node | None:
+    """The expansion WORD is, alone or as the one part of a string."""
+    if word.type == "string" and len(word.named_children) == 1:
+        word = word.named_children[0]
+    return word if word.type in ("simple_expansion", "expansion") else None
+
+
 def _array_programs(word: Node, namespace: Namespace) -> set[str] | None:
     """The programs a command word that expands one array may name:
     `"${SHA_ARGV[@]}"` names `sha256sum` when each assignment of `SHA_ARGV` is
     an array that starts with it. A `+=` only appends options, so it names no
     program. None when the word is anything else."""
-    if word.type == "string" and len(word.named_children) == 1:
-        word = word.named_children[0]
-    if word.type not in ("simple_expansion", "expansion"):
+    word = _expansion_word(word)
+    if word is None:
         return None
     names = list(iter_nodes(word, "variable_name"))
     assignments = namespace.assignments.get(node_text(names[0]), []) if names else []
@@ -555,14 +691,32 @@ def _array_programs(word: Node, namespace: Namespace) -> set[str] | None:
     return programs or None
 
 
+def _hashes_in(namespace: Namespace) -> _BodyTest:
+    """A `_BodyTest`: True when the function body runs a checksum tool, read
+    as `_runs_digest_tool` reads a command in NAMESPACE."""
+
+    def test(body: Node) -> bool:
+        named, expanded = _body_hashing(body)
+        return named or any(_runs_digest_tool(c, namespace) for c in expanded)
+
+    return test
+
+
+@functools.cache
+def _names_digest_tool(command: Node) -> bool:
+    """True when COMMAND's own program word is a checksum tool."""
+    words = tokens(command)
+    return bool(words) and bool(_DIGEST_TOOLS.fullmatch(program_name(words[0])))
+
+
 def _runs_digest_tool(command: Node, namespace: Namespace) -> bool:
     """True when COMMAND runs a checksum tool: by name, or through an array
     that holds the tool and its options."""
+    if _names_digest_tool(command):
+        return True
     args = command_arguments(command)
     if not args:
         return False
-    if _DIGEST_TOOLS.fullmatch(program_name(tokens(command)[0])):
-        return True
     programs = _array_programs(args[0], namespace)
     return bool(programs) and all(_DIGEST_TOOLS.fullmatch(p) for p in programs)
 
@@ -876,7 +1030,8 @@ def _spelled(
 ) -> str:
     """NODE's value when the text fixes it. Otherwise its text after quote
     removal. A variable with one assignment spells that assignment, so
-    `D="$HOME/bin"` makes `$D/tool` read `$HOME/bin/tool`. Any other expansion
+    `D="$HOME/bin"` makes `$D/tool` read `$HOME/bin/tool`. A loop variable
+    whose every item is a URL spells its first item. Any other expansion
     is spelled `$NAME`, so one variable reads the same in an output flag and
     in a here-string, or UNKNOWN when it is set. FOLLOWING holds the names
     being spelled, to stop a cycle."""
@@ -888,9 +1043,9 @@ def _spelled(
         if name_node is None:
             return node_text(node) if unknown is None else unknown
         name = node_text(name_node)
-        assignments = namespace.assignments.get(name, [])
+        assignments = namespace.assignments_at(name, node)
         default = _unset_default(node)
-        if default is not None and not assignments:
+        if default is not None and not namespace.sets(name):
             return "".join(
                 _spelled(part, namespace, unit, following, unknown) for part in default
             )
@@ -900,6 +1055,9 @@ def _spelled(
             assigned = assignment.child_by_field_name("value")
             if assigned is not None:
                 return _spelled(assigned, namespace, owner, following | {name}, unknown)
+        items = namespace.loop_items(name, node) if plain and not assignments else None
+        if items and all(_URL.match(item) for item in items):
+            return items[0]  # a loop over hosts: one stands for every pass
         return f"${name}" if unknown is None else unknown
     if unknown is not None and node.type in _COMPUTED_WORDS:
         return unknown
@@ -921,7 +1079,8 @@ def _spelled(
 
 def _unset_default(expansion: Node) -> list[Node] | None:
     """The parts of the default in `${X:-default}` or `${X-default}`, or None
-    for any other expansion. The shell uses the default when no file assigns X."""
+    for any other expansion. The shell uses the default when no file assigns X
+    and the step environment does not set it."""
     inner = expansion.children[1:-1]
     if (
         len(inner) < 2
@@ -1068,10 +1227,8 @@ def _written_names(
 
 def _shell_context(namespace: Namespace) -> _Shell:
     callees = _callees(namespace)
-    downloaders = _functions_running(namespace, callees, _runs_downloader)
-    hashers = _functions_running(
-        namespace, callees, lambda command: _runs_digest_tool(command, namespace)
-    )
+    downloaders = _functions_running(namespace, callees, _body_downloads)
+    hashers = _functions_running(namespace, callees, _hashes_in(namespace))
     checks = _digest_checks(namespace, hashers, _Floats(namespace, downloaders))
     pins: set[str] = set()
     by_function: dict[str, frozenset[str]] = {}
@@ -1127,14 +1284,33 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
     words = tokens(command)
     if not words or MESSAGE_PREFIX.match(words[0]):
         return []
-    where = f" in {rel}" if (rel := _relative(unit.path)) else ""
     fetches = []
-    install_args, sometimes = _with_array_elements(args, namespace)
-    install_words = [unquote(node_text(node)) for node in install_args]
-    installer, specs = _pinned_install(install_words, install_args)
-    if _NO_STORE_FLAGS & set(install_words):
+    if _expands_an_array(command):
+        install_args, sometimes = _with_array_elements(args, namespace)
+        install_words = [unquote(node_text(node)) for node in install_args]
+        installer, specs, moving = _install_specs(install_words, install_args)
+    else:
+        install_args, sometimes, install_words = args, set(), words
+        installer, specs, moving = _command_install(command)
+    where = f" in {rel}" if (rel := _relative(unit.path)) else ""
+    if not _NO_STORE_FLAGS.isdisjoint(install_words):
         installer = ""  # the bytes reach no store, so no store cache holds them
-    store = _INSTALLER_STORES.get(installer, "")
+    store = _store_flag(install_words) or _INSTALLER_STORES.get(installer, "")
+    if moving:
+        nodes = [install_args[install_words.index(spec)] for spec in moving]
+        # The file that fills an array the install expands lists its packages.
+        arrays = {name for node in args if (name := _whole_array(node))}
+        fetches.append(
+            Fetch(
+                " ".join(moving) + where,
+                frozenset(),
+                frozenset(_sources_of(nodes, arrays, namespace, unit)),
+                frozenset(_at_each_home(store)),
+                frozenset(),
+                installer,
+                moving=True,
+            )
+        )
     for spec in specs:
         node = install_args[install_words.index(spec)]
         if node.id in sometimes:
@@ -1150,7 +1326,7 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
                 installer,
             )
         )
-    if not _runs_downloader(command) and not shell.downloaders & set(words):
+    if not _runs_downloader(command) and shell.downloaders.isdisjoint(words):
         return fetches
     values = [namespace.value(node, unit) for node in args]
     spelled = [_spelled(node, namespace, unit) for node in args]
@@ -1163,8 +1339,13 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
         directory,
     )
     for node, token, value in zip(args, words, values):
+        # A version the text fixes, read through variables: the URL as the
+        # shell spells it, with each value only the run knows as `*`.
+        spelling = _spelled(node, namespace, unit, unknown="*")
         if _PINNED_URL.match(token) or (value and _PINNED_URL.match(value)):
             label, extra = token, set()
+        elif _PINNED_URL.match(spelling):
+            label, extra = spelling, _literals(spelling)
         elif _digest_pinned(value or token, outputs | output_names, shell):
             label, extra = f"{token} (digest-checked)", set(shell.digest_pins)
         else:
@@ -1180,6 +1361,22 @@ def _command_fetches(command: Node, unit: Unit, shell: _Shell) -> list[Fetch]:
             )
         )
     return fetches
+
+
+# The install flags that move an installer's store: pip's and uv's
+# `--cache-dir`, and npm's `--cache`.
+_STORE_FLAGS = ("--cache-dir", "--cache")
+
+
+def _store_flag(words: list[str]) -> str:
+    """The store that a flag in WORDS names, when the text fixes it, else the
+    empty string."""
+    for at, word in enumerate(words):
+        flag, equals, value = word.partition("=")
+        if flag in _STORE_FLAGS:
+            value = value if equals else (words[at + 1] if at + 1 < len(words) else "")
+            return "" if value.startswith("$") else value
+    return ""
 
 
 def _at_each_home(store: str) -> set[str]:
@@ -1204,17 +1401,7 @@ def _copies(paths: set[str], namespace: Namespace) -> set[str]:
     of them to, followed to a fixed point. `curl -o "$work/t" …` and then
     `install "$work/t" "$cache/t"` leave the bytes where a cache of `$cache`
     holds them."""
-    copies = []
-    for command, unit in namespace.executed:
-        words = tokens(command)
-        launched = _launched(words)
-        if not launched or program_name(launched[0] or "") not in _COPIERS:
-            continue
-        nodes = command_arguments(command)[len(words) - len(launched) + 1 :]
-        named = [_spelled(node, namespace, unit) for node in nodes]
-        named = [word for word in named if not word.startswith("-")]
-        if len(named) >= 2:
-            copies.append((frozenset(named[:-1]), named[-1]))
+    copies = _copy_commands(namespace)
     found, pending = set(paths), True
     while pending:
         pending = False
@@ -1227,28 +1414,61 @@ def _copies(paths: set[str], namespace: Namespace) -> set[str]:
     return found
 
 
-def _pinned_install(words: list[str], args: list) -> tuple[str, list[str]]:
-    """The installer of the install invocation in WORDS, and its pinned
-    package specs."""
+@functools.cache
+def _copy_commands(namespace: Namespace) -> list[tuple[frozenset[str], str]]:
+    """(sources, target) of each copy NAMESPACE runs, read once per namespace:
+    every download in it asks."""
+    copies = []
+    for command, unit in namespace.executed:
+        words = tokens(command)
+        launched = _launched(words)
+        if not launched or program_name(launched[0] or "") not in _COPIERS:
+            continue
+        nodes = command_arguments(command)[len(words) - len(launched) + 1 :]
+        named = [_spelled(node, namespace, unit) for node in nodes]
+        named = [word for word in named if not word.startswith("-")]
+        if len(named) >= 2:
+            copies.append((frozenset(named[:-1]), named[-1]))
+    return copies
+
+
+@functools.cache
+def _command_install(command: Node) -> "_Install":
+    """`_install_specs` of COMMAND's own words, read once per command: a
+    shared file's commands run in many namespaces."""
+    return _install_specs(tokens(command), command_arguments(command))
+
+
+class _Install(NamedTuple):
+    """The INSTALLER of one install command, its PINNED specs, and its MOVING
+    specs."""
+
+    installer: str
+    pinned: list[str]
+    moving: list[str]
+
+
+def _install_specs(words: list[str], args: list) -> _Install:
+    """The installer of the install invocation in WORDS, its pinned package
+    specs, and the specs that take a moving index: a spec with no version,
+    or with a version that is not one (`pkg@latest`). An install with a
+    moving spec gets different bytes on a later run, so it has no pinned
+    specs."""
     invocation = _find_install(words)
     if not invocation:
-        return "", []
+        return _Install("", [], [])
     family, index = invocation
     if family == NODE and not writes_outside_the_lockfile(words, index):
-        return (
-            "",
-            [],
-        )  # a local install is covered by the lockfile and setup-node's cache
+        # A local install is covered by the lockfile and setup-node's cache.
+        return _Install("", [], [])
     pinned, unpinned = spec_scan(args[index:], family)
-    if unpinned:
-        return "", []
     # A spec that opens with an expansion (`"$@"`, `${ARGS[@]}`) names no
     # package the text fixes, so it is no download this lint can name.
-    return _installer(words, index), [
-        spec
-        for spec in pinned
-        if not _FLOATING.search(spec) and not spec.startswith("$")
-    ]
+    fixed = [spec for spec in pinned if not spec.startswith("$")]
+    moving = unpinned + [spec for spec in fixed if _FLOATING.search(spec)]
+    if moving:
+        return _Install(_installer(words, index), [], moving)
+    return _Install(_installer(words, index), fixed, [])
 
 
 def _with_array_elements(
@@ -1277,15 +1497,30 @@ def _with_array_elements(
     return expanded, sometimes
 
 
-def _array_elements(word: Node, namespace: Namespace) -> list[tuple[Node, bool]] | None:
-    """The elements of the array WORD expands whole, across every assignment
-    of it, each with whether its assignment is conditional. None when WORD is
-    not such an expansion."""
+def _whole_array(word: Node) -> str | None:
+    """The array WORD expands whole (`"${NAME[@]}"`, `${NAME[*]}`), or None."""
     if word.type == "string" and len(word.named_children) == 1:
         word = word.named_children[0]
     names = list(iter_nodes(word, "variable_name")) if word.type == "expansion" else []
     name = node_text(names[0]) if names else ""
     if not name or node_text(word) not in (f"${{{name}[@]}}", f"${{{name}[*]}}"):
+        return None
+    return name
+
+
+@functools.cache
+def _expands_an_array(command: Node) -> bool:
+    """True when an argument of COMMAND expands a whole array, so only the
+    namespace knows its words."""
+    return any(_whole_array(word) is not None for word in command_arguments(command))
+
+
+def _array_elements(word: Node, namespace: Namespace) -> list[tuple[Node, bool]] | None:
+    """The elements of the array WORD expands whole, across every assignment
+    of it, each with whether its assignment is conditional. None when WORD is
+    not such an expansion."""
+    name = _whole_array(word)
+    if name is None:
         return None
     elements = []
     for assignment, _ in namespace.assignments.get(name, []):
@@ -1318,6 +1553,10 @@ def _installer(words: list[str], index: int) -> str:
     first = words[index - 3] if index >= 3 else ""
     if first in ("uv", "yarn"):
         return first
+    # apt options may stand between the program and its verb.
+    apt = [word for word in words[: index - 1] if word in _APT_PROGRAMS]
+    if apt:
+        return apt[-1]
     second = program_name(words[index - 2])
     return "pip" if _PIP_ALIAS.match(second) else second
 
@@ -1456,19 +1695,193 @@ def _checks_digest(
     return False
 
 
+# ── Python: a download a subprocess makes ──────────────────────────────────
+
+_PY_SUBPROCESS = frozenset(
+    f"subprocess.{name}"
+    for name in ("run", "Popen", "call", "check_call", "check_output")
+)
+# A word bash reads as computed, for a Python value the text does not fix.
+_UNKNOWN_WORD = '"$(:)"'
+_SHELL_COMMAND_FLAG = re.compile(r"^-[A-Za-z]*c$")
+_MAX_ARGV_VARIANTS = 8
+
+
+class _PyScope(NamedTuple):
+    """What an expression in one Python function can be read against: the
+    module's CONSTANTS, the names the module binds to PATHS, the LOCAL
+    assignments of the function, and FILE, the module itself."""
+
+    constants: dict[str, ast.expr]
+    paths: dict[str, Path]
+    local: dict[str, list[ast.expr]]
+    file: Path
+
+
+def _bindings(scope: ast.AST) -> dict[str, list[ast.expr]]:
+    """Each value SCOPE assigns to each plain name, in source order."""
+    found: dict[str, list[ast.expr]] = {}
+    for node in ast.walk(scope):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(target := node.targets[0], ast.Name)
+        ):
+            found.setdefault(target.id, []).append(node.value)
+    return found
+
+
+def _argv_variants(
+    node: ast.expr, scope: _PyScope, depth: int = 0
+) -> list[list[ast.expr | None]]:
+    """The element lists the argv NODE can be: a list literal, a name the
+    function binds to one, or each arm of a conditional. A `*name` element
+    splices each list the name can be, and None when the text does not fix it."""
+    if depth > 3:
+        return []
+    if isinstance(node, ast.Name):
+        values = scope.local.get(node.id) or [scope.constants.get(node.id)]
+        return [
+            v
+            for value in values
+            if value
+            for v in _argv_variants(value, scope, depth + 1)
+        ]
+    if isinstance(node, ast.IfExp):
+        return _argv_variants(node.body, scope, depth + 1) + _argv_variants(
+            node.orelse, scope, depth + 1
+        )
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return []
+    variants: list[list[ast.expr | None]] = [[]]
+    for element in node.elts:
+        options: list[list[ast.expr | None]] = [[element]]
+        if isinstance(element, ast.Starred):
+            options = _argv_variants(element.value, scope, depth + 1) or [[None]]
+        variants = [v + o for v in variants for o in options][:_MAX_ARGV_VARIANTS]
+    return variants
+
+
+def _shell_text(node: ast.expr | None, scope: _PyScope, depth: int = 0) -> str | None:
+    """NODE as bash reads it between double quotes, or None when the text does
+    not fix it. A name reads the function's own assignment before the
+    module's. A name neither binds is `${name}`, so a pin name in a URL stays
+    a pin name."""
+    if node is None or depth > 3:
+        return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return re.sub(r'["\\`]', lambda m: "\\" + m[0], node.value)
+    if isinstance(node, ast.Name):
+        local = scope.local.get(node.id, [])
+        if len(local) > 1:
+            return None  # two assignments: the text does not fix which one runs
+        bound = local[0] if local else scope.constants.get(node.id)
+        return _shell_text(bound, scope, depth + 1) if bound else f"${{{node.id}}}"
+    if not isinstance(node, ast.JoinedStr):
+        return None
+    pieces = [
+        _shell_text(
+            part.value if isinstance(part, ast.FormattedValue) else part,
+            scope,
+            depth + 1,
+        )
+        for part in node.values
+    ]
+    return "".join("$(:)" if piece is None else piece for piece in pieces)
+
+
+def _shell_word(node: ast.expr | None, scope: _PyScope) -> str:
+    """NODE as one bash word: a path the fold reads, else its text quoted."""
+    folded = _fold_path(node, scope.paths, scope.file) if node else None
+    if folded is not None:
+        return shlex.quote(str(folded))
+    text = _shell_text(node, scope)
+    return _UNKNOWN_WORD if text is None else f'"{text}"'
+
+
+def _bound_script(script: str, positionals: list[str]) -> str:
+    """SCRIPT with each `$N` and `"$@"` replaced by the words `bash -c SCRIPT`
+    receives, POSITIONALS[0] being `$0`. A `shift` written before an
+    expansion drops one word from it, in source order."""
+    root = parse(script)
+    shifts = [
+        c.start_byte for c in iter_nodes(root, "command") if tokens(c) == ["shift"]
+    ]
+    edits = []
+    for node in iter_nodes(root, "simple_expansion", "expansion"):
+        name = node_text(node).strip("${}")
+        dropped = sum(start < node.start_byte for start in shifts)
+        if name == "@":
+            words = positionals[1 + dropped :]
+        elif name.isdigit():
+            index = int(name) + (dropped if name != "0" else 0)
+            words = positionals[index : index + 1] or ['""']
+        else:
+            continue
+        if edits and node.start_byte < edits[-1][1]:
+            continue  # inside an expansion this already replaces
+        parent = node.parent
+        whole = parent.type == "string" and len(parent.named_children) == 1
+        target = parent if whole else node
+        edits.append((target.start_byte, target.end_byte, " ".join(words)))
+    raw = script.encode()
+    for start, end, text in sorted(edits, reverse=True):
+        raw = raw[:start] + text.encode() + raw[end:]
+    return raw.decode()
+
+
+def _subprocess_scripts(call: ast.Call, scope: _PyScope) -> list[str]:
+    """The shell text each argv of the subprocess CALL amounts to: the command
+    line of a curl or wget, or the `-c` script a shell runs with its
+    positional parameters bound."""
+    argv = call.args[0] if call.args else None
+    argv = argv or next((k.value for k in call.keywords if k.arg == "args"), None)
+    scripts = []
+    for elements in _argv_variants(argv, scope) if argv else []:
+        texts = [_py_text(element, scope.constants) for element in elements[:3]]
+        program, flag, script = [*texts, "", "", ""][:3]
+        program = posixpath.basename(program)
+        words = [_shell_word(element, scope) for element in elements]
+        if program in _DOWNLOADERS:
+            scripts.append(" ".join(words))
+        elif _SHELL_INTERPRETER.fullmatch(program) and _SHELL_COMMAND_FLAG.match(flag):
+            scripts.append(_bound_script(script, words[3:]))
+    return scripts
+
+
+def _subprocess_fetches(
+    call: ast.Call, scope: _PyScope, sources: frozenset[str], where: str
+) -> list[Fetch]:
+    """The pinned downloads the subprocess CALL makes, judged by the shell
+    rules on the script it runs. WHERE names the calling function."""
+    fetches = []
+    for script in _subprocess_scripts(call, scope):
+        for namespace in reach(script, REPO_ROOT, None, None).namespaces:
+            fetches += [
+                fetch._replace(
+                    what=f"{fetch.what} (run by {where})",
+                    sources=fetch.sources - {_RUN_BODY} | sources,
+                )
+                for fetch in _namespace_fetches(namespace)
+            ]
+    return fetches
+
+
 # A cheap shortlist ahead of the parse: a module that spells no fetcher's name
 # holds no fetch call. The `ast` walk below is what decides.
-_PY_FETCHER_SPELLING = re.compile(r"\b(?:urlopen|urlretrieve|requests|httpx)\b")
+_PY_FETCHER_SPELLING = re.compile(
+    r"\b(?:urlopen|urlretrieve|requests|httpx|subprocess)\b"
+)
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.cache
 def _source(path: Path) -> str:
     """PATH's text. A followed file that is not UTF-8 raises, as a followed
     shell file does: the lint cannot judge bytes it cannot read."""
     return path.read_text(encoding="utf-8")
 
 
-@functools.lru_cache(maxsize=512)
+@functools.cache
 def _parsed(path: Path) -> ast.Module | None:
     """PATH's tree, or None when it does not read as Python."""
     try:
@@ -1477,36 +1890,170 @@ def _parsed(path: Path) -> ast.Module | None:
         return None
 
 
-@functools.lru_cache(maxsize=512)
+@functools.cache
+def _py_nodes(path: Path) -> tuple[ast.AST, ...]:
+    """Every node of PATH's tree in `ast.walk` order, walked once per file."""
+    tree = _parsed(path)
+    return tuple(ast.walk(tree)) if tree is not None else ()
+
+
+class _PyNames(NamedTuple):
+    """What one Python file takes from other modules. IMPORTS holds its
+    import statements. ATTRIBUTES maps each dotted name to the attributes read
+    from it (`m.x` gives `m` -> `x`)."""
+
+    imports: tuple[ast.Import | ast.ImportFrom, ...]
+    attributes: dict[str | None, frozenset[str]]
+
+
+@functools.cache
+def _py_names(path: Path) -> _PyNames:
+    """PATH's `_PyNames`, read once per file."""
+    nodes = _py_nodes(path)
+    attributes: dict[str | None, set[str]] = {}
+    for node in nodes:
+        if isinstance(node, ast.Attribute):
+            attributes.setdefault(name_of(node.value), set()).add(node.attr)
+    return _PyNames(
+        tuple(n for n in nodes if isinstance(n, (ast.Import, ast.ImportFrom))),
+        {name: frozenset(attrs) for name, attrs in attributes.items()},
+    )
+
+
+class _PyCalls(NamedTuple):
+    """The call graph of one Python file. FUNCTIONS names its module-level
+    functions, CALLS the module-level functions each one calls, and
+    TOP_CALLS those that its import-time code calls. NESTED names every
+    other function it defines."""
+
+    functions: frozenset[str]
+    calls: dict[str, frozenset[str]]
+    top_calls: frozenset[str]
+    nested: frozenset[str]
+
+
+@functools.cache
+def _py_calls(path: Path) -> _PyCalls:
+    """PATH's `_PyCalls`, read once per file. A file that does not read as
+    Python calls nothing."""
+    tree = _parsed(path) or ast.Module(body=[], type_ignores=[])
+    functions: dict[str, ast.AST] = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    # A definition runs no body on import, and neither does the main guard.
+    top = [
+        n
+        for n in tree.body
+        if not isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and not (isinstance(n, ast.If) and "__main__" in ast.unparse(n.test))
+    ]
+    return _PyCalls(
+        frozenset(functions),
+        {name: frozenset(_called(node, functions)) for name, node in functions.items()},
+        frozenset(_called(ast.Module(body=top, type_ignores=[]), functions)),
+        frozenset(
+            node.name
+            for node in _py_nodes(path)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name not in functions
+        ),
+    )
+
+
+@functools.cache
 def _python_fetches(path: Path) -> list[Fetch]:
     """The pinned downloads the Python file PATH makes, and those of each
-    repo-local module it imports, one level down."""
+    repo-local module it imports, one level down. A download inside a
+    function of that module counts only when PATH names the function, or a
+    function that calls it."""
     tree = _parsed(path)
     if tree is None:
         return []
-    fetches = list(_module_fetches(path, None))
-    for module in _local_imports(tree, path):
-        fetches += _module_fetches(module, path)
+    fetches = [fetch for _, fetch in _module_fetches(path, None)]
+    for module in _local_imports(path):
+        stems = {module.stem}
+        if (module.parent / "__init__.py").is_file():
+            stems.add(module.parent.name)  # a package re-exports its modules
+        reached = _reached(module, _names_used(path, stems))
+        fetches += [
+            f for holder, f in _module_fetches(module, path) if holder in reached
+        ]
     return fetches
 
 
-@functools.lru_cache(maxsize=1024)
-def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
-    """The pinned downloads written in the Python file PATH itself. IMPORTER is
-    the file that imports it, whose hash a cache key may also name."""
+def _names_used(path: Path, stems: set[str]) -> set[str]:
+    """The names the file PATH takes from a module named in STEMS:
+    `from STEM import x`, and `m.x` for each name `m` that an import binds to
+    a STEM."""
+    index = _py_names(path)
+    names, bound = set(), set()
+    for node in index.imports:
+        module = node.module if isinstance(node, ast.ImportFrom) else None
+        if (module or "").rsplit(".", 1)[-1] in stems:
+            names |= {alias.name for alias in node.names}
+        bound |= {
+            alias.asname or alias.name
+            for alias in node.names
+            if alias.name.rsplit(".", 1)[-1] in stems
+        }
+    return names.union(*(index.attributes.get(name, ()) for name in bound))
+
+
+def _reached(module: Path, named: set[str]) -> set[str]:
+    """NAMED, with every module-level function of MODULE that a NAMED function
+    calls at any depth. Code at module level runs on import, so it and each
+    function it calls count. A method or a nested function is reached by calls
+    this graph cannot follow, so it counts too. A `*` import names every
+    function."""
+    index = _py_calls(module)
+    functions = index.functions
+    named = named | (functions if "*" in named else set())
+    reached = named | {"<module>"} | index.nested
+    pending = list((named | index.top_calls) & functions)
+    reached |= set(pending)
+    while pending:
+        new = index.calls[pending.pop()] - reached
+        reached |= new
+        pending += new
+    return reached
+
+
+def _module_fetches(path: Path, importer: Path | None) -> list[tuple[str, Fetch]]:
+    """The pinned downloads written in the Python file PATH itself, each with
+    the function that holds it. IMPORTER is the file that imports it, whose
+    hash a cache key may also name."""
+    held = _relative(importer)
+    return [
+        (holder, fetch._replace(sources=fetch.sources | {held}) if held else fetch)
+        for holder, fetch in _own_module_fetches(path)
+    ]
+
+
+@functools.cache
+def _own_module_fetches(path: Path) -> list[tuple[str, Fetch]]:
+    """`_module_fetches` of PATH with no importer, read once per file: many
+    files import one module."""
     if not _PY_FETCHER_SPELLING.search(_source(path)):
         return []
     tree = _parsed(path)
     if tree is None:
         return []
-    nodes = list(ast.walk(tree))
+    nodes = _py_nodes(path)
     aliases = _aliases(nodes)
     calls = [
         node
         for node in nodes
         if isinstance(node, ast.Call) and _qualified(node.func, aliases) in _PY_FETCHERS
     ]
-    if not calls:
+    launches = [
+        node
+        for node in nodes
+        if isinstance(node, ast.Call)
+        and _qualified(node.func, aliases) in _PY_SUBPROCESS
+    ]
+    if not calls and not launches:
         return []
     constants = _constants(tree)
     functions: dict[str, ast.AST] = {
@@ -1526,8 +2073,8 @@ def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
         and isinstance(node.value, str)
         and _DIGEST_LITERAL.fullmatch(node.value)
     }
-    sources = {rel for p in (path, importer) if (rel := _relative(p))}
-    rel = _relative(path) or path.name
+    sources = {rel} if (rel := _relative(path)) else set()
+    rel = rel or path.name
     # A fetch's scope is its innermost enclosing function. ast.walk is
     # breadth-first, so an inner function overwrites its outer one here. The
     # module scope holds only top-level statements, so a compare inside some
@@ -1567,32 +2114,98 @@ def _module_fetches(path: Path, importer: Path | None) -> list[Fetch]:
         label = f"{url or 'a URL'} (fetched by {rel}:{scope_name}"
         label += ")" if pinned_url else ", digest-checked)"
         fetches.append(
-            Fetch(
-                label, frozenset(p for p in pins if p), frozenset(sources), frozenset()
+            (
+                scope_name,
+                Fetch(
+                    label,
+                    frozenset(p for p in pins if p),
+                    frozenset(sources),
+                    frozenset(),
+                ),
             )
         )
+    paths = path_bindings(tree, path)
+    for node in launches:
+        scope = owner.get(id(node), top)
+        scope_name = getattr(scope, "name", "<module>")
+        own = _PyScope(constants, paths, _bindings(scope), path)
+        fetches += [
+            (scope_name, fetch)
+            for fetch in _subprocess_fetches(
+                node, own, frozenset(sources), f"{rel}:{scope_name}"
+            )
+        ]
     return fetches
 
 
-def _local_imports(tree: ast.Module, path: Path) -> list[Path]:
+def _local_imports(path: Path) -> list[Path]:
     """The repo files PATH imports, found the way `python3 PATH` finds them."""
     names = set()
-    for node in ast.walk(tree):
+    for node in _py_names(path).imports:
         if isinstance(node, ast.Import):
             names |= {alias.name.split(".")[0] for alias in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
             names.add(node.module.split(".")[0])
-    search = (path.parent, *sys_path_roots(path))
-    found = []
-    for name in sorted(names):
-        for module in local_files(name, search):
-            if (
-                module.is_relative_to(REPO_ROOT)
-                and module != path
-                and module not in found
-            ):
-                found.append(module)
+    # `sys.path` is one list per process, so a directory that an imported
+    # module inserts serves the imports after it. The walk runs to a fixed
+    # point and ignores import order, which can only resolve more names.
+    search = [path.parent, *_inserted_roots(path)]
+    found: list[Path] = []
+    grew = True
+    while grew:
+        grew = False
+        for name in sorted(names):
+            for module in local_files(name, tuple(search)):
+                if module.is_relative_to(REPO_ROOT) and module not in (path, *found):
+                    found.append(module)
+                    search += [d for d in _inserted_roots(module) if d not in search]
+                    grew = True
     return found
+
+
+def _literal_tail(node: ast.expr) -> tuple[ast.expr, tuple[str, ...]]:
+    """NODE, read through `str()`, as the base of its `/` chain and the
+    literal parts after that base."""
+    if isinstance(node, ast.Call) and name_of(node.func) == "str" and node.args:
+        return _literal_tail(node.args[0])
+    if (
+        isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Div)
+        and isinstance(node.right, ast.Constant)
+        and isinstance(node.right.value, str)
+    ):
+        base, parts = _literal_tail(node.left)
+        return base, (*parts, node.right.value)
+    return node, ()
+
+
+@functools.cache
+def _inserted_roots(module: Path) -> tuple[Path, ...]:
+    """The directories MODULE puts on `sys.path`. An insert whose base the fold
+    cannot read (`repo_root(_HERE) / "bin" / "lib"`) names its literal tail
+    under each ancestor of MODULE in the repo that holds that tail. That is a
+    guess about the base, so it serves only to find a module by name."""
+    tree = _parsed(module)
+    inserts = [
+        node
+        for node in _py_nodes(module)
+        if isinstance(node, ast.Call) and _is_sys_path_call(node) and node.args
+    ]
+    # `sys_path_roots` reads only these calls, and parses the file again.
+    if tree is None or not inserts:
+        return ()
+    roots, bindings = list(sys_path_roots(module)), path_bindings(tree, module)
+    for node in inserts:
+        base, tail = _literal_tail(node.args[-1])
+        if not tail or _fold_path(base, bindings, module):
+            continue
+        roots += [
+            directory / Path(*tail)
+            for directory in module.parents
+            if directory.is_relative_to(REPO_ROOT)
+            and (directory / Path(*tail)).is_dir()
+        ]
+    return tuple(roots)
 
 
 class _CheckedCall(NamedTuple):
@@ -1752,11 +2365,12 @@ def _script_fetches(
     holder: str | None,
     action_dir: str | None,
     working_directory: str | None,
+    environment: frozenset[str] = frozenset(),
 ) -> list[Fetch]:
     """Every pinned download the `run:` body SCRIPT causes, through every repo
     file it reaches. HOLDER is the repo-relative workflow or action file that
-    SCRIPT is written in."""
-    reached = reach(script, REPO_ROOT, action_dir, working_directory)
+    SCRIPT is written in. ENVIRONMENT holds the names the step's `env:` sets."""
+    reached = reach(script, REPO_ROOT, action_dir, working_directory, environment)
     fetches: list[Fetch] = []
     for namespace in reached.namespaces:
         fetches += _namespace_fetches(namespace)
@@ -1818,14 +2432,93 @@ def _hashed_assignments(root: Path, pattern: str) -> frozenset[str]:
     return frozenset(names)
 
 
+@functools.lru_cache(maxsize=1024)
+def _assigned_literals(root: Path, name: str, files: frozenset[str]) -> frozenset[str]:
+    """The literal values that FILES, repo-relative shell files, assign NAME: the
+    assigned text, where it holds no expansion. FILES are the ones the fetch reads,
+    so only the value the download uses counts. A generated file such as
+    `tool-versions.sh` carries the value its source file holds, which is how a key
+    that hashes the source (`config/tool-pins/k3s.json`) names the pin.
+
+    A file the parser refuses gives no value, which leaves the fetch uncovered:
+    the safe direction."""
+    values: set[str] = set()
+    for rel in sorted(files):
+        try:
+            tree = load_shell(root / rel)[1]
+        except (OSError, UnicodeDecodeError, PathologicalInputError):
+            continue
+        for assigned, node in definitions(tree)[1]:
+            value = node.child_by_field_name("value")
+            text = unquote(node_text(value)) if assigned == name and value else ""
+            if text and not any(char in text for char in "$`"):
+                values.add(text)
+    return frozenset(values)
+
+
+@functools.lru_cache(maxsize=4)
+def _repo_files(root: Path) -> tuple[tuple[str, Path], ...]:
+    """(repo-relative path, path) of every file under ROOT, `.git` left out."""
+    found = []
+    for directory, subdirectories, names in os.walk(root):
+        subdirectories[:] = sorted(d for d in subdirectories if d != ".git")
+        base = Path(directory)
+        prefix = base.relative_to(root).as_posix() + "/" if base != root else ""
+        found += [(prefix + name, base / name) for name in sorted(names)]
+    return tuple(found)
+
+
+@functools.lru_cache(maxsize=1024)
+def _hashed_text(root: Path, pattern: str) -> str:
+    """The text of every file under ROOT that a `hashFiles()` PATTERN matches."""
+    if not pattern or pattern.startswith(("/", "!")):
+        return ""
+    matcher = glob_to_regex(pattern)
+    return "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for rel, path in _repo_files(root)
+        if matcher.match(rel)
+    )
+
+
+def _pin_values(fetch: Fetch) -> set[str]:
+    """FETCH's pins as literal values: each version or digest it names, and each
+    literal a pin variable is assigned. A value under 4 characters is left out,
+    because a hashed file holds it by chance."""
+    values = {
+        pin
+        for pin in fetch.pins
+        if not _IDENTIFIER.fullmatch(pin) or _DIGEST_LITERAL.fullmatch(pin)
+    }
+    shell = frozenset(rel for rel in fetch.sources if rel.endswith((".sh", ".bash")))
+    for pin in fetch.pins - values:
+        values |= _assigned_literals(REPO_ROOT, pin, shell)
+    return {value for value in values if len(value) >= 4}
+
+
 def _covers(scope: CacheScope, fetch: Fetch) -> bool:
-    """True when SCOPE's key names FETCH's pin or a file that sets it, its
-    path holds FETCH's output, or it is the store of FETCH's installer."""
-    if scope.key is None:
-        return True
+    """True when SCOPE's path holds FETCH's output, it is the store of FETCH's
+    installer, or its key names FETCH's pin or a file that sets it and its
+    path can hold FETCH's output."""
     if fetch.installer and scope.installers & {fetch.installer, ANY_INSTALLER}:
         return True
-    if any(_pin_in_key(pin).search(scope.key) for pin in fetch.pins):
+    if fetch.moving:
+        # A key the lint cannot read may still hit and refresh, but only a
+        # path that holds the installer's store can hold the packages.
+        return _holds(scope, fetch) and (
+            scope.key is None or _hits_and_refreshes(scope, fetch)
+        )
+    if scope.key is None:
+        return True
+    return _holds(scope, fetch) or (
+        _key_names(scope, fetch) and _may_hold(scope, fetch)
+    )
+
+
+def _key_names(scope: CacheScope, fetch: Fetch) -> bool:
+    """True when SCOPE's key names FETCH's pin, or hashes a file that sets it or
+    holds its value."""
+    if any(_pin_in_key(pin).search(scope.key or "") for pin in fetch.pins):
         return True
     for pattern in scope.hashed:
         pattern = pattern.removeprefix("./")
@@ -1836,8 +2529,74 @@ def _covers(scope: CacheScope, fetch: Fetch) -> bool:
             return True
         if fetch.pins & _hashed_assignments(REPO_ROOT, pattern):
             return True
+        text = _hashed_text(REPO_ROOT, pattern)
+        # `value in text` is a cheap shortlist: the token pattern matches only
+        # where VALUE itself is written, and the hashed text can be large.
+        if text and any(
+            value in text and _pin_in_key(value).search(text)
+            for value in _pin_values(fetch)
+        ):
+            return True
+    return False
+
+
+def _hits_and_refreshes(scope: CacheScope, fetch: Fetch) -> bool:
+    """True when SCOPE's key can restore an entry for the moving install FETCH
+    and can also save a newer one. No version names a moving install, so two
+    keys qualify. A key that hashes a file holding the install changes when
+    its package list changes. A per-run key changes on every run, and its
+    `restore-keys` restore the newest older entry. A per-run key with no
+    `restore-keys` never restores. A key with neither part never changes, so
+    its one entry ages while the index moves on."""
+    if _PER_RUN_KEY.search(scope.key or ""):
+        return scope.restores
+    return _key_names(scope, fetch)
+
+
+# A path part the text does not fix: a variable, or a glob a cache path holds.
+_UNFIXED_PART = re.compile(r"[$*?\[{]")
+
+
+def _fixed_head(path: str) -> tuple[list[str], bool]:
+    """The leading parts of PATH that the text fixes, with `~` for each of
+    _HOMES, and True when the text fixes the whole path."""
+    for spelling in _HOMES[1:]:
+        if path == spelling or path.startswith(spelling + "/"):
+            path = "~" + path[len(spelling) :]
+    head: list[str] = []
+    for part in path.split("/"):
+        if _UNFIXED_PART.search(part):
+            return head, False
+        head.append(part)
+    return head, True
+
+
+def _may_hold(scope: CacheScope, fetch: Fetch) -> bool:
+    """True when a path of SCOPE can hold an output of FETCH. A computed part
+    can take any value, so only the leading parts the text fixes compare. An
+    installer writes where its own settings say, which the text does not show.
+    So an installer fetch, a fetch with no output the text can read, and a
+    cache with no path the text fixes compare as able to hold it."""
+    if fetch.installer or fetch.output_names or not fetch.outputs or not scope.paths:
+        return True
+    for out in fetch.outputs:
+        out_head, out_fixed = _fixed_head(out)
+        for path in scope.paths:
+            path_head, _ = _fixed_head(path)
+            if out_fixed and len(path_head) > len(out_head):
+                continue  # the cache holds a directory below the output
+            common = min(len(out_head), len(path_head))
+            if out_head[:common] == path_head[:common]:
+                return True
+    return False
+
+
+def _holds(scope: CacheScope, fetch: Fetch) -> bool:
+    """True when a path of SCOPE holds an output of FETCH."""
     for out in fetch.outputs:
         for path in scope.paths:
+            if path == "." and not out.startswith(("/", "~")):
+                return True  # the workspace holds every relative output
             if glob_to_regex(path).match(out) or glob_to_regex(
                 path.rstrip("/") + "/**"
             ).match(out):
@@ -1965,9 +2724,11 @@ def check_file(path: Path) -> list[tuple[int, str]]:
         return [
             (
                 1,
-                f"could not parse this workflow or an action it uses as YAML "
-                f"({first_line}); cannot check its jobs for uncached downloads — "
-                "fix the syntax (or run actionlint) and re-check.",
+                (
+                    f"could not parse this workflow or an action it uses as YAML "
+                    f"({first_line}); cannot check its jobs for uncached downloads — "
+                    "fix the syntax (or run actionlint) and re-check."
+                ),
             )
         ]
 
@@ -1991,6 +2752,296 @@ def _directory(value: object) -> str | None:
     return value.removeprefix("./")
 
 
+def job_steps(doc: dict, job: object, anchor: int, path: Path) -> list[FlatStep]:
+    """Every step that JOB in the workflow DOC at PATH really runs, through
+    each local composite action. ANCHOR is the line of the job's key."""
+    steps = _steps(job)
+    env = {**env_of(doc), **env_of(job)} if isinstance(job, dict) else env_of(doc)
+    return flatten(
+        steps, anchor, "", frozenset({path}), Context(tuple(steps), None, env)
+    )
+
+
+class StepRun(NamedTuple):
+    """Where a step's `run:` body runs: the composite action directory it
+    comes from, its directory relative to the repo root (None when the text
+    does not fix it), and the names its environment sets to a value."""
+
+    action_dir: str | None
+    directory: str | None
+    environment: frozenset[str]
+
+
+def step_run(flat: FlatStep, doc: dict, job: dict) -> StepRun:
+    """The StepRun of FLAT, a step of JOB in the workflow DOC. The job's
+    `defaults.run` directory reaches only the workflow's own steps."""
+    step, origin = flat.step, flat.origin
+    default = "" if origin else _default_directory(doc, job)
+    directory = _directory(step.get("working-directory", default))
+    # A name set to the empty string reads as unset to `${X:-default}`.
+    environment = frozenset(
+        name
+        for name, value in {**flat.context.env, **env_of(step)}.items()
+        if value not in ("", None)
+    )
+    return StepRun(
+        origin.removeprefix("./") if origin else None, directory, environment
+    )
+
+
+# ── installs in another machine: an image, a guest, a container ─────────────
+
+MACHINE_MESSAGE = (
+    "job '{job}' runs '{what}' in {machine}, and that install reads a live "
+    "package mirror with no store the repo controls in front of it, so a slow "
+    "or dead mirror turns the job red. Build an image with a registry cache "
+    "(`cache-from`), or install package files the job restored from a cache, "
+    f"or annotate '# {OPT_OUT}: <reason>'."
+)
+TILDE_MESSAGE = (
+    "job '{job}' reads ${name}, whose value '{value}' starts with '~'. Bash "
+    "does not expand a tilde that comes from a variable, so the step reads a "
+    "directory named '~' and the cache of '{value}' never fills. Spell the "
+    "value with $HOME."
+)
+# The verb that makes each package manager read its mirror, as a pattern.
+_MACHINE_VERBS = {"apk": "add", "pacman": "-S[yuw]*|--sync"} | dict.fromkeys(
+    ("apt-get", "apt", "aptitude", "dnf", "microdnf", "yum", "zypper"), "install"
+)
+_PREFIX_PROGRAMS = frozenset({"sudo", "env", "nice", "command", "exec"})
+_SHELLS = frozenset({"sh", "bash", "ash", "dash"})
+# The `docker build` options that take no value.
+_BOOL_FLAGS = frozenset("--no-cache --pull --push --load -q --quiet --rm".split())
+# A package file on disk. A path opens with `/`, since `pkg/release` names a
+# release of the mirror, and a URL is a download.
+_LOCAL_SPEC = re.compile(r"^(?!.*://)(?:\.{0,2}/|.*\.(?:deb|rpm|apk)$)")
+# A shell option cluster that holds `-c`: `-c`, `-ec`, `-xc`.
+_SHELL_C = re.compile(r"-[a-z]*c[a-z]*")
+
+
+def machine_installs(script: str) -> list[tuple[str, bool]]:
+    """Each package install that the shell SCRIPT runs, as its words and
+    whether it reads local package files alone. The walk reads a `sh -c
+    BODY` through BODY."""
+    found = []
+    for command in iter_nodes(parse(script), "command"):
+        words = tokens(command)
+        # A prefix program, its options and `NAME=value` words, or a
+        # Dockerfile `RUN --mount=…` flag, only start the program after them.
+        while words and (
+            program_name(words[0]) in _PREFIX_PROGRAMS
+            or words[0][:1] == "-"
+            or re.match(r"\w+=", words[0])
+        ):
+            words = words[1:]
+        program = program_name(words[0]) if words else ""
+        found += [
+            install
+            for at, word in enumerate(words[1:-1], 1)
+            if program in _SHELLS and _SHELL_C.fullmatch(word)
+            for install in machine_installs(words[at + 1])
+        ]
+        verb = _MACHINE_VERBS.get(program)
+        verbs = [w for w in words if verb and re.fullmatch(verb, w)]
+        if verbs:
+            specs = [w for w in words[words.index(verbs[0]) + 1 :] if w[:1] != "-"]
+            local = bool(specs) and all(_LOCAL_SPEC.search(spec) for spec in specs)
+            found.append((" ".join(words), local))
+    return found
+
+
+def _dockerfile_installs(path: Path) -> list[tuple[str, bool]]:
+    """Each package install that the `RUN` instructions of the Dockerfile at
+    PATH make. An exec form is a JSON list of words."""
+    scripts, heredoc = [], None
+    for instruction in DockerfileParser(fileobj=path.open("rb")).structure:
+        value, content = instruction["value"], instruction["content"]
+        # dockerfile-parse reads each line of a `RUN <<EOF` body as an
+        # instruction of its own, so the body is rebuilt from those lines.
+        if heredoc is not None:
+            if content.strip() == heredoc:
+                heredoc = None
+            else:
+                scripts[-1] += content
+        elif instruction["instruction"] == "RUN":
+            opener = re.match(r"(?:--\S+\s+)*<<-?['\"]?(?P<tag>\w+)", value)
+            heredoc = opener["tag"] if opener else None
+            scripts.append("" if opener else _shell_form(value))
+    return [install for script in scripts for install in machine_installs(script)]
+
+
+def _shell_form(value: str) -> str:
+    """The script that the `RUN` VALUE runs. Docker reads a value that is not
+    a JSON list as shell form, as in `RUN [ -f x ] && apk add y`."""
+    try:
+        words = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    return shlex.join(words) if isinstance(words, list) else value
+
+
+def _guest_installs(path: Path) -> list[tuple[str, bool]]:
+    """Each package install that the `provision:` scripts of the Lima
+    template at PATH make."""
+    template = yaml.safe_load(path.read_text(encoding="utf-8"))
+    entries = template.get("provision") if isinstance(template, dict) else None
+    return [
+        install
+        for entry in entries or []
+        if isinstance(entry, dict) and isinstance(entry.get("script"), str)
+        for install in machine_installs(entry["script"])
+    ]
+
+
+class _Machine(NamedTuple):
+    """An image, guest or container that a step starts, STORED from a cache."""
+
+    machine: str
+    installs: list[tuple[str, bool]]
+    stored: bool = False
+
+
+def _repo_machine(
+    kind: str, value: object, directory: str | None, stored: bool = False
+) -> _Machine | None:
+    """The guest or image (KIND) that the repo file VALUE describes, read
+    from DIRECTORY when VALUE is relative. None when the text does not fix
+    the file."""
+    if not isinstance(value, str) or not value:
+        return None
+    path = (
+        Path(value) if value.startswith("/") else REPO_ROOT / (directory or "") / value
+    )
+    if not path.is_file() or not path.is_relative_to(REPO_ROOT):
+        return None
+    read = _guest_installs if kind == "guest" else _dockerfile_installs
+    return _Machine(f"the {kind} of {_relative(path)}", read(path), stored)
+
+
+def _started_machine(
+    words: list[str], values: list[str | None], directory: str | None
+) -> _Machine | None:
+    """The machine that a command with WORDS starts: a guest that `limactl
+    create` or `start` boots, a container that `docker run … sh -c BODY`
+    runs, or an image that `docker build` builds. VALUES are the expanded
+    words, None where the text does not fix one."""
+    while words and program_name(words[0]) in _PREFIX_PROGRAMS:
+        words, values = words[1:], values[1:]
+    program = program_name(words[0]) if words else ""
+    if program == "limactl" and words[1:2] in (["create"], ["start"]):
+        yamls = [v for v in values if v and v.endswith((".yaml", ".yml"))]
+        return _repo_machine("guest", yamls[0] if yamls else None, directory)
+    # `docker compose` reads a compose file, which this pass does not.
+    docker = program == "docker" and words[1:2] != ["compose"]
+    verbs = [w for w in words[1:3] if w[:1] != "-"] if docker else []
+    if "run" in verbs:
+        bodies = [
+            words[at + 2]
+            for at in range(len(words) - 2)
+            if program_name(words[at]) in _SHELLS and _SHELL_C.fullmatch(words[at + 1])
+        ]
+        installs = machine_installs(bodies[0]) if bodies else []
+        return _Machine("a container it starts", installs)
+    if "build" not in verbs:
+        return None
+    at = words.index("build") + 1
+    files = [
+        values[i + 1] for i in range(at, len(words) - 1) if words[i] in ("-f", "--file")
+    ] + [str(v).partition("=")[2] for v in values[at:] if str(v).startswith("--file=")]
+    context, skip = ".", False
+    for word, value in zip(words[at:], values[at:]):
+        if not skip and word[:1] != "-":
+            context = value
+            break
+        skip = (
+            not skip and word[:1] == "-" and "=" not in word and word not in _BOOL_FLAGS
+        )
+    dockerfile = files[0] if files else posixpath.join(context or "", "Dockerfile")
+    stored = any(w.startswith("--cache-from") for w in words[at:])
+    return _repo_machine("image", dockerfile, directory, stored)
+
+
+def _step_machines(flat: FlatStep, run: StepRun) -> list[_Machine]:
+    """Every machine that the step FLAT starts, through a
+    `docker/build-push-action` or every repo file its `run:` body reaches."""
+    step, script = flat.step, flat.step.get("run")
+    if str(step.get("uses")).startswith("docker/build-push-action@"):
+        inputs = step.get("with") if isinstance(step.get("with"), dict) else {}
+        default = posixpath.join(str(inputs.get("context", ".")), "Dockerfile")
+        machine = _repo_machine(
+            "image",
+            inputs.get("file", default),
+            None,  # `working-directory` applies to a `run:` step alone
+            bool(inputs.get("cache-from")),
+        )
+        return [machine] if machine else []
+    if not isinstance(script, str):
+        return []
+    reached = reach(script, REPO_ROOT, run.action_dir, run.directory, run.environment)
+    return [
+        machine
+        for namespace in reached.namespaces
+        for command, unit in namespace.executed
+        if (
+            machine := _started_machine(
+                tokens(command),
+                [namespace.value(node, unit) for node in command_arguments(command)],
+                run.directory,
+            )
+        )
+    ]
+
+
+def _machine_findings(name: str, flat: FlatStep, run: StepRun) -> list[tuple[int, str]]:
+    """A finding for each machine that the step FLAT of job NAME starts and
+    that installs from a live mirror. A guest that installs only local
+    package files reads a store, and so makes no finding."""
+    findings = {}
+    for machine in _step_machines(flat, run):
+        live = sorted({text for text, only_local in machine.installs if not only_local})
+        if live and not machine.stored:
+            message = MACHINE_MESSAGE.format(
+                job=name,
+                what="', '".join(live[:3]),
+                machine=machine.machine,
+            )
+            findings[flat.line, message] = None
+    return list(findings)
+
+
+def _tilde_findings(name: str, flat: list[FlatStep]) -> list[tuple[int, str]]:
+    """A finding for each `run:` step of job NAME that reads `$X`, where the
+    `env:` value of X starts with `~/` and a cache `path:` of the job names
+    X or its value. The cache action expands that tilde, and bash does not."""
+    paths = [
+        line.strip()
+        for step in flat
+        if cache_scope(step.step, step.context)
+        and isinstance(step.step.get("with"), dict)
+        for line in str(step.step["with"].get("path", "")).splitlines()
+    ]
+    findings = []
+    for step in flat:
+        script = step.step.get("run")
+        if not isinstance(script, str):
+            continue
+        read = {
+            node_text(node)
+            for node in iter_nodes(parse(script), "variable_name")
+            if node.parent.type in ("simple_expansion", "expansion")
+        }
+        for key, value in sorted({**step.context.env, **env_of(step.step)}.items()):
+            if (
+                key in read
+                and str(value).startswith("~/")
+                and any(value == p or f"env.{key}" in p for p in paths)
+            ):
+                findings.append(
+                    (step.line, TILDE_MESSAGE.format(job=name, name=key, value=value))
+                )
+    return findings
+
+
 def _check_parsed(path: Path) -> list[tuple[int, str]]:
     doc = _load(path)
     jobs = doc.get("jobs") if doc else None
@@ -1999,12 +3050,10 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
     blocks = _job_blocks(path.read_text(encoding="utf-8"))
     violations: list[tuple[int, str]] = []
     for name, job in jobs.items():
-        steps = _steps(job)
-        if not steps:
-            continue  # a `uses:` job runs another workflow's steps, not its own
         key_line, block = blocks.get(str(name), (1, ""))
-        context = Context(tuple(steps), None, {**env_of(doc), **env_of(job)})
-        flat = flatten(steps, key_line, "", frozenset({path}), context)
+        flat = job_steps(doc, job, key_line, path)
+        if not flat:
+            continue  # a `uses:` job runs another workflow's steps, not its own
         # The job-scoped marker reads the surfaces a `#` may open a comment on:
         # a real YAML comment, and a `run:` value. A `#` inside any other scalar
         # is content. The step-scoped read below keeps the raw script, because
@@ -2012,38 +3061,69 @@ def _check_parsed(path: Path) -> list[tuple[int, str]]:
         # whose text this job's BLOCK does not hold.
         if any(annotated(line, OPT_OUT) for line in yaml_script_view(block)):
             continue
+        # Each cache with the index of its step: a cache restored after a
+        # download cannot skip it.
         scopes = [
-            scope for f in flat if (scope := cache_scope(f.step, f.context)) is not None
+            (index, scope)
+            for index, f in enumerate(flat)
+            if (scope := cache_scope(f.step, f.context)) is not None
         ]
-        default_directory = _default_directory(doc, job)
-        for step, line, origin, _ in flat:
+        violations += _tilde_findings(name, flat)
+        for index, flat_step in enumerate(flat):
+            step, line, origin = flat_step.step, flat_step.line, flat_step.origin
             script = step.get("run")
+            if isinstance(script, str) and any(
+                annotated(text, OPT_OUT) for text in script.splitlines()
+            ):
+                continue
+            run = step_run(flat_step, doc, job)
+            violations += _machine_findings(name, flat_step, run)
             if not isinstance(script, str):
                 continue
-            if any(annotated(text, OPT_OUT) for text in script.splitlines()):
-                continue
-            action_dir = origin.removeprefix("./") if origin else None
-            # `defaults.run` reaches only the workflow's own steps.
-            directory = _directory(
-                step.get("working-directory", "" if origin else default_directory)
-            )
             holder = _relative(_action_path(origin) if origin else REPO_ROOT / path)
+            earlier = [scope for at, scope in scopes if at < index]
             uncovered = [
                 fetch
-                for fetch in _script_fetches(script, holder, action_dir, directory)
-                if not any(_covers(scope, fetch) for scope in scopes)
+                for fetch in _script_fetches(
+                    script, holder, run.action_dir, run.directory, run.environment
+                )
+                if not any(_covers(scope, fetch) for scope in earlier)
             ]
-            if not uncovered:
-                continue
-            what = ", ".join(sorted({fetch.what for fetch in uncovered})[:3])
-            if origin:
-                what += f" (installed by {origin})"
-            why = NO_COVER if scopes else NO_CACHE
-            violations.append((line, MESSAGE.format(job=name, what=what, why=why)))
+            for moving, template, no_cover in (
+                (False, MESSAGE, NO_COVER),
+                (True, MOVING_MESSAGE, MOVING_NO_COVER),
+            ):
+                kind = [fetch for fetch in uncovered if fetch.moving == moving]
+                if not kind:
+                    continue
+                what = ", ".join(sorted({fetch.what for fetch in kind})[:3])
+                if origin:
+                    what += f" (installed by {origin})"
+                why = no_cover if scopes else NO_CACHE
+                violations.append((line, template.format(job=name, what=what, why=why)))
     return violations
 
 
 def main() -> int:
+    """Check every workflow, with the cyclic garbage collector off.
+
+    The run keeps every parse tree and namespace it builds until it ends, and
+    none of them is garbage, so each pass of the collector only re-walks them:
+    about a quarter of the run on a large tree. Reference counting still frees
+    everything else. The collector comes back on for a caller that runs `main`
+    in its own process."""
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        return _report()
+    finally:
+        if enabled:
+            gc.enable()
+
+
+def _report() -> int:
+    """Print every finding in the repo's workflows. Return 1 when there is
+    one, else 0."""
     total = 0
     # Only workflows are entry points: a composite action has no cache scope of its
     # own, so it is judged inside each job that uses it, where `flatten` reaches it.
@@ -2071,4 +3151,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    status = main()
+    # Every tree and namespace the run built is still reachable here. A normal
+    # exit frees them one object at a time, which costs seconds on a large
+    # tree, and the OS frees the whole heap anyway. `_exit` skips that, so the
+    # output is flushed first.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(status)

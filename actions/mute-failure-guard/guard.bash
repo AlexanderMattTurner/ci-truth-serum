@@ -2,7 +2,7 @@
 # mute-failure-guard: bash reads this file through BASH_ENV before every non-interactive script.
 #
 # It records failed commands in a ledger, so a step that fails without a message still names the
-# command, the file and the line. Three kinds of row, because bash hides failures three ways:
+# command, the file and the line. Four kinds of row, because bash hides failures four ways:
 #
 #   * ERR — a failed command. `set -E` passes the trap into functions, subshells and command
 #     substitutions, so a failure an outer command drops (`f "$(g)"`) is recorded.
@@ -10,6 +10,8 @@
 #     inside a condition (`if`, `!`, a non-final `&&`/`||` part) nor in anything a condition
 #     calls, so this row is what records `[[ -n "$(f)" ]] || …` and `x="$(f)" || return 1`.
 #   * suppressed — a failure that `|| true` or `|| :` discarded.
+#   * status saved — a failure whose status a caller saves, as `"$@" || rc=$?` does. Bash runs
+#     no ERR trap on the left of `||`, so there this row is the only record of the failure.
 #
 # It never uses `set -x`: that prints expanded values, and CI logs are public. /bin/bash 3.2 on
 # macOS runs it with less recorded: it names no command in an ERR row, and it records no exit
@@ -28,7 +30,7 @@ _cts_mute_dir=${BASH_SOURCE[0]%/*}
 # -T passes the DEBUG trap into functions and subshells, which the subshell rows need.
 set -E -T
 # The traps below assign these; set here so `set -u` never meets them unset.
-_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd='' _cts_us=''
+_cts_rc=0 _cts_src=0 _cts_drc=0 _cts_dline=0 _cts_cmd='' _cts_us='' _cts_var='' _cts_psrc='?' _cts_pline=0
 
 # _cts_mute_row STATUS FILE LINE COMMAND — append one tab-separated ledger row: step id, pid,
 # file:line, status, open descriptors, command text. The handler must never fail: under errexit
@@ -84,13 +86,28 @@ _cts_mute_enter() {
 # The DEBUG trap runs before every command. In order, it:
 #   1. arms the subshell EXIT trap on the first command of a new subshell;
 #   2. records a failure that the `true` or `:` about to run will discard — $? still holds it;
-#   3. turns -T off in a shell about to set a RETURN trap, in any position of its signal list.
+#   3. records a failure whose status the assignment about to run saves, at the failed command;
+#   4. turns -T off in a shell about to set a RETURN trap, in any position of its signal list.
 #      Under -T a RETURN trap also runs when every function it calls returns, so a cleanup there
 #      would run too early. That shell keeps its ERR and suppressed rows and loses only the
 #      subshell rows. A false match costs the shell its subshell rows and nothing else. Known
 #      limit: a trap set through a wrapper function (`add_trap cleanup RETURN`) is not seen.
-#   4. gives `$_` back the caller's last argument.
+#   5. gives `$_` back the caller's last argument.
 _cts_prev=
+# _cts_saved_status TEXT — whether the command TEXT only saves `$?` in a variable, as `rc=$?`,
+# `local rc="$?"` and `declare -i rc=${?}` do. It sets _cts_var to the variable's name.
+_cts_saved_status() {
+  local t=$1
+  case $t in
+  local\ * | declare\ * | typeset\ * | export\ * | readonly\ *) t=${t#* } ;;
+  *) ;;
+  esac
+  while [[ $t == -*' '* ]]; do t=${t#* }; done
+  # shellcheck disable=SC2016 # these are the literal source spellings, which must not expand
+  case ${t#*=} in '$?' | '"$?"' | '${?}' | '"${?}"') ;; *) return 1 ;; esac
+  _cts_var=${t%%=*}
+  [[ -n $_cts_var && $_cts_var != *[!A-Za-z0-9_]* ]]
+}
 # _cts_sets_return_trap TEXT — whether the command TEXT sets a RETURN trap. It matches with
 # `case`, because `=~` would overwrite the caller's BASH_REMATCH.
 _cts_sets_return_trap() {
@@ -103,8 +120,9 @@ _cts_sets_return_trap() {
 trap '_cts_drc=$? _cts_dline=$LINENO _cts_us=$_
 ((BASH_SUBSHELL > ${_cts_sub_level:-0})) && _cts_mute_enter "${BASH_SOURCE[0]:-?}" "$_cts_dline" "$BASH_COMMAND"
 ((_cts_drc != 0)) && [[ $BASH_COMMAND == true || $BASH_COMMAND == : ]] && _cts_mute_cmd "${_cts_prev:-}" && _cts_mute_row "$_cts_drc" "${BASH_SOURCE[0]:-?}" "$_cts_dline" "suppressed by || true: $_cts_cmd"
+((_cts_drc != 0)) && _cts_saved_status "$BASH_COMMAND" && _cts_mute_cmd "${_cts_prev:-}" && _cts_mute_row "$_cts_drc" "${_cts_psrc:-?}" "${_cts_pline:-0}" "status saved by ${_cts_var:-?}=\$?: $_cts_cmd"
 [[ $BASH_COMMAND == trap[[:space:]]* ]] && _cts_sets_return_trap "$BASH_COMMAND" && set +T
-_cts_prev=$BASH_COMMAND
+_cts_prev=$BASH_COMMAND _cts_psrc=${BASH_SOURCE[0]:-?} _cts_pline=$_cts_dline
 : "$_cts_us"' DEBUG
 
 # The first guarded bash in a step is the step's own shell. It records the step's exit status and

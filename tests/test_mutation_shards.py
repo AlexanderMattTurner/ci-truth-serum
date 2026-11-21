@@ -230,7 +230,68 @@ def test_large_module_splits_into_line_capped_sub_shards(tmp_path: Path) -> None
         "tests": "tests/cts/test_check_small.py",
         "index": 0,
         "total": 1,
+        "timeout": mod.SHARD_TIMEOUT_MINUTES,
     }
+
+
+# ── scopes: the daily run skips the slow-oracle modules ─────────────────────
+def _with_weekly(root: Path, listed: list[str]) -> None:
+    config = root / "cosmic-ray.toml"
+    entries = ", ".join(f'"{m}"' for m in listed)
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + f"\n[mutation]\nweekly-modules = [{entries}]\n",
+        encoding="utf-8",
+    )
+
+
+def test_the_daily_scope_leaves_out_the_weekly_modules(tmp_path: Path) -> None:
+    _write_min_repo(
+        tmp_path,
+        modules=["__init__.py", "check_a.py", "check_slow.py"],
+        tests=["test_check_a.py", "test_check_slow.py"],
+    )
+    _with_weekly(tmp_path, ["ci_truth_serum/check_slow.py"])
+
+    daily = mod.expand_shards(tmp_path, mod.DAILY)
+    full = mod.expand_shards(tmp_path, mod.FULL)
+
+    assert [(s["id"], s["timeout"]) for s in daily] == [
+        ("check_a", mod.SHARD_TIMEOUT_MINUTES)
+    ]
+    assert [(s["id"], s["timeout"]) for s in full] == [
+        ("check_a", mod.SHARD_TIMEOUT_MINUTES),
+        ("check_slow", mod.WEEKLY_SHARD_TIMEOUT_MINUTES),
+    ]
+
+
+def test_a_weekly_entry_that_names_no_module_raises(tmp_path: Path) -> None:
+    """A misspelled entry would move nothing, and the daily run would keep timing
+    out on the module it meant to move."""
+    _write_min_repo(
+        tmp_path, modules=["__init__.py", "check_a.py"], tests=["test_check_a.py"]
+    )
+    _with_weekly(tmp_path, ["ci_truth_serum/check_slwo.py"])
+    with pytest.raises(ValueError, match=r"check_slwo\.py"):
+        mod.expand_shards(tmp_path, mod.DAILY)
+
+
+def test_an_unknown_scope_raises(tmp_path: Path) -> None:
+    _write_min_repo(
+        tmp_path, modules=["__init__.py", "check_a.py"], tests=["test_check_a.py"]
+    )
+    with pytest.raises(ValueError, match="unknown scope"):
+        mod.expand_shards(tmp_path, "weekly")
+
+
+def test_the_live_daily_scope_has_no_shard_over_its_timeout_budget() -> None:
+    """Every daily shard runs under the short timeout, and every live weekly
+    module is out of the daily matrix."""
+    weekly = mod.weekly_modules(REPO_ROOT)
+    daily = mod.expand_shards(REPO_ROOT, mod.DAILY)
+    assert weekly
+    assert {s["timeout"] for s in daily} == {mod.SHARD_TIMEOUT_MINUTES}
+    assert not weekly & {s["module"] for s in daily}
 
 
 # ── the shard hash: the safety property behind the session cache ───────────

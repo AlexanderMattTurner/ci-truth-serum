@@ -39,6 +39,10 @@ fires on both a pull request event and ``merge_group``. A workflow that fires on
 ``merge_group`` alone can be a leg written before the queue is turned on, so it
 proves nothing.
 
+A job whose check a ``.mergify.yml`` queue rule names in ``check-success=<name>``
+is also a root of the closure. Mergify sends no ``merge_group`` event, so the
+second rule judges only the marked jobs.
+
 Opt out per job with ``# event-scoped-ok: <reason>`` on or above the job when
 the skip is deliberate and the reporter below it is honest about it.
 """
@@ -54,6 +58,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_linecheck import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
     _job_blocks,
     _marked_jobs,
+    gating_jobs,
+    mergify_check_names,
     annotated_near,
     declared_events,
     github_string,
@@ -452,13 +458,14 @@ def _siblings(path: Path) -> list[Path]:
 
 
 def check_file(
-    path: Path, merge_queue: bool | None = None
+    path: Path, merge_queue: bool | None = None, mergify: frozenset[str] = frozenset()
 ) -> list[tuple[int | None, str]]:
     """Return (line, message) for every closure job provably skipped on a
     gating event, and for every required job the merge queue never runs.
 
     MERGE_QUEUE says whether the repo uses a merge queue. None reads it from
-    the workflow files beside PATH.
+    the workflow files beside PATH. MERGIFY holds the check names a Mergify
+    config gates on.
 
     A file that cannot be parsed as YAML is itself reported as a violation
     (line ``None``) rather than silently passed as clean — matching the sibling
@@ -491,15 +498,16 @@ def check_file(
     blocks = _job_blocks(text)
     lines = source_lines(text)
     comments = yaml_marker_comments(text)
-    required = _marked_jobs(blocks, jobs)
+    required = gating_jobs(blocks, jobs, mergify)
+    marked = _marked_jobs(blocks, jobs)
 
     violations: list[tuple[int | None, str]] = []
     events = {event for event, _ in pairs}
-    if required and events & PR_EVENTS and "merge_group" not in events:
+    if marked and events & PR_EVENTS and "merge_group" not in events:
         if merge_queue is None:
             merge_queue = uses_merge_queue(_siblings(path))
         if merge_queue:
-            for root in required:
+            for root in marked:
                 start, block = blocks.get(root, (1, ""))
                 span_end = start + len(block.splitlines()) - 1
                 if not annotated_near(
@@ -575,9 +583,10 @@ def main() -> int:
     total = 0
     files = workflow_files()
     merge_queue = uses_merge_queue(files)
+    mergify = mergify_check_names(REPO_ROOT)
     for path in files:
         rel = path.relative_to(REPO_ROOT)
-        for line, message in check_file(path, merge_queue):
+        for line, message in check_file(path, merge_queue, mergify):
             loc = f"file={rel},line={line}" if line else f"file={rel}"
             print(f"::error {loc}::{message}")
             total += 1

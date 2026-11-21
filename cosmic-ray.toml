@@ -47,6 +47,17 @@ test-command = "python -m pytest -x -q -p no:cacheprovider tests/cts"
 [cosmic-ray.distributor]
 name = "local"
 
+# Read by .github/scripts/mutation_shards.py, not by cosmic-ray. A module listed
+# here is mutated only by the weekly full run, with a longer shard timeout.
+# The daily run skips it, so the daily run can finish and its skip gate works.
+# A module belongs here when its oracle is too slow for the daily shard
+# timeout: test_trace_ci.py takes about 22 s, and each mutant reruns it, so a
+# trace_ci shard of about 240 mutants needs over an hour.
+[mutation]
+weekly-modules = [
+    "ci_truth_serum/trace_ci.py",
+]
+
 [cosmic-ray.filters.operators-filter]
 # Operators whose mutants are predominantly equivalent/noise on this codebase.
 exclude-operators = []
