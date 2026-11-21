@@ -143,7 +143,9 @@ def test_main_names_the_file_and_hook_for_a_malformed_shell_entry(
     tmp_path, capsys
 ) -> None:
     config = tmp_path / "config.yaml"
-    config.write_text(_config(_hook_in("system", "bad-hook", _QUOTE_CLASS)))
+    config.write_text(
+        _config(_hook_in("system", "bad-hook", _QUOTE_CLASS)), encoding="utf-8"
+    )
     assert mod.main(["--config", str(config)]) == 1
     err = capsys.readouterr().err
     assert f"{config}: hook 'bad-hook'" in err
