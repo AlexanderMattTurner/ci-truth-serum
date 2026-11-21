@@ -29,6 +29,7 @@ import subprocess
 import sys
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _cts_bash_ast import (  # noqa: E402,I001  # pylint: disable=wrong-import-position
@@ -67,8 +68,19 @@ _NOT_CHECKOUT = frozenset(
     "mkdtemp __file__ bash_source 0".split()
 )
 
-# name -> (line, members or None when one is computed, the arrays it expands)
-_Lists = dict[str, tuple[int, tuple[str, ...] | None, frozenset[str]]]
+
+class Array(NamedTuple):
+    line: int
+    members: tuple[str, ...] | None  # None when a member is computed
+    expands: frozenset[str]
+
+
+class Finding(NamedTuple):
+    list_file: str
+    line: int
+    name: str
+    path: str
+    sites: list[tuple[str, int]]
 
 
 def normalize(raw: str) -> str | None:
@@ -94,7 +106,6 @@ def covered(path: str, members: Iterable[str]) -> bool:
 
 
 def _checkout_root(names: Iterable[str]) -> bool:
-    """False when an identifier in NAMES names a root other than the checkout."""
     return not any(
         n.lower() in _NOT_CHECKOUT or n.lower().startswith("xdg_") for n in names
     )
@@ -113,11 +124,11 @@ def _expanded_array(node) -> str | None:
     return node_text(sub.child_by_field_name("name"))
 
 
-def shell_lists(text: str) -> _Lists:
+def shell_lists(text: str) -> dict[str, Array]:
     """Each array in the shell TEXT, read in source order as bash runs it.
     `X=(…)` replaces a list, `X+=(…)` adds its literal words, and an expanded
     array with known members adds those members."""
-    lists: _Lists = {}
+    lists: dict[str, Array] = {}
     for assignment in iter_nodes(parse_bash(text), "variable_assignment"):
         name = assignment.child_by_field_name("name")
         value = assignment.child_by_field_name("value")
@@ -129,7 +140,7 @@ def shell_lists(text: str) -> _Lists:
         computed = False
         for child in (c for c in value.named_children if c.type != "comment"):
             source = _expanded_array(child) or ""
-            known = lists.get(source, (0, None))[1]
+            known = lists[source].members if source in lists else None
             if known is not None:
                 words += known
                 sources.add(source)
@@ -142,10 +153,12 @@ def shell_lists(text: str) -> _Lists:
         if earlier is not None and any(c.type == "+=" for c in assignment.children):
             line, members, expanded = earlier
             if members is not None:
-                lists[key] = (line, members + tuple(words), expanded | sources)
+                lists[key] = Array(line, members + tuple(words), expanded | sources)
         else:
             line = assignment.start_point[0] + 1
-            lists[key] = (line, None if computed else tuple(words), frozenset(sources))
+            lists[key] = Array(
+                line, None if computed else tuple(words), frozenset(sources)
+            )
     return lists
 
 
@@ -266,9 +279,8 @@ def references(text: str, path: str) -> list[tuple[int, str]]:
     return [(line, spelled) for line, spelled in found if spelled is not None]
 
 
-def find() -> tuple[list[tuple[str, int, str, str, list[tuple[str, int]]]], bool]:
-    """Every omission in the tracked tree, as (list file, line, list name,
-    omitted path, [(consumer, line)]), and whether a file was refused."""
+def find() -> tuple[list[Finding], bool]:
+    """Every omission in the tracked tree, and whether a file was refused."""
     git = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True)
     files = frozenset(os.fsdecode(p) for p in git.stdout.split(b"\0") if p)
     dirs = frozenset(str(d) for f in files for d in PurePosixPath(f).parents)
@@ -284,7 +296,6 @@ def find() -> tuple[list[tuple[str, int, str, str, list[tuple[str, int]]]], bool
                 lists[list_file, name] = (line, paths)
                 replaced.update((list_file, source) for source in sources)
     findings = []
-    read: dict[str, tuple[list[str], list[tuple[int, str]], dict[int, str]]] = {}
     for (list_file, name), (line, members) in sorted(lists.items()):
         if (list_file, name) in replaced:
             continue
@@ -293,7 +304,7 @@ def find() -> tuple[list[tuple[str, int, str, str, list[tuple[str, int]]]], bool
             for f in sorted(files)
             if covered(f, members) and (f in shell or is_python_source(f))
         ]
-        refused |= refuse_unparseable(sorted(set(shipped) - set(read) - refused))
+        refused |= refuse_unparseable([f for f in shipped if f not in refused])
         picked = {
             parent(m)
             for m in members
@@ -301,22 +312,19 @@ def find() -> tuple[list[tuple[str, int, str, str, list[tuple[str, int]]]], bool
         }
         sites: dict[str, set[tuple[str, int]]] = {}
         for consumer in (f for f in shipped if f not in refused):
-            if consumer not in read:
-                text = Path(consumer).read_text(encoding="utf-8")
-                read[consumer] = (
-                    source_lines(text, consumer),
-                    references(text, consumer),
-                    comment_lines(text, consumer),
-                )
-            lines, refs, comments = read[consumer]
-            for at, path in refs:
+            text = Path(consumer).read_text(encoding="utf-8")
+            lines, comments = (
+                source_lines(text, consumer),
+                comment_lines(text, consumer),
+            )
+            for at, path in references(text, consumer):
                 omitted = parent(path) in picked and not covered(path, members)
                 if not omitted or path in picked or not (path in files or path in dirs):
                     continue
                 if not annotated_near(lines, at, OPT_OUT, comments=comments):
                     sites.setdefault(path, set()).add((consumer, at))
         findings += [
-            (list_file, line, name, path, sorted(at))
+            Finding(list_file, line, name, path, sorted(at))
             for path, at in sorted(sites.items())
         ]
     return findings, bool(refused)

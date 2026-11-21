@@ -30,6 +30,7 @@ def _write(files: dict[str, str]) -> None:
     for rel, text in {**base, **files}.items():
         Path(rel).parent.mkdir(parents=True, exist_ok=True)
         Path(rel).write_text(text, encoding="utf-8")
+    # cwd-git-ok: the autouse fixture chdirs into a fresh tmp repo first
     subprocess.run(["git", "add", "-A"], check=True)
 
 
