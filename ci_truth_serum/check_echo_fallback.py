@@ -147,7 +147,7 @@ def _applied_redirects(fallback) -> list:
 
 
 def _writes_to_stderr(fallback) -> bool:
-    """True when FALLBACK's stdout goes to stderr, a file or /dev/null — no value.
+    """True when FALLBACK's output goes to stderr — narration, never a value.
 
     Both spellings are read off the redirect's own children: a duplication whose
     target descriptor is 2 (`>&2`, `1>&2`, `>& 2`), or a write to
@@ -157,11 +157,6 @@ def _writes_to_stderr(fallback) -> bool:
         if ">&" in parts and parts[-1] == "2":
             return True
         if "/dev/stderr" in parts:
-            return True
-        # `>`/`>>` onto a file or /dev/null (stdout, so no leading fd other than 1).
-        if parts[0] in {">", ">>", "1"} and (
-            parts[0] != "1" or parts[1] in {">", ">>"}
-        ):
             return True
     return False
 
