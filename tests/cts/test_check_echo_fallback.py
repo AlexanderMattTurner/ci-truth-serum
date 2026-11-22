@@ -201,6 +201,7 @@ def test_capture_the_script_itself_takes_is_flagged(src: str) -> None:
         # the redirect sits on the enclosing block, so it still applies
         '{ cmd || echo "x"; } >&2\n',
         '( cmd || echo "x" ) >&2\n',
+        '[[ -n "$pin" ]] || echo "WARNING: may differ from CI." >&2\n',
     ],
 )
 def test_stderr_spellings_are_not_flagged(src: str) -> None:
@@ -217,6 +218,26 @@ def test_stderr_spellings_are_not_flagged(src: str) -> None:
 )
 def test_bare_form_that_aborts_is_not_flagged(src: str) -> None:
     assert mod.violations(src) == []
+
+
+@pytest.mark.parametrize(
+    "src",
+    [
+        'cmd || echo "x"\n',
+        'cmd || echo "x" 2>&1\n',
+        'v=$(cmd || echo "x" 2>&1)\n',
+        'cmd || echo "x" 2>f\n',
+        # a file a later read can parse, stdout spelled as a path, or a
+        # failure silenced into /dev/null (no other lint catches that shape)
+        'cmd || echo "x" >/dev/null\n',
+        'cmd || echo "x" 1>/dev/null\n',
+        'cmd || echo "x" > out.txt\n',
+        'cmd || echo "x" >> out.txt\n',
+        'v=$(cmd || echo "x" >/dev/stdout)\n',
+    ],
+)
+def test_stdout_still_reaching_stdout_is_flagged(src: str) -> None:
+    assert mod.violations(src) == [1]
 
 
 def test_abort_on_a_later_line_does_not_excuse_the_fallback() -> None:

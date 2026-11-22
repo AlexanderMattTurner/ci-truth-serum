@@ -179,9 +179,9 @@ elif [[ -z "$reviews" ]]; then
   reason="waiting for the automated review of this pull request"
 else
   # (b) Unresolved reviewer-rooted threads carrying a gating severity, per the
-  # SSOT-derived predicate built above. config/review-severities.json lists all
-  # three here, 🔵 `nit` included, so every finding opens a thread the merge
-  # waits on. .github/prompts/claude-pr-review.md tells the reviewer the same.
+  # SSOT-derived predicate built above. config/review-severities.json's `gating`
+  # list names those severities, and .github/prompts/claude-pr-review.md tells
+  # the reviewer the same.
   gating="$(fetch_review_threads "$owner" "$name" "$PR" \
     "[.[] | select(.isResolved == false)
           | $REVIEW_THREAD_ROOT_IS_REVIEWER

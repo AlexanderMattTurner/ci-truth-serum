@@ -30,6 +30,18 @@ on: # zizmor: ignore[dangerous-triggers] — no PR code executes: an API-only sc
 
 permissions: {}
 
+# Keyed per HEAD, and never cancelling a running evaluation. Webhook delivery
+# is unordered, so a PR-only key would let a late event for a stale head
+# displace the queued evaluation for the current one. `cancel-in-progress`
+# stays false because GitHub cancels mid-step, which can lose a verdict between
+# the read and the post. The block is at the WORKFLOW level because one review
+# fires one event per finding: GitHub drops a superseded queued RUN before any
+# job starts, so it posts no check run. A job-level block cancels the queued
+# JOB instead, and that posts a CANCELLED check run on the PR head.
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
 jobs:
   # No job-level `if:`. This job posts a required check, so every run that can
   # occupy the concurrency slot must post a verdict itself — a conditionally
@@ -46,15 +58,6 @@ jobs:
     name: Evaluate the automated-review gate # required-check: false  # this job reports whether the EVALUATION ran; the gate itself is the status it posts
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # Keyed per HEAD, and never cancelling a run in flight. Webhook delivery is
-    # unordered, so a PR-only key would let a late event carrying a stale head
-    # displace the queued evaluation for the current one. `cancel-in-progress`
-    # stays false because GitHub cancels mid-step: a true here could kill a run
-    # between reading the reviews and posting the status, losing the verdict and
-    # leaving the head with a stale one.
-    concurrency:
-      group: review-gate-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
-      cancel-in-progress: false
     permissions:
       contents: read # sparse-checkout the trusted gate script
       pull-requests: read # read the PR's reviews
