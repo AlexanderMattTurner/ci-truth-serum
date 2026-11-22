@@ -92,6 +92,8 @@ _KEPT_CONTEXTS = frozenset(
 )
 # The outputs of a cache step that report how its restore went.
 _CACHE_STATUS_OUTPUTS = frozenset({"cache-hit", "cache-matched-key"})
+# `PREFIX<expansion>…=`: a variable name built at run time. "\0" stands for an expansion.
+_BUILT_NAME = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\0[A-Za-z0-9_\0]*=")
 # The bash nodes of an argument that are literal text.
 _LITERAL_PIECES = frozenset({"word", "string_content", "raw_string"})
 
@@ -229,6 +231,8 @@ def _set_at_run_time(path: tuple[str, ...], step: dict, context: Context) -> boo
     """Whether `env.<NAME>` in a key holds a value an earlier `run:` step computes.
     No `env:` block sets NAME, and the script of a step before STEP writes
     `NAME=VALUE`, as `echo "NAME=…" >> "$GITHUB_ENV"` or `gha_env "NAME=…"` does.
+    A write whose name the script builds (`PREFIX_$tool=VALUE`) counts for each
+    NAME that starts with PREFIX.
     The name alone then says nothing: a pin can only match a name that says it
     holds one. So the key holds a value this module cannot read. A name that
     says it holds a pin (`TOOL_VERSION`) stays as written."""
@@ -240,7 +244,10 @@ def _set_at_run_time(path: tuple[str, ...], step: dict, context: Context) -> boo
     index = next((i for i, s in enumerate(context.steps) if s is step), 0)
     return any(
         isinstance(script := producer.get("run"), str)
-        and any(True for _ in _assignments(script, name))
+        and (
+            any(True for _ in _assignments(script, name))
+            or any(name.startswith(prefix) for prefix in _built_name_prefixes(script))
+        )
         for producer in context.steps[:index]
     )
 
@@ -301,6 +308,19 @@ def _assignments(script: str, name: str):
             first = _literal_piece(head)
             if first.startswith(f"{name}="):
                 yield command, first, pieces
+
+
+def _built_name_prefixes(script: str):
+    """The literal PREFIX of each command argument `PREFIX$var=VALUE` in SCRIPT:
+    a write to any name that starts with PREFIX, which `_assignments` cannot spell."""
+    for command in iter_nodes(parse_shell(script), "command"):
+        for argument in command_arguments(command):
+            text = "".join(
+                _literal_piece(p) if p.type in _LITERAL_PIECES else "\0"
+                for p in _pieces(argument)
+            )
+            if built := _BUILT_NAME.match(text):
+                yield built.group(1)
 
 
 def _pieces(node: Node) -> list[Node]:

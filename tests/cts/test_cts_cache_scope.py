@@ -142,6 +142,9 @@ def test_only_a_step_before_the_cache_sets_its_output():
     assert _scope(step, after=(producer,)) == cs.CacheScope(None)
 
 
+BUILT = {"run": 'echo "KEY_$tool=x" >> "$GITHUB_ENV"'}
+KEY = "t-${{ env.KEY_ruff }}"
+PIN_KEY = "t-${{ env.KEY_ruff_VERSION }}"
 ENV_WRITER = {"run": 'gha_env "CACHE_KEY=gate-$digest"'}
 
 
@@ -172,6 +175,22 @@ ENV_WRITER = {"run": 'gha_env "CACHE_KEY=gate-$digest"'}
             "t-${{ env.TOOL_VERSION }}",
             "t-${{ env.TOOL_VERSION }}",
         ),
+        ((BUILT,), (), {}, KEY, None),
+        (
+            ({"run": 'for t in a b; do echo "KEY_${t}=x" >> "$GITHUB_ENV"; done'},),
+            (),
+            {},
+            KEY,
+            None,
+        ),
+        (({"run": "gha_env KEY_$(echo a)=x"},), (), {}, KEY, None),
+        (({"run": 'echo "OTHER_$tool=x" >> "$GITHUB_ENV"'},), (), {}, KEY, KEY),
+        (({"run": 'echo "KEY_ruff_$tool=x" >> "$GITHUB_ENV"'},), (), {}, KEY, KEY),
+        (({"run": 'echo "KEY_$tool is a=b"'},), (), {}, KEY, KEY),
+        (({"run": 'echo "KEY_$tool"'},), (), {}, KEY, KEY),
+        ((BUILT,), (), {"KEY_ruff": "k"}, KEY, KEY),
+        ((), (BUILT,), {}, KEY, KEY),
+        ((BUILT,), (), {}, PIN_KEY, PIN_KEY),
     ],
     ids=[
         "written-by-an-earlier-step",
@@ -180,6 +199,16 @@ ENV_WRITER = {"run": 'gha_env "CACHE_KEY=gate-$digest"'}
         "written-by-no-step",
         "set-in-an-env-block",
         "pin-name-stays",
+        "name-built-from-a-variable",
+        "name-built-in-a-loop-with-braces",
+        "name-built-from-a-command",
+        "name-built-with-an-unrelated-prefix",
+        "name-built-with-a-longer-prefix",
+        "no-name-before-the-equals-sign",
+        "built-name-printed-not-written",
+        "built-name-set-in-an-env-block",
+        "built-name-written-only-after-the-cache",
+        "built-name-that-says-it-holds-a-pin",
     ],
 )
 def test_an_env_key_an_earlier_step_computes_is_unreadable(
