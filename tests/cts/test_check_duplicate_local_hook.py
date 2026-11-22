@@ -85,6 +85,55 @@ def test_a_quoted_entry_word_is_one_argument() -> None:
     assert len(mod.findings(_config(one, two))) == 1
 
 
+def _in(language: str, hook_id: str, entry: str, extra: str = "") -> str:
+    return (
+        _hook(hook_id, entry).replace("language: system", f"language: {language}")
+        + extra
+    )
+
+
+_QUOTE = "'[\"'']'"  # one unbalanced quote: `shlex.split` raises on it
+_FLAG = '        args: ["-i"]\n'
+
+
+@pytest.mark.parametrize(
+    ("language", "extra", "command"),
+    [
+        ("pygrep", "", ("<pygrep>", "x y")),
+        ("pygrep", _FLAG, ("<pygrep>", "-i", "x y")),
+        ("fail", _FLAG, ("<fail>", "x y")),
+    ],
+)
+def test_an_unsplit_entry_stays_one_word(language, extra, command) -> None:
+    [hook] = mod.local_hooks(_config(_in(language, "a", "x y", extra)))
+    assert hook.command == command
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "reported"),
+    [
+        (("pygrep", _QUOTE, ""), ("pygrep", _QUOTE, ""), True),
+        (("fail", _QUOTE, ""), ("fail", _QUOTE, ""), True),
+        (("pygrep", "x", ""), ("pygrep", "x", _FLAG), False),
+        (("pygrep", "x.py", ""), ("system", "x.py", ""), False),
+    ],
+)
+def test_pygrep_and_fail_entries_compare_as_regexes(first, second, reported) -> None:
+    text = _config(_in(first[0], "a", *first[1:]), _in(second[0], "b", *second[1:]))
+    assert bool(mod.findings(text)) is reported
+
+
+def test_main_names_the_file_and_hook_for_a_malformed_shell_entry(
+    tmp_path, capsys
+) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text(_config(_in("system", "bad", _QUOTE)), encoding="utf-8")
+    assert mod.main(["--config", str(config)]) == 1
+    err = capsys.readouterr().err
+    assert f"{config}: hook 'bad'" in err
+    assert "Traceback" not in err
+
+
 def test_different_args_make_different_commands() -> None:
     second = _hook("b", "x.py", "") + "        args: [--fast]\n"
     assert mod.findings(_config(_hook("a", "x.py"), second)) == []

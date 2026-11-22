@@ -91,7 +91,19 @@ def command_of(hook: dict) -> tuple[str, ...]:
     args = hook.get("args") or []
     if not isinstance(args, list):
         raise ValueError(f"hook {hook.get('id')!r}: `args:` is not a list")
-    return (*shlex.split(str(hook.get("entry", ""))), *(str(arg) for arg in args))
+    entry = str(hook.get("entry", ""))
+    argv = tuple(str(arg) for arg in args)
+    # pre-commit hands a `pygrep` entry to the regex engine and prints a `fail`
+    # entry. Neither splits it as shell words, so a quote there is plain text.
+    # The tag keeps a regex from matching a command with the same text.
+    if hook.get("language") == "pygrep":
+        return ("<pygrep>", *argv, entry)
+    if hook.get("language") == "fail":
+        return ("<fail>", entry)
+    try:
+        return (*shlex.split(entry), *argv)
+    except ValueError as error:
+        raise ValueError(f"hook {hook.get('id')!r}: bad `entry` ({error})") from error
 
 
 def local_hooks(text: str) -> list[Hook]:
@@ -188,7 +200,11 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 0
-    hits = findings(path.read_text(encoding="utf-8"))
+    try:
+        hits = findings(path.read_text(encoding="utf-8"))
+    except ValueError as error:
+        print(f"{path}: {error}", file=sys.stderr)
+        return 1
     for line, message in hits:
         print(f"{path}:{line}: {message}", file=sys.stderr)
     return 1 if hits else 0
