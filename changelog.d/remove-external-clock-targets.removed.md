@@ -1,0 +1,1 @@
+- `check-external-clock-targets`: removed. Only one repository owned an external-clock manifest, so that repository now runs its own copy of the check. A consumer that names the hook in its `.pre-commit-config.yaml`, or passes it to `--skip` or `--check-arg`, must remove that line when it bumps past this release.
