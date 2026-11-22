@@ -284,7 +284,6 @@ CHECKS: tuple[Check, ...] = (
     _check("check_case_default", "extras", SHELL, CORRECTNESS, per_file=True),
     _check("check_cron_comment", "extras", WORKFLOW, SCHEDULING, DOCS),
     _check("check_cron_alert_coverage", "extras", WORKFLOW, SCHEDULING, ALERTING),
-    _check("check_external_clock_targets", "extras", WORKFLOW, SCHEDULING),
     _check("check_multi_cron_gating", "extras", WORKFLOW, SCHEDULING),
     _check("check_unused_reusable_input", "extras", WORKFLOW, MAINTAINABILITY),
     _check("check_unreferenced_local_uses", "extras", WORKFLOW, MAINTAINABILITY),
