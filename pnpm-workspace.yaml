@@ -1,0 +1,7 @@
+overrides:
+  # GHSA-r7fv-28h4-cvq7, GHSA-gfr2-rv44-r23c: ReDoS in markdown-it via markdownlint-cli2
+  markdown-it: ">=15.0.3"
+  # GHSA-r4xh-jqrq-34v2: quadratic parse in smol-toml via markdownlint-cli2
+  smol-toml: ">=1.8.1"
+  # GHSA-ph9p-34f9-6g65: path traversal in tmp via @stryker-mutator/core
+  tmp: ">=0.2.6"
